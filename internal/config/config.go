@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -8,16 +9,19 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
+	Servers  []ServerConfig `yaml:"servers"`
 	Download DownloadConfig `yaml:"download"`
 }
 
 type ServerConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	TLS      bool   `yaml:"tls"`
+	ID            string `yaml:"id"`
+	Host          string `yaml:"host"`
+	Port          int    `yaml:"port"`
+	Username      string `yaml:"username"`
+	Password      string `yaml:"password"`
+	TLS           bool   `yaml:"tls"`
+	MaxConnection int    `yaml:"max_connections"`
+	Priority      int    `yaml:"priority"`
 }
 
 type DownloadConfig struct {
@@ -48,11 +52,40 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.Server.Host == "" {
-		return fmt.Errorf("server host is required")
+	if len(c.Servers) == 0 {
+		return errors.New("at least one server must be configured")
 	}
-	if c.Server.TLS && c.Server.Port == 119 {
-		fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
+
+	for i, s := range c.Servers {
+		if s.ID == "" {
+			return fmt.Errorf("server[%d] requires a unique ID", i)
+		}
+
+		if s.Host == "" {
+			return fmt.Errorf("server %s: host is required", s.ID)
+		}
+
+		if s.Port == 0 {
+			return fmt.Errorf("server %s: port is required", s.ID)
+		}
+
+		if s.TLS && s.Port == 119 {
+			fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
+		}
+
+		if s.MaxConnection <= 0 {
+			// Default to a sane value
+			c.Servers[i].MaxConnection = 10
+		}
+
+		if s.Priority == 0 {
+			// Default to same priority
+			c.Servers[i].Priority = 1
+		}
+	}
+
+	if c.Download.OutDir == "" {
+		c.Download.OutDir = "./downloads"
 	}
 
 	return nil

@@ -7,7 +7,7 @@ import (
 )
 
 type FileWriter struct {
-	mu    sync.RWMutex
+	mu    sync.Mutex
 	files map[string]*os.File
 }
 
@@ -28,19 +28,24 @@ func (fw *FileWriter) Write(path string, offset int64, data []byte) error {
 	return err
 }
 
-func (fw *FileWriter) getOrCreateFile(path string) (*os.File, error) {
-	fw.mu.RLock()
-	f, ok := fw.files[path]
-	fw.mu.RUnlock()
-	if ok {
-		return f, nil
+func (fw *FileWriter) PreAllocate(path string, size int64) error {
+	// getOrCreateFile opens the file with os.O_RDWR | os.O_CREATE
+	f, err := fw.getOrCreateFile(path)
+	if err != nil {
+		return err
 	}
 
+	// On Linux/Unix, Truncate creates a sparse file.
+	// It updates the metadata size but doesn't fill blocks with zeros yet.
+	return f.Truncate(size)
+}
+
+func (fw *FileWriter) getOrCreateFile(path string) (*os.File, error) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
-	// Double-check pattern
-	if f, ok := fw.files[path]; ok {
+	f, ok := fw.files[path]
+	if ok {
 		return f, nil
 	}
 
@@ -55,9 +60,33 @@ func (fw *FileWriter) getOrCreateFile(path string) (*os.File, error) {
 
 func (fw *FileWriter) CloseAll() {
 	fw.mu.Lock()
-	defer fw.mu.Unlock()
-	for _, f := range fw.files {
-		f.Sync() // Ensure data is flushed to Linux disk cache
-		f.Close()
+	// We iterate over keys because CloseFile will be modifying the map
+	paths := make([]string, 0, len(fw.files))
+	for path := range fw.files {
+		paths = append(paths, path)
 	}
+	fw.mu.Unlock()
+
+	for _, path := range paths {
+		_ = fw.CloseFile(path) // Ignore error on global cleanup
+	}
+}
+
+func (fw *FileWriter) CloseFile(path string) error {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	f, ok := fw.files[path]
+	if !ok {
+		return nil // Already closed or never opened
+	}
+
+	// Sync to disk and close
+	f.Sync()
+	err := f.Close()
+
+	// Remove from our map so we don't try to use a closed handle later
+	delete(fw.files, path)
+
+	return err
 }

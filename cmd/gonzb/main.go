@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"gonzb/internal/config"
+	"gonzb/internal/domain"
 	"gonzb/internal/downloader"
+	"gonzb/internal/nntp"
 	"gonzb/internal/nzb"
+	"gonzb/internal/provider"
 	"log"
 	"os"
 	"os/signal"
@@ -18,6 +21,18 @@ func main() {
 		log.Fatalf("Config error: %v", err)
 	}
 
+	// Initialize Providers
+	var providers []domain.Provider
+	for _, s := range cfg.Servers {
+		providers = append(providers, nntp.NewNNTPProvider(s))
+	}
+
+	// Initialize the Manager (The provider load balancer)
+	mgr := provider.NewManager(providers)
+
+	// Initialize the Downloader Service
+	svc := downloader.NewService(cfg, mgr)
+
 	// Setup Signal Handling for Graceful Shutdown
 	// We create a context that is cancelled when the user hits Ctrl+C
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -30,17 +45,16 @@ func main() {
 	}
 	defer f.Close()
 
-	// Initialize application services
+	// Initialize nzb parser
 	nzbParser := nzb.NewParser()
 	nzbDomain, err := nzbParser.Parse(f)
 	if err != nil {
 		log.Fatalf("Failed to parse NZB: %v", err)
 	}
 
-	svc := downloader.NewService(cfg)
-
 	log.Println("Starting download...")
-	if err := svc.DownloadNZB(ctx, nzbDomain); err != nil {
+
+	if err := svc.Download(ctx, nzbDomain); err != nil {
 		log.Fatalf("Download failed: %v", err)
 	}
 

@@ -19,3 +19,11 @@ type NZBSegment struct {
 	Bytes     int64    `xml:"bytes,attr"`
 	MessageID string   `xml:",chardata"`
 }
+
+func (f *NZBFile) TotalSize() int64 {
+	var total int64
+	for _, s := range f.Segments {
+		total += int64(s.Bytes)
+	}
+	return total
+}

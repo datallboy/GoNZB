@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
+	"gonzb/internal/provider"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,85 +21,60 @@ var bufferPool = sync.Pool{
 }
 
 type Service struct {
-	cfg *config.Config
+	cfg     *config.Config
+	manager *provider.Manager
+	writer  *FileWriter
 }
 
-func NewService(c *config.Config) *Service {
-	return &Service{cfg: c}
-}
-
-func (s *Service) DownloadNZB(ctx context.Context, nzb *domain.NZB) error {
-	if err := s.prepareEnvironment(); err != nil {
-		return err
+func NewService(c *config.Config, mgr *provider.Manager) *Service {
+	return &Service{
+		cfg:     c,
+		manager: mgr,
+		writer:  NewFileWriter(),
 	}
-
-	writer := NewFileWriter()
-	defer writer.CloseAll()
-
-	if err := s.runWorkerPool(ctx, nzb, writer); err != nil {
-		return err
-	}
-
-	return s.mergeAll(nzb)
 }
 
-func (s *Service) prepareEnvironment() error {
-	// Create the output directory where finished files go
+func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
+	defer s.writer.CloseAll()
+
 	if err := os.MkdirAll(s.cfg.Download.OutDir, 0755); err != nil {
 		return fmt.Errorf("failed to create out_dir: %w", err)
 	}
 
-	// Create the temporary directory for segments
-	if err := os.MkdirAll(s.cfg.Download.TempDir, 0755); err != nil {
-		return fmt.Errorf("failed to create temp_dir: %w", err)
-	}
-
-	return nil
-}
-
-func (s *Service) mergeAll(nzb *domain.NZB) error {
+	// Pre-allocate Sparse Files (.part)
 	for _, file := range nzb.Files {
-		log.Printf("Merging file: %s", file.Subject)
-
-		// 1. Determine final filename (simplified sanitize)
-		// Usually Usenet subjects look like: "FileName.rar [1/50]"
-		// For now, we'll just use the subject string cleaned up.
-		cleanName := strings.Map(func(r rune) rune {
-			if r == '/' || r == '\\' || r == ':' {
-				return '_'
-			}
-			return r
-		}, file.Subject)
-
-		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
-
-		// 2. Perform the actual byte-copy merge
-		if err := s.mergeFile(file, finalPath); err != nil {
-			return fmt.Errorf("failed to merge %s: %w", cleanName, err)
-		}
-	}
-	return nil
-}
-
-func (s *Service) dispatchJobs(nzb *domain.NZB, jobs chan<- domain.DownloadJob) {
-	// Ensure we close the jobs channel when we are done sending,
-	// otherwise workers will hang forever waiting for more.
-	defer close(jobs)
-
-	for _, file := range nzb.Files {
-		var currentOffset int64 = 0
 		cleanName := s.sanitizeFileName(file.Subject)
 		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
 
-		for _, seg := range file.Segments {
-			jobs <- domain.DownloadJob{
-				Segment:  seg,
-				FilePath: finalPath,
-				Offset:   currentOffset,
-			}
-			currentOffset += seg.Bytes
+		// Create the sparse file so workers have a target
+		if err := s.writer.PreAllocate(finalPath+".part", file.TotalSize()); err != nil {
+			return fmt.Errorf("failed to pre-allocate %s %w", cleanName, err)
 		}
 	}
+
+	// Call worker pool
+	if err := s.runWorkerPool(ctx, nzb, s.writer); err != nil {
+		return err
+	}
+
+	// Finialize: Close handles and rename .part -> final
+	for _, file := range nzb.Files {
+		cleanName := s.sanitizeFileName(file.Subject)
+		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
+		partPath := finalPath + ".part"
+
+		// Close handle so OS releases the lock for renaming
+		if err := s.writer.CloseFile(partPath); err != nil {
+			log.Printf("Warning: failed to close %s: %v", partPath, err)
+		}
+
+		if err := os.Rename(partPath, finalPath); err != nil {
+			return fmt.Errorf("failed to finalize %s: %w", cleanName, err)
+		}
+		log.Printf("Finished: %s", cleanName)
+	}
+
+	return nil
 }
 
 func (s *Service) sanitizeFileName(subject string) string {
