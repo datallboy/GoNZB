@@ -2,6 +2,7 @@ package domain
 
 type DownloadJob struct {
 	Segment    NZBSegment
+	Groups     []string
 	FilePath   string // Where to write this specific segment
 	Offset     int64
 	RetryCount int

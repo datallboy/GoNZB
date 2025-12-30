@@ -27,6 +27,15 @@ func main() {
 		providers = append(providers, nntp.NewNNTPProvider(s))
 	}
 
+	// Test Providers
+	for _, p := range providers {
+		log.Printf("Testing connection %s...", p.ID())
+		if err := p.TestConnection(); err != nil {
+			log.Fatalf("FAILED to connect to %s: %v", p.ID(), err)
+		}
+		log.Printf("Successfully authenticated with %s", p.ID())
+	}
+
 	// Initialize the Manager (The provider load balancer)
 	mgr := provider.NewManager(providers)
 

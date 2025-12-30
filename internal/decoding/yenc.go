@@ -32,10 +32,11 @@ func (d *YencDecoder) DiscardHeader() error {
 	for {
 		line, err := d.scanner.ReadString('\n')
 		if err != nil {
-			return err
+			return fmt.Errorf("searching for yenc header: %w", err)
 		}
-		if strings.HasPrefix(line, "-ybegin") {
-			return nil
+
+		if strings.HasPrefix(line, "=ybegin") {
+			return d.handlePotentialPartHeader()
 		}
 	}
 }
@@ -65,21 +66,24 @@ func (d *YencDecoder) Read(p []byte) (n int, err error) {
 			continue
 		}
 
-		// Decode thge byte
+		if b == '\r' || b == '\n' {
+			// yEnc ignores critical characters (newlines) unless they are escaped.
+			// If escaped is true, it shouldn't be a newline, but we reset anyway.
+			d.escaped = false
+			continue
+		}
+
+		// Decode the byte
 		var decoded byte
 		if d.escaped {
-			decoded = b - 42 - 64
+			decoded = b - 64 - 42
 			d.escaped = false
 		} else {
-			// Skip newlines (yEnc ignore \r and \n)
-			if b == '\r' || b == '\n' {
-				continue
-			}
 			decoded = b - 42
 		}
 
 		p[n] = decoded
-		d.hash.Write([]byte{decoded})
+		d.hash.Write(p[n : n+1])
 		n++
 	}
 
@@ -89,11 +93,19 @@ func (d *YencDecoder) Read(p []byte) (n int, err error) {
 func (d *YencDecoder) parseFooter() {
 	line, _ := d.scanner.ReadString('\n')
 	// Typical footer: =yend size=12345 pcrc32=ABC12345
-	parts := strings.Split(line, " ")
+	parts := strings.Fields(line)
 	for _, part := range parts {
-		if strings.HasPrefix(part, "pcrc32=") || strings.HasPrefix(part, "crc32=") {
-			val := strings.Split(part, "=")[1]
-			val = strings.TrimSpace(val)
+		if strings.HasPrefix(part, "pcrc32=") {
+			val := strings.TrimPrefix(part, "pcrc32=")
+			crc, err := strconv.ParseUint(val, 16, 32)
+			if err == nil {
+				d.expectedCRC = uint32(crc)
+				return // Found the part CRC, we can stop
+			}
+		}
+		// Fallback to crc32 if pcrc32 isn't there
+		if strings.HasPrefix(part, "crc32=") {
+			val := strings.TrimPrefix(part, "crc32=")
 			crc, err := strconv.ParseUint(val, 16, 32)
 			if err == nil {
 				d.expectedCRC = uint32(crc)
@@ -106,6 +118,19 @@ func (d *YencDecoder) Verify() error {
 	actual := d.hash.Sum32()
 	if actual != d.expectedCRC {
 		return fmt.Errorf("checksum mismatch: expected %08X, got %08X", d.expectedCRC, actual)
+	}
+	return nil
+}
+
+func (d *YencDecoder) handlePotentialPartHeader() error {
+	// Peek at the next few bytes to see if =ypart follows
+	// We use Peek so we don't consume the data if it's actually binary
+	peek, _ := d.scanner.Peek(100)
+	peekStr := string(peek)
+
+	if strings.Contains(peekStr, "=ypart") {
+		_, err := d.scanner.ReadString('\n')
+		return err
 	}
 	return nil
 }

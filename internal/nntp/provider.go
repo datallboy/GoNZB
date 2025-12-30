@@ -43,11 +43,16 @@ func (p *nntpProvider) Priority() int { return p.conf.Priority }
 // Interface implimentation: MaxConnection
 func (p *nntpProvider) MaxConnection() int { return p.conf.MaxConnection }
 
-func (p *nntpProvider) Fetch(ctx context.Context, msgID string) (io.Reader, error) {
+func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
 	// Create a NEW connection for this specific fetch
 	conn, err := p.getConn()
 	if err != nil {
 		return nil, err
+	}
+
+	if len(groups) > 0 {
+		conn.Cmd("GROUP %s", groups[0])
+		conn.ReadCodeLine(211)
 	}
 
 	formattedID := msgID
@@ -56,17 +61,22 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string) (io.Reader, erro
 	}
 
 	// The BODY command tells the server to stream the article content
-	_, err = conn.Cmd("BODY <%s>", formattedID)
+	_, err = conn.Cmd("BODY %s", formattedID)
 	if err != nil {
-		conn.Close()
+		p.returnConn(conn)
 		return nil, err
 	}
 
 	// Expecting 222 Body follows
-	_, _, err = conn.ReadCodeLine(222)
+	code, msg, err := conn.ReadCodeLine(222)
 	if err != nil {
+		if code == 403 {
+			// If not found, we recycle the connection (it's still healthy)
+			p.returnConn(conn)
+			return nil, fmt.Errorf("article not found (430): %s", formattedID)
+		}
 		conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("NNTP error %d: %s", code, msg)
 	}
 
 	// DotReader handles the NNTP "dot-stuffing" (terminating the stream with .\r\n)
@@ -176,6 +186,27 @@ func (p *nntpProvider) authenticate(conn *textproto.Conn) error {
 	return err
 }
 
+func (p *nntpProvider) TestConnection() error {
+	conn, err := p.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// Send a 'HELP' or 'DATE' command to verify we are truly authenticated and active
+	_, err = conn.Cmd("DATE")
+	if err != nil {
+		return fmt.Errorf("DATE command failed: %w", err)
+	}
+
+	code, msg, err := conn.ReadCodeLine(111) // 111 is the success code for DATE
+	if err != nil {
+		return fmt.Errorf("auth check failed (code %d): %s", code, msg)
+	}
+
+	return nil
+}
+
 // pooledReader intercepts the EOF/Close to recycle the connection
 type pooledReader struct {
 	io.Reader
@@ -190,6 +221,12 @@ func (pr *pooledReader) Read(b []byte) (n int, err error) {
 
 // Close is called by the Service worker via 'defer closer.Close()'
 func (pr *pooledReader) Close() error {
+	_, err := io.Copy(io.Discard, pr.Reader)
+	if err != nil {
+		pr.conn.Close()
+		return err
+	}
+
 	pr.p.returnConn(pr.conn)
 	return nil
 }

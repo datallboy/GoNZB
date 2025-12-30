@@ -17,11 +17,6 @@ type managedProvider struct {
 	semaphore chan struct{}
 }
 
-type releaseReader struct {
-	io.Reader
-	onClose func()
-}
-
 type Manager struct {
 	providers []*managedProvider
 }
@@ -42,34 +37,68 @@ func NewManager(providers []domain.Provider) *Manager {
 	return &Manager{providers: managed}
 }
 
-func (m *Manager) FetchArticle(ctx context.Context, msgID string) (io.Reader, error) {
+func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
 	var lastErr error
 
 	for _, mp := range m.providers {
 		select {
 		case mp.semaphore <- struct{}{}:
-			// Try to fetch with a small internal retry for network blips
-			reader, err := m.tryFetch(ctx, mp, msgID)
-			if err != nil {
-				<-mp.semaphore // Release immediately if fetch failed
-				lastErr = err
-				continue // Try the next provider
-			}
+			// Got a slot!
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 
-			// 2. Wrap the reader to release the slot only when Close() is called
-			return &releaseReader{
-				Reader: reader,
-				onClose: func() {
-					<-mp.semaphore
-				},
-			}, nil
-
-		default:
-			// No connections available for this provider right now, try next...
+		reader, err := m.tryFetch(ctx, mp, msgID, groups)
+		if err != nil {
+			// Release the slot if the fetch fails so
+			// the next worker can try this provider for a different article.
+			<-mp.semaphore
+			lastErr = err
 			continue
 		}
+
+		if reader == nil {
+			<-mp.semaphore
+			continue
+		}
+
+		// Return a reader that releases the semaphore ONLY when the
+		// worker is finished reading the body.
+		return &releaseReader{
+			Reader: reader,
+			onClose: func() {
+				<-mp.semaphore
+			},
+		}, nil
 	}
-	return nil, fmt.Errorf("article %s not found on any provider (last error: %v)", msgID, lastErr)
+
+	return nil, fmt.Errorf("article not found on any provider: %w", lastErr)
+}
+
+// try fetch will attempt to fetch an article with some logic to check missing articles or retry
+func (m *Manager) tryFetch(ctx context.Context, p *managedProvider, msgID string, groups []string) (io.Reader, error) {
+	// Simple interneal retry for network blips
+	for i := 0; i < FETCH_RETRY_COUNT; i++ {
+		reader, err := p.Fetch(ctx, msgID, groups)
+		if err == nil {
+			return reader, nil
+		}
+
+		// If the error is specifically "430 No Such Article", don't retry this provider
+		if strings.Contains(err.Error(), "430") {
+			return nil, err
+		}
+
+		// wait a moment before retrying a network timeout
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return nil, fmt.Errorf("provider %s failed after retries", p.ID())
+}
+
+type releaseReader struct {
+	io.Reader
+	onClose func()
 }
 
 func (r *releaseReader) Read(p []byte) (n int, err error) {
@@ -85,23 +114,19 @@ func (r *releaseReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-// try fetch will attempt to fetch an article with some logic to check missing articles or retry
-func (m *Manager) tryFetch(ctx context.Context, p *managedProvider, msgID string) (io.Reader, error) {
-	// Simple interneal retry for network blips
-	for i := 0; i < FETCH_RETRY_COUNT; i++ {
-		reader, err := p.Fetch(ctx, msgID)
-		if err == nil {
-			return reader, nil
+func (r *releaseReader) Close() error {
+	// 1. Guard against nil reader
+	if r.Reader != nil {
+		if c, ok := r.Reader.(io.ReadCloser); ok {
+			c.Close()
 		}
-
-		// If the error is specifically "430 No Such Article", don't retry this provider
-		if strings.Contains(err.Error(), "430") {
-			return nil, err
-		}
-
-		// wait a moment before retrying a network timeout
-		time.Sleep(100 * time.Millisecond)
 	}
 
-	return nil, fmt.Errorf("provider %s failed after retries", p.ID())
+	// 2. Guard against nil onClose function
+	// and ensure it only runs once
+	if r.onClose != nil {
+		r.onClose()
+		r.onClose = nil // Prevent double-release if Close is called twice
+	}
+	return nil
 }

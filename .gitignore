@@ -1,3 +1,7 @@
+# Ignore config file
 config.yaml
+
+# Ignore any .nzb files used as a sample
 *.nzb
-./downloads
+# ignore the default downloads folder
+downloads

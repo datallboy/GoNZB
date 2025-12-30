@@ -53,7 +53,8 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 					// Calculate backoff: 2s, 4s, 8s...
 					delay := time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
-					log.Printf("[Retry] Segment %s (Attempt %d)", res.Segment.MessageID, res.Job.RetryCount)
+					log.Printf("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+						res.Segment.MessageID, res.Job.RetryCount, res.Error)
 
 					// Use a timer to re-queue the job so we don't block this loop
 					time.AfterFunc(delay, func() {
@@ -90,9 +91,13 @@ func (s *Service) worker(ctx context.Context, jobs <-chan domain.DownloadJob, re
 // processSegment handles the unique pipleine for a single Usenet article
 func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, writer *FileWriter) error {
 	// Fetch from the Manager (handles priorities, auth, and connections)
-	rawReader, err := s.manager.FetchArticle(ctx, job.Segment.MessageID)
+	rawReader, err := s.manager.FetchArticle(ctx, job.Segment.MessageID, job.Groups)
 	if err != nil {
 		return fmt.Errorf("fetch failed: %w", err)
+	}
+
+	if rawReader == nil {
+		return fmt.Errorf("manager returned nil reader for %s", job.Segment.MessageID)
 	}
 
 	// The manager returns io.Reader. We must ensure it's closed (or read to EOF)
@@ -101,19 +106,18 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, wr
 		defer closer.Close()
 	}
 
-	// Get a buffer from the pool
-	buf := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf) // Put it back when we are done
-
 	// Decode yEnc stream
 	decoder := decoding.NewYencDecoder(rawReader)
+
 	if err := decoder.DiscardHeader(); err != nil {
-		return fmt.Errorf("yenc header error: %w", err)
+		return fmt.Errorf("header error: %w", err)
 	}
+
+	data := make([]byte, job.Segment.Bytes)
 
 	// Read decoded data into buffer
 	// Limit the read to the expected segment size
-	n, err := io.ReadFull(decoder, buf[:job.Segment.Bytes])
+	_, err = io.ReadFull(decoder, data)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return fmt.Errorf("decode read failed: %w", err)
 	}
@@ -124,7 +128,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, wr
 	}
 
 	// Write only the number of bytes actually read (n)
-	return writer.Write(job.FilePath, job.Offset, buf[:n])
+	return writer.Write(job.FilePath, job.Offset, data)
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.

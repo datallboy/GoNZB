@@ -22,6 +22,7 @@ type Provider interface {
 	ID() string
 	Priority() int
 	MaxConnection() int
-	Fetch(ctx context.Context, msgID string) (io.Reader, error)
+	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
+	TestConnection() error
 	Close() error
 }
