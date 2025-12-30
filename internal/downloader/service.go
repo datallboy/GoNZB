@@ -9,7 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		// Allocate a 1MB buffer (typical max size for a Usenet segment)
+		return make([]byte, 1024*1024)
+	},
+}
 
 type Service struct {
 	cfg *config.Config
@@ -24,7 +32,10 @@ func (s *Service) DownloadNZB(ctx context.Context, nzb *domain.NZB) error {
 		return err
 	}
 
-	if err := s.runWorkerPool(ctx, nzb); err != nil {
+	writer := NewFileWriter()
+	defer writer.CloseAll()
+
+	if err := s.runWorkerPool(ctx, nzb, writer); err != nil {
 		return err
 	}
 
@@ -75,13 +86,35 @@ func (s *Service) dispatchJobs(nzb *domain.NZB, jobs chan<- domain.DownloadJob) 
 	defer close(jobs)
 
 	for _, file := range nzb.Files {
-		for _, seg := range file.Segments {
-			tempPath := filepath.Join(s.cfg.Download.TempDir, seg.MessageID)
+		var currentOffset int64 = 0
+		cleanName := s.sanitizeFileName(file.Subject)
+		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
 
+		for _, seg := range file.Segments {
 			jobs <- domain.DownloadJob{
 				Segment:  seg,
-				FilePath: tempPath,
+				FilePath: finalPath,
+				Offset:   currentOffset,
 			}
+			currentOffset += seg.Bytes
 		}
 	}
+}
+
+func (s *Service) sanitizeFileName(subject string) string {
+	// 1. Remove characters that are illegal in Linux/Windows filenames
+	badChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
+	res := subject
+	for _, char := range badChars {
+		res = strings.ReplaceAll(res, char, "_")
+	}
+
+	// 2. Optional: Usenet subjects often end with ' (1/50)' or similar metadata.
+	// We can use a regex here if we want to be fancy, but a simple trim works for now.
+	if idx := strings.LastIndex(res, "\""); idx != -1 {
+		// Many NZBs put the filename in quotes inside the subject
+		res = res[idx+1:]
+	}
+
+	return strings.TrimSpace(res)
 }

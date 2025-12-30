@@ -7,11 +7,10 @@ import (
 	"gonzb/internal/nntp"
 	"io"
 	"log"
-	"os"
 	"sync"
 )
 
-func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB) error {
+func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *FileWriter) error {
 	jobs := make(chan domain.DownloadJob)
 	results := make(chan domain.DownloadResult)
 	var wg sync.WaitGroup
@@ -21,7 +20,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB) error {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			s.worker(ctx, id, jobs, results)
+			s.worker(ctx, id, jobs, results, writer)
 		}(w)
 	}
 
@@ -43,7 +42,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB) error {
 	return nil
 }
 
-func (s *Service) worker(ctx context.Context, id int, jobs <-chan domain.DownloadJob, results chan<- domain.DownloadResult) {
+func (s *Service) worker(ctx context.Context, id int, jobs <-chan domain.DownloadJob, results chan<- domain.DownloadResult, writer *FileWriter) {
 	repo := nntp.NewRepository(s.cfg.Server)
 	if err := repo.Authenticate(); err != nil {
 		return
@@ -66,36 +65,40 @@ func (s *Service) worker(ctx context.Context, id int, jobs <-chan domain.Downloa
 				return // No more jobs
 			}
 
-			err := s.processSegment(repo, job)
+			err := s.processSegment(repo, job, writer)
 			results <- domain.DownloadResult{Segment: job.Segment, Error: err}
 		}
 	}
 }
 
-func (s *Service) processSegment(repo domain.ArticleRespository, job domain.DownloadJob) error {
+func (s *Service) processSegment(repo domain.ArticleRespository, job domain.DownloadJob, writer *FileWriter) error {
 	rawReader, err := repo.FetchBody(job.Segment.MessageID)
 	if err != nil {
 		return err
 	}
 
-	// Wrap with yEnc Decoder
+	// Get a buffer from the pool
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf) // Put it back when we are done
+
+	// We'll need a way to wrap this for the decoder.
+	// A bytes.Buffer might be easier, or we can write a custom limited reader.
+	// For now, let's use a simple approach to keep the logic clear.
 	decoder := decoding.NewYencDecoder(rawReader)
 	if err := decoder.DiscardHeader(); err != nil {
 		return err
 	}
 
-	// Create Temp File
-	f, err := os.Create(job.FilePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Stream through decoder to disk
-	if _, err := io.Copy(f, decoder); err != nil {
+	// Decode directly into the pooled slice
+	n, err := io.ReadFull(decoder, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return err
 	}
 
-	// Verify CRC32
-	return decoder.Verify()
+	if err := decoder.Verify(); err != nil {
+		return err
+	}
+
+	// Write only the number of bytes actually read (n)
+	return writer.Write(job.FilePath, job.Offset, buf[:n])
 }
