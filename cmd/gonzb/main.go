@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"gonzb/internal/config"
 	"gonzb/internal/downloader"
-	"gonzb/internal/nntp"
 	"gonzb/internal/nzb"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -16,15 +18,10 @@ func main() {
 		log.Fatalf("Config error: %v", err)
 	}
 
-	// Initialize Infrastructure repo
-	repo := nntp.NewRepository(cfg.Server)
-	if err := repo.Authenticate(); err != nil {
-		log.Fatalf("Failed to auth: %v", err)
-	}
-
-	// Initialize application services
-	nzbParser := nzb.NewParser()
-	downloadSvc := downloader.NewService(repo, nzbParser)
+	// Setup Signal Handling for Graceful Shutdown
+	// We create a context that is cancelled when the user hits Ctrl+C
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// TODO - read from cmd line argument
 	f, err := os.Open("test_file.nzb")
@@ -33,7 +30,19 @@ func main() {
 	}
 	defer f.Close()
 
-	if err := downloadSvc.DownloadNZB(f); err != nil {
+	// Initialize application services
+	nzbParser := nzb.NewParser()
+	nzbDomain, err := nzbParser.Parse(f)
+	if err != nil {
+		log.Fatalf("Failed to parse NZB: %v", err)
+	}
+
+	svc := downloader.NewService(cfg)
+
+	log.Println("Starting download...")
+	if err := svc.DownloadNZB(ctx, nzbDomain); err != nil {
 		log.Fatalf("Download failed: %v", err)
 	}
+
+	log.Println("Process finished successfully.")
 }

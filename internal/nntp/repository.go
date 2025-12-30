@@ -80,8 +80,10 @@ func (r *Repository) FetchBody(messageID string) (io.Reader, error) {
 
 func (r *Repository) Close() error {
 	if r.conn != nil {
+		// Send the NNTP QUIT command so the server can release
+		// the connection slot immediately.
+		r.conn.Cmd("QUIT")
 		return r.conn.Close()
 	}
-
 	return nil
 }
