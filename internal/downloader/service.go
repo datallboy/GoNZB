@@ -81,6 +81,8 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 		return nil
 	}
 
+	log.Println("Starting download...")
+
 	startTime := time.Now()
 	monitorCtx, cancel := context.WithCancel(ctx)
 	fmt.Print("\n\n")

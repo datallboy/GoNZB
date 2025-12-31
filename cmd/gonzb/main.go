@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
 	"gonzb/internal/downloader"
@@ -42,10 +44,27 @@ func main() {
 	// Initialize the Downloader Service
 	svc := downloader.NewService(cfg, mgr)
 
+	// 1. Create a channel for OS signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	// Setup Signal Handling for Graceful Shutdown
 	// We create a context that is cancelled when the user hits Ctrl+C
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		select {
+		case <-sigChan:
+			fmt.Println("\n\r[!] Interrupt received. Shutting down gracefully...")
+			cancel()
+
+		case <-ctx.Done():
+			// Context was cancelled normally (download finished), just exit
+			fmt.Print("\n\r Process finished successfully")
+			return
+		}
+	}()
 
 	// TODO - read from cmd line argument
 	f, err := os.Open("test_file.nzb")
@@ -61,11 +80,11 @@ func main() {
 		log.Fatalf("Failed to parse NZB: %v", err)
 	}
 
-	log.Println("Starting download...")
-
 	if err := svc.Download(ctx, nzbDomain); err != nil {
-		log.Fatalf("Download failed: %v", err)
+		if errors.Is(err, context.Canceled) {
+			fmt.Println("Download cancelled by user.")
+		} else {
+			log.Fatalf("Download failed: %v", err)
+		}
 	}
-
-	log.Println("Process finished successfully.")
 }
