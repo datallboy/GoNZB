@@ -43,15 +43,31 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 		return fmt.Errorf("failed to create out_dir: %w", err)
 	}
 
+	var filesToProcess []domain.NZBFile
+
 	// Pre-allocate Sparse Files (.part)
 	for _, file := range nzb.Files {
 		cleanName := s.sanitizeFileName(file.Subject)
 		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
+		pathPath := finalPath + ".part"
+
+		// Check if the file is already 100% finished
+		if _, err := os.Stat(finalPath); err == nil {
+			log.Printf("Found finished file %s (Skipping)", cleanName)
+			continue
+		}
 
 		// Create the sparse file so workers have a target
-		if err := s.writer.PreAllocate(finalPath+".part", file.TotalSize()); err != nil {
+		if err := s.writer.PreAllocate(pathPath, file.TotalSize()); err != nil {
 			return fmt.Errorf("failed to pre-allocate %s %w", cleanName, err)
 		}
+
+		filesToProcess = append(filesToProcess, file)
+	}
+
+	if len(filesToProcess) == 0 {
+		log.Println("All files are already present. No downloaded needed.")
+		return nil
 	}
 
 	// Call worker pool
