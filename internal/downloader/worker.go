@@ -128,7 +128,15 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, wr
 	}
 
 	// Write only the number of bytes actually read (n)
-	return writer.Write(job.FilePath, job.Offset, data)
+	err = writer.Write(job.FilePath, job.Offset, data)
+	if err != nil {
+		return fmt.Errorf("write error %w", err)
+	}
+
+	// Update progress bar / cli UI
+	s.reportProgress(len(data))
+
+	return nil
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.
