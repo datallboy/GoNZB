@@ -6,9 +6,11 @@ import (
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
 	"gonzb/internal/provider"
+	"html"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -78,19 +80,30 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 }
 
 func (s *Service) sanitizeFileName(subject string) string {
-	// 1. Remove characters that are illegal in Linux/Windows filenames
-	badChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
-	res := subject
-	for _, char := range badChars {
-		res = strings.ReplaceAll(res, char, "_")
+	res := html.UnescapeString(subject)
+
+	// Try pattern A: Contents inside double quotes
+	firstQuote := strings.Index(res, "\"")
+	lastQuote := strings.LastIndex(res, "\"")
+	if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote {
+		res = res[firstQuote+1 : lastQuote]
+	} else {
+		// Try pattern B: Strip Usenet metadata (fallback)
+		//  Removes (1/14) or [01/14] and the "yenc" suffix
+
+		// Remove yenc
+		reYenc := regexp.MustCompile(`(?i)\s+yenc.*$`)
+		res = reYenc.ReplaceAllString(res, "")
+
+		// Remove leading counters like [1/14]
+		reLead := regexp.MustCompile(`^\[\d+/\d+\]\s+`)
+		res = reLead.ReplaceAllString(res, "")
 	}
 
-	// 2. Optional: Usenet subjects often end with ' (1/50)' or similar metadata.
-	// We can use a regex here if we want to be fancy, but a simple trim works for now.
-	if idx := strings.LastIndex(res, "\""); idx != -1 {
-		// Many NZBs put the filename in quotes inside the subject
-		res = res[idx+1:]
-	}
+	// Final cleanup: remove OS characters
+	// Windows/Linux/macOS safety
+	badChars := regexp.MustCompile(`[\\/:*?"<>|]`)
+	res = badChars.ReplaceAllString(res, "_")
 
 	return strings.TrimSpace(res)
 }
