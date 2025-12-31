@@ -1,0 +1,22 @@
+servers:
+  - id: "1"
+    host: "news.example.com"
+    port: 563
+    username: "username"
+    password: "password"
+    tls: true
+    max_connections: 10
+    priority: 1
+  - id: "2"
+    host: "news.example.com"
+    port: 563
+    username: "username"
+    password: "password"
+    tls: true
+    max_connections: 10
+    priority: 2
+
+
+download:
+  out_dir: "./downloads"
+  max_workers: 10

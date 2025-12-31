@@ -20,6 +20,7 @@ import (
 
 var (
 	nzbPath string
+	cfgFile string = "config.yaml"
 )
 
 var rootCmd = &cobra.Command{
@@ -39,6 +40,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	// Define flags
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
 	rootCmd.Flags().StringVarP(&nzbPath, "file", "f", "", "Path to the NZB file (required)")
 }
 
@@ -66,7 +68,7 @@ func executeDownload() {
 	}()
 
 	// Load config
-	cfg, err := config.Load("config.yaml")
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
 	}
