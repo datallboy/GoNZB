@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"gonzb/internal/decoding"
 	"gonzb/internal/domain"
@@ -19,12 +20,23 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 		totalSegments += len(f.Segments)
 	}
 
-	jobs := make(chan domain.DownloadJob, totalSegments*2)
-	results := make(chan domain.DownloadResult, totalSegments)
+	// Ask the manager for the connection limit
+	capacity := s.manager.TotalCapacity()
+	if capacity <= 0 {
+		return fmt.Errorf("no download capacity available: check server max_connections")
+	}
+
+	// Dynamically define workers and buffers based on max_connection capacity
+	// Add 2 extra workers to ensure there's alyways a worker waiting for a slot
+	workerCount := capacity + 2
+	bufferSize := workerCount * 2
+
+	jobs := make(chan domain.DownloadJob, bufferSize)
+	results := make(chan domain.DownloadResult, bufferSize)
 
 	// Start the Workers
 	var wg sync.WaitGroup
-	for w := 1; w <= s.cfg.Download.MaxWorkers; w++ {
+	for w := 1; w <= workerCount; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -45,15 +57,22 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 			return ctx.Err()
 		case res := <-results:
 			if res.Error != nil {
+				// Identify the error type
+				isBusy := errors.Is(res.Error, domain.ErrProviderBusy)
+
 				// If we have retires left, put it back in the pipeline
-				if res.Job.RetryCount < 3 {
-					res.Job.RetryCount++
+				if isBusy || res.Job.RetryCount < 3 {
+					delay := 100 * time.Millisecond // quick retry for busy error
 
-					// Calculate backoff: 2s, 4s, 8s...
-					delay := time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
+					if !isBusy {
+						res.Job.RetryCount++
 
-					s.logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
-						res.Segment.MessageID, res.Job.RetryCount, res.Error)
+						// Calculate backoff: 2s, 4s, 8s...
+						delay = time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
+
+						s.logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+							res.Segment.MessageID, res.Job.RetryCount, res.Error)
+					}
 
 					// Use a timer to re-queue the job so we don't block this loop
 					time.AfterFunc(delay, func() {

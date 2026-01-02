@@ -56,6 +56,10 @@ func executeDownload() {
 	}
 	appLogger.Info("GONZB starting up...")
 
+	if cfg.Log.Level == "debug" {
+		appLogger.Debug("Debug logging enabled")
+	}
+
 	// Initialize the Manager (The provider load balancer)
 	mgr, err := provider.NewManager(cfg.Servers, appLogger)
 	if err != nil {

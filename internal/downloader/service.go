@@ -92,6 +92,7 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 
 	// Call worker pool with remaining files to process
 	workNZB := &domain.NZB{Files: filesToProcess}
+
 	err := s.runWorkerPool(ctx, workNZB, s.writer)
 
 	cancel() // Stop the UI when workers are done

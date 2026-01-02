@@ -10,31 +10,30 @@ import (
 )
 
 type Config struct {
-	Servers  []ServerConfig `yaml:"servers"`
-	Download DownloadConfig `yaml:"download"`
-	Log      LogConfig      `yaml:"log"`
+	Servers  []ServerConfig `mapstructure:"servers" yaml:"servers"`
+	Download DownloadConfig `mapstructure:"download" yaml:"download"`
+	Log      LogConfig      `mapstructure:"log" yaml:"log"`
 }
 
 type ServerConfig struct {
-	ID            string `yaml:"id"`
-	Host          string `yaml:"host"`
-	Port          int    `yaml:"port"`
-	Username      string `yaml:"username"`
-	Password      string `yaml:"password"`
-	TLS           bool   `yaml:"tls"`
-	MaxConnection int    `yaml:"max_connections"`
-	Priority      int    `yaml:"priority"`
+	ID            string `mapstructure:"id" yaml:"id"`
+	Host          string `mapstructure:"host" yaml:"host"`
+	Port          int    `mapstructure:"port" yaml:"port"`
+	Username      string `mapstructure:"username" yaml:"username"`
+	Password      string `mapstructure:"password" yaml:"password"`
+	TLS           bool   `mapstructure:"tls" yaml:"tls"`
+	MaxConnection int    `mapstructure:"max_connections" yaml:"max_connections"`
+	Priority      int    `mapstructure:"priority" yaml:"priority"`
 }
 
 type DownloadConfig struct {
-	OutDir     string `yaml:"out_dir"`
-	MaxWorkers int    `yaml:"max_workers"`
+	OutDir string `mapstructure:"out_dir" yaml:"out_dir"`
 }
 
 type LogConfig struct {
-	Path          string `yaml:"path"`
-	Level         string `yaml:"level"`
-	IncludeStdout bool   `yaml:"include_stdout"`
+	Path          string `mapstructure:"path" yaml:"path"`
+	Level         string `mapstructure:"level" yaml:"level"`
+	IncludeStdout bool   `mapstructure:"include_stdout" yaml:"include_stdout"`
 }
 
 func Load(path string) (*Config, error) {
@@ -62,7 +61,6 @@ func Load(path string) (*Config, error) {
 
 	// Set Defaults
 	v.SetDefault("download.out_dir", "./downloads")
-	v.SetDefault("download.max_workers", 10)
 	v.SetDefault("log.path", "gonzb.log")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)

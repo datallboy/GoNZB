@@ -50,41 +50,39 @@ func NewManager(configs []config.ServerConfig, l *logger.Logger) (*Manager, erro
 }
 
 func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
-	var lastErr error
+
+	// Fast fail if user already cancelled
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	for _, mp := range m.providers {
 		select {
 		case mp.semaphore <- struct{}{}:
-			// Got a slot!
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-
-		reader, err := m.tryFetch(ctx, mp, msgID, groups)
-		if err != nil {
-			// Release the slot if the fetch fails so
-			// the next worker can try this provider for a different article.
-			<-mp.semaphore
-			lastErr = err
-			continue
-		}
-
-		if reader == nil {
-			<-mp.semaphore
-			continue
-		}
-
-		// Return a reader that releases the semaphore ONLY when the
-		// worker is finished reading the body.
-		return &releaseReader{
-			Reader: reader,
-			onClose: func() {
+			reader, err := m.tryFetch(ctx, mp, msgID, groups)
+			if err != nil {
+				// Release the slot if the fetch fails so
+				// the next worker can try this provider for a different article.
 				<-mp.semaphore
-			},
-		}, nil
+				m.logger.Debug("%v", err)
+				continue
+			}
+
+			// Return a reader that releases the semaphore ONLY when the
+			// worker is finished reading the body.
+			return &releaseReader{
+				Reader: reader,
+				onClose: func() {
+					<-mp.semaphore
+				},
+			}, nil
+		default:
+			// Provider is at MaxConnections, skip to the next one
+			continue
+		}
 	}
 
-	return nil, fmt.Errorf("article not found on any provider: %w", lastErr)
+	return nil, domain.ErrProviderBusy
 }
 
 // try fetch will attempt to fetch an article with some logic to check missing articles or retry
@@ -93,6 +91,9 @@ func (m *Manager) tryFetch(ctx context.Context, p *managedProvider, msgID string
 	for i := 0; i < FETCH_RETRY_COUNT; i++ {
 		reader, err := p.Fetch(ctx, msgID, groups)
 		if err == nil {
+			if reader == nil {
+				return nil, fmt.Errorf("provider returned no error but reader is nil")
+			}
 			return reader, nil
 		}
 
@@ -141,4 +142,16 @@ func (r *releaseReader) Close() error {
 		r.onClose = nil // Prevent double-release if Close is called twice
 	}
 	return nil
+}
+
+// TotalCapacity returns the maximum number of concurrent connections
+// allowed across all configured providers.
+func (m *Manager) TotalCapacity() int {
+	total := 0
+	for _, mp := range m.providers {
+		// cap() tells us the size of the semaphore buffer
+		// which equals the MaxConnections for that provider.
+		total += cap(mp.semaphore)
+	}
+	return total
 }
