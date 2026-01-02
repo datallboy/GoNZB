@@ -2,16 +2,15 @@ package domain
 
 type DownloadJob struct {
 	Segment    NZBSegment
+	File       *DownloadFile
 	Groups     []string
-	FilePath   string // Where to write this specific segment
 	Offset     int64
 	RetryCount int
 }
 
 type DownloadResult struct {
-	Segment NZBSegment
-	Job     DownloadJob
-	Error   error
+	Job   DownloadJob
+	Error error
 }
 
 type WriteRequest struct {

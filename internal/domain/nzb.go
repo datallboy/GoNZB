@@ -3,7 +3,8 @@ package domain
 import "encoding/xml"
 
 type NZB struct {
-	Files []NZBFile `xml:"file"`
+	XMLName xml.Name  `xml:"nzb"`
+	Files   []NZBFile `xml:"file"`
 }
 
 type NZBFile struct {
@@ -18,12 +19,4 @@ type NZBSegment struct {
 	Number    int      `xml:"number,attr"`
 	Bytes     int64    `xml:"bytes,attr"`
 	MessageID string   `xml:",chardata"`
-}
-
-func (f *NZBFile) TotalSize() int64 {
-	var total int64
-	for _, s := range f.Segments {
-		total += int64(s.Bytes)
-	}
-	return total
 }

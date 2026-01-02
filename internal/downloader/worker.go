@@ -8,15 +8,14 @@ import (
 	"gonzb/internal/domain"
 	"io"
 	"math"
-	"path/filepath"
 	"sync"
 	"time"
 )
 
 // runWorkerPool orchestrates the lifecycle of the download process.
-func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *FileWriter) error {
+func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFile) error {
 	totalSegments := 0
-	for _, f := range nzb.Files {
+	for _, f := range tasks {
 		totalSegments += len(f.Segments)
 	}
 
@@ -40,12 +39,12 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			s.worker(ctx, jobs, results, writer)
+			s.worker(ctx, jobs, results)
 		}(w)
 	}
 
 	// Dispatch Jobs
-	go s.dispatchJobs(nzb, jobs)
+	go s.dispatchJobs(tasks, jobs)
 
 	// Collect Results
 	completedCount := 0
@@ -71,7 +70,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 						delay = time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
 						s.logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
-							res.Segment.MessageID, res.Job.RetryCount, res.Error)
+							res.Job.Segment.MessageID, res.Job.RetryCount, res.Error)
 					}
 
 					// Use a timer to re-queue the job so we don't block this loop
@@ -82,7 +81,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 					continue // Do not count as completed yet
 				}
 				// Permanent failure
-				s.logger.Error("[FAIL] Segment %s permanently failed: %v", res.Segment.MessageID, res.Error)
+				s.logger.Error("[FAIL] Segment %s permanently failed: %v", res.Job.Segment.MessageID, res.Error)
 				finalErr = fmt.Errorf("one or more segments failed permanently")
 			}
 			completedCount++
@@ -94,20 +93,20 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 }
 
 // worker pulls jobs from the channel and executes them until channel is closed
-func (s *Service) worker(ctx context.Context, jobs <-chan domain.DownloadJob, results chan<- domain.DownloadResult, writer *FileWriter) {
+func (s *Service) worker(ctx context.Context, jobs <-chan domain.DownloadJob, results chan<- domain.DownloadResult) {
 	for job := range jobs {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			err := s.processSegment(ctx, job, writer)
-			results <- domain.DownloadResult{Segment: job.Segment, Job: job, Error: err}
+			err := s.processSegment(ctx, job)
+			results <- domain.DownloadResult{Job: job, Error: err}
 		}
 	}
 }
 
 // processSegment handles the unique pipleine for a single Usenet article
-func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, writer *FileWriter) error {
+func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) error {
 	// Fetch from the Manager (handles priorities, auth, and connections)
 	rawReader, err := s.manager.FetchArticle(ctx, job.Segment.MessageID, job.Groups)
 	if err != nil {
@@ -146,7 +145,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, wr
 	}
 
 	// Write only the number of bytes actually read (n)
-	err = writer.Write(job.FilePath, job.Offset, data)
+	err = s.writer.Write(job.File.PartPath, job.Offset, data)
 	if err != nil {
 		return fmt.Errorf("write error %w", err)
 	}
@@ -158,20 +157,24 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob, wr
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.
-func (s *Service) dispatchJobs(nzb *domain.NZB, jobs chan<- domain.DownloadJob) {
-	for _, file := range nzb.Files {
+func (s *Service) dispatchJobs(tasks []*domain.DownloadFile, jobs chan<- domain.DownloadJob) {
+	for _, task := range tasks {
 		var currentOffset int64 = 0
-		cleanName := s.sanitizeFileName(file.Subject)
-		// Write the the .part files during download
-		partPath := filepath.Join(s.cfg.Download.OutDir, cleanName+".part")
 
-		for _, seg := range file.Segments {
+		var groups []string
+		if task.Source != nil {
+			groups = task.Source.Groups
+		}
+
+		for _, seg := range task.Segments {
 			jobs <- domain.DownloadJob{
-				Segment:  seg,
-				FilePath: partPath,
-				Offset:   currentOffset,
+				Segment:    seg,
+				File:       task,
+				Groups:     groups,
+				Offset:     currentOffset,
+				RetryCount: 0,
 			}
-			currentOffset += int64(seg.Bytes)
+			currentOffset += seg.Bytes
 		}
 	}
 }

@@ -6,11 +6,9 @@ import (
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
 	"gonzb/internal/logger"
+	"gonzb/internal/processor"
 	"gonzb/internal/provider"
-	"html"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,36 +47,26 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 		return fmt.Errorf("failed to create out_dir: %w", err)
 	}
 
-	var filesToProcess []domain.NZBFile
+	// PREPARE: Sanitize names and pre-allocate .part files
+	fp := processor.NewFileProcessor(s.logger, s.writer, s.cfg.Download.OutDir)
+	tasks, err := fp.Prepare(nzb)
+	if err != nil {
+		return err
+	}
 
-	// Pre-allocate Sparse Files (.part)
-	for _, file := range nzb.Files {
-		cleanName := s.sanitizeFileName(file.Subject)
-		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
-		pathPath := finalPath + ".part"
-
-		// Check if the file is already 100% finished
-		if _, err := os.Stat(finalPath); err == nil {
-			s.logger.Info("Found finished file %s (Skipping)", cleanName)
-			continue
-		}
-
-		// Create the sparse file so workers have a target
-		if err := s.writer.PreAllocate(pathPath, file.TotalSize()); err != nil {
-			return fmt.Errorf("failed to pre-allocate %s %w", cleanName, err)
-		}
-
-		filesToProcess = append(filesToProcess, file)
+	if len(tasks) == 0 {
+		s.logger.Info("All files are already present. No download needed.")
+		return nil
 	}
 
 	// Reset counters for new job
 	s.bytesWritten = 0
 	s.totalBytes = 0
-	for _, f := range filesToProcess {
-		s.totalBytes += uint64(f.TotalSize())
+	for _, t := range tasks {
+		s.totalBytes += uint64(t.Size)
 	}
 
-	if len(filesToProcess) == 0 {
+	if len(tasks) == 0 {
 		s.logger.Info("All files are already present. No downloaded needed.")
 		return nil
 	}
@@ -90,66 +78,23 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	fmt.Print("\n\n")
 	go s.startUI(monitorCtx, startTime)
 
-	// Call worker pool with remaining files to process
-	workNZB := &domain.NZB{Files: filesToProcess}
-
-	err := s.runWorkerPool(ctx, workNZB, s.writer)
+	err = s.runWorkerPool(ctx, tasks)
 
 	cancel() // Stop the UI when workers are done
 	s.renderUI(0, startTime, true)
 	fmt.Print("\n\n") // Print newline after the progress bar finishes
 
 	if err != nil {
+		s.writer.CloseAll()
 		return err
 	}
 
 	// Finialize: Close handles and rename .part -> final
-	for _, file := range nzb.Files {
-		cleanName := s.sanitizeFileName(file.Subject)
-		finalPath := filepath.Join(s.cfg.Download.OutDir, cleanName)
-		partPath := finalPath + ".part"
-
-		// Close handle so OS releases the lock for renaming
-		if err := s.writer.CloseFile(partPath); err != nil {
-			s.logger.Warn("Warning: failed to close %s: %v", partPath, err)
-		}
-
-		if err := os.Rename(partPath, finalPath); err != nil {
-			return fmt.Errorf("failed to finalize %s: %w", cleanName, err)
-		}
-		s.logger.Info("Finished: %s", cleanName)
+	if err := fp.Finalize(ctx, tasks); err != nil {
+		return fmt.Errorf("post-processing failed: %w", err)
 	}
 
 	return nil
-}
-
-func (s *Service) sanitizeFileName(subject string) string {
-	res := html.UnescapeString(subject)
-
-	// Try pattern A: Contents inside double quotes
-	firstQuote := strings.Index(res, "\"")
-	lastQuote := strings.LastIndex(res, "\"")
-	if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote {
-		res = res[firstQuote+1 : lastQuote]
-	} else {
-		// Try pattern B: Strip Usenet metadata (fallback)
-		//  Removes (1/14) or [01/14] and the "yenc" suffix
-
-		// Remove yenc
-		reYenc := regexp.MustCompile(`(?i)\s+yenc.*$`)
-		res = reYenc.ReplaceAllString(res, "")
-
-		// Remove leading counters like [1/14]
-		reLead := regexp.MustCompile(`^\[\d+/\d+\]\s+`)
-		res = reLead.ReplaceAllString(res, "")
-	}
-
-	// Final cleanup: remove OS characters
-	// Windows/Linux/macOS safety
-	badChars := regexp.MustCompile(`[\\/:*?"<>|]`)
-	res = badChars.ReplaceAllString(res, "_")
-
-	return strings.TrimSpace(res)
 }
 
 func (s *Service) startUI(ctx context.Context, startTime time.Time) {
