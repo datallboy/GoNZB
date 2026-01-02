@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
+	"gonzb/internal/logger"
 	"gonzb/internal/provider"
 	"html"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,15 +27,17 @@ var bufferPool = sync.Pool{
 type Service struct {
 	cfg          *config.Config
 	manager      *provider.Manager
+	logger       *logger.Logger
 	writer       *FileWriter
 	bytesWritten uint64
 	totalBytes   uint64
 }
 
-func NewService(c *config.Config, mgr *provider.Manager) *Service {
+func NewService(c *config.Config, mgr *provider.Manager, l *logger.Logger) *Service {
 	return &Service{
 		cfg:     c,
 		manager: mgr,
+		logger:  l,
 		writer:  NewFileWriter(),
 	}
 }
@@ -57,7 +59,7 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 
 		// Check if the file is already 100% finished
 		if _, err := os.Stat(finalPath); err == nil {
-			log.Printf("Found finished file %s (Skipping)", cleanName)
+			s.logger.Info("Found finished file %s (Skipping)", cleanName)
 			continue
 		}
 
@@ -77,11 +79,11 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	if len(filesToProcess) == 0 {
-		log.Println("All files are already present. No downloaded needed.")
+		s.logger.Info("All files are already present. No downloaded needed.")
 		return nil
 	}
 
-	log.Println("Starting download...")
+	s.logger.Info("Starting download...")
 
 	startTime := time.Now()
 	monitorCtx, cancel := context.WithCancel(ctx)
@@ -108,13 +110,13 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 
 		// Close handle so OS releases the lock for renaming
 		if err := s.writer.CloseFile(partPath); err != nil {
-			log.Printf("Warning: failed to close %s: %v", partPath, err)
+			s.logger.Warn("Warning: failed to close %s: %v", partPath, err)
 		}
 
 		if err := os.Rename(partPath, finalPath); err != nil {
 			return fmt.Errorf("failed to finalize %s: %w", cleanName, err)
 		}
-		log.Printf("Finished: %s", cleanName)
+		s.logger.Info("Finished: %s", cleanName)
 	}
 
 	return nil

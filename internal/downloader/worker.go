@@ -6,7 +6,6 @@ import (
 	"gonzb/internal/decoding"
 	"gonzb/internal/domain"
 	"io"
-	"log"
 	"math"
 	"path/filepath"
 	"sync"
@@ -53,7 +52,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 					// Calculate backoff: 2s, 4s, 8s...
 					delay := time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
-					log.Printf("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+					s.logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
 						res.Segment.MessageID, res.Job.RetryCount, res.Error)
 
 					// Use a timer to re-queue the job so we don't block this loop
@@ -64,7 +63,7 @@ func (s *Service) runWorkerPool(ctx context.Context, nzb *domain.NZB, writer *Fi
 					continue // Do not count as completed yet
 				}
 				// Permanent failure
-				log.Printf("[FAIL] Segment %s permanently failed: %v", res.Segment.MessageID, res.Error)
+				s.logger.Error("[FAIL] Segment %s permanently failed: %v", res.Segment.MessageID, res.Error)
 				finalErr = fmt.Errorf("one or more segments failed permanently")
 			}
 			completedCount++

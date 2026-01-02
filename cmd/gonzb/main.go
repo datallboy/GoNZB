@@ -7,6 +7,7 @@ import (
 	"gonzb/internal/config"
 	"gonzb/internal/domain"
 	"gonzb/internal/downloader"
+	"gonzb/internal/logger"
 	"gonzb/internal/nntp"
 	"gonzb/internal/nzb"
 	"gonzb/internal/provider"
@@ -73,6 +74,13 @@ func executeDownload() {
 		log.Fatalf("Config error: %v", err)
 	}
 
+	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
+	if err != nil {
+		fmt.Printf("Fatal: Could not initialize logger %v\n", err)
+		os.Exit(1)
+	}
+	appLogger.Info("GONZB starting up...")
+
 	// Initialize Providers
 	var providers []domain.Provider
 	for _, s := range cfg.Servers {
@@ -89,10 +97,10 @@ func executeDownload() {
 	}
 
 	// Initialize the Manager (The provider load balancer)
-	mgr := provider.NewManager(providers)
+	mgr := provider.NewManager(providers, appLogger)
 
 	// Initialize the Downloader Service
-	svc := downloader.NewService(cfg, mgr)
+	svc := downloader.NewService(cfg, mgr, appLogger)
 
 	// Read NZB file from cmd line flag
 	f, err := os.Open(nzbPath)

@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Servers  []ServerConfig `yaml:"servers"`
 	Download DownloadConfig `yaml:"download"`
+	Log      LogConfig      `yaml:"log"`
 }
 
 type ServerConfig struct {
@@ -28,6 +29,12 @@ type ServerConfig struct {
 type DownloadConfig struct {
 	OutDir     string `yaml:"out_dir"`
 	MaxWorkers int    `yaml:"max_workers"`
+}
+
+type LogConfig struct {
+	Path          string `yaml:"path"`
+	Level         string `yaml:"level"`
+	IncludeStdout bool   `yaml:"include_stdout"`
 }
 
 func Load(path string) (*Config, error) {
@@ -56,6 +63,9 @@ func Load(path string) (*Config, error) {
 	// Set Defaults
 	v.SetDefault("download.out_dir", "./downloads")
 	v.SetDefault("download.max_workers", 10)
+	v.SetDefault("log.path", "gonzb.log")
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.include_stdout", true)
 
 	// Read config File
 	v.SetConfigFile(path)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"gonzb/internal/domain"
+	"gonzb/internal/logger"
 	"io"
 	"sort"
 	"strings"
@@ -19,9 +20,10 @@ type managedProvider struct {
 
 type Manager struct {
 	providers []*managedProvider
+	logger    *logger.Logger
 }
 
-func NewManager(providers []domain.Provider) *Manager {
+func NewManager(providers []domain.Provider, l *logger.Logger) *Manager {
 	var managed []*managedProvider
 	for _, p := range providers {
 		managed = append(managed, &managedProvider{
