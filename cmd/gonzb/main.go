@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"gonzb/internal/config"
-	"gonzb/internal/domain"
 	"gonzb/internal/downloader"
 	"gonzb/internal/logger"
-	"gonzb/internal/nntp"
 	"gonzb/internal/nzb"
 	"gonzb/internal/provider"
 	"log"
@@ -46,29 +44,7 @@ func init() {
 }
 
 func executeDownload() {
-	// 1. Create a channel for OS signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// Setup Signal Handling for Graceful Shutdown
-	// We create a context that is cancelled when the user hits Ctrl+C
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		select {
-		case <-sigChan:
-			fmt.Println("\n\r[!] Interrupt received. Shutting down gracefully...")
-			cancel()
-
-		case <-ctx.Done():
-			// Context was cancelled normally (download finished), just exit
-			fmt.Print("\n\r Process finished successfully")
-			return
-		}
-	}()
-
-	// Load config
+	// Load core app infrastructure (config & logger)
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
@@ -76,53 +52,38 @@ func executeDownload() {
 
 	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
 	if err != nil {
-		fmt.Printf("Fatal: Could not initialize logger %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Fatal: Could not initialize logger %v\n", err)
 	}
 	appLogger.Info("GONZB starting up...")
 
-	// Initialize Providers
-	var providers []domain.Provider
-	for _, s := range cfg.Servers {
-		providers = append(providers, nntp.NewNNTPProvider(s))
-	}
-
-	// Test Providers
-	for _, p := range providers {
-		log.Printf("Testing connection %s...", p.ID())
-		if err := p.TestConnection(); err != nil {
-			log.Fatalf("FAILED to connect to %s: %v", p.ID(), err)
-		}
-		log.Printf("Successfully authenticated with %s", p.ID())
-	}
-
 	// Initialize the Manager (The provider load balancer)
-	mgr := provider.NewManager(providers, appLogger)
+	mgr, err := provider.NewManager(cfg.Servers, appLogger)
+	if err != nil {
+		appLogger.Fatal("Provider initializiation failed: %v", err)
+	}
+
+	// Initialize nzb parser
+	nzbParser := nzb.NewParser()
+	nzbDomain, err := nzbParser.ParseFile(nzbPath)
+	if err != nil {
+		appLogger.Fatal("Failed to parse NZB: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Initialize the Downloader Service
 	svc := downloader.NewService(cfg, mgr, appLogger)
 
-	// Read NZB file from cmd line flag
-	f, err := os.Open(nzbPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	// Initialize nzb parser
-	nzbParser := nzb.NewParser()
-	nzbDomain, err := nzbParser.Parse(f)
-	if err != nil {
-		log.Fatalf("Failed to parse NZB: %v", err)
-	}
-
 	if err := svc.Download(ctx, nzbDomain); err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Println("Download cancelled by user.")
+			appLogger.Info("Download cancelled by user.")
 		} else {
-			log.Fatalf("Download failed: %v", err)
+			appLogger.Error("Download failed: %v", err)
 		}
 	}
+
+	appLogger.Info("Download completed successfully!")
 
 }
 

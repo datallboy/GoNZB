@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"gonzb/internal/config"
 	"gonzb/internal/domain"
 	"gonzb/internal/logger"
+	"gonzb/internal/nntp"
 	"io"
 	"sort"
 	"strings"
@@ -23,9 +25,17 @@ type Manager struct {
 	logger    *logger.Logger
 }
 
-func NewManager(providers []domain.Provider, l *logger.Logger) *Manager {
+func NewManager(configs []config.ServerConfig, l *logger.Logger) (*Manager, error) {
 	var managed []*managedProvider
-	for _, p := range providers {
+
+	for _, cfg := range configs {
+		p := nntp.NewNNTPProvider(cfg)
+
+		l.Info("Validating provider: %s", p.ID())
+		if err := p.TestConnection(); err != nil {
+			return nil, fmt.Errorf("connection test failed for %s: %w", p.ID(), err)
+		}
+
 		managed = append(managed, &managedProvider{
 			Provider:  p,
 			semaphore: make(chan struct{}, p.MaxConnection()),
@@ -33,10 +43,10 @@ func NewManager(providers []domain.Provider, l *logger.Logger) *Manager {
 	}
 
 	// Sort providers by priority (0 = highest)
-	sort.Slice(providers, func(i, j int) bool {
-		return providers[i].Priority() < providers[j].Priority()
+	sort.Slice(managed, func(i, j int) bool {
+		return managed[i].Priority() < managed[j].Priority()
 	})
-	return &Manager{providers: managed}
+	return &Manager{providers: managed, logger: l}, nil
 }
 
 func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
