@@ -78,8 +78,10 @@ func executeDownload() {
 	if err := svc.Download(ctx, nzbDomain); err != nil {
 		if errors.Is(err, context.Canceled) {
 			appLogger.Info("Download cancelled by user.")
+			return
 		} else {
 			appLogger.Error("Download failed: %v", err)
+			return
 		}
 	}
 
