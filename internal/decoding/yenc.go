@@ -49,16 +49,19 @@ func (d *YencDecoder) Read(p []byte) (n int, err error) {
 	for n < len(p) {
 		b, err := d.scanner.ReadByte()
 		if err != nil {
+			d.hash.Write(p[:n])
 			return n, err
 		}
 
 		// Handle yEnc Escape character
 		if b == '=' && !d.escaped {
 			// Peek ahead to see if this is actually the end of the file
-			peek, _ := d.scanner.Peek(4)
-			if len(peek) >= 4 && string(peek) == "yend" {
+			peek, err := d.scanner.Peek(4)
+			if err == nil && string(peek) == "yend" {
 				d.reachedEnd = true
 				d.parseFooter() // Extract CRC from the footer
+
+				d.hash.Write(p[:n])
 				return n, io.EOF
 			}
 
@@ -66,10 +69,9 @@ func (d *YencDecoder) Read(p []byte) (n int, err error) {
 			continue
 		}
 
-		if b == '\r' || b == '\n' {
+		if (b == '\r' || b == '\n') && !d.escaped {
 			// yEnc ignores critical characters (newlines) unless they are escaped.
 			// If escaped is true, it shouldn't be a newline, but we reset anyway.
-			d.escaped = false
 			continue
 		}
 
@@ -83,10 +85,11 @@ func (d *YencDecoder) Read(p []byte) (n int, err error) {
 		}
 
 		p[n] = decoded
-		d.hash.Write(p[n : n+1])
 		n++
 	}
 
+	// Update hash once per Read call
+	d.hash.Write(p[:n])
 	return n, nil
 }
 
@@ -125,7 +128,11 @@ func (d *YencDecoder) Verify() error {
 func (d *YencDecoder) handlePotentialPartHeader() error {
 	// Peek at the next few bytes to see if =ypart follows
 	// We use Peek so we don't consume the data if it's actually binary
-	peek, _ := d.scanner.Peek(100)
+	peek, err := d.scanner.Peek(6)
+	if err != nil {
+		return nil
+	}
+
 	peekStr := string(peek)
 
 	if strings.Contains(peekStr, "=ypart") {
