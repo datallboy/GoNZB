@@ -29,6 +29,13 @@ jobs:
             - name: Build Binaries
               run: make build
 
+            # 2. Generate Checksums
+            - name: Generate Checksums
+              run: |
+                cd bin
+                sha256sum * > checksums.txt
+                cat checksums.txt
+
             # 2. Setup Docker Buildx (for multi-platform support)
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v3
@@ -59,5 +66,7 @@ jobs:
               uses: softprops/action-gh-release@v1
               if: startsWith(github.ref, 'refs/tags/')
               with:
-                files: bin/gonzb
+                files: |
+                  bin/gonzb_*
+                  bin/checksums.txt
                 generate_release_notes: true
