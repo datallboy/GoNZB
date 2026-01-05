@@ -145,7 +145,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 	}
 
 	// Write only the number of bytes actually read (n)
-	err = s.writer.Write(job.File.PartPath, job.Offset, data)
+	err = s.writer.WriteAt(job.File.PartPath, job.Offset, data)
 	if err != nil {
 		return fmt.Errorf("write error %w", err)
 	}

@@ -6,47 +6,66 @@ import (
 	"sync"
 )
 
+type fileHandle struct {
+	mu   sync.Mutex
+	file *os.File
+}
+
 type FileWriter struct {
-	mu    sync.Mutex
-	files map[string]*os.File
+	mu      sync.RWMutex
+	handles map[string]*fileHandle
 }
 
 func NewFileWriter() *FileWriter {
 	return &FileWriter{
-		files: make(map[string]*os.File),
+		handles: make(map[string]*fileHandle),
 	}
 }
 
-func (fw *FileWriter) Write(path string, offset int64, data []byte) error {
-	f, err := fw.getOrCreateFile(path)
+// WriteAt finds the handle and performs a thread-safe write
+func (fw *FileWriter) WriteAt(path string, offset int64, data []byte) error {
+	h, err := fw.getOrCreateFile(path)
 	if err != nil {
 		return err
 	}
 
+	// Lock the handle to ensure sequential access if needed
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	// WriteAt is thread-safe on Linux/Unix for the same file descriptor
-	_, err = f.WriteAt(data, offset)
+	_, err = h.file.WriteAt(data, offset)
 	return err
 }
 
 func (fw *FileWriter) PreAllocate(path string, size int64) error {
 	// getOrCreateFile opens the file with os.O_RDWR | os.O_CREATE
-	f, err := fw.getOrCreateFile(path)
+	h, err := fw.getOrCreateFile(path)
 	if err != nil {
 		return err
 	}
 
 	// On Linux/Unix, Truncate creates a sparse file.
 	// It updates the metadata size but doesn't fill blocks with zeros yet.
-	return f.Truncate(size)
+	return h.file.Truncate(size)
 }
 
-func (fw *FileWriter) getOrCreateFile(path string) (*os.File, error) {
+func (fw *FileWriter) getOrCreateFile(path string) (*fileHandle, error) {
+	// Read-Lock: Check if handle exists
+	fw.mu.RLock()
+	h, ok := fw.handles[path]
+	fw.mu.RUnlock()
+	if ok {
+		return h, nil
+	}
+
+	// Write-Lock: Prepare to create handle
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
-	f, ok := fw.files[path]
+	h, ok = fw.handles[path]
 	if ok {
-		return f, nil
+		return h, nil
 	}
 
 	// Create the file with Read/Write permissions
@@ -54,15 +73,21 @@ func (fw *FileWriter) getOrCreateFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not open final file: %w", err)
 	}
-	fw.files[path] = f
-	return f, nil
+
+	h = &fileHandle{
+		file: f,
+	}
+
+	fw.handles[path] = h
+
+	return h, nil
 }
 
 func (fw *FileWriter) CloseAll() {
 	fw.mu.Lock()
 	// We iterate over keys because CloseFile will be modifying the map
-	paths := make([]string, 0, len(fw.files))
-	for path := range fw.files {
+	paths := make([]string, 0, len(fw.handles))
+	for path := range fw.handles {
 		paths = append(paths, path)
 	}
 	fw.mu.Unlock()
@@ -74,19 +99,23 @@ func (fw *FileWriter) CloseAll() {
 
 func (fw *FileWriter) CloseFile(path string) error {
 	fw.mu.Lock()
-	defer fw.mu.Unlock()
-
-	f, ok := fw.files[path]
+	h, ok := fw.handles[path]
 	if !ok {
-		return nil // Already closed or never opened
+		fw.mu.Unlock()
+		return nil
 	}
 
-	// Sync to disk and close
-	f.Sync()
-	err := f.Close()
-
 	// Remove from our map so we don't try to use a closed handle later
-	delete(fw.files, path)
+	delete(fw.handles, path)
+	fw.mu.Unlock()
+
+	// Perform I/O outside the map lock
+	h.mu.Lock()
+	defer fw.mu.Unlock()
+
+	// Sync to disk and close
+	h.file.Sync()
+	err := h.file.Close()
 
 	return err
 }
