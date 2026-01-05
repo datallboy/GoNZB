@@ -4,28 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gonzb/internal/config"
-	"gonzb/internal/downloader"
-	"gonzb/internal/logger"
-	"gonzb/internal/nzb"
-	"gonzb/internal/provider"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/datallboy/gonzb/internal/config"
+	"github.com/datallboy/gonzb/internal/downloader"
+	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/provider"
+
 	"github.com/spf13/cobra"
 )
 
 var (
-	nzbPath string
-	cfgFile string = "config.yaml"
+	Version   = "dev"
+	BuildTime = "unknown"
+	nzbPath   string
+	cfgFile   string = "config.yaml"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gonzb",
-	Short: "GONZB is a simple Usenet downloader",
-	Long:  `A lightweight, concurrent NNTP downloaer written in Go.`,
+	Use:     "gonzb",
+	Short:   "GONZB is a simple Usenet downloader",
+	Long:    `A lightweight, concurrent NNTP downloaer written in Go.`,
+	Version: Version,
 	Run: func(cmd *cobra.Command, args []string) {
 		if nzbPath == "" {
 			fmt.Println("Error: --file or -f is required")
@@ -37,10 +41,21 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version number of GoNZB",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime)
+	},
+}
+
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
 	rootCmd.Flags().StringVarP(&nzbPath, "file", "f", "", "Path to the NZB file (required)")
+
+	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
+	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 }
 
 func executeDownload() {
@@ -94,6 +109,9 @@ func executeDownload() {
 }
 
 func main() {
+
+	rootCmd.AddCommand(versionCmd)
+
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

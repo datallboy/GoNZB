@@ -3,14 +3,15 @@ package provider
 import (
 	"context"
 	"fmt"
-	"gonzb/internal/config"
-	"gonzb/internal/domain"
-	"gonzb/internal/logger"
-	"gonzb/internal/nntp"
 	"io"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/config"
+	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/nntp"
 )
 
 var FETCH_RETRY_COUNT = 3

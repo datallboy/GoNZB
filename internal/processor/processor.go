@@ -3,12 +3,13 @@ package processor
 import (
 	"context"
 	"fmt"
-	"gonzb/internal/domain"
-	"gonzb/internal/logger"
 	"html"
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/logger"
 )
 
 type Closeable interface {

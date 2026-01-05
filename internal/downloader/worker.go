@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gonzb/internal/decoding"
-	"gonzb/internal/domain"
 	"io"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/decoding"
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 // runWorkerPool orchestrates the lifecycle of the download process.

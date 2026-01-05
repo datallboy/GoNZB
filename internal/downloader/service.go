@@ -3,16 +3,17 @@ package downloader
 import (
 	"context"
 	"fmt"
-	"gonzb/internal/config"
-	"gonzb/internal/domain"
-	"gonzb/internal/logger"
-	"gonzb/internal/processor"
-	"gonzb/internal/provider"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/config"
+	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/processor"
+	"github.com/datallboy/gonzb/internal/provider"
 )
 
 var bufferPool = sync.Pool{
