@@ -84,13 +84,13 @@ func (fw *FileWriter) getOrCreateFile(path string) (*fileHandle, error) {
 }
 
 func (fw *FileWriter) CloseAll() {
-	fw.mu.Lock()
+	fw.mu.RLock()
 	// We iterate over keys because CloseFile will be modifying the map
 	paths := make([]string, 0, len(fw.handles))
 	for path := range fw.handles {
 		paths = append(paths, path)
 	}
-	fw.mu.Unlock()
+	fw.mu.RUnlock()
 
 	for _, path := range paths {
 		_ = fw.CloseFile(path) // Ignore error on global cleanup
@@ -99,19 +99,19 @@ func (fw *FileWriter) CloseAll() {
 
 func (fw *FileWriter) CloseFile(path string) error {
 	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
 	h, ok := fw.handles[path]
 	if !ok {
-		fw.mu.Unlock()
-		return nil
+		return nil // Already closed: defer will handle it
 	}
 
 	// Remove from our map so we don't try to use a closed handle later
 	delete(fw.handles, path)
-	fw.mu.Unlock()
 
 	// Perform I/O outside the map lock
 	h.mu.Lock()
-	defer fw.mu.Unlock()
+	defer h.mu.Unlock()
 
 	// Sync to disk and close
 	h.file.Sync()
