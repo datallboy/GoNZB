@@ -23,7 +23,7 @@ func NewFileWriter() *FileWriter {
 }
 
 // WriteAt finds the handle and performs a thread-safe write
-func (fw *FileWriter) WriteAt(path string, offset int64, data []byte) error {
+func (fw *FileWriter) WriteAt(path string, data []byte, offset int64) error {
 	h, err := fw.getOrCreateFile(path)
 	if err != nil {
 		return err

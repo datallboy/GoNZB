@@ -134,6 +134,13 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 		job.File.SetActualSize(decoder.FileSize)
 	}
 
+	// use the yEnc header offset if it exists
+	// If partOffset is 0, likely a single-seg file. So just use job.Offset.
+	writeOffset := decoder.PartOffset
+	if writeOffset == 0 && job.Offset != 0 {
+		writeOffset = job.Offset
+	}
+
 	data := make([]byte, job.Segment.Bytes)
 
 	// Read decoded data into buffer
@@ -150,7 +157,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 
 	// Write only the number of bytes actually read (n)
 	if n > 0 {
-		err = s.writer.WriteAt(job.File.PartPath, job.Offset, data)
+		err = s.writer.WriteAt(job.File.PartPath, data[:n], writeOffset)
 		if err != nil {
 			return fmt.Errorf("write error %w", err)
 		}
