@@ -19,6 +19,8 @@ type YencDecoder struct {
 	escaped     bool // State: was the previous byte '='?
 	hash        hash.Hash32
 	expectedCRC uint32
+	PartOffset  int64
+	FileSize    int64
 }
 
 func NewYencDecoder(r io.Reader) *YencDecoder {
@@ -36,6 +38,7 @@ func (d *YencDecoder) DiscardHeader() error {
 		}
 
 		if strings.HasPrefix(line, "=ybegin") {
+			d.parseYbegin(line)
 			return d.handlePotentialPartHeader()
 		}
 	}
@@ -125,6 +128,19 @@ func (d *YencDecoder) Verify() error {
 	return nil
 }
 
+func (d *YencDecoder) parseYbegin(line string) {
+	parts := strings.Fields(line)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "size=") {
+			val := strings.TrimPrefix(part, "size=")
+			size, err := strconv.ParseInt(val, 10, 64)
+			if err == nil {
+				d.FileSize = size
+			}
+		}
+	}
+}
+
 func (d *YencDecoder) handlePotentialPartHeader() error {
 	// Peek at the next few bytes to see if =ypart follows
 	// We use Peek so we don't consume the data if it's actually binary
@@ -136,8 +152,25 @@ func (d *YencDecoder) handlePotentialPartHeader() error {
 	peekStr := string(peek)
 
 	if strings.Contains(peekStr, "=ypart") {
-		_, err := d.scanner.ReadString('\n')
-		return err
+		line, err := d.scanner.ReadString('\n')
+		if err != nil {
+			return err
+		}
+
+		// Extract the "begin" offset
+		// Example line: =ypart begin=1 end=734000
+		parts := strings.Fields(line)
+		for _, part := range parts {
+			if strings.HasPrefix(part, "begin=") {
+				val := strings.TrimPrefix(part, "begin=")
+				// yEnc offsets are 1-based, we convert to 0-based for disk I/O
+				offset, err := strconv.ParseInt(val, 10, 64)
+				if err == nil {
+					d.PartOffset = offset - 1
+				}
+			}
+		}
+
 	}
 	return nil
 }

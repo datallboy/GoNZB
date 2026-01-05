@@ -93,11 +93,11 @@ func (fw *FileWriter) CloseAll() {
 	fw.mu.RUnlock()
 
 	for _, path := range paths {
-		_ = fw.CloseFile(path) // Ignore error on global cleanup
+		_ = fw.CloseFile(path, 0) // Ignore error on global cleanup
 	}
 }
 
-func (fw *FileWriter) CloseFile(path string) error {
+func (fw *FileWriter) CloseFile(path string, finalSize int64) error {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
@@ -112,6 +112,14 @@ func (fw *FileWriter) CloseFile(path string) error {
 	// Perform I/O outside the map lock
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Ensure the final is exacty the size yEnc reported
+	// This removes any extra padding from the initial NZB PreAllocate
+	if finalSize > 0 {
+		if err := h.file.Truncate(finalSize); err != nil {
+			return fmt.Errorf("failed to truncate to final size: %w", err)
+		}
+	}
 
 	// Sync to disk and close
 	h.file.Sync()

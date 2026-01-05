@@ -12,7 +12,7 @@ import (
 )
 
 type Closeable interface {
-	CloseFile(path string) error
+	CloseFile(path string, finalSize int64) error
 	PreAllocate(path string, size int64) error
 }
 
@@ -55,13 +55,29 @@ func (p *FileProcessor) Prepare(nzb *domain.NZB) ([]*domain.DownloadFile, error)
 // Finalize renames .part to final names
 func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFile) error {
 	for _, task := range tasks {
+
+		actualSize := task.GetActualSize()
+
 		// 1. Release the file handle from the FileWriter
-		p.writer.CloseFile(task.PartPath)
+		err := p.writer.CloseFile(task.PartPath, actualSize)
+		if err != nil {
+			p.logger.Error("Failed to close/truncate %s: %v", task.CleanName, err)
+		}
 
 		// 2. Quick Integrity Check
 		info, err := os.Stat(task.PartPath)
-		if err != nil || info.Size() < task.Size {
-			p.logger.Warn("File incomplete, skipping finalize: %s", task.CleanName)
+		if err != nil {
+			p.logger.Error("Could not stat file %s: %v", task.CleanName, err)
+		}
+
+		// Use actualSize for the check if we have it. fallback to task.Size (NZB size)
+		targetSize := actualSize
+		if targetSize == 0 {
+			targetSize = task.Size
+		}
+
+		if info.Size() < targetSize {
+			p.logger.Warn("File incomplete, (Size %d, Expected: %d), skipping finalize: %s", info.Size(), targetSize, task.CleanName)
 			continue
 		}
 

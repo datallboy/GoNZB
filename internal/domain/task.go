@@ -1,14 +1,18 @@
 package domain
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"sync/atomic"
+)
 
 type DownloadFile struct {
-	Source    *NZBFile
-	Segments  []NZBSegment
-	CleanName string
-	PartPath  string
-	FinalPath string
-	Size      int64
+	Source     *NZBFile
+	Segments   []NZBSegment
+	CleanName  string
+	PartPath   string
+	FinalPath  string
+	Size       int64
+	actualSize int64
 }
 
 func NewDownloadFile(raw NZBFile, cleanName, outDir string) *DownloadFile {
@@ -27,4 +31,12 @@ func NewDownloadFile(raw NZBFile, cleanName, outDir string) *DownloadFile {
 		FinalPath: final,
 		Size:      total,
 	}
+}
+
+func (f *DownloadFile) SetActualSize(size int64) {
+	atomic.StoreInt64(&f.actualSize, size)
+}
+
+func (f *DownloadFile) GetActualSize() int64 {
+	return atomic.LoadInt64(&f.actualSize)
 }

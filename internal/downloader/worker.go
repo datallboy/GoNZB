@@ -130,11 +130,15 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 		return fmt.Errorf("header error: %w", err)
 	}
 
+	if decoder.FileSize > 0 {
+		job.File.SetActualSize(decoder.FileSize)
+	}
+
 	data := make([]byte, job.Segment.Bytes)
 
 	// Read decoded data into buffer
 	// Limit the read to the expected segment size
-	_, err = io.ReadFull(decoder, data)
+	n, err := io.ReadFull(decoder, data)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return fmt.Errorf("decode read failed: %w", err)
 	}
@@ -145,13 +149,15 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 	}
 
 	// Write only the number of bytes actually read (n)
-	err = s.writer.WriteAt(job.File.PartPath, job.Offset, data)
-	if err != nil {
-		return fmt.Errorf("write error %w", err)
+	if n > 0 {
+		err = s.writer.WriteAt(job.File.PartPath, job.Offset, data)
+		if err != nil {
+			return fmt.Errorf("write error %w", err)
+		}
 	}
 
 	// Update progress bar / cli UI
-	s.reportProgress(len(data))
+	s.reportProgress(n)
 
 	return nil
 }
