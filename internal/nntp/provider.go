@@ -4,13 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"gonzb/internal/config"
-	"gonzb/internal/domain"
 	"io"
 	"net"
 	"net/textproto"
 	"strings"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/config"
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type nntpProvider struct {

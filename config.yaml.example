@@ -19,4 +19,8 @@ servers:
 
 download:
   out_dir: "./downloads"
-  max_workers: 10
+
+log:
+  path: "gonzb.log"
+  level: "info"
+  include_stdout: true

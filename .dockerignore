@@ -1,0 +1,22 @@
+# Build items
+bin/
+
+# Local config and logs
+config.yaml
+*.log
+*.yaml
+
+# Downloaded data and NZBs
+downloads/
+*.part
+*.NZBs
+
+# Git and IDE stuff
+.git
+.gitignore
+.vscode
+.github
+
+# Docker specific
+Dockerfile
+.dockerignore

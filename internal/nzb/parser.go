@@ -2,10 +2,11 @@ package nzb
 
 import (
 	"encoding/xml"
-	"gonzb/internal/domain"
 	"io"
 	"log"
 	"os"
+
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type Parser struct{}
