@@ -104,7 +104,7 @@ func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFi
 			continue
 		}
 
-		p.logger.Info("Completed: %s", task.CleanName)
+		p.logger.Debug("Completed: %s", task.CleanName)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 
 	// Perform Repair if PAR2 exists
 	if primaryPar != "" {
-		p.logger.Info("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
+		p.logger.Debug("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
 
 		repairer := repair.NewCLIPar2()
 		healthy, err := repairer.Verify(primaryPar)
@@ -198,14 +198,14 @@ func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
 		fileName := filepath.Base(task.FinalPath)
 
 		if p.cleanupExtensions(fileName) {
-			p.logger.Info("Cleanup: Removing %s", fileName)
+			p.logger.Debug("Cleanup: Removing %s", fileName)
 			// It's safe to ignore the error here if the file is already gone
 			_ = os.Remove(task.FinalPath)
 			continue
 		}
 
 		dest := filepath.Join(p.completedDir, filepath.Base(task.FinalPath))
-		p.logger.Info("Moving %s to completed folder", fileName)
+		p.logger.Debug("Moving %s to completed folder", fileName)
 
 		// Try rename
 		err := os.Rename(task.FinalPath, dest)
