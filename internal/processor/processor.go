@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/repair"
 )
 
 type Closeable interface {
@@ -18,13 +21,14 @@ type Closeable interface {
 }
 
 type FileProcessor struct {
-	logger *logger.Logger
-	writer Closeable
-	outDir string
+	logger       *logger.Logger
+	writer       Closeable
+	outDir       string
+	completedDir string
 }
 
-func NewFileProcessor(l *logger.Logger, w Closeable, outDir string) *FileProcessor {
-	return &FileProcessor{logger: l, writer: w, outDir: outDir}
+func NewFileProcessor(l *logger.Logger, w Closeable, outDir string, completedDir string) *FileProcessor {
+	return &FileProcessor{logger: l, writer: w, outDir: outDir, completedDir: completedDir}
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
@@ -93,6 +97,55 @@ func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFi
 	return nil
 }
 
+// PostProcess handles the modular repair and extraction logic
+func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.DownloadFile) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// Identify the working directory from the first task
+	workingDir := filepath.Dir(tasks[0].FinalPath)
+	p.logger.Info("Starting post-processing in %s", workingDir)
+
+	// Find the primary PAR2 file among the finalized tasks
+	var primaryPar string
+	for _, t := range tasks {
+		if strings.HasSuffix(t.FinalPath, ".par2") && !strings.Contains(t.FinalPath, ".vol") {
+			primaryPar = t.FinalPath
+			break
+		}
+	}
+
+	// Perform Repair if PAR2 exists
+	if primaryPar != "" {
+		p.logger.Info("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
+
+		repairer := repair.NewCLIPar2()
+		healthy, err := repairer.Verify(primaryPar)
+
+		if err != nil {
+			// Check for Exit Code 1 (Damanged but repairable)
+			p.logger.Warn("Files are damanged. Attemting repair...")
+			if repairErr := repairer.Repair(primaryPar); repairErr != nil {
+				return fmt.Errorf("PAR2 repair failed: %w", repairErr)
+			}
+			p.logger.Info("Repair complete.")
+		} else if healthy {
+			p.logger.Info("All files verified healthy via PAR2.")
+		}
+	}
+
+	// Move to Completed Directory
+	if p.completedDir != "" {
+		p.logger.Info("Moving files to completed directory: %s", p.completedDir)
+		if err := p.moveToCompleted(tasks); err != nil {
+			return fmt.Errorf("failed to move files: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func (p *FileProcessor) sanitizeFileName(subject string) string {
 	res := html.UnescapeString(subject)
 
@@ -120,4 +173,57 @@ func (p *FileProcessor) sanitizeFileName(subject string) string {
 	res = badChars.ReplaceAllString(res, "_")
 
 	return strings.TrimSpace(res)
+}
+
+func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
+
+	// Ensure destination subdir exists if using nested folders
+	if err := os.MkdirAll(p.completedDir, 0755); err != nil {
+		return fmt.Errorf("failed to create completed directory: %w", err)
+	}
+
+	for _, task := range tasks {
+		dest := filepath.Join(p.completedDir, filepath.Base(task.FinalPath))
+
+		// Try rename
+		err := os.Rename(task.FinalPath, dest)
+		if err != nil {
+			// Fallback to Copy + Delete
+			if err := p.moveCrossDevice(task.FinalPath, dest); err != nil {
+				p.logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
+				return domain.ErrArticleNotFound
+			}
+		}
+	}
+	return nil
+}
+
+// moveCrossDevice handles moving files between different mount points/filesystems
+func (p *FileProcessor) moveCrossDevice(sourcePath, destPath string) error {
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	// Create the destination file
+	dst, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	// Copy the contents. io.Copy is efficient as it uses small buffers
+	// or sendfile(2) where available.
+	_, err = io.Copy(dst, src)
+	if err != nil {
+		return err
+	}
+
+	// Explicitly close before deleting the source
+	src.Close()
+	dst.Close()
+
+	// Remove the original file only after copy success
+	return os.Remove(sourcePath)
 }

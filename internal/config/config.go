@@ -27,7 +27,8 @@ type ServerConfig struct {
 }
 
 type DownloadConfig struct {
-	OutDir string `mapstructure:"out_dir" yaml:"out_dir"`
+	OutDir       string `mapstructure:"out_dir" yaml:"out_dir"`
+	CompletedDir string `mapstructure:"completed_dir" yaml:"completed_dir"`
 }
 
 type LogConfig struct {
@@ -61,6 +62,7 @@ func Load(path string) (*Config, error) {
 
 	// Set Defaults
 	v.SetDefault("download.out_dir", "./downloads")
+	v.SetDefault("download.completed_dir", "./downloads/completed")
 	v.SetDefault("log.path", "gonzb.log")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
