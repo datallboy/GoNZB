@@ -13,7 +13,10 @@ RUN go build -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME
 FROM alpine:latest
 WORKDIR /app
 # Install certs for secure Usenet connections (TLS/SSL)
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing/ \
+    ca-certificates \
+    par2cmdline-turbo 
 
 # Create directories for config and download
 RUN mkdir /config /downloads
