@@ -115,9 +115,7 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 		return nil
 	}
 
-	// Identify the working directory from the first task
-	workingDir := filepath.Dir(tasks[0].FinalPath)
-	p.logger.Info("Starting post-processing in %s", workingDir)
+	p.logger.Info("Starting post-processing...")
 
 	// Find the primary PAR2 file among the finalized tasks
 	var primaryPar string
@@ -132,13 +130,16 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	if primaryPar != "" {
 		p.logger.Debug("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
 
-		repairer := repair.NewCLIPar2()
-		healthy, err := repairer.Verify(primaryPar)
+		repairer, err := repair.NewCLIPar2()
+		if err != nil {
+			return fmt.Errorf("cannot initialize repair engine: %w", err)
+		}
+		healthy, err := repairer.Verify(ctx, primaryPar)
 
 		if err != nil {
 			// Check for Exit Code 1 (Damanged but repairable)
 			p.logger.Warn("Files are damanged. Attemting repair...")
-			if repairErr := repairer.Repair(primaryPar); repairErr != nil {
+			if repairErr := repairer.Repair(ctx, primaryPar); repairErr != nil {
 				return fmt.Errorf("PAR2 repair failed: %w", repairErr)
 			}
 			p.logger.Info("Repair complete.")
