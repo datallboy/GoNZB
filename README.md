@@ -7,10 +7,10 @@ This is a work in progress and a personal project to learn more about Usenet cli
 ## Features
 - **CLI Based:** Simple CLI based NZB downloader with a low-memory footprint
 - **Connection Pooling:** Pools providers to concurrently take advantage of max connections across all providers
-
-## Possible Future Features
 - **PAR2 Support**
 - **Incomplete/Complete Downloads folders**
+
+## Possible Future Features
 - **Web UI**
 - **SQLite** - *Provider configs, partial download repairs*
 
