@@ -13,6 +13,7 @@ import (
 	"github.com/datallboy/gonzb/internal/downloader"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/platform"
 	"github.com/datallboy/gonzb/internal/provider"
 
 	"github.com/spf13/cobra"
@@ -59,7 +60,11 @@ func init() {
 }
 
 func executeDownload() {
-	// Load core app infrastructure (config & logger)
+	// Load core app infrastructure (dependency check, config & logger)
+	if err := platform.ValidateDependencies(); err != nil {
+		log.Fatalf("FATAL: %v. Please check your Dockerfile or local installation.", err)
+	}
+
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
