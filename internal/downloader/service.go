@@ -49,7 +49,7 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	fp := processor.NewFileProcessor(s.logger, s.writer, s.cfg.Download.OutDir)
+	fp := processor.NewFileProcessor(s.logger, s.writer, &s.cfg.Download)
 	tasks, err := fp.Prepare(nzb)
 	if err != nil {
 		return err
@@ -93,6 +93,13 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	// Finialize: Close handles and rename .part -> final
 	if err := fp.Finalize(ctx, tasks); err != nil {
 		return fmt.Errorf("post-processing failed: %w", err)
+	}
+
+	// Post Process: PAR2 verify, repair, unrar if needed
+	if err := fp.PostProcess(ctx, tasks); err != nil {
+		// Download is "done" but failed repair/verify
+		// TODO: decide if should return an error or consider the file "good enough"
+		s.logger.Error("Post-processing failed: %v", err)
 	}
 
 	return nil
