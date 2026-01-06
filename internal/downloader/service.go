@@ -49,7 +49,7 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	fp := processor.NewFileProcessor(s.logger, s.writer, s.cfg.Download.OutDir, s.cfg.Download.CompletedDir)
+	fp := processor.NewFileProcessor(s.logger, s.writer, &s.cfg.Download)
 	tasks, err := fp.Prepare(nzb)
 	if err != nil {
 		return err
