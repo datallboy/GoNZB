@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/datallboy/gonzb/internal/config"
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/repair"
@@ -25,10 +26,21 @@ type FileProcessor struct {
 	writer       Closeable
 	outDir       string
 	completedDir string
+	cleanupMap   map[string]struct{}
 }
 
-func NewFileProcessor(l *logger.Logger, w Closeable, outDir string, completedDir string) *FileProcessor {
-	return &FileProcessor{logger: l, writer: w, outDir: outDir, completedDir: completedDir}
+func NewFileProcessor(l *logger.Logger, w Closeable, downloadCfg *config.DownloadConfig) *FileProcessor {
+	fp := &FileProcessor{logger: l, writer: w, outDir: downloadCfg.OutDir, completedDir: downloadCfg.CompletedDir, cleanupMap: make(map[string]struct{})}
+
+	for _, ext := range downloadCfg.CleanupExtensions {
+		normalized := strings.ToLower(ext)
+		if !strings.HasPrefix(normalized, ".") {
+			normalized = "." + normalized
+		}
+		fp.cleanupMap[normalized] = struct{}{}
+	}
+
+	return fp
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
@@ -183,7 +195,17 @@ func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
 	}
 
 	for _, task := range tasks {
+		fileName := filepath.Base(task.FinalPath)
+
+		if p.cleanupExtensions(fileName) {
+			p.logger.Info("Cleanup: Removing %s", fileName)
+			// It's safe to ignore the error here if the file is already gone
+			_ = os.Remove(task.FinalPath)
+			continue
+		}
+
 		dest := filepath.Join(p.completedDir, filepath.Base(task.FinalPath))
+		p.logger.Info("Moving %s to completed folder", fileName)
 
 		// Try rename
 		err := os.Rename(task.FinalPath, dest)
@@ -196,6 +218,15 @@ func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
 		}
 	}
 	return nil
+}
+
+func (p *FileProcessor) cleanupExtensions(fileName string) bool {
+	filenameLower := strings.ToLower(fileName)
+
+	ext := filepath.Ext(filenameLower)
+	_, exists := p.cleanupMap[ext]
+
+	return exists
 }
 
 // moveCrossDevice handles moving files between different mount points/filesystems
