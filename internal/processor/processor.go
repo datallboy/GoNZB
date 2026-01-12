@@ -12,6 +12,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/config"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/extraction"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/repair"
 )
@@ -22,15 +23,25 @@ type Closeable interface {
 }
 
 type FileProcessor struct {
-	logger       *logger.Logger
-	writer       Closeable
-	outDir       string
-	completedDir string
-	cleanupMap   map[string]struct{}
+	logger            *logger.Logger
+	writer            Closeable
+	outDir            string
+	completedDir      string
+	cleanupMap        map[string]struct{}
+	extractionEnabled bool
+	cleanupArchives   bool
 }
 
 func NewFileProcessor(l *logger.Logger, w Closeable, downloadCfg *config.DownloadConfig) *FileProcessor {
-	fp := &FileProcessor{logger: l, writer: w, outDir: downloadCfg.OutDir, completedDir: downloadCfg.CompletedDir, cleanupMap: make(map[string]struct{})}
+	fp := &FileProcessor{
+		logger:            l,
+		writer:            w,
+		outDir:            downloadCfg.OutDir,
+		completedDir:      downloadCfg.CompletedDir,
+		cleanupMap:        make(map[string]struct{}),
+		extractionEnabled: true,
+		cleanupArchives:   false,
+	}
 
 	for _, ext := range downloadCfg.CleanupExtensions {
 		normalized := strings.ToLower(ext)
@@ -148,6 +159,15 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 		}
 	}
 
+	// Extract RAR archives if present
+	if p.extractionEnabled {
+		_, err := p.extractArchives(ctx, tasks)
+		if err != nil {
+			p.logger.Error("Archive extraction failed: %v", err)
+			// Non-fatal: continue to move files even if extraction fails
+		}
+	}
+
 	// Move to Completed Directory
 	if p.completedDir != "" {
 		p.logger.Info("Moving files to completed directory: %s", p.completedDir)
@@ -157,6 +177,53 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	}
 
 	return nil
+}
+
+func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]string, error) {
+	// Initialize the extraction manager
+	extractor := extraction.NewManager()
+
+	if !extractor.HasExtractors() {
+		p.logger.Warn("No extractors available, skipping archive extraction")
+		return nil, nil
+	}
+
+	p.logger.Debug("Available extractors: %v", extractor.AvailableExtractors())
+
+	// Detect which files are RAR archives
+	archives, err := extractor.DetectArchives(tasks)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect archives: %w", err)
+	}
+
+	if len(archives) == 0 {
+		p.logger.Debug("No archives detected, skipping extraction")
+		return nil, nil
+	}
+
+	p.logger.Info("Found %d RAR archive(s) to extract", len(archives))
+
+	var allExtractedFiles []string
+
+	// Extract each archive
+	for task, archive := range archives {
+		archiveName := filepath.Base(task.FinalPath)
+		p.logger.Debug("Extracting %s with %s", archiveName, archive.Name())
+
+		// Extract to the same directory as the archive
+		destDir := filepath.Dir(task.FinalPath)
+		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir)
+		if err != nil {
+			// Error out but return the successful files
+			return allExtractedFiles, fmt.Errorf("extraction failed for %s: %w", archiveName, err)
+		}
+
+		allExtractedFiles = append(allExtractedFiles, extractedFile...)
+		p.logger.Debug("Successfully extracted: %s", archiveName)
+	}
+
+	return allExtractedFiles, nil
 }
 
 func (p *FileProcessor) sanitizeFileName(subject string) string {
