@@ -54,17 +54,13 @@ func (u *CLIUnzip) CanExtract(filePath string) (bool, error) {
 
 // Extract extracts the ZIP archive to the destination directory
 func (u *CLIUnzip) Extract(ctx context.Context, archivePath string, destDir string) ([]string, error) {
-	// unzip -o <archive> -d <destination>
-	// -o = overwrite existing files
-	// -q = quiet mode
-	cmd := exec.CommandContext(ctx, u.BinaryPath, "-o", "-q", archivePath, "-d", destDir)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("unzip extraction failed: %w\nOutput: %s", err, string(output))
-	}
-
-	return []string{}, nil
+	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
+		// unzip -o <archive> -d <destination>
+		// -o = overwrite existing files
+		// -q = quiet mode
+		cmd := exec.CommandContext(ctx, u.BinaryPath, "-o", "-q", archivePath, "-d", destDir)
+		return cmd
+	})
 }
 
 // hasZipSignature checks if the file has a valid ZIP magic byte signature
