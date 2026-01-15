@@ -161,11 +161,13 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 
 	// Extract RAR archives if present
 	if p.extractionEnabled {
-		_, err := p.extractArchives(ctx, tasks)
+		extractedTasks, err := p.extractArchives(ctx, tasks)
 		if err != nil {
 			p.logger.Error("Archive extraction failed: %v", err)
 			// Non-fatal: continue to move files even if extraction fails
 		}
+		// Adds extracted files to our list of things to move
+		tasks = append(tasks, extractedTasks...)
 	}
 
 	// Move to Completed Directory
@@ -179,7 +181,7 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	return nil
 }
 
-func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]string, error) {
+func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
 	// Initialize the extraction manager
 	extractor := extraction.NewManager()
 
@@ -204,7 +206,7 @@ func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.Dow
 
 	p.logger.Info("Found %d RAR archive(s) to extract", len(archives))
 
-	var allExtractedFiles []string
+	var newTasks []*domain.DownloadFile
 
 	// Extract each archive
 	for task, archive := range archives {
@@ -216,14 +218,22 @@ func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.Dow
 		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir)
 		if err != nil {
 			// Error out but return the successful files
-			return allExtractedFiles, fmt.Errorf("extraction failed for %s: %w", archiveName, err)
+			return newTasks, fmt.Errorf("extraction failed for %s: %w", archiveName, err)
 		}
 
-		allExtractedFiles = append(allExtractedFiles, extractedFile...)
+		// Convert strings to domain.DownloadFile objects
+		for _, path := range extractedFile {
+			newTasks = append(newTasks, &domain.DownloadFile{
+				FinalPath: path,
+				CleanName: filepath.Base(path),
+			})
+
+		}
+
 		p.logger.Debug("Successfully extracted: %s", archiveName)
 	}
 
-	return allExtractedFiles, nil
+	return newTasks, nil
 }
 
 func (p *FileProcessor) sanitizeFileName(subject string) string {
