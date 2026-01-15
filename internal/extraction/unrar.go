@@ -68,20 +68,14 @@ func (u *CLIUnrar) CanExtract(filePath string) (bool, error) {
 
 // Extract extracts the RAR archive to the destination directory
 func (u *CLIUnrar) Extract(ctx context.Context, archivePath string, destDir string) ([]string, error) {
-	// unrar x -o+ -y <archive> <destination>
-	// x = extract with full paths
-	// -o+ = overwrite existing files
-	// -y = assume yes on all queries (non-interactive)
-	cmd := exec.CommandContext(ctx, u.BinaryPath, "x", "-o+", "-y", archivePath, destDir+string(filepath.Separator))
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("unrar extraction failed: %w\nOutput: %s", err, string(output))
-	}
-
-	// TODO: Parse output to return actual extracted filenames
-	// For now, return empty list as extraction was successful
-	return []string{}, nil
+	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
+		// unrar x -o+ -y <archive> <destination>
+		// x = extract with full paths
+		// -o+ = overwrite existing files
+		// -y = assume yes on all queries (non-interactive)
+		cmd := exec.CommandContext(ctx, u.BinaryPath, "x", "-o+", "-y", archivePath, workDir+string(filepath.Separator))
+		return cmd
+	})
 }
 
 // hasRarSignature checks if the file has a valid RAR magic byte signature
