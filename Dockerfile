@@ -15,8 +15,15 @@ WORKDIR /app
 # Install certs for secure Usenet connections (TLS/SSL)
 RUN apk --no-cache add \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing/ \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
     ca-certificates \
-    par2cmdline-turbo 
+    par2cmdline-turbo \
+    unzip \
+    7zip
+
+# Symlink unrar to 7z since Alpine doesn't package unrar
+# 7z 'x' command is compatible with unrar extract
+RUN ln -s /usr/bin/7z /usr/bin/unrar
 
 # Create directories for config and download
 RUN mkdir /config /downloads
