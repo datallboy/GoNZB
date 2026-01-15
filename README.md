@@ -9,6 +9,7 @@ This is a work in progress and a personal project to learn more about Usenet cli
 - **Connection Pooling:** Pools providers to concurrently take advantage of max connections across all providers
 - **PAR2 Support**
 - **Incomplete/Complete Downloads folders**
+- **Archive file (RAR, ZIP, 7Z) support**
 
 ## Possible Future Features
 - **Web UI**
@@ -34,6 +35,8 @@ cp config.yaml.example config.yaml
 | | `max_connections`| The maximum threads allowed by your provider. |
 | | `priority` | Lower numbers are used first. Use higher numbers for backup/block accounts. |
 | **download** | `out_dir` | The directory where finished downloads and `.part` files are stored. |
+| | `completed_dir` | The directory where files are placed after post-processing |
+| | `cleanup_extensions` | A list of file extensions to delete after processing (e.g., [".nfo", ".rar"]) |
 | **log** | `path` | Path to the log file (e.g., `gonzb.log`). |
 | | `level` | Logging verbosity: `debug`, `info`, `warn`, or `error`. |
 | | `include_stdout` | If `true`, logs will appear in your terminal in addition to the log file. |
