@@ -1,6 +1,7 @@
 package extraction
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -104,23 +105,10 @@ func hasRarSignature(filePath string) (bool, error) {
 
 	// Check against known RAR signatures
 	for _, sig := range rarSignatures {
-		if bytesEqual(header[:len(sig)], sig) {
+		if bytes.Equal(header[:len(sig)], sig) {
 			return true, nil
 		}
 	}
 
 	return false, nil
-}
-
-// bytesEqual compares two byte slices
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

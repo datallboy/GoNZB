@@ -1,6 +1,7 @@
 package extraction
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -86,7 +87,7 @@ func hasZipSignature(filePath string) (bool, error) {
 
 	// Check against known ZIP signatures
 	for _, sig := range zipSignatures {
-		if bytesEqual(header, sig) {
+		if bytes.Equal(header, sig) {
 			return true, nil
 		}
 	}

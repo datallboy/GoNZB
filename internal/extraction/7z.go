@@ -1,6 +1,7 @@
 package extraction
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -86,5 +87,5 @@ func has7zSignature(filePath string) (bool, error) {
 		return false, nil
 	}
 
-	return bytesEqual(header, sevenZipSignature), nil
+	return bytes.Equal(header, sevenZipSignature), nil
 }
