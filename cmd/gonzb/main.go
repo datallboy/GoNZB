@@ -11,6 +11,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/config"
 	"github.com/datallboy/gonzb/internal/downloader"
+	"github.com/datallboy/gonzb/internal/extraction"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/platform"
@@ -96,8 +97,11 @@ func executeDownload() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Initialize archive extraction manager
+	extractor := extraction.NewManager()
+
 	// Initialize the Downloader Service
-	svc := downloader.NewService(cfg, mgr, appLogger)
+	svc := downloader.NewService(cfg, mgr, extractor, appLogger)
 
 	if err := svc.Download(ctx, nzbDomain); err != nil {
 		if errors.Is(err, context.Canceled) {
