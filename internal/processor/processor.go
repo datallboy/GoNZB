@@ -12,6 +12,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/config"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/extraction"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/repair"
 )
@@ -22,15 +23,27 @@ type Closeable interface {
 }
 
 type FileProcessor struct {
-	logger       *logger.Logger
-	writer       Closeable
-	outDir       string
-	completedDir string
-	cleanupMap   map[string]struct{}
+	logger            *logger.Logger
+	extractor         *extraction.Manager
+	writer            Closeable
+	outDir            string
+	completedDir      string
+	cleanupMap        map[string]struct{}
+	extractionEnabled bool
+	cleanupArchives   bool
 }
 
-func NewFileProcessor(l *logger.Logger, w Closeable, downloadCfg *config.DownloadConfig) *FileProcessor {
-	fp := &FileProcessor{logger: l, writer: w, outDir: downloadCfg.OutDir, completedDir: downloadCfg.CompletedDir, cleanupMap: make(map[string]struct{})}
+func NewFileProcessor(l *logger.Logger, ex *extraction.Manager, w Closeable, downloadCfg *config.DownloadConfig) *FileProcessor {
+	fp := &FileProcessor{
+		logger:            l,
+		writer:            w,
+		extractor:         ex,
+		outDir:            downloadCfg.OutDir,
+		completedDir:      downloadCfg.CompletedDir,
+		cleanupMap:        make(map[string]struct{}),
+		extractionEnabled: true,
+		cleanupArchives:   false,
+	}
 
 	for _, ext := range downloadCfg.CleanupExtensions {
 		normalized := strings.ToLower(ext)
@@ -148,6 +161,16 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 		}
 	}
 
+	// Extract RAR archives if present
+	extractedTasks, err := p.extractArchives(ctx, tasks)
+	if err != nil {
+		p.logger.Error("Archive extraction failed: %v", err)
+		// Non-fatal: continue to move files even if extraction fails
+	}
+	// Adds extracted files to our list of things to move
+	// tasks contains the .rar files, extractedTasks contains actual files
+	tasks = append(tasks, extractedTasks...)
+
 	// Move to Completed Directory
 	if p.completedDir != "" {
 		p.logger.Info("Moving files to completed directory: %s", p.completedDir)
@@ -157,6 +180,89 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	}
 
 	return nil
+}
+
+func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
+
+	if !p.extractionEnabled {
+		return nil, nil
+	}
+
+	if !p.extractor.HasExtractors() {
+		p.logger.Warn("No extractors available, skipping archive extraction")
+		return nil, nil
+	}
+
+	p.logger.Debug("Available extractors: %v", p.extractor.AvailableExtractors())
+
+	var allNewTasks []*domain.DownloadFile
+	currentBatch := tasks
+	maxDepth := 3
+
+	for depth := 1; depth <= maxDepth; depth++ {
+		newTasks, err := p.extractBatch(ctx, currentBatch)
+		if err != nil {
+			return allNewTasks, err
+		}
+
+		if len(newTasks) == 0 {
+			break // No more archives found, we are finished
+		}
+
+		// Add to the master list of files we need to move later
+		allNewTasks = append(allNewTasks, newTasks...)
+
+		// Set the newly found files as the next batch to check
+		currentBatch = newTasks
+		p.logger.Debug("Depth %d complete, found %d new files to check", depth, len(newTasks))
+	}
+
+	return allNewTasks, nil
+}
+
+func (p *FileProcessor) extractBatch(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
+	// Detect which files are archives
+	archives, err := p.extractor.DetectArchives(tasks)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect archives: %w", err)
+	}
+
+	if len(archives) == 0 {
+		p.logger.Debug("No archives detected, skipping extraction")
+		return nil, nil
+	}
+
+	p.logger.Info("Found %d archive(s) to extract", len(archives))
+
+	var newTasks []*domain.DownloadFile
+
+	// Extract each archive
+	for task, archive := range archives {
+		archiveName := filepath.Base(task.FinalPath)
+		p.logger.Debug("Extracting %s with %s", archiveName, archive.Name())
+
+		// Extract to the same directory as the archive
+		destDir := filepath.Dir(task.FinalPath)
+		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir)
+		if err != nil {
+			p.logger.Error("Xxtraction failed for %s: %v", task.CleanName, err)
+			continue
+		}
+
+		// Convert strings to domain.DownloadFile objects
+		for _, path := range extractedFile {
+			newTasks = append(newTasks, &domain.DownloadFile{
+				FinalPath: path,
+				CleanName: filepath.Base(path),
+			})
+
+		}
+
+		p.logger.Debug("Successfully extracted: %s", archiveName)
+	}
+	return newTasks, nil
+
 }
 
 func (p *FileProcessor) sanitizeFileName(subject string) string {
