@@ -11,6 +11,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/config"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/extraction"
 	"github.com/datallboy/gonzb/internal/logger"
 	"github.com/datallboy/gonzb/internal/processor"
 	"github.com/datallboy/gonzb/internal/provider"
@@ -26,18 +27,20 @@ var bufferPool = sync.Pool{
 type Service struct {
 	cfg          *config.Config
 	manager      *provider.Manager
+	extractor    *extraction.Manager
 	logger       *logger.Logger
 	writer       *FileWriter
 	bytesWritten uint64
 	totalBytes   uint64
 }
 
-func NewService(c *config.Config, mgr *provider.Manager, l *logger.Logger) *Service {
+func NewService(c *config.Config, mgr *provider.Manager, ex *extraction.Manager, l *logger.Logger) *Service {
 	return &Service{
-		cfg:     c,
-		manager: mgr,
-		logger:  l,
-		writer:  NewFileWriter(),
+		cfg:       c,
+		manager:   mgr,
+		extractor: ex,
+		logger:    l,
+		writer:    NewFileWriter(),
 	}
 }
 
@@ -49,7 +52,7 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	fp := processor.NewFileProcessor(s.logger, s.writer, &s.cfg.Download)
+	fp := processor.NewFileProcessor(s.logger, s.extractor, s.writer, &s.cfg.Download)
 	tasks, err := fp.Prepare(nzb)
 	if err != nil {
 		return err
