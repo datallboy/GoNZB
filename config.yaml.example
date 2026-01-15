@@ -19,6 +19,13 @@ servers:
 
 download:
   out_dir: "./downloads"
+  completed_dir: "./downloads/completed"
+  cleanup_extensions:
+    - ".par2"
+    - ".nzb"
+    - ".rar"
+    - ".zip"
+    - ".7z"
 
 log:
   path: "gonzb.log"
