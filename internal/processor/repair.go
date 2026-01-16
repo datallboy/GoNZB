@@ -1,4 +1,4 @@
-package repair
+package processor
 
 // Repairer defines the behavior for verifying and fixing downloads
 type Repairer interface {

@@ -5,8 +5,6 @@ import (
 	"io"
 	"log"
 	"os"
-
-	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type Parser struct{}
@@ -15,7 +13,7 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-func (p *Parser) ParseFile(nzbPath string) (*domain.NZB, error) {
+func (p *Parser) ParseFile(nzbPath string) (*Model, error) {
 	f, err := os.Open(nzbPath)
 	if err != nil {
 		log.Fatal(err)
@@ -26,8 +24,8 @@ func (p *Parser) ParseFile(nzbPath string) (*domain.NZB, error) {
 
 }
 
-func (p *Parser) Parse(r io.Reader) (*domain.NZB, error) {
-	var nzb domain.NZB
+func (p *Parser) Parse(r io.Reader) (*Model, error) {
+	var nzb Model
 	decoder := xml.NewDecoder(r)
 	if err := decoder.Decode(&nzb); err != nil {
 		return nil, err

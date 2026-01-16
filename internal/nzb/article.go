@@ -1,4 +1,4 @@
-package domain
+package nzb
 
 import "io"
 

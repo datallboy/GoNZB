@@ -10,29 +10,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/config"
-	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
 type nntpProvider struct {
-	conf domain.ProviderConfig
+	conf config.ServerConfig
 	pool chan *textproto.Conn
 }
 
-func NewNNTPProvider(c config.ServerConfig) domain.Provider {
+func NewNNTPProvider(c config.ServerConfig) Provider {
 	return &nntpProvider{
-		conf: domain.ProviderConfig{
-			ID:            c.ID,
-			Host:          c.Host,
-			Port:          c.Port,
-			Username:      c.Username,
-			Password:      c.Password,
-			TLS:           c.TLS,
-			MaxConnection: c.MaxConnection,
-			Priority:      c.Priority,
-		},
+		conf: c,
 		pool: make(chan *textproto.Conn, c.MaxConnection),
 	}
+}
+
+// Provider represents the contract for a Usenet server connection.
+type Provider interface {
+	ID() string
+	Priority() int
+	MaxConnection() int
+	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
+	TestConnection() error
+	Close() error
 }
 
 // Interface implimentation: ID

@@ -10,11 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/datallboy/gonzb/internal/config"
-	"github.com/datallboy/gonzb/internal/domain"
-	"github.com/datallboy/gonzb/internal/extraction"
-	"github.com/datallboy/gonzb/internal/logger"
-	"github.com/datallboy/gonzb/internal/repair"
+	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 type Closeable interface {
@@ -22,53 +19,46 @@ type Closeable interface {
 	PreAllocate(path string, size int64) error
 }
 
-type FileProcessor struct {
-	logger            *logger.Logger
-	extractor         *extraction.Manager
-	writer            Closeable
-	outDir            string
-	completedDir      string
-	cleanupMap        map[string]struct{}
-	extractionEnabled bool
-	cleanupArchives   bool
+type Processor struct {
+	ctx       *app.Context
+	writer    Closeable
+	extractor *Manager
+
+	cleanupMap map[string]struct{}
 }
 
-func NewFileProcessor(l *logger.Logger, ex *extraction.Manager, w Closeable, downloadCfg *config.DownloadConfig) *FileProcessor {
-	fp := &FileProcessor{
-		logger:            l,
-		writer:            w,
-		extractor:         ex,
-		outDir:            downloadCfg.OutDir,
-		completedDir:      downloadCfg.CompletedDir,
-		cleanupMap:        make(map[string]struct{}),
-		extractionEnabled: true,
-		cleanupArchives:   false,
+func New(ctx *app.Context, w Closeable) *Processor {
+	p := &Processor{
+		ctx:        ctx,
+		writer:     w,
+		extractor:  NewManager(),
+		cleanupMap: make(map[string]struct{}),
 	}
 
-	for _, ext := range downloadCfg.CleanupExtensions {
+	for _, ext := range ctx.Config.Download.CleanupExtensions {
 		normalized := strings.ToLower(ext)
 		if !strings.HasPrefix(normalized, ".") {
 			normalized = "." + normalized
 		}
-		fp.cleanupMap[normalized] = struct{}{}
+		p.cleanupMap[normalized] = struct{}{}
 	}
 
-	return fp
+	return p
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
-func (p *FileProcessor) Prepare(nzb *domain.NZB) ([]*domain.DownloadFile, error) {
-	var tasks []*domain.DownloadFile
+func (p *Processor) Prepare(nzbModel *nzb.Model) ([]*nzb.DownloadFile, error) {
+	var tasks []*nzb.DownloadFile
 
-	for _, rawFile := range nzb.Files {
+	for _, rawFile := range nzbModel.Files {
 		cleanName := p.sanitizeFileName(rawFile.Subject)
 
 		// Create the Task (This calculates Size and Paths internally)
-		task := domain.NewDownloadFile(rawFile, cleanName, p.outDir)
+		task := nzb.NewDownloadFile(rawFile, cleanName, p.ctx.Config.Download.OutDir)
 
 		// Skip if already exists
 		if _, err := os.Stat(task.FinalPath); err == nil {
-			p.logger.Info("Skipping: %s (already completed)", task.CleanName)
+			p.ctx.Logger.Info("Skipping: %s (already completed)", task.CleanName)
 			continue
 		}
 
@@ -83,7 +73,7 @@ func (p *FileProcessor) Prepare(nzb *domain.NZB) ([]*domain.DownloadFile, error)
 }
 
 // Finalize renames .part to final names
-func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFile) error {
+func (p *Processor) Finalize(ctx context.Context, tasks []*nzb.DownloadFile) error {
 	for _, task := range tasks {
 
 		actualSize := task.GetActualSize()
@@ -91,13 +81,13 @@ func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFi
 		// 1. Release the file handle from the FileWriter
 		err := p.writer.CloseFile(task.PartPath, actualSize)
 		if err != nil {
-			p.logger.Error("Failed to close/truncate %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Failed to close/truncate %s: %v", task.CleanName, err)
 		}
 
 		// 2. Quick Integrity Check
 		info, err := os.Stat(task.PartPath)
 		if err != nil {
-			p.logger.Error("Could not stat file %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Could not stat file %s: %v", task.CleanName, err)
 		}
 
 		// Use actualSize for the check if we have it. fallback to task.Size (NZB size)
@@ -107,28 +97,28 @@ func (p *FileProcessor) Finalize(ctx context.Context, tasks []*domain.DownloadFi
 		}
 
 		if info.Size() < targetSize {
-			p.logger.Warn("File incomplete, (Size %d, Expected: %d), skipping finalize: %s", info.Size(), targetSize, task.CleanName)
+			p.ctx.Logger.Warn("File incomplete, (Size %d, Expected: %d), skipping finalize: %s", info.Size(), targetSize, task.CleanName)
 			continue
 		}
 
 		// 3. Rename to final
 		if err := os.Rename(task.PartPath, task.FinalPath); err != nil {
-			p.logger.Error("Finalize failed for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Finalize failed for %s: %v", task.CleanName, err)
 			continue
 		}
 
-		p.logger.Debug("Completed: %s", task.CleanName)
+		p.ctx.Logger.Debug("Completed: %s", task.CleanName)
 	}
 	return nil
 }
 
 // PostProcess handles the modular repair and extraction logic
-func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.DownloadFile) error {
+func (p *Processor) PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) error {
 	if len(tasks) == 0 {
 		return nil
 	}
 
-	p.logger.Info("Starting post-processing...")
+	p.ctx.Logger.Info("Starting post-processing...")
 
 	// Find the primary PAR2 file among the finalized tasks
 	var primaryPar string
@@ -141,9 +131,9 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 
 	// Perform Repair if PAR2 exists
 	if primaryPar != "" {
-		p.logger.Debug("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
+		p.ctx.Logger.Debug("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
 
-		repairer, err := repair.NewCLIPar2()
+		repairer, err := NewCLIPar2()
 		if err != nil {
 			return fmt.Errorf("cannot initialize repair engine: %w", err)
 		}
@@ -151,20 +141,20 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 
 		if err != nil {
 			// Check for Exit Code 1 (Damanged but repairable)
-			p.logger.Warn("Files are damanged. Attemting repair...")
+			p.ctx.Logger.Warn("Files are damanged. Attemting repair...")
 			if repairErr := repairer.Repair(ctx, primaryPar); repairErr != nil {
 				return fmt.Errorf("PAR2 repair failed: %w", repairErr)
 			}
-			p.logger.Info("Repair complete.")
+			p.ctx.Logger.Info("Repair complete.")
 		} else if healthy {
-			p.logger.Info("All files verified healthy via PAR2.")
+			p.ctx.Logger.Info("All files verified healthy via PAR2.")
 		}
 	}
 
 	// Extract RAR archives if present
 	extractedTasks, err := p.extractArchives(ctx, tasks)
 	if err != nil {
-		p.logger.Error("Archive extraction failed: %v", err)
+		p.ctx.Logger.Error("Archive extraction failed: %v", err)
 		// Non-fatal: continue to move files even if extraction fails
 	}
 	// Adds extracted files to our list of things to move
@@ -172,8 +162,8 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	tasks = append(tasks, extractedTasks...)
 
 	// Move to Completed Directory
-	if p.completedDir != "" {
-		p.logger.Info("Moving files to completed directory: %s", p.completedDir)
+	if p.ctx.Config.Download.CompletedDir != "" {
+		p.ctx.Logger.Info("Moving files to completed directory: %s", p.ctx.Config.Download.CompletedDir)
 		if err := p.moveToCompleted(tasks); err != nil {
 			return fmt.Errorf("failed to move files: %w", err)
 		}
@@ -182,20 +172,20 @@ func (p *FileProcessor) PostProcess(ctx context.Context, tasks []*domain.Downloa
 	return nil
 }
 
-func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
+func (p *Processor) extractArchives(ctx context.Context, tasks []*nzb.DownloadFile) ([]*nzb.DownloadFile, error) {
 
-	if !p.extractionEnabled {
+	if !p.ctx.ExtractionEnabled {
 		return nil, nil
 	}
 
 	if !p.extractor.HasExtractors() {
-		p.logger.Warn("No extractors available, skipping archive extraction")
+		p.ctx.Logger.Warn("No extractors available, skipping archive extraction")
 		return nil, nil
 	}
 
-	p.logger.Debug("Available extractors: %v", p.extractor.AvailableExtractors())
+	p.ctx.Logger.Debug("Available extractors: %v", p.extractor.AvailableExtractors())
 
-	var allNewTasks []*domain.DownloadFile
+	var allNewTasks []*nzb.DownloadFile
 	currentBatch := tasks
 	maxDepth := 3
 
@@ -214,13 +204,13 @@ func (p *FileProcessor) extractArchives(ctx context.Context, tasks []*domain.Dow
 
 		// Set the newly found files as the next batch to check
 		currentBatch = newTasks
-		p.logger.Debug("Depth %d complete, found %d new files to check", depth, len(newTasks))
+		p.ctx.Logger.Debug("Depth %d complete, found %d new files to check", depth, len(newTasks))
 	}
 
 	return allNewTasks, nil
 }
 
-func (p *FileProcessor) extractBatch(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
+func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile) ([]*nzb.DownloadFile, error) {
 	// Detect which files are archives
 	archives, err := p.extractor.DetectArchives(tasks)
 
@@ -229,43 +219,43 @@ func (p *FileProcessor) extractBatch(ctx context.Context, tasks []*domain.Downlo
 	}
 
 	if len(archives) == 0 {
-		p.logger.Debug("No archives detected, skipping extraction")
+		p.ctx.Logger.Debug("No archives detected, skipping extraction")
 		return nil, nil
 	}
 
-	p.logger.Info("Found %d archive(s) to extract", len(archives))
+	p.ctx.Logger.Info("Found %d archive(s) to extract", len(archives))
 
-	var newTasks []*domain.DownloadFile
+	var newTasks []*nzb.DownloadFile
 
 	// Extract each archive
 	for task, archive := range archives {
 		archiveName := filepath.Base(task.FinalPath)
-		p.logger.Debug("Extracting %s with %s", archiveName, archive.Name())
+		p.ctx.Logger.Debug("Extracting %s with %s", archiveName, archive.Name())
 
 		// Extract to the same directory as the archive
 		destDir := filepath.Dir(task.FinalPath)
 		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir)
 		if err != nil {
-			p.logger.Error("Xxtraction failed for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Xxtraction failed for %s: %v", task.CleanName, err)
 			continue
 		}
 
-		// Convert strings to domain.DownloadFile objects
+		// Convert strings to nzb.DownloadFile objects
 		for _, path := range extractedFile {
-			newTasks = append(newTasks, &domain.DownloadFile{
+			newTasks = append(newTasks, &nzb.DownloadFile{
 				FinalPath: path,
 				CleanName: filepath.Base(path),
 			})
 
 		}
 
-		p.logger.Debug("Successfully extracted: %s", archiveName)
+		p.ctx.Logger.Debug("Successfully extracted: %s", archiveName)
 	}
 	return newTasks, nil
 
 }
 
-func (p *FileProcessor) sanitizeFileName(subject string) string {
+func (p *Processor) sanitizeFileName(subject string) string {
 	res := html.UnescapeString(subject)
 
 	// Try pattern A: Contents inside double quotes
@@ -294,10 +284,10 @@ func (p *FileProcessor) sanitizeFileName(subject string) string {
 	return strings.TrimSpace(res)
 }
 
-func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
+func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
 
 	// Ensure destination subdir exists if using nested folders
-	if err := os.MkdirAll(p.completedDir, 0755); err != nil {
+	if err := os.MkdirAll(p.ctx.Config.Download.CompletedDir, 0755); err != nil {
 		return fmt.Errorf("failed to create completed directory: %w", err)
 	}
 
@@ -305,29 +295,29 @@ func (p *FileProcessor) moveToCompleted(tasks []*domain.DownloadFile) error {
 		fileName := filepath.Base(task.FinalPath)
 
 		if p.cleanupExtensions(fileName) {
-			p.logger.Debug("Cleanup: Removing %s", fileName)
+			p.ctx.Logger.Debug("Cleanup: Removing %s", fileName)
 			// It's safe to ignore the error here if the file is already gone
 			_ = os.Remove(task.FinalPath)
 			continue
 		}
 
-		dest := filepath.Join(p.completedDir, filepath.Base(task.FinalPath))
-		p.logger.Debug("Moving %s to completed folder", fileName)
+		dest := filepath.Join(p.ctx.Config.Download.CompletedDir, filepath.Base(task.FinalPath))
+		p.ctx.Logger.Debug("Moving %s to completed folder", fileName)
 
 		// Try rename
 		err := os.Rename(task.FinalPath, dest)
 		if err != nil {
 			// Fallback to Copy + Delete
 			if err := p.moveCrossDevice(task.FinalPath, dest); err != nil {
-				p.logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
-				return domain.ErrArticleNotFound
+				p.ctx.Logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
+				return nzb.ErrArticleNotFound
 			}
 		}
 	}
 	return nil
 }
 
-func (p *FileProcessor) cleanupExtensions(fileName string) bool {
+func (p *Processor) cleanupExtensions(fileName string) bool {
 	filenameLower := strings.ToLower(fileName)
 
 	ext := filepath.Ext(filenameLower)
@@ -337,7 +327,7 @@ func (p *FileProcessor) cleanupExtensions(fileName string) bool {
 }
 
 // moveCrossDevice handles moving files between different mount points/filesystems
-func (p *FileProcessor) moveCrossDevice(sourcePath, destPath string) error {
+func (p *Processor) moveCrossDevice(sourcePath, destPath string) error {
 	src, err := os.Open(sourcePath)
 	if err != nil {
 		return err

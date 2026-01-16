@@ -1,8 +1,10 @@
-package domain
+package engine
+
+import "github.com/datallboy/gonzb/internal/nzb"
 
 type DownloadJob struct {
-	Segment    NZBSegment
-	File       *DownloadFile
+	Segment    nzb.Segment
+	File       *nzb.DownloadFile
 	Groups     []string
 	Offset     int64
 	RetryCount int

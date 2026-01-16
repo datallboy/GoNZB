@@ -1,4 +1,4 @@
-package downloader
+package engine
 
 import (
 	"context"
@@ -9,19 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/decoding"
-	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 // runWorkerPool orchestrates the lifecycle of the download process.
-func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFile) error {
+func (s *Service) runWorkerPool(ctx context.Context, tasks []*nzb.DownloadFile) error {
 	totalSegments := 0
 	for _, f := range tasks {
 		totalSegments += len(f.Segments)
 	}
 
 	// Ask the manager for the connection limit
-	capacity := s.manager.TotalCapacity()
+	capacity := s.ctx.NNTP.TotalCapacity()
 	if capacity <= 0 {
 		return fmt.Errorf("no download capacity available: check server max_connections")
 	}
@@ -31,8 +31,8 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFil
 	workerCount := capacity + 2
 	bufferSize := workerCount * 2
 
-	jobs := make(chan domain.DownloadJob, bufferSize)
-	results := make(chan domain.DownloadResult, bufferSize)
+	jobs := make(chan DownloadJob, bufferSize)
+	results := make(chan DownloadResult, bufferSize)
 
 	// Start the Workers
 	var wg sync.WaitGroup
@@ -58,7 +58,7 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFil
 		case res := <-results:
 			if res.Error != nil {
 				// Identify the error type
-				isBusy := errors.Is(res.Error, domain.ErrProviderBusy)
+				isBusy := errors.Is(res.Error, nntp.ErrProviderBusy)
 
 				// If we have retires left, put it back in the pipeline
 				if isBusy || res.Job.RetryCount < 3 {
@@ -70,7 +70,7 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFil
 						// Calculate backoff: 2s, 4s, 8s...
 						delay = time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
-						s.logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+						s.ctx.Logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
 							res.Job.Segment.MessageID, res.Job.RetryCount, res.Error)
 					}
 
@@ -82,7 +82,7 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFil
 					continue // Do not count as completed yet
 				}
 				// Permanent failure
-				s.logger.Error("[FAIL] Segment %s permanently failed: %v", res.Job.Segment.MessageID, res.Error)
+				s.ctx.Logger.Error("[FAIL] Segment %s permanently failed: %v", res.Job.Segment.MessageID, res.Error)
 				finalErr = fmt.Errorf("one or more segments failed permanently")
 			}
 			completedCount++
@@ -94,22 +94,22 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*domain.DownloadFil
 }
 
 // worker pulls jobs from the channel and executes them until channel is closed
-func (s *Service) worker(ctx context.Context, jobs <-chan domain.DownloadJob, results chan<- domain.DownloadResult) {
+func (s *Service) worker(ctx context.Context, jobs <-chan DownloadJob, results chan<- DownloadResult) {
 	for job := range jobs {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 			err := s.processSegment(ctx, job)
-			results <- domain.DownloadResult{Job: job, Error: err}
+			results <- DownloadResult{Job: job, Error: err}
 		}
 	}
 }
 
 // processSegment handles the unique pipleine for a single Usenet article
-func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) error {
+func (s *Service) processSegment(ctx context.Context, job DownloadJob) error {
 	// Fetch from the Manager (handles priorities, auth, and connections)
-	rawReader, err := s.manager.FetchArticle(ctx, job.Segment.MessageID, job.Groups)
+	rawReader, err := s.ctx.NNTP.Fetch(ctx, job.Segment.MessageID, job.Groups)
 	if err != nil {
 		return fmt.Errorf("fetch failed: %w", err)
 	}
@@ -125,7 +125,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 	}
 
 	// Decode yEnc stream
-	decoder := decoding.NewYencDecoder(rawReader)
+	decoder := nzb.NewYencDecoder(rawReader)
 
 	if err := decoder.DiscardHeader(); err != nil {
 		return fmt.Errorf("header error: %w", err)
@@ -171,7 +171,7 @@ func (s *Service) processSegment(ctx context.Context, job domain.DownloadJob) er
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.
-func (s *Service) dispatchJobs(tasks []*domain.DownloadFile, jobs chan<- domain.DownloadJob) {
+func (s *Service) dispatchJobs(tasks []*nzb.DownloadFile, jobs chan<- DownloadJob) {
 	for _, task := range tasks {
 		var currentOffset int64 = 0
 
@@ -181,7 +181,7 @@ func (s *Service) dispatchJobs(tasks []*domain.DownloadFile, jobs chan<- domain.
 		}
 
 		for _, seg := range task.Segments {
-			jobs <- domain.DownloadJob{
+			jobs <- DownloadJob{
 				Segment:    seg,
 				File:       task,
 				Groups:     groups,

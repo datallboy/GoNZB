@@ -1,4 +1,4 @@
-package provider
+package nntp
 
 import (
 	"context"
@@ -8,31 +8,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/config"
-	"github.com/datallboy/gonzb/internal/domain"
-	"github.com/datallboy/gonzb/internal/logger"
-	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/app"
 )
 
 var FETCH_RETRY_COUNT = 3
 
 type managedProvider struct {
-	domain.Provider
+	Provider
 	semaphore chan struct{}
 }
 
 type Manager struct {
+	ctx       *app.Context
 	providers []*managedProvider
-	logger    *logger.Logger
 }
 
-func NewManager(configs []config.ServerConfig, l *logger.Logger) (*Manager, error) {
+func NewManager(ctx *app.Context) (*Manager, error) {
 	var managed []*managedProvider
 
-	for _, cfg := range configs {
-		p := nntp.NewNNTPProvider(cfg)
+	for _, cfg := range ctx.Config.Servers {
+		p := NewNNTPProvider(cfg)
 
-		l.Info("Validating provider: %s", p.ID())
+		ctx.Logger.Info("Validating provider: %s", p.ID())
 		if err := p.TestConnection(); err != nil {
 			return nil, fmt.Errorf("connection test failed for %s: %w", p.ID(), err)
 		}
@@ -47,10 +44,10 @@ func NewManager(configs []config.ServerConfig, l *logger.Logger) (*Manager, erro
 	sort.Slice(managed, func(i, j int) bool {
 		return managed[i].Priority() < managed[j].Priority()
 	})
-	return &Manager{providers: managed, logger: l}, nil
+	return &Manager{ctx: ctx, providers: managed}, nil
 }
 
-func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
+func (m *Manager) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
 
 	// Fast fail if user already cancelled
 	if err := ctx.Err(); err != nil {
@@ -65,7 +62,7 @@ func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []strin
 				// Release the slot if the fetch fails so
 				// the next worker can try this provider for a different article.
 				<-mp.semaphore
-				m.logger.Debug("%v", err)
+				m.ctx.Logger.Debug("%v", err)
 				continue
 			}
 
@@ -83,7 +80,7 @@ func (m *Manager) FetchArticle(ctx context.Context, msgID string, groups []strin
 		}
 	}
 
-	return nil, domain.ErrProviderBusy
+	return nil, ErrProviderBusy
 }
 
 // try fetch will attempt to fetch an article with some logic to check missing articles or retry
