@@ -1,4 +1,4 @@
-package domain
+package nzb
 
 import (
 	"path/filepath"
@@ -6,8 +6,8 @@ import (
 )
 
 type DownloadFile struct {
-	Source     *NZBFile
-	Segments   []NZBSegment
+	Source     *File
+	Segments   []Segment
 	CleanName  string
 	PartPath   string
 	FinalPath  string
@@ -15,7 +15,7 @@ type DownloadFile struct {
 	actualSize int64
 }
 
-func NewDownloadFile(raw NZBFile, cleanName, outDir string) *DownloadFile {
+func NewDownloadFile(raw File, cleanName, outDir string) *DownloadFile {
 	var total int64
 	for _, s := range raw.Segments {
 		total += s.Bytes

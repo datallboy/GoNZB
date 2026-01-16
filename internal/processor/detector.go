@@ -1,9 +1,9 @@
-package extraction
+package processor
 
 import (
 	"fmt"
 
-	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 // Manager handles multiple extractors and determines which to use
@@ -51,8 +51,8 @@ func (m *Manager) HasExtractors() bool {
 
 // DetectArchives scans the completed tasks and returns archives that need extraction
 // Returns a map of task -> extractor for each archive found
-func (m *Manager) DetectArchives(tasks []*domain.DownloadFile) (map[*domain.DownloadFile]Extractor, error) {
-	archives := make(map[*domain.DownloadFile]Extractor)
+func (m *Manager) DetectArchives(tasks []*nzb.DownloadFile) (map[*nzb.DownloadFile]Extractor, error) {
+	archives := make(map[*nzb.DownloadFile]Extractor)
 
 	for _, task := range tasks {
 		// Try each extractor to see if it can handle this file

@@ -9,13 +9,17 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/datallboy/gonzb/internal/config"
-	"github.com/datallboy/gonzb/internal/downloader"
-	"github.com/datallboy/gonzb/internal/extraction"
-	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/infra/logger"
+	"github.com/datallboy/gonzb/internal/infra/platform"
+
+	"github.com/datallboy/gonzb/internal/engine"
+
+	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/nzb"
-	"github.com/datallboy/gonzb/internal/platform"
-	"github.com/datallboy/gonzb/internal/provider"
+
+	"github.com/datallboy/gonzb/internal/processor"
 
 	"github.com/spf13/cobra"
 )
@@ -81,11 +85,19 @@ func executeDownload() {
 		appLogger.Debug("Debug logging enabled")
 	}
 
+	// Initialize app context
+	appCtx := app.NewContext(cfg, appLogger)
+
+	// Initialize shared writer
+	writer := engine.NewFileWriter()
+
 	// Initialize the Manager (The provider load balancer)
-	mgr, err := provider.NewManager(cfg.Servers, appLogger)
+	appCtx.NNTP, err = nntp.NewManager(appCtx)
 	if err != nil {
 		appLogger.Fatal("Provider initializiation failed: %v", err)
 	}
+
+	appCtx.Processor = processor.New(appCtx, writer)
 
 	// Initialize nzb parser
 	nzbParser := nzb.NewParser()
@@ -97,11 +109,8 @@ func executeDownload() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize archive extraction manager
-	extractor := extraction.NewManager()
-
 	// Initialize the Downloader Service
-	svc := downloader.NewService(cfg, mgr, extractor, appLogger)
+	svc := engine.NewService(appCtx, writer)
 
 	if err := svc.Download(ctx, nzbDomain); err != nil {
 		if errors.Is(err, context.Canceled) {

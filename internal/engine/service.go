@@ -1,65 +1,55 @@
-package downloader
+package engine
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/config"
-	"github.com/datallboy/gonzb/internal/domain"
-	"github.com/datallboy/gonzb/internal/extraction"
-	"github.com/datallboy/gonzb/internal/logger"
+	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/processor"
-	"github.com/datallboy/gonzb/internal/provider"
+
+	"github.com/datallboy/gonzb/internal/nntp"
 )
 
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		// Allocate a 1MB buffer (typical max size for a Usenet segment)
-		return make([]byte, 1024*1024)
-	},
-}
-
 type Service struct {
-	cfg          *config.Config
-	manager      *provider.Manager
-	extractor    *extraction.Manager
-	logger       *logger.Logger
-	writer       *FileWriter
+	ctx       *app.Context
+	nntp      *nntp.Manager
+	processor *processor.Processor
+	writer    *FileWriter
+
+	// Progress tracking state
 	bytesWritten uint64
 	totalBytes   uint64
 }
 
-func NewService(c *config.Config, mgr *provider.Manager, ex *extraction.Manager, l *logger.Logger) *Service {
+func NewService(ctx *app.Context, writer *FileWriter) *Service {
 	return &Service{
-		cfg:       c,
-		manager:   mgr,
-		extractor: ex,
-		logger:    l,
-		writer:    NewFileWriter(),
+		ctx:       ctx,
+		nntp:      ctx.NNTP.(*nntp.Manager),
+		processor: ctx.Processor.(*processor.Processor),
+		writer:    writer,
 	}
 }
 
-func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
+func (s *Service) Download(ctx context.Context, nzb *nzb.Model) error {
 	defer s.writer.CloseAll()
 
-	if err := os.MkdirAll(s.cfg.Download.OutDir, 0755); err != nil {
+	if err := os.MkdirAll(s.ctx.Config.Download.OutDir, 0755); err != nil {
 		return fmt.Errorf("failed to create out_dir: %w", err)
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	fp := processor.NewFileProcessor(s.logger, s.extractor, s.writer, &s.cfg.Download)
-	tasks, err := fp.Prepare(nzb)
+	tasks, err := s.processor.Prepare(nzb)
 	if err != nil {
 		return err
 	}
 
 	if len(tasks) == 0 {
-		s.logger.Info("All files are already present. No download needed.")
+		s.ctx.Logger.Info("All files are already present. No download needed.")
 		return nil
 	}
 
@@ -71,11 +61,11 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	if len(tasks) == 0 {
-		s.logger.Info("All files are already present. No downloaded needed.")
+		s.ctx.Logger.Info("All files are already present. No downloaded needed.")
 		return nil
 	}
 
-	s.logger.Info("Starting download...")
+	s.ctx.Logger.Info("Starting download...")
 
 	startTime := time.Now()
 	monitorCtx, cancel := context.WithCancel(ctx)
@@ -94,15 +84,15 @@ func (s *Service) Download(ctx context.Context, nzb *domain.NZB) error {
 	}
 
 	// Finialize: Close handles and rename .part -> final
-	if err := fp.Finalize(ctx, tasks); err != nil {
+	if err := s.processor.Finalize(ctx, tasks); err != nil {
 		return fmt.Errorf("post-processing failed: %w", err)
 	}
 
 	// Post Process: PAR2 verify, repair, unrar if needed
-	if err := fp.PostProcess(ctx, tasks); err != nil {
+	if err := s.processor.PostProcess(ctx, tasks); err != nil {
 		// Download is "done" but failed repair/verify
 		// TODO: decide if should return an error or consider the file "good enough"
-		s.logger.Error("Post-processing failed: %v", err)
+		s.ctx.Logger.Error("Post-processing failed: %v", err)
 	}
 
 	return nil

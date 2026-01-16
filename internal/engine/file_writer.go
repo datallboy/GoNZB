@@ -1,4 +1,4 @@
-package downloader
+package engine
 
 import (
 	"fmt"
