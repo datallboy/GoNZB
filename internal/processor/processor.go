@@ -3,11 +3,8 @@ package processor
 import (
 	"context"
 	"fmt"
-	"html"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -51,7 +48,7 @@ func (p *Processor) Prepare(nzbModel *nzb.Model) ([]*nzb.DownloadFile, error) {
 	var tasks []*nzb.DownloadFile
 
 	for _, rawFile := range nzbModel.Files {
-		cleanName := p.sanitizeFileName(rawFile.Subject)
+		cleanName := sanitizeFileName(rawFile.Subject)
 
 		// Create the Task (This calculates Size and Paths internally)
 		task := nzb.NewDownloadFile(rawFile, cleanName, p.ctx.Config.Download.OutDir)
@@ -121,33 +118,11 @@ func (p *Processor) PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) 
 	p.ctx.Logger.Info("Starting post-processing...")
 
 	// Find the primary PAR2 file among the finalized tasks
-	var primaryPar string
-	for _, t := range tasks {
-		if strings.HasSuffix(t.FinalPath, ".par2") && !strings.Contains(t.FinalPath, ".vol") {
-			primaryPar = t.FinalPath
-			break
-		}
-	}
-
-	// Perform Repair if PAR2 exists
-	if primaryPar != "" {
-		p.ctx.Logger.Debug("PAR2 Index found: %s. Verifying...", filepath.Base(primaryPar))
-
-		repairer, err := NewCLIPar2()
-		if err != nil {
-			return fmt.Errorf("cannot initialize repair engine: %w", err)
-		}
-		healthy, err := repairer.Verify(ctx, primaryPar)
-
-		if err != nil {
-			// Check for Exit Code 1 (Damanged but repairable)
-			p.ctx.Logger.Warn("Files are damanged. Attemting repair...")
-			if repairErr := repairer.Repair(ctx, primaryPar); repairErr != nil {
-				return fmt.Errorf("PAR2 repair failed: %w", repairErr)
-			}
-			p.ctx.Logger.Info("Repair complete.")
-		} else if healthy {
-			p.ctx.Logger.Info("All files verified healthy via PAR2.")
+	// Verify and Repair if needed
+	if primaryPar := findPrimaryPar(tasks); primaryPar != "" {
+		if err := p.handleRepair(ctx, primaryPar); err != nil {
+			p.ctx.Logger.Error("Post-repair health check failed: %v", err)
+			return fmt.Errorf("Post-repair health check failed: %v", err)
 		}
 	}
 
@@ -155,6 +130,7 @@ func (p *Processor) PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) 
 	extractedTasks, err := p.extractArchives(ctx, tasks)
 	if err != nil {
 		p.ctx.Logger.Error("Archive extraction failed: %v", err)
+		return fmt.Errorf("Archive extraction failed: %v", err)
 		// Non-fatal: continue to move files even if extraction fails
 	}
 	// Adds extracted files to our list of things to move
@@ -255,35 +231,6 @@ func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile)
 
 }
 
-func (p *Processor) sanitizeFileName(subject string) string {
-	res := html.UnescapeString(subject)
-
-	// Try pattern A: Contents inside double quotes
-	firstQuote := strings.Index(res, "\"")
-	lastQuote := strings.LastIndex(res, "\"")
-	if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote {
-		res = res[firstQuote+1 : lastQuote]
-	} else {
-		// Try pattern B: Strip Usenet metadata (fallback)
-		//  Removes (1/14) or [01/14] and the "yenc" suffix
-
-		// Remove yenc
-		reYenc := regexp.MustCompile(`(?i)\s+yenc.*$`)
-		res = reYenc.ReplaceAllString(res, "")
-
-		// Remove leading counters like [1/14]
-		reLead := regexp.MustCompile(`^\[\d+/\d+\]\s+`)
-		res = reLead.ReplaceAllString(res, "")
-	}
-
-	// Final cleanup: remove OS characters
-	// Windows/Linux/macOS safety
-	badChars := regexp.MustCompile(`[\\/:*?"<>|]`)
-	res = badChars.ReplaceAllString(res, "_")
-
-	return strings.TrimSpace(res)
-}
-
 func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
 
 	// Ensure destination subdir exists if using nested folders
@@ -294,7 +241,7 @@ func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
 	for _, task := range tasks {
 		fileName := filepath.Base(task.FinalPath)
 
-		if p.cleanupExtensions(fileName) {
+		if cleanupExtensions(fileName, p.cleanupMap) {
 			p.ctx.Logger.Debug("Cleanup: Removing %s", fileName)
 			// It's safe to ignore the error here if the file is already gone
 			_ = os.Remove(task.FinalPath)
@@ -304,54 +251,20 @@ func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
 		dest := filepath.Join(p.ctx.Config.Download.CompletedDir, filepath.Base(task.FinalPath))
 		p.ctx.Logger.Debug("Moving %s to completed folder", fileName)
 
-		// Try rename
-		err := os.Rename(task.FinalPath, dest)
+		err := moveFile(task.FinalPath, dest)
 		if err != nil {
-			// Fallback to Copy + Delete
-			if err := p.moveCrossDevice(task.FinalPath, dest); err != nil {
-				p.ctx.Logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
-				return nzb.ErrArticleNotFound
-			}
+			p.ctx.Logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
+			return err
 		}
 	}
 	return nil
 }
 
-func (p *Processor) cleanupExtensions(fileName string) bool {
-	filenameLower := strings.ToLower(fileName)
-
-	ext := filepath.Ext(filenameLower)
-	_, exists := p.cleanupMap[ext]
-
-	return exists
-}
-
-// moveCrossDevice handles moving files between different mount points/filesystems
-func (p *Processor) moveCrossDevice(sourcePath, destPath string) error {
-	src, err := os.Open(sourcePath)
-	if err != nil {
-		return err
+func findPrimaryPar(tasks []*nzb.DownloadFile) string {
+	for _, t := range tasks {
+		if strings.HasSuffix(t.FinalPath, ".par2") && !strings.Contains(t.FinalPath, ".vol") {
+			return t.FinalPath
+		}
 	}
-	defer src.Close()
-
-	// Create the destination file
-	dst, err := os.Create(destPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	// Copy the contents. io.Copy is efficient as it uses small buffers
-	// or sendfile(2) where available.
-	_, err = io.Copy(dst, src)
-	if err != nil {
-		return err
-	}
-
-	// Explicitly close before deleting the source
-	src.Close()
-	dst.Close()
-
-	// Remove the original file only after copy success
-	return os.Remove(sourcePath)
+	return ""
 }
