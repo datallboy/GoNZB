@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -44,9 +45,21 @@ func New(ctx *app.Context, w Closeable) *Processor {
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
-func (p *Processor) Prepare(nzbModel *nzb.Model) ([]*nzb.DownloadFile, error) {
+func (p *Processor) Prepare(nzbModel *nzb.Model, nzbFilename string) ([]*nzb.DownloadFile, error) {
 	var tasks []*nzb.DownloadFile
-	var password = nzbModel.GetPassword()
+
+	// Try Meta tag for password
+	password := nzbModel.GetPassword()
+
+	// Try NZB Filename fallback
+	if password == "" {
+		password = extractPassword(nzbFilename)
+	}
+
+	// Fallback to subject line
+	if password == "" && len(nzbModel.Files) > 0 {
+		password = extractPassword(nzbModel.Files[0].Subject)
+	}
 
 	for _, rawFile := range nzbModel.Files {
 		cleanName := sanitizeFileName(rawFile.Subject)
@@ -266,6 +279,17 @@ func findPrimaryPar(tasks []*nzb.DownloadFile) string {
 		if strings.HasSuffix(t.FinalPath, ".par2") && !strings.Contains(t.FinalPath, ".vol") {
 			return t.FinalPath
 		}
+	}
+	return ""
+}
+
+// extractPassword searches a string for the {{password}} pattern
+func extractPassword(input string) string {
+	// Matches text inside double curly braces: {{mypassword}}
+	re := regexp.MustCompile(`\{\{(.*?)\}\}`)
+	match := re.FindStringSubmatch(input)
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
 	}
 	return ""
 }

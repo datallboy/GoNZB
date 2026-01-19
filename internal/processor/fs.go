@@ -13,6 +13,10 @@ import (
 func sanitizeFileName(subject string) string {
 	res := html.UnescapeString(subject)
 
+	// Strip password tags like {{...}} first so they don't interfere
+	rePass := regexp.MustCompile(`\{\{.*?\}\}`)
+	res = rePass.ReplaceAllString(res, "")
+
 	// Try pattern A: Contents inside double quotes
 	firstQuote := strings.Index(res, "\"")
 	lastQuote := strings.LastIndex(res, "\"")

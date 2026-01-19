@@ -17,7 +17,7 @@ type NNTPManager interface {
 
 type Processor interface {
 	// This allows the engine to trigger repair/extract without importing processor
-	Prepare(nzbModel *nzb.Model) ([]*nzb.DownloadFile, error)
+	Prepare(nzbModel *nzb.Model, nzbFilename string) ([]*nzb.DownloadFile, error)
 	Finalize(ctx context.Context, tasks []*nzb.DownloadFile) error
 	PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) error
 }

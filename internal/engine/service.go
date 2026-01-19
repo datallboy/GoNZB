@@ -35,7 +35,7 @@ func NewService(ctx *app.Context, writer *FileWriter) *Service {
 	}
 }
 
-func (s *Service) Download(ctx context.Context, nzb *nzb.Model) error {
+func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename string) error {
 	defer s.writer.CloseAll()
 
 	if err := os.MkdirAll(s.ctx.Config.Download.OutDir, 0755); err != nil {
@@ -43,7 +43,7 @@ func (s *Service) Download(ctx context.Context, nzb *nzb.Model) error {
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	tasks, err := s.processor.Prepare(nzb)
+	tasks, err := s.processor.Prepare(nzb, nzbFilename)
 	if err != nil {
 		return err
 	}
