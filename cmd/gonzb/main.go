@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -111,8 +112,9 @@ func executeDownload() {
 
 	// Initialize the Downloader Service
 	svc := engine.NewService(appCtx, writer)
+	filename := filepath.Base(nzbPath)
 
-	if err := svc.Download(ctx, nzbDomain); err != nil {
+	if err := svc.Download(ctx, nzbDomain, filename); err != nil {
 		if errors.Is(err, context.Canceled) {
 			appLogger.Info("Download cancelled by user.")
 			return
