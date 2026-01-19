@@ -46,12 +46,13 @@ func New(ctx *app.Context, w Closeable) *Processor {
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
 func (p *Processor) Prepare(nzbModel *nzb.Model) ([]*nzb.DownloadFile, error) {
 	var tasks []*nzb.DownloadFile
+	var password = nzbModel.GetPassword()
 
 	for _, rawFile := range nzbModel.Files {
 		cleanName := sanitizeFileName(rawFile.Subject)
 
 		// Create the Task (This calculates Size and Paths internally)
-		task := nzb.NewDownloadFile(rawFile, cleanName, p.ctx.Config.Download.OutDir)
+		task := nzb.NewDownloadFile(rawFile, cleanName, p.ctx.Config.Download.OutDir, password)
 
 		// Skip if already exists
 		if _, err := os.Stat(task.FinalPath); err == nil {
@@ -210,9 +211,9 @@ func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile)
 
 		// Extract to the same directory as the archive
 		destDir := filepath.Dir(task.FinalPath)
-		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir)
+		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir, task.Password)
 		if err != nil {
-			p.ctx.Logger.Error("Xxtraction failed for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Extraction failed for %s: %v", task.CleanName, err)
 			continue
 		}
 

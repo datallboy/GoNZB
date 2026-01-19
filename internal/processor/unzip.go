@@ -53,12 +53,21 @@ func (u *CLIUnzip) CanExtract(filePath string) (bool, error) {
 }
 
 // Extract extracts the ZIP archive to the destination directory
-func (u *CLIUnzip) Extract(ctx context.Context, archivePath string, destDir string) ([]string, error) {
+func (u *CLIUnzip) Extract(ctx context.Context, archivePath string, destDir string, password string) ([]string, error) {
 	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
 		// unzip -o <archive> -d <destination>
 		// -o = overwrite existing files
 		// -q = quiet mode
-		cmd := exec.CommandContext(ctx, u.BinaryPath, "-o", "-q", archivePath, "-d", destDir)
+
+		args := []string{"-o", "-q"}
+
+		if password != "" {
+			args = append(args, "-P", password)
+		}
+
+		args = append(args, archivePath, "-d", workDir)
+
+		cmd := exec.CommandContext(ctx, u.BinaryPath, args...)
 		return cmd
 	})
 }

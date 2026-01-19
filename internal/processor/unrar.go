@@ -67,13 +67,24 @@ func (u *CLIUnrar) CanExtract(filePath string) (bool, error) {
 }
 
 // Extract extracts the RAR archive to the destination directory
-func (u *CLIUnrar) Extract(ctx context.Context, archivePath string, destDir string) ([]string, error) {
+func (u *CLIUnrar) Extract(ctx context.Context, archivePath string, destDir string, password string) ([]string, error) {
 	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
 		// unrar x -o+ -y <archive> <destination>
 		// x = extract with full paths
 		// -o+ = overwrite existing files
 		// -y = assume yes on all queries (non-interactive)
-		cmd := exec.CommandContext(ctx, u.BinaryPath, "x", "-o+", "-y", archivePath, workDir+string(filepath.Separator))
+		// -kb = keep broken
+		args := []string{"x", "-o+", "-y", "-kb"}
+
+		if password != "" {
+			args = append(args, "-p"+password)
+		} else {
+			args = append(args, "-p-")
+		}
+
+		args = append(args, archivePath, workDir+string(filepath.Separator))
+
+		cmd := exec.CommandContext(ctx, u.BinaryPath, args...)
 		return cmd
 	})
 }

@@ -11,11 +11,12 @@ type DownloadFile struct {
 	CleanName  string
 	PartPath   string
 	FinalPath  string
+	Password   string
 	Size       int64
 	actualSize int64
 }
 
-func NewDownloadFile(raw File, cleanName, outDir string) *DownloadFile {
+func NewDownloadFile(raw File, cleanName, outDir string, password string) *DownloadFile {
 	var total int64
 	for _, s := range raw.Segments {
 		total += s.Bytes
@@ -29,6 +30,7 @@ func NewDownloadFile(raw File, cleanName, outDir string) *DownloadFile {
 		CleanName: cleanName,
 		PartPath:  final + ".part",
 		FinalPath: final,
+		Password:  password,
 		Size:      total,
 	}
 }

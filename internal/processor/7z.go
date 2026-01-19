@@ -54,13 +54,24 @@ func (z *CLI7z) CanExtract(filePath string) (bool, error) {
 }
 
 // Extract extracts the 7z archive to the destination directory
-func (z *CLI7z) Extract(ctx context.Context, archivePath string, destDir string) ([]string, error) {
+func (z *CLI7z) Extract(ctx context.Context, archivePath string, destDir string, password string) ([]string, error) {
 	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
 		// 7z x -o<destination> -y <archive>
 		// x = extract with full paths
 		// -o = output directory (no space between -o and path)
 		// -y = assume yes on all queries
-		cmd := exec.CommandContext(ctx, z.BinaryPath, "x", fmt.Sprintf("-o%s", destDir), "-y", archivePath)
+
+		args := []string{"x", fmt.Sprintf("-o%s", workDir), "-y"}
+
+		if password != "" {
+			args = append(args, "-p"+password)
+		} else {
+			args = append(args, "-p-")
+		}
+
+		args = append(args, archivePath)
+
+		cmd := exec.CommandContext(ctx, z.BinaryPath, args...)
 		return cmd
 	})
 }
