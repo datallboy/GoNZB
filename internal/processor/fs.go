@@ -57,6 +57,8 @@ func moveCrossDevice(sourcePath, destPath string) error {
 	}
 	defer src.Close()
 
+	tempDest := filepath.Join(filepath.Dir(destPath), "."+filepath.Base(destPath)+".tmp")
+
 	// Create the destination file
 	dst, err := os.Create(destPath)
 	if err != nil {
@@ -68,12 +70,25 @@ func moveCrossDevice(sourcePath, destPath string) error {
 	// or sendfile(2) where available.
 	_, err = io.Copy(dst, src)
 	if err != nil {
+		dst.Close()
+		os.Remove(tempDest)
+		return err
+	}
+
+	err = dst.Sync()
+	if err != nil {
 		return err
 	}
 
 	// Explicitly close before deleting the source
 	src.Close()
 	dst.Close()
+
+	err = os.Rename(tempDest, destPath)
+	if err != nil {
+		os.Remove(tempDest)
+		return err
+	}
 
 	// Remove the original file only after copy success
 	return os.Remove(sourcePath)
