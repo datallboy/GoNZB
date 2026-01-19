@@ -121,6 +121,12 @@ func (d *YencDecoder) parseFooter() {
 }
 
 func (d *YencDecoder) Verify() error {
+	// A CRC of 00000000 in yEnc often indicates obfuscated data.
+	// Trust the data; PAR2 will verify it later.
+	if d.expectedCRC == 0 {
+		return nil
+	}
+
 	actual := d.hash.Sum32()
 	if actual != d.expectedCRC {
 		return fmt.Errorf("checksum mismatch: expected %08X, got %08X", d.expectedCRC, actual)
