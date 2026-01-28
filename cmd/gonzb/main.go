@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/datallboy/gonzb/internal/api"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/infra/platform"
+	"github.com/labstack/echo/v5"
 
 	"github.com/datallboy/gonzb/internal/engine"
 
@@ -56,6 +58,14 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Starts GoNZB in server mode. Start HTTP server.",
+	Run: func(cmd *cobra.Command, args []string) {
+		executeServer()
+	},
+}
+
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
@@ -63,6 +73,42 @@ func init() {
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
+}
+
+func executeServer() {
+	e := echo.New()
+
+	// 1. Initialize  application context
+	// Load core app infrastructure (dependency check, config & logger)
+	if err := platform.ValidateDependencies(); err != nil {
+		log.Fatalf("FATAL: %v. Please check your Dockerfile or local installation.", err)
+	}
+
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		log.Fatalf("Config error: %v", err)
+	}
+
+	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
+	if err != nil {
+		log.Fatalf("Fatal: Could not initialize logger %v\n", err)
+	}
+	appLogger.Info("GONZB starting up...")
+
+	if cfg.Log.Level == "debug" {
+		appLogger.Debug("Debug logging enabled")
+	}
+
+	// Initialize app context
+	appCtx := app.NewContext(cfg, appLogger)
+
+	// Register routes via the router
+	api.RegisterRoutes(e, appCtx)
+
+	if err := e.Start(":8080"); err != nil {
+		e.Logger.Error("failed to start server", "error", err)
+	}
+
 }
 
 func executeDownload() {
@@ -131,6 +177,7 @@ func executeDownload() {
 func main() {
 
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(serveCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
