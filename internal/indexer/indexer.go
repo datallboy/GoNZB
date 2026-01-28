@@ -9,14 +9,15 @@ import (
 
 // SearchResult is a normalized view of an entry from any indexer
 type SearchResult struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	GUID        string    `json:"guid"`
-	DownloadURL string    `json:"downloadUrl"`
-	Size        int64     `json:"size"`
-	Source      string    `json:"source"`
-	PublishDate time.Time `json:"publishDate"`
-	Category    string    `json:"category"`
+	ID              string    `json:"id"`
+	Title           string    `json:"title"`
+	GUID            string    `json:"guid"`
+	DownloadURL     string    `json:"downloadUrl"`
+	Size            int64     `json:"size"`
+	Source          string    `json:"source"`
+	PublishDate     time.Time `json:"publishDate"`
+	Category        string    `json:"category"`
+	RedirectAllowed bool
 }
 
 // Indexer is the contract any source (Newznab, Local, Scraper) must fulfill
