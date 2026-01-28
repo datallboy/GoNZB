@@ -115,7 +115,7 @@ func executeServer() {
 	defer stop()
 
 	sc := echo.StartConfig{
-		Address:         cfg.Port,
+		Address:         ":" + cfg.Port,
 		GracefulTimeout: 10 * time.Second,
 	}
 
