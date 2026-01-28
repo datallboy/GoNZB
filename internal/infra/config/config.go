@@ -78,7 +78,7 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 
 	// Set Defaults
-	v.SetDefault("port", ":8080")
+	v.SetDefault("port", "8080")
 	v.SetDefault("download.out_dir", "./downloads")
 	v.SetDefault("download.completed_dir", "./downloads/completed")
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
