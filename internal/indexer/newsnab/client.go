@@ -34,6 +34,10 @@ func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResu
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("indexer %s returned status: %d", c.name, resp.StatusCode)
+	}
+
 	// 2. Unmarshal XML into local structs
 	var rss RSSResponse
 	if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
@@ -49,9 +53,9 @@ func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResu
 	return results, nil
 }
 
-func (c *Client) DownloadNZB(ctx context.Context, id string) ([]byte, error) {
+func (c *Client) DownloadNZB(ctx context.Context, res indexer.SearchResult) ([]byte, error) {
 	// Newznab uses t=getnzb and the id (guid) to fetch the file
-	u := fmt.Sprintf("%s/api?t=getnzb&id=%s&apikey=%s", c.BaseURL, id, c.APIKey)
+	u := fmt.Sprintf("%s&apikey=%s", res.DownloadURL, c.APIKey)
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
 	resp, err := http.DefaultClient.Do(req)

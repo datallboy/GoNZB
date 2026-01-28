@@ -100,7 +100,10 @@ func executeServer() {
 	}
 
 	// Initialize app context
-	appCtx := app.NewContext(cfg, appLogger)
+	appCtx, err := app.NewContext(cfg, appLogger)
+	if err != nil {
+		log.Fatalf("Failed to initialize application context %v\n", err)
+	}
 
 	// Register routes via the router
 	api.RegisterRoutes(e, appCtx)
@@ -133,7 +136,10 @@ func executeDownload() {
 	}
 
 	// Initialize app context
-	appCtx := app.NewContext(cfg, appLogger)
+	appCtx, err := app.NewContext(cfg, appLogger)
+	if err != nil {
+		log.Fatalf("Failed to initialize application context %v\n", err)
+	}
 
 	// Initialize shared writer
 	writer := engine.NewFileWriter()

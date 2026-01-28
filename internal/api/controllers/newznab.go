@@ -94,20 +94,21 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 		return c.String(http.StatusBadRequest, "Missing ID")
 	}
 
-	res, err := ctrl.App.Indexer.GetResultByID(id)
-	if err != nil {
-		return c.String(http.StatusNotFound, "NZB expired from search memory")
-	}
-
 	// Handle redirect mode
 	if ctrl.App.Config.RedirectDownloads {
+		res, err := ctrl.App.Indexer.GetResultByID(c.Request().Context(), id)
+		if err != nil {
+			return c.String(http.StatusNotFound, "NZB not found in database")
+		}
+
+		// Send the user directly to NNTmux/Indexer
 		return c.Redirect(http.StatusFound, res.DownloadURL)
 	}
 
 	// Handle proxy mode
 	data, err := ctrl.App.Indexer.FetchNZB(c.Request().Context(), id)
 	if err != nil {
-		return c.NoContent(http.StatusNotFound)
+		return c.String(http.StatusNotFound, "File not found")
 	}
 
 	c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s.nzb", id))

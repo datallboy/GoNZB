@@ -14,6 +14,7 @@ type Config struct {
 	Indexers []IndexerConfig `mapstructure:"indexers" yaml:"indexers"`
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
+	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 
 	RedirectDownloads bool `mapstructure:"redirect_downloads" yaml:"redirect_downloads"`
 }
@@ -45,6 +46,11 @@ type LogConfig struct {
 	Path          string `mapstructure:"path" yaml:"path"`
 	Level         string `mapstructure:"level" yaml:"level"`
 	IncludeStdout bool   `mapstructure:"include_stdout" yaml:"include_stdout"`
+}
+
+type StoreConfig struct {
+	SQLitePath string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
+	BlobDir    string `mapstructure:"blob_dir" yaml:"blob_dir"`
 }
 
 func Load(path string) (*Config, error) {

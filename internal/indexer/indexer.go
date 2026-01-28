@@ -23,7 +23,7 @@ type SearchResult struct {
 type Indexer interface {
 	Name() string
 	Search(ctx context.Context, query string) ([]SearchResult, error)
-	DownloadNZB(ctx context.Context, id string) ([]byte, error)
+	DownloadNZB(ctx context.Context, res SearchResult) ([]byte, error)
 }
 
 func (r *SearchResult) SetCompositeID() {
