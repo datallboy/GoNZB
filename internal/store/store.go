@@ -32,7 +32,7 @@ func NewPersistentStore(dbPath, blobDir string) (*PersistentStore, error) {
 	}
 
 	// Open the metadata db
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal+mode(WAL)&_progma=synchronous=(NORMAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
 	}
