@@ -7,28 +7,25 @@ import (
 )
 
 type store interface {
-	Get(string) ([]byte, error)
-	Put(string, []byte) error
+	SaveReleases(ctx context.Context, results []SearchResult) error
+	GetRelease(ctx context.Context, id string) (SearchResult, error)
+	GetNZB(id string) ([]byte, error)
+	PutNZB(id string, data []byte) error
+	Exists(id string) bool
 }
 
 // BaseManager is the concrete implementation of the Manager interface.
 type BaseManager struct {
 	mu       sync.RWMutex
 	indexers map[string]Indexer
-
-	// resultCache stores recent search results so we can find the
-	// DownloadURL when a user requests an NZB by its ID.
-	resultCache map[string]SearchResult
-
-	store store
+	store    store
 }
 
 // NewManager initializes a new manager with a physical file store.
 func NewManager(s store) *BaseManager {
 	return &BaseManager{
-		indexers:    make(map[string]Indexer),
-		resultCache: make(map[string]SearchResult),
-		store:       s,
+		indexers: make(map[string]Indexer),
+		store:    s,
 	}
 }
 
@@ -65,13 +62,11 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResu
 	var allResults []SearchResult
 	for res := range resultsChan {
 		allResults = append(allResults, res...)
+	}
 
-		// Store these results in our "memory" so FetchNZB can find them later
-		m.mu.Lock()
-		for _, r := range res {
-			m.resultCache[r.ID] = r
-		}
-		m.mu.Unlock()
+	// Persist release records in database
+	if len(allResults) > 0 {
+		_ = m.store.SaveReleases(ctx, allResults)
 	}
 
 	return allResults, nil
@@ -80,12 +75,12 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResu
 // FetchNZB handles retrieving nzb from cache or downloading from an indexer
 func (m *BaseManager) FetchNZB(ctx context.Context, id string) ([]byte, error) {
 	// Check the file store
-	if data, err := m.store.Get(id); err == nil {
-		return data, nil
+	if m.store.Exists(id) {
+		return m.store.GetNZB(id)
 	}
 
-	// Not in file store, find the metadata to get the URL and Source
-	res, err := m.GetResultByID(id)
+	// Not on disk? Looks where to download it from in SQLite
+	res, err := m.store.GetRelease(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -100,17 +95,18 @@ func (m *BaseManager) FetchNZB(ctx context.Context, id string) ([]byte, error) {
 	}
 
 	// This calls either the raw DownloadNZB or the Cached one!
-	return idx.DownloadNZB(ctx, id)
+	data, err := idx.DownloadNZB(ctx, res)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache file to disk
+	_ = m.store.PutNZB(id, data)
+
+	return data, nil
 }
 
 // GetResultByID looks up a search result in the manager's memory
-func (m *BaseManager) GetResultByID(id string) (SearchResult, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	res, ok := m.resultCache[id]
-	if !ok {
-		return SearchResult{}, fmt.Errorf("result %s not found in recent history", id)
-	}
-	return res, nil
+func (m *BaseManager) GetResultByID(ctx context.Context, id string) (SearchResult, error) {
+	return m.store.GetRelease(ctx, id)
 }
