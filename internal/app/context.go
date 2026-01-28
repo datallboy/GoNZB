@@ -45,6 +45,8 @@ type Store interface {
 	GetNZB(key string) ([]byte, error)
 	PutNZB(key string, data []byte) error
 	Exists(key string) bool
+
+	Close() error
 }
 
 // Context hold the core environment and shared resources for GoNZB.
@@ -85,4 +87,11 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Indexer:           idxManager,
 		NZBStore:          store,
 	}, nil
+}
+
+func (ctx *Context) Close() {
+	ctx.Logger.Info("Shutting down store...")
+	if err := ctx.NZBStore.Close(); err != nil {
+		ctx.Logger.Error("Error closing store: %v", err)
+	}
 }

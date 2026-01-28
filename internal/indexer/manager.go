@@ -100,6 +100,10 @@ func (m *BaseManager) FetchNZB(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	// Cache file to disk
 	_ = m.store.PutNZB(id, data)
 

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/api"
 	"github.com/datallboy/gonzb/internal/app"
@@ -93,7 +95,6 @@ func executeServer() {
 	if err != nil {
 		log.Fatalf("Fatal: Could not initialize logger %v\n", err)
 	}
-	appLogger.Info("GONZB starting up...")
 
 	if cfg.Log.Level == "debug" {
 		appLogger.Debug("Debug logging enabled")
@@ -102,16 +103,32 @@ func executeServer() {
 	// Initialize app context
 	appCtx, err := app.NewContext(cfg, appLogger)
 	if err != nil {
-		log.Fatalf("Failed to initialize application context %v\n", err)
+		appLogger.Fatal("Failed to initialize application context %v", err)
 	}
 
 	// Register routes via the router
 	api.RegisterRoutes(e, appCtx)
 
-	if err := e.Start(":8080"); err != nil {
-		e.Logger.Error("failed to start server", "error", err)
+	// Create a "Global" context that we can cancel to trigger shutdown
+	// This context manages the entire application lifecycle
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	sc := echo.StartConfig{
+		Address:         cfg.Port,
+		GracefulTimeout: 10 * time.Second,
 	}
 
+	appLogger.Info("GoNZB starting up on port %s", cfg.Port)
+
+	if err := sc.Start(ctx, e); err != nil && err != http.ErrServerClosed {
+		appLogger.Error("failed to start server %v", err)
+	}
+
+	appLogger.Info("Server stopped. Finalizing store...")
+	appCtx.Close()
+
+	appLogger.Info("GoNZB shutdown gracefully")
 }
 
 func executeDownload() {
