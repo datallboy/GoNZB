@@ -10,9 +10,12 @@ import (
 )
 
 type Config struct {
-	Servers  []ServerConfig `mapstructure:"servers" yaml:"servers"`
-	Download DownloadConfig `mapstructure:"download" yaml:"download"`
-	Log      LogConfig      `mapstructure:"log" yaml:"log"`
+	Servers  []ServerConfig  `mapstructure:"servers" yaml:"servers"`
+	Indexers []IndexerConfig `mapstructure:"indexers" yaml:"indexers"`
+	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
+	Log      LogConfig       `mapstructure:"log" yaml:"log"`
+
+	RedirectDownloads bool `mapstructure:"redirect_downloads" yaml:"redirect_downloads"`
 }
 
 type ServerConfig struct {
@@ -24,6 +27,12 @@ type ServerConfig struct {
 	TLS           bool   `mapstructure:"tls" yaml:"tls"`
 	MaxConnection int    `mapstructure:"max_connections" yaml:"max_connections"`
 	Priority      int    `mapstructure:"priority" yaml:"priority"`
+}
+
+type IndexerConfig struct {
+	ID      string `mapstructure:"id" yaml:"id"`
+	BaseUrl string `mapstructure:"base_url" yaml:"base_url"`
+	ApiKey  string `mapstructure:"api_key" yaml:"api_key"`
 }
 
 type DownloadConfig struct {
