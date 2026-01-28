@@ -108,3 +108,7 @@ func (s *PersistentStore) Exists(id string) bool {
 	_, err := os.Stat(filepath.Join(s.blobDir, id+".nzb"))
 	return err == nil
 }
+
+func (s *PersistentStore) Close() error {
+	return s.db.Close()
+}

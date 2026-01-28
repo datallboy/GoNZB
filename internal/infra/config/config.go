@@ -15,6 +15,8 @@ type Config struct {
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
+
+	Port string `mapstructure:"port" yaml:"port"`
 }
 
 type ServerConfig struct {
@@ -76,6 +78,7 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 
 	// Set Defaults
+	v.SetDefault("port", ":8080")
 	v.SetDefault("download.out_dir", "./downloads")
 	v.SetDefault("download.completed_dir", "./downloads/completed")
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
