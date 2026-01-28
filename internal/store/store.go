@@ -50,6 +50,7 @@ func NewPersistentStore(dbPath, blobDir string) (*PersistentStore, error) {
 		download_url TEXT,
 		size INTEGER,
 		category TEXT,
+		redirect_allowed INTEGER, -- 0 for false, 1 for true
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
 	if _, err := db.Exec(schema); err != nil {
@@ -71,14 +72,14 @@ func (s *PersistentStore) SaveReleases(ctx context.Context, results []indexer.Se
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO releases (id, title, source, download_url, size, category) VALUES (?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO releases (id, title, source, download_url, size, category, redirect_allowed) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, r := range results {
-		_, err := stmt.ExecContext(ctx, r.ID, r.Title, r.Source, r.DownloadURL, r.Size, r.Category)
+		_, err := stmt.ExecContext(ctx, r.ID, r.Title, r.Source, r.DownloadURL, r.Size, r.Category, r.RedirectAllowed)
 		if err != nil {
 			return fmt.Errorf("failed to insert release %s: %w", r.ID, err)
 		}
@@ -89,7 +90,7 @@ func (s *PersistentStore) SaveReleases(ctx context.Context, results []indexer.Se
 
 func (s *PersistentStore) GetRelease(ctx context.Context, id string) (indexer.SearchResult, error) {
 	var r indexer.SearchResult
-	err := s.db.QueryRowContext(ctx, "SELECT id, title, source, download_url, size FROM releases WHERE id = ?", id).
+	err := s.db.QueryRowContext(ctx, "SELECT id, title, source, download_url, size, category, redirect_allowed FROM releases WHERE id = ?", id).
 		Scan(&r.ID, &r.Title, &r.Source, &r.DownloadURL, &r.Size)
 	return r, err
 }

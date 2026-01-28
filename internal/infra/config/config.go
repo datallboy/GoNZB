@@ -15,8 +15,6 @@ type Config struct {
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
-
-	RedirectDownloads bool `mapstructure:"redirect_downloads" yaml:"redirect_downloads"`
 }
 
 type ServerConfig struct {
@@ -31,9 +29,10 @@ type ServerConfig struct {
 }
 
 type IndexerConfig struct {
-	ID      string `mapstructure:"id" yaml:"id"`
-	BaseUrl string `mapstructure:"base_url" yaml:"base_url"`
-	ApiKey  string `mapstructure:"api_key" yaml:"api_key"`
+	ID       string `mapstructure:"id" yaml:"id"`
+	BaseUrl  string `mapstructure:"base_url" yaml:"base_url"`
+	ApiKey   string `mapstructure:"api_key" yaml:"api_key"`
+	Redirect bool   `mapstructure:"redirect" yaml:"redirect"`
 }
 
 type DownloadConfig struct {

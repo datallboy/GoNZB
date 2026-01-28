@@ -11,13 +11,19 @@ import (
 )
 
 type Client struct {
-	BaseURL string
-	APIKey  string
-	name    string
+	BaseURL         string
+	APIKey          string
+	name            string
+	redirectAllowed bool
 }
 
-func New(name, baseURL, apiKey string) *Client {
-	return &Client{name: name, BaseURL: baseURL, APIKey: apiKey}
+func New(name, baseURL, apiKey string, redirect bool) *Client {
+	return &Client{
+		name:            name,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		redirectAllowed: redirect,
+	}
 }
 
 func (c *Client) Name() string { return c.name }
@@ -47,7 +53,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResu
 	results := make([]indexer.SearchResult, 0, len(rss.Channel.Items))
 	for _, item := range rss.Channel.Items {
 		res := item.ToSearchResult(c.name)
-
+		res.RedirectAllowed = c.redirectAllowed
 		results = append(results, res)
 	}
 	return results, nil

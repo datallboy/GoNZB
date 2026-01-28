@@ -94,13 +94,13 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 		return c.String(http.StatusBadRequest, "Missing ID")
 	}
 
-	// Handle redirect mode
-	if ctrl.App.Config.RedirectDownloads {
-		res, err := ctrl.App.Indexer.GetResultByID(c.Request().Context(), id)
-		if err != nil {
-			return c.String(http.StatusNotFound, "NZB not found in database")
-		}
+	res, err := ctrl.App.Indexer.GetResultByID(c.Request().Context(), id)
+	if err != nil {
+		return c.String(http.StatusNotFound, "NZB not found in database")
+	}
 
+	// Handle redirect mode
+	if res.RedirectAllowed {
 		// Send the user directly to NNTmux/Indexer
 		return c.Redirect(http.StatusFound, res.DownloadURL)
 	}
