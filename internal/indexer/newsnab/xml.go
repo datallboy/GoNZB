@@ -10,18 +10,31 @@ import (
 
 type RSSResponse struct {
 	XMLName xml.Name `xml:"rss"`
+	Version string   `xml:"version,attr"`
+	NS      string   `xml:"xmlns:newznab,attr"`
 	Channel Channel  `xml:"channel"`
 }
 
 type Channel struct {
-	Items []Item `xml:"item"`
+	Title       string       `xml:"title"`
+	Description string       `xml:"description"`
+	Link        string       `xml:"link"`
+	Items       []Item       `xml:"item"`
+	Response    ResponseInfo `xml:"newznab:response"`
+}
+
+type ResponseInfo struct {
+	Offset int `xml:"offset,attr"`
+	Total  int `xml:"total,attr"`
 }
 
 type Item struct {
 	Title      string      `xml:"title"`
+	GUID       GUID        `xml:"guid"`
 	Link       string      `xml:"link"`
-	GUID       string      `xml:"guid"`
 	PubDate    string      `xml:"pubDate"`
+	Category   string      `xml:"category"`
+	Enclosure  Enclosure   `xml:"enclosure"`
 	Attributes []Attribute `xml:"attr"`
 }
 
@@ -59,7 +72,7 @@ func (i Item) getPubishDate() time.Time {
 func (i Item) ToSearchResult(sourceName string) indexer.SearchResult {
 	res := indexer.SearchResult{
 		Title:       i.Title,
-		GUID:        i.GUID,
+		GUID:        i.GUID.Value,
 		DownloadURL: i.Link,
 		Size:        i.getSize(),
 		Source:      sourceName,
@@ -70,7 +83,18 @@ func (i Item) ToSearchResult(sourceName string) indexer.SearchResult {
 	return res
 }
 
+type Enclosure struct {
+	URL    string `xml:"url,attr"`
+	Length int64  `xml:"length,attr"`
+	Type   string `xml:"type,attr"`
+}
+
 type Attribute struct {
 	Name  string `xml:"name,attr"`
 	Value string `xml:"value,attr"`
+}
+
+type GUID struct {
+	Value       string `xml:",chardata"`
+	IsPermaLink bool   `xml:"isPermaLink,attr"`
 }

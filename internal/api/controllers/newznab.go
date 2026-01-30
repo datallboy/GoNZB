@@ -3,8 +3,11 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/indexer"
+	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/labstack/echo/v5"
 )
 
@@ -32,10 +35,35 @@ func (ctrl *NewznabController) Handle(c *echo.Context) error {
 func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 	// Prowlarr/Sonarr need this to know what categories you support
 	caps := NewznabCaps{
-		Server: ServerInfo{Version: "0.5", Title: "GoNZB"},
-		Categories: []Category{
-			{ID: 5000, Name: "TV", SubCats: []SubCat{{ID: 5040, Name: "TV/HD"}}},
-			{ID: 2000, Name: "Movies", SubCats: []SubCat{{ID: 2040, Name: "Movies/HD"}}},
+		Server: ServerInfo{
+			Version: "0.5",
+			Title:   "GoNZB",
+		},
+		Limits: Limits{
+			Max: 100,
+		},
+		Retention: Retention{
+			Days: 5000,
+		},
+		Categories: []CapCategory{
+			{
+				ID:   2000,
+				Name: "Movies",
+				SubCats: []CapSubCat{
+					{ID: 2030, Name: nzb.GetCategoryName("2030")},
+					{ID: 2040, Name: nzb.GetCategoryName("2040")},
+					{ID: 2045, Name: nzb.GetCategoryName("2045")},
+				},
+			},
+			{
+				ID:   5000,
+				Name: "TV",
+				SubCats: []CapSubCat{
+					{ID: 5030, Name: nzb.GetCategoryName("5030")},
+					{ID: 5040, Name: nzb.GetCategoryName("5040")},
+					{ID: 5045, Name: nzb.GetCategoryName("5045")},
+				},
+			},
 		},
 	}
 	return c.XML(http.StatusOK, caps)
@@ -50,37 +78,10 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 		return c.XML(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	baseURL := fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host)
+	baseAddr := fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host)
 
-	rss := NewznabRSS{
-		Version: "2.0",
-		Channel: Channel{
-			Title:       "GoNZB Search Results",
-			Description: "Aggregated NZB Search",
-			Items:       make([]RSSItem, 0),
-		},
-	}
-
-	for _, r := range results {
-		// GUID: Stays as the unqiue identifier for the release
-		// Link/Enclosure: Point to OUR proxy endpoint
-		localDownloadURL := fmt.Sprintf("%s/nzb/%s", baseURL, r.ID)
-
-		rss.Channel.Items = append(rss.Channel.Items, RSSItem{
-			Title:    r.Title,
-			GUID:     r.ID,
-			Link:     localDownloadURL,
-			Category: r.Category,
-			PubDate:  r.PublishDate.Format(http.TimeFormat),
-			Enclosure: Enclosure{
-				URL:    localDownloadURL,
-				Type:   "application/x-nzb",
-				Length: r.Size,
-			},
-		})
-	}
-
-	return c.XML(http.StatusOK, rss)
+	rssResp := buildRSSResponse(results, baseAddr)
+	return c.XML(http.StatusOK, rssResp)
 }
 
 // handleDownload serves the actual NZB file from cache or source
@@ -113,4 +114,49 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 
 	c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s.nzb", id))
 	return c.Blob(http.StatusOK, "application/x-nzb", data)
+}
+
+// buildRSSResponse maps internal SearchResults to the outgoing Newznab XML format
+func buildRSSResponse(results []indexer.SearchResult, baseAddr string) NewznabRSS {
+	items := make([]RSSItem, 0, len(results))
+
+	for _, res := range results {
+		downloadURL := fmt.Sprintf("%s/api?t=get&id=%s", baseAddr, res.ID)
+
+		items = append(items, RSSItem{
+			Title: res.Title,
+			GUID: RSSGUID{
+				Value:       res.ID,
+				IsPermaLink: false,
+			},
+			Link:     downloadURL,
+			Category: nzb.GetCategoryName(res.Category),
+			PubDate:  res.PublishDate.Format(time.RFC1123Z),
+			Enclosure: Enclosure{
+				URL:    downloadURL,
+				Length: res.Size,
+				Type:   "application/x-nzb",
+			},
+			Attributes: []Attr{
+				{Name: "category", Value: res.Category},
+				{Name: "size", Value: fmt.Sprintf("%d", res.Size)},
+				{Name: "guid", Value: res.ID},
+			},
+		})
+	}
+
+	return NewznabRSS{
+		Version: "2.0",
+		NS:      "http://www.newznab.com/DTD/2010/feeds/attributes/",
+		Channel: Channel{
+			Title:       "GoNZB",
+			Description: "GoNZB Aggregated Feed",
+			Link:        baseAddr,
+			Items:       items,
+			Response: Response{
+				Offset: 0,
+				Total:  len(items),
+			},
+		},
+	}
 }
