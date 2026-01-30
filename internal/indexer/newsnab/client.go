@@ -59,11 +59,14 @@ func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResu
 	return results, nil
 }
 
-func (c *Client) DownloadNZB(ctx context.Context, res indexer.SearchResult) ([]byte, error) {
+func (c *Client) DownloadNZB(ctx context.Context, res indexer.SearchResult) (io.ReadCloser, error) {
 	// Newznab uses t=getnzb and the id (guid) to fetch the file
 	u := fmt.Sprintf("%s&apikey=%s", res.DownloadURL, c.APIKey)
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+
+	req.Header.Set("User-Agent", "GoNZB/1.0")
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -74,5 +77,5 @@ func (c *Client) DownloadNZB(ctx context.Context, res indexer.SearchResult) ([]b
 		return nil, fmt.Errorf("indexer returned status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	return resp.Body, nil
 }

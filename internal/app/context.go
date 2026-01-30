@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store"
+	"github.com/labstack/echo/v5"
 )
 
 type NNTPManager interface {
@@ -22,7 +23,7 @@ type NNTPManager interface {
 // Manager defines the contract for our NZB search and download engine.
 type IndexerManager interface {
 	SearchAll(ctx context.Context, query string) ([]indexer.SearchResult, error)
-	FetchNZB(ctx context.Context, id string) ([]byte, error)
+	FetchNZB(ctx context.Context, id string, c *echo.Context) error
 	GetResultByID(ctx context.Context, id string) (indexer.SearchResult, error)
 }
 
@@ -42,8 +43,8 @@ type Store interface {
 	GetRelease(ctx context.Context, id string) (indexer.SearchResult, error)
 
 	// Blobs: File System
-	GetNZB(key string) ([]byte, error)
-	PutNZB(key string, data []byte) error
+	GetNZBReader(key string) (io.ReadCloser, error)
+	CreateNZBWriter(key string) (io.WriteCloser, error)
 	Exists(key string) bool
 
 	Close() error

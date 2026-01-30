@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
+	"io"
 	"time"
 )
 
@@ -24,7 +25,7 @@ type SearchResult struct {
 type Indexer interface {
 	Name() string
 	Search(ctx context.Context, query string) ([]SearchResult, error)
-	DownloadNZB(ctx context.Context, res SearchResult) ([]byte, error)
+	DownloadNZB(ctx context.Context, res SearchResult) (io.ReadCloser, error)
 }
 
 func (r *SearchResult) SetCompositeID() {
