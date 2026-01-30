@@ -91,7 +91,7 @@ func (s *PersistentStore) SaveReleases(ctx context.Context, results []indexer.Se
 func (s *PersistentStore) GetRelease(ctx context.Context, id string) (indexer.SearchResult, error) {
 	var r indexer.SearchResult
 	err := s.db.QueryRowContext(ctx, "SELECT id, title, source, download_url, size, category, redirect_allowed FROM releases WHERE id = ?", id).
-		Scan(&r.ID, &r.Title, &r.Source, &r.DownloadURL, &r.Size)
+		Scan(&r.ID, &r.Title, &r.Source, &r.DownloadURL, &r.Size, &r.Category, &r.RedirectAllowed)
 	return r, err
 }
 
