@@ -107,13 +107,8 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 	}
 
 	// Handle proxy mode
-	data, err := ctrl.App.Indexer.FetchNZB(c.Request().Context(), id)
-	if err != nil {
-		return c.String(http.StatusNotFound, "File not found")
-	}
-
 	c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s.nzb", id))
-	return c.Blob(http.StatusOK, "application/x-nzb", data)
+	return ctrl.App.Indexer.FetchNZB(c.Request().Context(), id, c)
 }
 
 // buildRSSResponse maps internal SearchResults to the outgoing Newznab XML format

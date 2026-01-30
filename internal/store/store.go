@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -95,13 +96,12 @@ func (s *PersistentStore) GetRelease(ctx context.Context, id string) (indexer.Se
 	return r, err
 }
 
-func (s *PersistentStore) GetNZB(id string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(s.blobDir, id+".nzb"))
+func (s *PersistentStore) GetNZBReader(id string) (io.ReadCloser, error) {
+	return os.Open(filepath.Join(s.blobDir, id+".nzb"))
 }
 
-func (s *PersistentStore) PutNZB(id string, data []byte) error {
-	_ = os.MkdirAll(s.blobDir, 0755)
-	return os.WriteFile(filepath.Join(s.blobDir, id+".nzb"), data, 0644)
+func (s *PersistentStore) CreateNZBWriter(id string) (io.WriteCloser, error) {
+	return os.Create(filepath.Join(s.blobDir, id+".nzb"))
 }
 
 func (s *PersistentStore) Exists(id string) bool {

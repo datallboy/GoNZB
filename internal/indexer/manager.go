@@ -2,15 +2,18 @@ package indexer
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"net/http"
 	"sync"
+
+	"github.com/labstack/echo/v5"
 )
 
 type store interface {
 	SaveReleases(ctx context.Context, results []SearchResult) error
 	GetRelease(ctx context.Context, id string) (SearchResult, error)
-	GetNZB(id string) ([]byte, error)
-	PutNZB(id string, data []byte) error
+	GetNZBReader(id string) (io.ReadCloser, error)
+	CreateNZBWriter(id string) (io.WriteCloser, error)
 	Exists(id string) bool
 }
 
@@ -73,16 +76,21 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResu
 }
 
 // FetchNZB handles retrieving nzb from cache or downloading from an indexer
-func (m *BaseManager) FetchNZB(ctx context.Context, id string) ([]byte, error) {
+func (m *BaseManager) FetchNZB(ctx context.Context, id string, c *echo.Context) error {
 	// Check the file store
 	if m.store.Exists(id) {
-		return m.store.GetNZB(id)
+		data, err := m.store.GetNZBReader(id)
+		if err != nil {
+			return err
+		}
+		defer data.Close()
+		return c.Stream(http.StatusOK, "application/x-nzb", data)
 	}
 
 	// Not on disk? Looks where to download it from in SQLite
 	res, err := m.store.GetRelease(ctx, id)
 	if err != nil {
-		return nil, err
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get release from cache")
 	}
 
 	// Find the indexer that provided this result.
@@ -91,23 +99,30 @@ func (m *BaseManager) FetchNZB(ctx context.Context, id string) ([]byte, error) {
 	m.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("indexer not available: %s", res.Source)
+		return echo.NewHTTPError(http.StatusInternalServerError, "Indexer not found")
 	}
 
 	// This calls either the raw DownloadNZB or the Cached one!
 	data, err := idx.DownloadNZB(ctx, res)
 	if err != nil {
-		return nil, err
+		return echo.NewHTTPError(http.StatusInternalServerError, "Indexer download failed")
 	}
-
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
+	defer data.Close()
 
 	// Cache file to disk
-	_ = m.store.PutNZB(id, data)
+	cacheFile, err := m.store.CreateNZBWriter(id)
+	if err != nil {
+		// If we can't create cache, just stream it from the web anyway
+		return c.Stream(http.StatusOK, "application/x-nzb", data)
+	}
 
-	return data, nil
+	// Read from 'body', write to 'cacheFile', then pass through to 'w' (the HTTP response)
+	tee := io.TeeReader(data, cacheFile)
+
+	err = c.Stream(http.StatusOK, "application/x-nzb", tee)
+
+	cacheFile.Close()
+	return err
 }
 
 // GetResultByID looks up a search result in the manager's memory
