@@ -5,29 +5,25 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
-	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/processor"
 
 	"github.com/datallboy/gonzb/internal/nntp"
 )
 
-type Service struct {
+// Downloader is the concrete implementation of the download engine.
+type Downloader struct {
 	ctx       *app.Context
 	nntp      *nntp.Manager
 	processor *processor.Processor
 	writer    *FileWriter
-
-	// Progress tracking state
-	bytesWritten uint64
-	totalBytes   uint64
 }
 
-func NewService(ctx *app.Context, writer *FileWriter) *Service {
-	return &Service{
+func NewDownloader(ctx *app.Context, writer *FileWriter) *Downloader {
+	return &Downloader{
 		ctx:       ctx,
 		nntp:      ctx.NNTP.(*nntp.Manager),
 		processor: ctx.Processor.(*processor.Processor),
@@ -35,7 +31,8 @@ func NewService(ctx *app.Context, writer *FileWriter) *Service {
 	}
 }
 
-func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename string) error {
+// Download processes a QueueItem from start to finish
+func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error {
 	defer s.writer.CloseAll()
 
 	if err := os.MkdirAll(s.ctx.Config.Download.OutDir, 0755); err != nil {
@@ -43,7 +40,7 @@ func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename stri
 	}
 
 	// PREPARE: Sanitize names and pre-allocate .part files
-	tasks, err := s.processor.Prepare(nzb, nzbFilename)
+	tasks, err := s.processor.Prepare(item.NZBModel, item.Name)
 	if err != nil {
 		return err
 	}
@@ -53,31 +50,21 @@ func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename stri
 		return nil
 	}
 
+	item.Tasks = tasks
+
 	// Reset counters for new job
-	s.bytesWritten = 0
-	s.totalBytes = 0
+	item.BytesWritten.Store(0)
+	var totalSize uint64
 	for _, t := range tasks {
-		s.totalBytes += uint64(t.Size)
+		totalSize += uint64(t.Size)
 	}
+	item.TotalBytes = totalSize
 
-	if len(tasks) == 0 {
-		s.ctx.Logger.Info("All files are already present. No downloaded needed.")
-		return nil
-	}
+	s.ctx.Logger.Info("Starting download for: %s (%d MB)", item.Name, item.TotalBytes/1024/1024)
 
-	s.ctx.Logger.Info("Starting download...")
+	item.StartedAt = time.Now()
 
-	startTime := time.Now()
-	monitorCtx, cancel := context.WithCancel(ctx)
-	fmt.Print("\n\n")
-	go s.startUI(monitorCtx, startTime)
-
-	err = s.runWorkerPool(ctx, tasks)
-
-	cancel() // Stop the UI when workers are done
-	s.renderUI(0, startTime, true)
-	fmt.Print("\n\n") // Print newline after the progress bar finishes
-
+	err = s.runWorkerPool(ctx, item)
 	if err != nil {
 		s.writer.CloseAll()
 		return err
@@ -89,6 +76,8 @@ func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename stri
 	}
 
 	// Post Process: PAR2 verify, repair, unrar if needed
+	// Update status to 'processing' so the WebUI shows we are working on the disk
+	item.Status = domain.StatusProcessing
 	if err := s.processor.PostProcess(ctx, tasks); err != nil {
 		// Download is "done" but failed repair/verify
 		// TODO: decide if should return an error or consider the file "good enough"
@@ -98,7 +87,7 @@ func (s *Service) Download(ctx context.Context, nzb *nzb.Model, nzbFilename stri
 	return nil
 }
 
-func (s *Service) startUI(ctx context.Context, startTime time.Time) {
+func (s *Downloader) StartCLIProgress(ctx context.Context, item *domain.QueueItem) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -107,29 +96,29 @@ func (s *Service) startUI(ctx context.Context, startTime time.Time) {
 	for {
 		select {
 		case <-ticker.C:
-			current := atomic.LoadUint64(&s.bytesWritten)
+			current := item.BytesWritten.Load()
 			delta := current - lastBytes
 			lastBytes = current
 
 			// Calculate instantaneous speed
 			speedMbps := float64(delta) * 8 / (1024 * 1024)
 
-			s.renderUI(speedMbps, startTime, false)
+			s.renderCLIProgress(item, speedMbps, false)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (s *Service) renderUI(speedMbps float64, startTime time.Time, final bool) {
-	current := atomic.LoadUint64(&s.bytesWritten)
-	total := s.totalBytes
+func (s *Downloader) renderCLIProgress(item *domain.QueueItem, speedMbps float64, final bool) {
+	current := item.BytesWritten.Load()
+	total := item.TotalBytes
 	if total == 0 {
 		return
 	}
 
 	// Average Speed & ETA
-	elapsed := time.Since(startTime)
+	elapsed := time.Since(item.StartedAt)
 	percent := float64(current) / float64(total) * 100
 
 	displaySpeed := speedMbps
@@ -179,8 +168,4 @@ func (s *Service) renderUI(speedMbps float64, startTime time.Time, final bool) {
 
 	fmt.Printf("\r[%s] %5.1f%% | %s: %6.2f Mbps | %s: %-7s | %d/%d MB      ",
 		bar, percent, speedLabel, displaySpeed, timeLabel, etaStr, current/1024/1024, total/1024/1024)
-}
-
-func (s *Service) reportProgress(n int) {
-	atomic.AddUint64(&s.bytesWritten, uint64(n))
 }

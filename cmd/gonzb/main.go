@@ -14,6 +14,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/api"
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/infra/platform"
@@ -106,13 +107,30 @@ func executeServer() {
 		appLogger.Fatal("Failed to initialize application context %v", err)
 	}
 
-	// Register routes via the router
-	api.RegisterRoutes(e, appCtx)
+	// Initialize shared writer
+	writer := engine.NewFileWriter()
+
+	// Initialize the Manager (The provider load balancer)
+	appCtx.NNTP, err = nntp.NewManager(appCtx)
+	if err != nil {
+		appLogger.Fatal("Provider initializiation failed: %v", err)
+	}
+
+	appCtx.Processor = processor.New(appCtx, writer)
+
+	appCtx.Downloader = engine.NewDownloader(appCtx, writer)
+	appCtx.Queue = engine.NewQueueManager(appCtx.Downloader)
 
 	// Create a "Global" context that we can cancel to trigger shutdown
 	// This context manages the entire application lifecycle
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start background worker for the queue
+	go appCtx.Queue.Start(ctx)
+
+	// Register routes via the router
+	api.RegisterRoutes(e, appCtx)
 
 	sc := echo.StartConfig{
 		Address:         ":" + cfg.Port,
@@ -180,10 +198,27 @@ func executeDownload() {
 	defer stop()
 
 	// Initialize the Downloader Service
-	svc := engine.NewService(appCtx, writer)
+	downloader := engine.NewDownloader(appCtx, writer)
+	appCtx.Downloader = downloader
 	filename := filepath.Base(nzbPath)
 
-	if err := svc.Download(ctx, nzbDomain, filename); err != nil {
+	item := &domain.QueueItem{
+		ID:       "cli-job",
+		Name:     filename,
+		Status:   domain.StatusDownloading,
+		NZBModel: nzbDomain,
+	}
+
+	uiCtx, cancelUI := context.WithCancel(ctx)
+	fmt.Print("\n\n")
+	go downloader.StartCLIProgress(uiCtx, item)
+
+	err = appCtx.Downloader.Download(ctx, item)
+
+	cancelUI()
+	fmt.Print("\n\n")
+
+	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			appLogger.Info("Download cancelled by user.")
 			return

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/indexer"
 	"github.com/datallboy/gonzb/internal/indexer/newsnab"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -34,6 +35,20 @@ type Processor interface {
 	PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) error
 }
 
+type Downloader interface {
+	// The engine's ability to process a specific item
+	Download(ctx context.Context, item *domain.QueueItem) error
+}
+
+type QueueManager interface {
+	Start(ctx context.Context)
+	Add(nzbModel *nzb.Model, filename string) (*domain.QueueItem, error)
+	GetActiveItem() *domain.QueueItem
+	GetItem(id string) (*domain.QueueItem, bool)
+	GetAllItems() []*domain.QueueItem
+	Cancel(id string) bool
+}
+
 // Store defines the contract for NZB storage.
 // Allows to use a simple directory FileCache, or Redis / DB / S3 for NZB storage in the future.
 // Should be StoreManager similar to others, but we'll just use FileCache and keep it simple for now.
@@ -57,10 +72,12 @@ type Context struct {
 	Logger *logger.Logger
 
 	// High-level interfaces for services to use
-	NNTP      NNTPManager
-	Indexer   IndexerManager
-	Processor Processor
-	NZBStore  Store
+	NNTP       NNTPManager
+	Indexer    IndexerManager
+	Processor  Processor
+	Downloader Downloader
+	Queue      QueueManager
+	NZBStore   Store
 
 	ExtractionEnabled bool
 }

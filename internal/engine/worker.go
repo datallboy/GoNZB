@@ -9,14 +9,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 // runWorkerPool orchestrates the lifecycle of the download process.
-func (s *Service) runWorkerPool(ctx context.Context, tasks []*nzb.DownloadFile) error {
+func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) error {
 	totalSegments := 0
-	for _, f := range tasks {
+	for _, f := range item.Tasks {
 		totalSegments += len(f.Segments)
 	}
 
@@ -36,16 +37,22 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*nzb.DownloadFile) 
 
 	// Start the Workers
 	var wg sync.WaitGroup
+
+	defer func() {
+		close(jobs)
+		wg.Wait()
+	}()
+
 	for w := 1; w <= workerCount; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			s.worker(ctx, jobs, results)
+			s.worker(ctx, item, jobs, results)
 		}(w)
 	}
 
 	// Dispatch Jobs
-	go s.dispatchJobs(tasks, jobs)
+	go s.dispatchJobs(ctx, item.Tasks, jobs)
 
 	// Collect Results
 	completedCount := 0
@@ -76,7 +83,12 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*nzb.DownloadFile) 
 
 					// Use a timer to re-queue the job so we don't block this loop
 					time.AfterFunc(delay, func() {
-						jobs <- res.Job
+						select {
+						case <-ctx.Done():
+							return
+						case jobs <- res.Job:
+						}
+
 					})
 
 					continue // Do not count as completed yet
@@ -88,26 +100,28 @@ func (s *Service) runWorkerPool(ctx context.Context, tasks []*nzb.DownloadFile) 
 			completedCount++
 		}
 	}
-	close(jobs)
-	wg.Wait()
+
 	return finalErr
 }
 
 // worker pulls jobs from the channel and executes them until channel is closed
-func (s *Service) worker(ctx context.Context, jobs <-chan DownloadJob, results chan<- DownloadResult) {
-	for job := range jobs {
+func (s *Downloader) worker(ctx context.Context, item *domain.QueueItem, jobs <-chan DownloadJob, results chan<- DownloadResult) {
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			err := s.processSegment(ctx, job)
+		case job, ok := <-jobs:
+			if !ok {
+				return
+			}
+			err := s.processSegment(ctx, item, job)
 			results <- DownloadResult{Job: job, Error: err}
 		}
 	}
 }
 
 // processSegment handles the unique pipleine for a single Usenet article
-func (s *Service) processSegment(ctx context.Context, job DownloadJob) error {
+func (s *Downloader) processSegment(ctx context.Context, item *domain.QueueItem, job DownloadJob) error {
 	// Fetch from the Manager (handles priorities, auth, and connections)
 	rawReader, err := s.ctx.NNTP.Fetch(ctx, job.Segment.MessageID, job.Groups)
 	if err != nil {
@@ -162,16 +176,16 @@ func (s *Service) processSegment(ctx context.Context, job DownloadJob) error {
 		if err != nil {
 			return fmt.Errorf("write error %w", err)
 		}
-	}
 
-	// Update progress bar / cli UI
-	s.reportProgress(n)
+		// Update progress
+		item.BytesWritten.Add(uint64(n))
+	}
 
 	return nil
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.
-func (s *Service) dispatchJobs(tasks []*nzb.DownloadFile, jobs chan<- DownloadJob) {
+func (s *Downloader) dispatchJobs(ctx context.Context, tasks []*nzb.DownloadFile, jobs chan<- DownloadJob) {
 	for _, task := range tasks {
 		var currentOffset int64 = 0
 
@@ -181,14 +195,20 @@ func (s *Service) dispatchJobs(tasks []*nzb.DownloadFile, jobs chan<- DownloadJo
 		}
 
 		for _, seg := range task.Segments {
-			jobs <- DownloadJob{
+			select {
+			case <-ctx.Done():
+				return // stop dispatching if job is cancelled
+			case jobs <- DownloadJob{
 				Segment:    seg,
 				File:       task,
 				Groups:     groups,
 				Offset:     currentOffset,
 				RetryCount: 0,
+			}:
+				currentOffset += seg.Bytes
+
 			}
-			currentOffset += seg.Bytes
+
 		}
 	}
 }
