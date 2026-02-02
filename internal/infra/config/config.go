@@ -10,9 +10,13 @@ import (
 )
 
 type Config struct {
-	Servers  []ServerConfig `mapstructure:"servers" yaml:"servers"`
-	Download DownloadConfig `mapstructure:"download" yaml:"download"`
-	Log      LogConfig      `mapstructure:"log" yaml:"log"`
+	Servers  []ServerConfig  `mapstructure:"servers" yaml:"servers"`
+	Indexers []IndexerConfig `mapstructure:"indexers" yaml:"indexers"`
+	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
+	Log      LogConfig       `mapstructure:"log" yaml:"log"`
+	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
+
+	Port string `mapstructure:"port" yaml:"port"`
 }
 
 type ServerConfig struct {
@@ -26,6 +30,13 @@ type ServerConfig struct {
 	Priority      int    `mapstructure:"priority" yaml:"priority"`
 }
 
+type IndexerConfig struct {
+	ID       string `mapstructure:"id" yaml:"id"`
+	BaseUrl  string `mapstructure:"base_url" yaml:"base_url"`
+	ApiKey   string `mapstructure:"api_key" yaml:"api_key"`
+	Redirect bool   `mapstructure:"redirect" yaml:"redirect"`
+}
+
 type DownloadConfig struct {
 	OutDir            string   `mapstructure:"out_dir" yaml:"out_dir"`
 	CompletedDir      string   `mapstructure:"completed_dir" yaml:"completed_dir"`
@@ -36,6 +47,11 @@ type LogConfig struct {
 	Path          string `mapstructure:"path" yaml:"path"`
 	Level         string `mapstructure:"level" yaml:"level"`
 	IncludeStdout bool   `mapstructure:"include_stdout" yaml:"include_stdout"`
+}
+
+type StoreConfig struct {
+	SQLitePath string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
+	BlobDir    string `mapstructure:"blob_dir" yaml:"blob_dir"`
 }
 
 func Load(path string) (*Config, error) {
@@ -62,6 +78,7 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 
 	// Set Defaults
+	v.SetDefault("port", "8080")
 	v.SetDefault("download.out_dir", "./downloads")
 	v.SetDefault("download.completed_dir", "./downloads/completed")
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
