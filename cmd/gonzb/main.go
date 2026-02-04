@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -119,7 +118,7 @@ func executeServer() {
 	appCtx.Processor = processor.New(appCtx, writer)
 
 	appCtx.Downloader = engine.NewDownloader(appCtx, writer)
-	appCtx.Queue = engine.NewQueueManager(appCtx.Downloader)
+	appCtx.Queue = engine.NewQueueManager(appCtx, true)
 
 	// Create a "Global" context that we can cancel to trigger shutdown
 	// This context manages the entire application lifecycle
@@ -200,36 +199,59 @@ func executeDownload() {
 	// Initialize the Downloader Service
 	downloader := engine.NewDownloader(appCtx, writer)
 	appCtx.Downloader = downloader
-	filename := filepath.Base(nzbPath)
+	appCtx.Queue = engine.NewQueueManager(appCtx, false)
 
-	item := &domain.QueueItem{
-		ID:       "cli-job",
-		Name:     filename,
-		Status:   domain.StatusDownloading,
-		NZBModel: nzbDomain,
+	// Start the background worker for queue
+	go appCtx.Queue.Start(ctx)
+
+	// Add to queue
+	filename := filepath.Base(nzbPath)
+	item, err := appCtx.Queue.Add(nzbDomain, filename)
+	if err != nil {
+		appLogger.Fatal("Failed to queue NZB: %v", err)
 	}
 
 	uiCtx, cancelUI := context.WithCancel(ctx)
+	defer cancelUI()
+
 	fmt.Print("\n\n")
 	go downloader.StartCLIProgress(uiCtx, item)
 
-	err = appCtx.Downloader.Download(ctx, item)
+	// Blocking wait loop for the CLI
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 
-	cancelUI()
-	fmt.Print("\n\n")
+	done := false
+	for !done {
+		select {
+		case <-ctx.Done():
+			// This triggers if the user hits Ctrl+C
+			fmt.Print("\n\n")
+			appLogger.Info("Cancellation received. Cleaning up...")
+			done = true
 
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			appLogger.Info("Download cancelled by user.")
-			return
-		} else {
-			appLogger.Error("Download failed: %v", err)
-			return
+		case <-ticker.C:
+			// Check if the manager has finished the job
+			itm, ok := appCtx.Queue.GetItem(item.ID)
+
+			if !ok {
+				appLogger.Error("Failed to find item from queue")
+				done = true
+			}
+
+			if ok && (itm.Status == domain.StatusCompleted || itm.Status == domain.StatusFailed) {
+				cancelUI() // Kill the progress bar
+				fmt.Print("\n\n")
+
+				if itm.Status == domain.StatusFailed {
+					appLogger.Error("Download failed")
+				} else {
+					appLogger.Info("Download completed successfully!")
+				}
+				done = true
+			}
 		}
 	}
-
-	appLogger.Info("Download completed successfully!")
-
 }
 
 func main() {

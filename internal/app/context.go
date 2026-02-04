@@ -57,6 +57,12 @@ type Store interface {
 	SaveReleases(ctx context.Context, results []indexer.SearchResult) error
 	GetRelease(ctx context.Context, id string) (indexer.SearchResult, error)
 
+	// Downloader Queue: SQLite
+	SaveQueueItem(item *domain.QueueItem) error
+	GetQueueItems() ([]*domain.QueueItem, error)
+	GetQueueItem(id string) (*domain.QueueItem, error)
+	GetActiveQueueItems() ([]*domain.QueueItem, error)
+
 	// Blobs: File System
 	GetNZBReader(key string) (io.ReadCloser, error)
 	CreateNZBWriter(key string) (io.WriteCloser, error)
@@ -77,7 +83,7 @@ type Context struct {
 	Processor  Processor
 	Downloader Downloader
 	Queue      QueueManager
-	NZBStore   Store
+	Store      Store
 
 	ExtractionEnabled bool
 }
@@ -103,13 +109,13 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Logger:            log,
 		ExtractionEnabled: true,
 		Indexer:           idxManager,
-		NZBStore:          store,
+		Store:             store,
 	}, nil
 }
 
 func (ctx *Context) Close() {
 	ctx.Logger.Info("Shutting down store...")
-	if err := ctx.NZBStore.Close(); err != nil {
+	if err := ctx.Store.Close(); err != nil {
 		ctx.Logger.Error("Error closing store: %v", err)
 	}
 }

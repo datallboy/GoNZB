@@ -48,6 +48,10 @@ func New(ctx *app.Context, w Closeable) *Processor {
 func (p *Processor) Prepare(nzbModel *nzb.Model, nzbFilename string) ([]*nzb.DownloadFile, error) {
 	var tasks []*nzb.DownloadFile
 
+	if err := os.MkdirAll(p.ctx.Config.Download.OutDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create out_dir: %w", err)
+	}
+
 	// Try Meta tag for password
 	password := nzbModel.GetPassword()
 

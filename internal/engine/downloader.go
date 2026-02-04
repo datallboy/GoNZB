@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -35,27 +34,10 @@ func NewDownloader(ctx *app.Context, writer *FileWriter) *Downloader {
 func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error {
 	defer s.writer.CloseAll()
 
-	if err := os.MkdirAll(s.ctx.Config.Download.OutDir, 0755); err != nil {
-		return fmt.Errorf("failed to create out_dir: %w", err)
-	}
-
-	// PREPARE: Sanitize names and pre-allocate .part files
-	tasks, err := s.processor.Prepare(item.NZBModel, item.Name)
-	if err != nil {
-		return err
-	}
-
-	if len(tasks) == 0 {
-		s.ctx.Logger.Info("All files are already present. No download needed.")
-		return nil
-	}
-
-	item.Tasks = tasks
-
 	// Reset counters for new job
 	item.BytesWritten.Store(0)
 	var totalSize uint64
-	for _, t := range tasks {
+	for _, t := range item.Tasks {
 		totalSize += uint64(t.Size)
 	}
 	item.TotalBytes = totalSize
@@ -64,24 +46,15 @@ func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error
 
 	item.StartedAt = time.Now()
 
-	err = s.runWorkerPool(ctx, item)
+	err := s.runWorkerPool(ctx, item)
 	if err != nil {
 		s.writer.CloseAll()
 		return err
 	}
 
 	// Finialize: Close handles and rename .part -> final
-	if err := s.processor.Finalize(ctx, tasks); err != nil {
+	if err := s.processor.Finalize(ctx, item.Tasks); err != nil {
 		return fmt.Errorf("post-processing failed: %w", err)
-	}
-
-	// Post Process: PAR2 verify, repair, unrar if needed
-	// Update status to 'processing' so the WebUI shows we are working on the disk
-	item.Status = domain.StatusProcessing
-	if err := s.processor.PostProcess(ctx, tasks); err != nil {
-		// Download is "done" but failed repair/verify
-		// TODO: decide if should return an error or consider the file "good enough"
-		s.ctx.Logger.Error("Post-processing failed: %v", err)
 	}
 
 	return nil
@@ -96,6 +69,10 @@ func (s *Downloader) StartCLIProgress(ctx context.Context, item *domain.QueueIte
 	for {
 		select {
 		case <-ticker.C:
+			if item.Status != domain.StatusDownloading {
+				return
+			}
+
 			current := item.BytesWritten.Load()
 			delta := current - lastBytes
 			lastBytes = current
