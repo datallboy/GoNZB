@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -14,25 +15,75 @@ import (
 type QueueManager struct {
 	mu         sync.RWMutex
 	downloader app.Downloader
+	processor  app.Processor
 	queue      []*domain.QueueItem
 	activeItem *domain.QueueItem
+	store      app.Store
 
 	newJobChan chan struct{}
 }
 
-func NewQueueManager(d app.Downloader) *QueueManager {
+// Initializes a QueueManager
+// Takes app.Context and loadExisting bool as parameters
+// if loadExisting is true, will load pending items from the database
+// if loadExisting is false, will skip the database lookup (for CLI mode)
+func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
+	var active []*domain.QueueItem
+	var err error
+
+	if loadExisting {
+		// Only get "active" queue items (not completed / failed)
+		active, err = app.Store.GetActiveQueueItems()
+		if err != nil {
+			active = make([]*domain.QueueItem, 0)
+		}
+	}
+
 	return &QueueManager{
-		downloader: d,
+		downloader: app.Downloader,
+		processor:  app.Processor,
+		queue:      active,
+		store:      app.Store,
+		newJobChan: make(chan struct{}, 1),
 	}
 }
 
 // Add creates a new domain.QueueItem and notifies the processor loop
 func (m *QueueManager) Add(nzbModel *nzb.Model, filename string) (*domain.QueueItem, error) {
+
+	// PREPARE: Sanitize names and pre-allocate .part files
+	tasks, err := m.processor.Prepare(nzbModel, filename)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("all files in this NZB already exist in the output directory")
+	}
+
+	// Calculate total size of all tasks and the password for extraction
+	var totalSize uint64
+	var password string
+	for _, t := range tasks {
+		totalSize += uint64(t.Size)
+
+		if password == "" && t.Password != "" {
+			password = t.Password
+		}
+	}
+
 	item := &domain.QueueItem{
-		ID:       ksuid.New().String(), // Simple UUID or timestamp
-		Name:     filename,
-		NZBModel: nzbModel,
-		Status:   domain.StatusPending,
+		ID:         ksuid.New().String(),
+		Name:       filename,
+		Password:   password,
+		Tasks:      tasks,
+		Status:     domain.StatusPending,
+		TotalBytes: totalSize,
+	}
+
+	// Save to database
+	if err := m.store.SaveQueueItem(item); err != nil {
+		return nil, fmt.Errorf("failed to save job to database: %w", err)
 	}
 
 	m.mu.Lock()
@@ -55,7 +106,13 @@ func (m *QueueManager) Start(ctx context.Context) {
 
 		m.mu.RLock()
 		for _, itm := range m.queue {
-			if itm.Status == domain.StatusPending {
+			if itm.Status == domain.StatusDownloading {
+				itm.Status = domain.StatusPending
+				next = itm
+				break
+			}
+
+			if itm.Status == domain.StatusPending || itm.Status == domain.StatusProcessing {
 				next = itm
 				break
 			}
@@ -73,32 +130,24 @@ func (m *QueueManager) Start(ctx context.Context) {
 
 		m.mu.Lock()
 		m.activeItem = next
-		next.Status = domain.StatusDownloading
-
 		jobCtx, cancel := context.WithCancel(ctx)
 		next.CancelFunc = cancel
 		m.mu.Unlock()
 
-		// Run the engine
-		err := m.downloader.Download(jobCtx, next)
+		var jobErr error
 
-		m.mu.Lock()
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				next.Status = domain.StatusFailed
-				next.Error = "Cancelled by user"
-			} else {
-				next.Status = domain.StatusFailed
-				next.Error = err.Error()
-			}
-		} else {
-			next.Status = domain.StatusCompleted
+		if next.Status == domain.StatusPending {
+			m.updateStatus(next, domain.StatusDownloading)
+			jobErr = m.downloader.Download(jobCtx, next)
 		}
-		m.activeItem = nil
-		if next.CancelFunc != nil {
-			next.CancelFunc()
+
+		if jobErr == nil && !isCancelled(jobCtx) {
+			m.updateStatus(next, domain.StatusProcessing)
+			jobErr = m.processor.PostProcess(jobCtx, next.Tasks)
 		}
-		m.mu.Unlock()
+
+		m.finalizeJob(next, jobErr)
+		cancel()
 	}
 }
 
@@ -115,10 +164,17 @@ func (m *QueueManager) GetItem(id string) (*domain.QueueItem, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Get from live cache
 	for _, item := range m.queue {
 		if item.ID == id {
 			return item, true
 		}
+	}
+
+	// Get from DB as a fallback
+	item, err := m.store.GetQueueItem(id)
+	if err == nil && item != nil {
+		return item, true
 	}
 
 	return nil, false
@@ -151,11 +207,59 @@ func (m *QueueManager) Cancel(id string) bool {
 				item.CancelFunc()
 			}
 
-			// 3. Mark it as failed/cancelled
-			item.Status = domain.StatusFailed
-			item.Error = "Cancelled by user"
 			return true
 		}
 	}
 	return false
+}
+
+// updateStatus changes the status and saves to DB immediately
+func (m *QueueManager) updateStatus(item *domain.QueueItem, status domain.JobStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item.Status = status
+	_ = m.store.SaveQueueItem(item)
+}
+
+func (m *QueueManager) finalizeJob(item *domain.QueueItem, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err != nil {
+		item.Status = domain.StatusFailed
+		if errors.Is(err, context.Canceled) {
+			item.Error = "Cancelled by user"
+		} else {
+			item.Error = err.Error()
+		}
+	} else {
+		item.Status = domain.StatusCompleted
+		item.BytesWritten.Store(item.TotalBytes)
+	}
+
+	// Persist the final outcome
+	_ = m.store.SaveQueueItem(item)
+
+	m.activeItem = nil
+	m.removeFromLiveQueue(item.ID)
+}
+
+// removeFromLiveQueue keeps the active slice small by removing finished items
+func (m *QueueManager) removeFromLiveQueue(id string) {
+	for i, itm := range m.queue {
+		if itm.ID == id {
+			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			break
+		}
+	}
+}
+
+// isCancelled is a small utility to check context state
+func isCancelled(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
 }

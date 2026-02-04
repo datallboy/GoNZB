@@ -43,22 +43,13 @@ func NewPersistentStore(dbPath, blobDir string) (*PersistentStore, error) {
 		return nil, fmt.Errorf("failed to connect to sqlite: %w", err)
 	}
 
-	// Initialize Schema
-	schema := `CREATE TABLE IF NOT EXISTS releases (
-		id TEXT PRIMARY KEY,
-		title TEXT,
-		source TEXT,
-		download_url TEXT,
-		size INTEGER,
-		category TEXT,
-		redirect_allowed INTEGER, -- 0 for false, 1 for true
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, err
+	store := &PersistentStore{db: db, blobDir: blobDir}
+
+	if err := store.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("could not migrate database: %w", err)
 	}
 
-	return &PersistentStore{db: db, blobDir: blobDir}, nil
+	return store, nil
 }
 
 // Satisfies app.Store for metadata
