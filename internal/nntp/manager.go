@@ -2,10 +2,10 @@ package nntp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -76,6 +76,7 @@ func (m *Manager) Fetch(ctx context.Context, msgID string, groups []string) (io.
 			}, nil
 		default:
 			// Provider is at MaxConnections, skip to the next one
+			m.ctx.Logger.Debug("Provider %s is full", mp.ID())
 			continue
 		}
 	}
@@ -96,7 +97,7 @@ func (m *Manager) tryFetch(ctx context.Context, p *managedProvider, msgID string
 		}
 
 		// If the error is specifically "430 No Such Article", don't retry this provider
-		if strings.Contains(err.Error(), "430") {
+		if errors.Is(err, ErrArticleNotFound) {
 			return nil, err
 		}
 
@@ -113,31 +114,21 @@ type releaseReader struct {
 }
 
 func (r *releaseReader) Read(p []byte) (n int, err error) {
-	n, err = r.Reader.Read(p)
-	// If we hit EOF or an error, we can trigger the release
-	if err != nil {
+	return r.Reader.Read(p)
+}
+
+func (r *releaseReader) Close() error {
+	defer func() {
 		if r.onClose != nil {
 			r.onClose()
 			r.onClose = nil
 		}
-	}
+	}()
 
-	return n, err
-}
-
-func (r *releaseReader) Close() error {
-	// 1. Guard against nil reader
 	if r.Reader != nil {
 		if c, ok := r.Reader.(io.ReadCloser); ok {
-			c.Close()
+			return c.Close()
 		}
-	}
-
-	// 2. Guard against nil onClose function
-	// and ensure it only runs once
-	if r.onClose != nil {
-		r.onClose()
-		r.onClose = nil // Prevent double-release if Close is called twice
 	}
 	return nil
 }

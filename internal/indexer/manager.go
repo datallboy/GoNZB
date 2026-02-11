@@ -2,16 +2,16 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"net/http"
 	"sync"
 
-	"github.com/labstack/echo/v5"
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type store interface {
-	SaveReleases(ctx context.Context, results []SearchResult) error
-	GetRelease(ctx context.Context, id string) (SearchResult, error)
+	UpsertReleases(ctx context.Context, results []*domain.Release) error
+	GetRelease(ctx context.Context, id string) (*domain.Release, error)
 	GetNZBReader(id string) (io.ReadCloser, error)
 	CreateNZBWriter(id string) (io.WriteCloser, error)
 	Exists(id string) bool
@@ -40,9 +40,9 @@ func (m *BaseManager) AddIndexer(idx Indexer) {
 }
 
 // SearchAll queries all indexers loaded by the manager
-func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResult, error) {
+func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]*domain.Release, error) {
 	var wg sync.WaitGroup
-	resultsChan := make(chan []SearchResult, len(m.indexers))
+	resultsChan := make(chan []*domain.Release, len(m.indexers))
 
 	m.mu.RLock()
 	for _, idx := range m.indexers {
@@ -50,9 +50,16 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResu
 		go func(i Indexer) {
 			defer wg.Done()
 			res, err := i.Search(ctx, query)
-			if err == nil {
-				resultsChan <- res
+			if err != nil {
+				return
 			}
+
+			for _, r := range res {
+				if r.ID == "" {
+					r.ID = domain.GenerateCompositeID(r.Source, r.GUID)
+				}
+			}
+			resultsChan <- res
 		}(idx)
 	}
 	m.mu.RUnlock()
@@ -62,35 +69,25 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]SearchResu
 		close(resultsChan)
 	}()
 
-	var allResults []SearchResult
+	var allResults []*domain.Release
 	for res := range resultsChan {
 		allResults = append(allResults, res...)
 	}
 
 	// Persist release records in database
 	if len(allResults) > 0 {
-		_ = m.store.SaveReleases(ctx, allResults)
+		_ = m.store.UpsertReleases(ctx, allResults)
 	}
 
 	return allResults, nil
 }
 
-// FetchNZB handles retrieving nzb from cache or downloading from an indexer
-func (m *BaseManager) FetchNZB(ctx context.Context, id string, c *echo.Context) error {
+// GetNZB handles retrieving nzb from cache or downloading from an indexer.
+// Returns io.ReaderCloser so it can returned as a HTTP response or parsed for download
+func (m *BaseManager) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
 	// Check the file store
-	if m.store.Exists(id) {
-		data, err := m.store.GetNZBReader(id)
-		if err != nil {
-			return err
-		}
-		defer data.Close()
-		return c.Stream(http.StatusOK, "application/x-nzb", data)
-	}
-
-	// Not on disk? Looks where to download it from in SQLite
-	res, err := m.store.GetRelease(ctx, id)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get release from cache")
+	if m.store.Exists(res.ID) {
+		return m.store.GetNZBReader(res.ID)
 	}
 
 	// Find the indexer that provided this result.
@@ -99,33 +96,52 @@ func (m *BaseManager) FetchNZB(ctx context.Context, id string, c *echo.Context) 
 	m.mu.RUnlock()
 
 	if !ok {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Indexer not found")
+		return nil, fmt.Errorf("indexer %s not found", res.Source)
 	}
 
 	// This calls either the raw DownloadNZB or the Cached one!
 	data, err := idx.DownloadNZB(ctx, res)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Indexer download failed")
+		return nil, fmt.Errorf("failed to download from inedxer: %w", err)
 	}
-	defer data.Close()
 
 	// Cache file to disk
-	cacheFile, err := m.store.CreateNZBWriter(id)
+	cacheFile, err := m.store.CreateNZBWriter(res.ID)
 	if err != nil {
-		// If we can't create cache, just stream it from the web anyway
-		return c.Stream(http.StatusOK, "application/x-nzb", data)
+		// If we can't create cache, just return the raw data anyways
+		return data, nil
 	}
 
-	// Read from 'body', write to 'cacheFile', then pass through to 'w' (the HTTP response)
-	tee := io.TeeReader(data, cacheFile)
+	// Return custom ReadCloser that closes both the network body and the cache file
+	return &teeReadCloser{
+		reader: io.TeeReader(data, cacheFile),
+		closer: data,
+		file:   cacheFile,
+	}, nil
 
-	err = c.Stream(http.StatusOK, "application/x-nzb", tee)
-
-	cacheFile.Close()
-	return err
 }
 
 // GetResultByID looks up a search result in the manager's memory
-func (m *BaseManager) GetResultByID(ctx context.Context, id string) (SearchResult, error) {
+func (m *BaseManager) GetResultByID(ctx context.Context, id string) (*domain.Release, error) {
 	return m.store.GetRelease(ctx, id)
+}
+
+// teeReadCloser is a helper to ensure we close everything correctly.
+type teeReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+	file   io.WriteCloser
+}
+
+func (t *teeReadCloser) Read(p []byte) (n int, err error) {
+	return t.reader.Read(p)
+}
+
+func (t *teeReadCloser) Close() error {
+	err1 := t.closer.Close()
+	err2 := t.file.Close()
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }

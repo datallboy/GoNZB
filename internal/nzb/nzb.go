@@ -19,6 +19,7 @@ type Meta struct {
 type File struct {
 	Subject  string    `xml:"subject,attr"`
 	Poster   string    `xml:"poster,attr"`
+	Date     int64     `xml:"date,attr"`
 	Groups   []string  `xml:"groups>group"`
 	Segments []Segment `xml:"segments>segment"`
 }

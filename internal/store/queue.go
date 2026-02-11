@@ -1,111 +1,116 @@
 package store
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
+	"strings"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
-func (s *PersistentStore) SaveQueueItem(item *domain.QueueItem) error {
+func (s *PersistentStore) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error {
+	query := `
+		INSERT INTO queue_items (id, release_id, status, out_dir, error)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			error = excluded.error,
+			out_dir = excluded.out_dir`
 
-	tasksJSON, err := json.Marshal(item.Tasks)
-	if err != nil {
-		return fmt.Errorf("failed to encode tasks: %w", err)
-	}
-
-	query := `INSERT OR REPLACE INTO queue_items (id, name, password, status, total_bytes, bytes_written, tasks, error) 
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-
-	_, err = s.db.Exec(query,
-		item.ID,
-		item.Name,
-		item.Password,
-		item.Status,
-		item.TotalBytes,
-		item.BytesWritten.Load(),
-		tasksJSON,
-		item.Error,
+	_, err := s.db.ExecContext(ctx, query,
+		item.ID, item.ReleaseID, item.Status, item.OutDir, item.Error,
 	)
 	return err
 }
 
-func (s *PersistentStore) GetQueueItems() ([]*domain.QueueItem, error) {
-	rows, err := s.db.Query("SELECT id, name, password, status, total_bytes, bytes_written, tasks, error FROM queue_items")
+// GetQueueItems returns all items in the queue, ordered by creation date.
+func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
+	query := `
+		SELECT 
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			p.name as poster_name
+		FROM queue_items q
+		JOIN releases r ON q.release_id = r.id
+		LEFT JOIN posters p ON r.poster_id = p.id
+		ORDER BY q.created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query queue items: %w", err)
 	}
 	defer rows.Close()
 
 	var items []*domain.QueueItem
 	for rows.Next() {
-		item := &domain.QueueItem{}
-		var tasksJSON string
-		var bytesWritten uint64
+		var qi queueItemDBO
+		var rel releaseDBO
 
-		err := rows.Scan(&item.ID, &item.Name, &item.Password, &item.Status, &item.TotalBytes, &bytesWritten, &tasksJSON, &item.Error)
+		err := rows.Scan(
+			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
+			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
+			&rel.PosterName,
+		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan queue row: %w", err)
 		}
 
-		if err := json.Unmarshal([]byte(tasksJSON), &item.Tasks); err != nil {
-			// TODO: Log this, but maybe don't kill the whole app
-			continue
-		}
-
-		item.BytesWritten.Store(bytesWritten) // Atomic store
-		items = append(items, item)
+		// Mapping DBOs to Domain via our helper methods
+		domainRelease := rel.ToDomain()
+		items = append(items, qi.ToDomain(domainRelease))
 	}
-
-	// Sort by KSUID (Chronological)
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].ID < items[j].ID
-	})
 
 	return items, nil
 }
 
-func (s *PersistentStore) GetQueueItem(id string) (*domain.QueueItem, error) {
+// GetQueueItem fetches a single job by its ID, fully hydrated with its Release.
+func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error) {
 	query := `
-			SELECT id, name, password, status, total_bytes, bytes_written, tasks, error 
-			FROM queue_items 
-			WHERE id = ? LIMIT 1`
+		SELECT 
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			p.name as poster_name
+		FROM queue_items q
+		JOIN releases r ON q.release_id = r.id
+		LEFT JOIN posters p ON r.poster_id = p.id
+		WHERE q.id = ? LIMIT 1`
 
-	row := s.db.QueryRow(query, id)
+	var qi queueItemDBO
+	var rel releaseDBO
 
-	item := &domain.QueueItem{}
-	var tasksJSON string
-	var bytesWritten uint64
-
-	err := row.Scan(&item.ID, &item.Name, &item.Password, &item.Status, &item.TotalBytes, &bytesWritten, &tasksJSON, &item.Error)
+	err := s.db.QueryRowContext(ctx, query, id).Scan(
+		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+		&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
+		&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
+		&rel.PosterName,
+	)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil // Return nil, nil to indicate "Not found"
+		if err == sql.ErrNoRows {
+			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to fetch queue item: %w", err)
+		return nil, fmt.Errorf("failed to get queue item %s: %w", id, err)
 	}
 
-	if err := json.Unmarshal([]byte(tasksJSON), &item.Tasks); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal tasks for %s: %w", id, err)
-	}
-
-	item.BytesWritten.Store(bytesWritten) // Atomic store
-
-	return item, nil
+	return qi.ToDomain(rel.ToDomain()), nil
 }
 
-func (s *PersistentStore) GetActiveQueueItems() ([]*domain.QueueItem, error) {
+// GetActiveQueueItems returns all jobs that are not in a terminal state (Completed/Failed).
+func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
-		SELECT id, name, password, status, total_bytes, bytes_written, tasks, error 
-		FROM queue_items 
-		WHERE status NOT IN ('completed', 'failed')
-		ORDER BY id ASC`
+		SELECT 
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			p.name as poster_name
+		FROM queue_items q
+		JOIN releases r ON q.release_id = r.id
+		LEFT JOIN posters p ON r.poster_id = p.id
+		WHERE q.status NOT IN ('Completed', 'Failed')
+		ORDER BY q.created_at ASC`
 
-	rows, err := s.db.Query(query)
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch active queue: %w", err)
 	}
@@ -113,28 +118,44 @@ func (s *PersistentStore) GetActiveQueueItems() ([]*domain.QueueItem, error) {
 
 	var items []*domain.QueueItem
 	for rows.Next() {
-		item := &domain.QueueItem{}
-		var tasksJSON string
-		var bytesWritten uint64
+		var qi queueItemDBO
+		var rel releaseDBO
 
 		err := rows.Scan(
-			&item.ID, &item.Name, &item.Password, &item.Status,
-			&item.TotalBytes, &bytesWritten, &tasksJSON, &item.Error,
+			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
+			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
+			&rel.PosterName,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Hydrate the tasks from JSON
-		if err := json.Unmarshal([]byte(tasksJSON), &item.Tasks); err != nil {
-			// Log error but continue to next item
-			continue
-		}
+		items = append(items, qi.ToDomain(rel.ToDomain()))
+	}
+	return items, nil
+}
 
-		item.BytesWritten.Store(bytesWritten)
-		items = append(items, item)
+func (s *PersistentStore) ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error {
+	if len(oldStatuses) == 0 {
+		return nil
 	}
 
-	return items, nil
+	// Build the "IN (?, ?, ?)" part of the query
+	placeholders := make([]string, len(oldStatuses))
+	args := make([]interface{}, len(oldStatuses)+1)
+	args[0] = string(newStatus)
 
+	for i, status := range oldStatuses {
+		placeholders[i] = "?"
+		args[i+1] = string(status)
+	}
+
+	query := fmt.Sprintf(
+		"UPDATE queue_items SET status = ?, error = 'Unexpected shutdown' WHERE status IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+
+	_, err := s.db.Exec(query, args...)
+	return err
 }

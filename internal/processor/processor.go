@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/nzb"
 )
 
@@ -45,8 +46,8 @@ func New(ctx *app.Context, w Closeable) *Processor {
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
-func (p *Processor) Prepare(nzbModel *nzb.Model, nzbFilename string) ([]*nzb.DownloadFile, error) {
-	var tasks []*nzb.DownloadFile
+func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) ([]*domain.DownloadFile, error) {
+	var tasks []*domain.DownloadFile
 
 	if err := os.MkdirAll(p.ctx.Config.Download.OutDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create out_dir: %w", err)
@@ -65,44 +66,57 @@ func (p *Processor) Prepare(nzbModel *nzb.Model, nzbFilename string) ([]*nzb.Dow
 		password = extractPassword(nzbModel.Files[0].Subject)
 	}
 
-	for _, rawFile := range nzbModel.Files {
+	for i, rawFile := range nzbModel.Files {
 		cleanName := sanitizeFileName(rawFile.Subject)
 
+		domSegs := make([]domain.Segment, len(rawFile.Segments))
+		for j, s := range rawFile.Segments {
+			domSegs[j] = domain.Segment{Number: s.Number, Bytes: s.Bytes, MessageID: s.MessageID}
+		}
+
 		// Create the Task (This calculates Size and Paths internally)
-		task := nzb.NewDownloadFile(rawFile, cleanName, p.ctx.Config.Download.OutDir, password)
+		task := domain.NewDownloadFile(cleanName, 0, i, domSegs, p.ctx.Config.Download.OutDir, password)
+		task.Subject = rawFile.Subject
+		task.Date = rawFile.Date
+		task.Groups = rawFile.Groups
 
-		// Skip if already exists
+		// Check if it exists, still append so PostProcess knows about the file
 		if _, err := os.Stat(task.FinalPath); err == nil {
-			p.ctx.Logger.Info("Skipping: %s (already completed)", task.CleanName)
-			continue
+			task.IsComplete = true
+		} else {
+			// Only pre-allocate if we actually need to download it
+			if err := p.writer.PreAllocate(task.PartPath, task.Size); err != nil {
+				return nil, fmt.Errorf("failed to pre-allocate %s: %w", task.FileName, err)
+			}
 		}
 
-		// Pre-allocate the .part file
-		if err := p.writer.PreAllocate(task.PartPath, task.Size); err != nil {
-			return nil, fmt.Errorf("failed to pre-allocate %s: %w", task.CleanName, err)
-		}
-
+		// Populate tasks either way so Download can determine how far along the download is
 		tasks = append(tasks, task)
 	}
 	return tasks, nil
 }
 
 // Finalize renames .part to final names
-func (p *Processor) Finalize(ctx context.Context, tasks []*nzb.DownloadFile) error {
+func (p *Processor) Finalize(ctx context.Context, tasks []*domain.DownloadFile) error {
 	for _, task := range tasks {
+		// If it was already complete from Prepare, skip
+		if task.IsComplete {
+			continue
+		}
+
+		// CHECK IF PART FILE EXISTS: If no part file and no final file, it's a fail.
+		info, err := os.Stat(task.PartPath)
+		if err != nil {
+			p.ctx.Logger.Debug("Finalize: No part file found for %s, skipping...", task.FileName)
+			continue
+		}
 
 		actualSize := task.GetActualSize()
 
-		// 1. Release the file handle from the FileWriter
-		err := p.writer.CloseFile(task.PartPath, actualSize)
+		// Release the file handle from the FileWriter
+		err = p.writer.CloseFile(task.PartPath, actualSize)
 		if err != nil {
-			p.ctx.Logger.Error("Failed to close/truncate %s: %v", task.CleanName, err)
-		}
-
-		// 2. Quick Integrity Check
-		info, err := os.Stat(task.PartPath)
-		if err != nil {
-			p.ctx.Logger.Error("Could not stat file %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Failed to close/truncate %s: %v", task.FileName, err)
 		}
 
 		// Use actualSize for the check if we have it. fallback to task.Size (NZB size)
@@ -112,23 +126,25 @@ func (p *Processor) Finalize(ctx context.Context, tasks []*nzb.DownloadFile) err
 		}
 
 		if info.Size() < targetSize {
-			p.ctx.Logger.Warn("File incomplete, (Size %d, Expected: %d), skipping finalize: %s", info.Size(), targetSize, task.CleanName)
+			p.ctx.Logger.Warn("File incomplete, (Size %d, Expected: %d), skipping finalize: %s", info.Size(), targetSize, task.FileName)
 			continue
 		}
 
-		// 3. Rename to final
+		// Rename to final
 		if err := os.Rename(task.PartPath, task.FinalPath); err != nil {
-			p.ctx.Logger.Error("Finalize failed for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Finalize failed for %s: %v", task.FileName, err)
 			continue
 		}
 
-		p.ctx.Logger.Debug("Completed: %s", task.CleanName)
+		//
+		task.IsComplete = true
+		p.ctx.Logger.Debug("Completed: %s", task.FileName)
 	}
 	return nil
 }
 
 // PostProcess handles the modular repair and extraction logic
-func (p *Processor) PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) error {
+func (p *Processor) PostProcess(ctx context.Context, tasks []*domain.DownloadFile) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -166,7 +182,7 @@ func (p *Processor) PostProcess(ctx context.Context, tasks []*nzb.DownloadFile) 
 	return nil
 }
 
-func (p *Processor) extractArchives(ctx context.Context, tasks []*nzb.DownloadFile) ([]*nzb.DownloadFile, error) {
+func (p *Processor) extractArchives(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
 
 	if !p.ctx.ExtractionEnabled {
 		return nil, nil
@@ -179,7 +195,7 @@ func (p *Processor) extractArchives(ctx context.Context, tasks []*nzb.DownloadFi
 
 	p.ctx.Logger.Debug("Available extractors: %v", p.extractor.AvailableExtractors())
 
-	var allNewTasks []*nzb.DownloadFile
+	var allNewTasks []*domain.DownloadFile
 	currentBatch := tasks
 	maxDepth := 3
 
@@ -204,7 +220,7 @@ func (p *Processor) extractArchives(ctx context.Context, tasks []*nzb.DownloadFi
 	return allNewTasks, nil
 }
 
-func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile) ([]*nzb.DownloadFile, error) {
+func (p *Processor) extractBatch(ctx context.Context, tasks []*domain.DownloadFile) ([]*domain.DownloadFile, error) {
 	// Detect which files are archives
 	archives, err := p.extractor.DetectArchives(tasks)
 
@@ -219,7 +235,7 @@ func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile)
 
 	p.ctx.Logger.Info("Found %d archive(s) to extract", len(archives))
 
-	var newTasks []*nzb.DownloadFile
+	var newTasks []*domain.DownloadFile
 
 	// Extract each archive
 	for task, archive := range archives {
@@ -230,15 +246,15 @@ func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile)
 		destDir := filepath.Dir(task.FinalPath)
 		extractedFile, err := archive.Extract(ctx, task.FinalPath, destDir, task.Password)
 		if err != nil {
-			p.ctx.Logger.Error("Extraction failed for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Extraction failed for %s: %v", task.FileName, err)
 			continue
 		}
 
-		// Convert strings to nzb.DownloadFile objects
+		// Convert strings to domain.DownloadFile objects
 		for _, path := range extractedFile {
-			newTasks = append(newTasks, &nzb.DownloadFile{
+			newTasks = append(newTasks, &domain.DownloadFile{
 				FinalPath: path,
-				CleanName: filepath.Base(path),
+				FileName:  filepath.Base(path),
 			})
 
 		}
@@ -249,7 +265,7 @@ func (p *Processor) extractBatch(ctx context.Context, tasks []*nzb.DownloadFile)
 
 }
 
-func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
+func (p *Processor) moveToCompleted(tasks []*domain.DownloadFile) error {
 
 	// Ensure destination subdir exists if using nested folders
 	if err := os.MkdirAll(p.ctx.Config.Download.CompletedDir, 0755); err != nil {
@@ -271,14 +287,14 @@ func (p *Processor) moveToCompleted(tasks []*nzb.DownloadFile) error {
 
 		err := moveFile(task.FinalPath, dest)
 		if err != nil {
-			p.ctx.Logger.Error("Failed cross-device move for %s: %v", task.CleanName, err)
+			p.ctx.Logger.Error("Failed cross-device move for %s: %v", task.FileName, err)
 			return err
 		}
 	}
 	return nil
 }
 
-func findPrimaryPar(tasks []*nzb.DownloadFile) string {
+func findPrimaryPar(tasks []*domain.DownloadFile) string {
 	for _, t := range tasks {
 		if strings.HasSuffix(t.FinalPath, ".par2") && !strings.Contains(t.FinalPath, ".vol") {
 			return t.FinalPath

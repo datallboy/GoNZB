@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,12 +18,12 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/infra/platform"
+	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/labstack/echo/v5"
 
 	"github.com/datallboy/gonzb/internal/engine"
 
 	"github.com/datallboy/gonzb/internal/nntp"
-	"github.com/datallboy/gonzb/internal/nzb"
 
 	"github.com/datallboy/gonzb/internal/processor"
 
@@ -77,13 +78,11 @@ func init() {
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 }
 
-func executeServer() {
-	e := echo.New()
-
+func setupApp() *app.Context {
 	// 1. Initialize  application context
 	// Load core app infrastructure (dependency check, config & logger)
 	if err := platform.ValidateDependencies(); err != nil {
-		log.Fatalf("FATAL: %v. Please check your Dockerfile or local installation.", err)
+		log.Fatalf("Missing dependencies. Please check your Dockerfile or local installation: %v", err)
 	}
 
 	cfg, err := config.Load(cfgFile)
@@ -93,7 +92,7 @@ func executeServer() {
 
 	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
 	if err != nil {
-		log.Fatalf("Fatal: Could not initialize logger %v\n", err)
+		log.Fatalf("Could not initialize logger %v\n", err)
 	}
 
 	if cfg.Log.Level == "debug" {
@@ -109,15 +108,23 @@ func executeServer() {
 	// Initialize shared writer
 	writer := engine.NewFileWriter()
 
-	// Initialize the Manager (The provider load balancer)
+	// Initialize the NNTP Manager (The provider load balancer)
 	appCtx.NNTP, err = nntp.NewManager(appCtx)
 	if err != nil {
 		appLogger.Fatal("Provider initializiation failed: %v", err)
 	}
 
 	appCtx.Processor = processor.New(appCtx, writer)
-
 	appCtx.Downloader = engine.NewDownloader(appCtx, writer)
+	appCtx.NZBParser = nzb.NewParser()
+
+	return appCtx
+}
+
+func executeServer() {
+	appCtx := setupApp()
+	e := echo.New()
+
 	appCtx.Queue = engine.NewQueueManager(appCtx, true)
 
 	// Create a "Global" context that we can cancel to trigger shutdown
@@ -132,123 +139,162 @@ func executeServer() {
 	api.RegisterRoutes(e, appCtx)
 
 	sc := echo.StartConfig{
-		Address:         ":" + cfg.Port,
+		Address:         ":" + appCtx.Config.Port,
 		GracefulTimeout: 10 * time.Second,
 	}
 
-	appLogger.Info("GoNZB starting up on port %s", cfg.Port)
+	appCtx.Logger.Info("GoNZB starting up on port %s", appCtx.Config.Port)
 
 	if err := sc.Start(ctx, e); err != nil && err != http.ErrServerClosed {
-		appLogger.Error("failed to start server %v", err)
+		appCtx.Logger.Error("failed to start server %v", err)
 	}
 
-	appLogger.Info("Server stopped. Finalizing store...")
+	appCtx.Logger.Info("Server stopped. Finalizing store...")
 	appCtx.Close()
 
-	appLogger.Info("GoNZB shutdown gracefully")
+	appCtx.Logger.Info("GoNZB shutdown gracefully")
 }
 
 func executeDownload() {
-	// Load core app infrastructure (dependency check, config & logger)
-	if err := platform.ValidateDependencies(); err != nil {
-		log.Fatalf("FATAL: %v. Please check your Dockerfile or local installation.", err)
-	}
+	appCtx := setupApp()
+	filename := filepath.Base(nzbPath)
+	setupCtx := context.Background()
 
-	cfg, err := config.Load(cfgFile)
+	// Open source file
+	nzbFile, err := os.Open(nzbPath)
 	if err != nil {
-		log.Fatalf("Config error: %v", err)
+		appCtx.Logger.Fatal("Failed to read NZB file: %v", err)
 	}
+	defer nzbFile.Close()
 
-	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
+	// Generate ID based on file contents
+	releaseID, err := domain.CalculateFileHash(nzbFile)
 	if err != nil {
-		log.Fatalf("Fatal: Could not initialize logger %v\n", err)
-	}
-	appLogger.Info("GONZB starting up...")
-
-	if cfg.Log.Level == "debug" {
-		appLogger.Debug("Debug logging enabled")
+		appCtx.Logger.Fatal("Hashing failed: %v", err)
 	}
 
-	// Initialize app context
-	appCtx, err := app.NewContext(cfg, appLogger)
+	// Reset file pointer to the beginning so we can read it again for the copy
+	if _, err := nzbFile.Seek(0, 0); err != nil {
+		appCtx.Logger.Fatal("Failed to reset NZB file pointer: %v", err)
+	}
+
+	// Minimal seed: just metadata and the blob
+	release := &domain.Release{
+		ID:       releaseID,
+		Title:    filename,
+		Source:   "manual",
+		Category: "Uncategorized",
+	}
+
+	// Save to DB so HydrateItem can find the metadata
+	err = appCtx.Store.UpsertReleases(setupCtx, []*domain.Release{release})
 	if err != nil {
-		log.Fatalf("Failed to initialize application context %v\n", err)
+		appCtx.Logger.Fatal("Failed to save release info to database: %v", err)
 	}
 
-	// Initialize shared writer
-	writer := engine.NewFileWriter()
-
-	// Initialize the Manager (The provider load balancer)
-	appCtx.NNTP, err = nntp.NewManager(appCtx)
+	// Save NZB bits to Blob Store
+	// This "primes" the cache so GetNZB doesn't try to call a web indexer
+	writer, err := appCtx.Store.CreateNZBWriter(releaseID)
 	if err != nil {
-		appLogger.Fatal("Provider initializiation failed: %v", err)
+		appCtx.Logger.Fatal("Failed to initialize blob writer: %v", err)
 	}
 
-	appCtx.Processor = processor.New(appCtx, writer)
-
-	// Initialize nzb parser
-	nzbParser := nzb.NewParser()
-	nzbDomain, err := nzbParser.ParseFile(nzbPath)
+	_, err = io.Copy(writer, nzbFile)
 	if err != nil {
-		appLogger.Fatal("Failed to parse NZB: %v", err)
+		writer.Close()
+		appCtx.Logger.Fatal("Failed to copy NZB to blob store: %v", err)
 	}
+
+	if err := writer.Close(); err != nil {
+		appCtx.Logger.Fatal("Failed to finalize NZB file on disk: %v", err)
+	}
+
+	// Initialize the queue manager (false = don't load pending queue items from db)
+	appCtx.Queue = engine.NewQueueManager(appCtx, false)
+	item, err := appCtx.Queue.Add(setupCtx, releaseID, filename)
+	if err != nil {
+		appCtx.Logger.Fatal("Failed to queue NZB: %v", err)
+	}
+
+	// Manually call Hydrate
+	if err := appCtx.Queue.HydrateItem(setupCtx, item); err != nil {
+		appCtx.Logger.Fatal("Hydration failed: %v", err)
+	}
+
+	appCtx.Queue.UpdateStatus(setupCtx, item, domain.StatusDownloading)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize the Downloader Service
-	downloader := engine.NewDownloader(appCtx, writer)
-	appCtx.Downloader = downloader
-	appCtx.Queue = engine.NewQueueManager(appCtx, false)
+	appCtx.Downloader.SetProgressHandler(func(item *domain.QueueItem) {
+		// This runs exactly when Download() finishes, inside the same goroutine.
+		// It "seals" the line before the status ever changes to Processing.
+		appCtx.Downloader.RenderCLIProgress(item, 0, true)
+		fmt.Println()
+	})
 
-	// Start the background worker for queue
+	// Start the queue
 	go appCtx.Queue.Start(ctx)
-
-	// Add to queue
-	filename := filepath.Base(nzbPath)
-	item, err := appCtx.Queue.Add(nzbDomain, filename)
-	if err != nil {
-		appLogger.Fatal("Failed to queue NZB: %v", err)
-	}
-
-	uiCtx, cancelUI := context.WithCancel(ctx)
-	defer cancelUI()
-
-	fmt.Print("\n\n")
-	go downloader.StartCLIProgress(uiCtx, item)
 
 	// Blocking wait loop for the CLI
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	done := false
-	for !done {
+	var lastBytes int64
+	var barRendered = false
+
+	for {
 		select {
 		case <-ctx.Done():
 			// This triggers if the user hits Ctrl+C
-			fmt.Print("\n\n")
-			appLogger.Info("Cancellation received. Cleaning up...")
-			done = true
+			ticker.Stop()
+			fmt.Print("\n")
+			appCtx.Logger.Info("Cancellation received. Cleaning up...")
+			return
 
 		case <-ticker.C:
 			// Check if the manager has finished the job
-			itm, ok := appCtx.Queue.GetItem(item.ID)
+			itm, ok := appCtx.Queue.GetItem(ctx, item.ID)
 
 			if !ok {
-				appLogger.Error("Failed to find item from queue")
-				done = true
+				continue
 			}
 
-			if ok && (itm.Status == domain.StatusCompleted || itm.Status == domain.StatusFailed) {
-				cancelUI() // Kill the progress bar
-				fmt.Print("\n\n")
+			switch itm.Status {
+			case domain.StatusDownloading:
+				current := itm.BytesWritten.Load()
+				delta := current - lastBytes
+				lastBytes = current
 
-				if itm.Status == domain.StatusFailed {
-					appLogger.Error("Download failed")
-				} else {
-					appLogger.Info("Download completed successfully!")
+				// Will print a newline on first call to RenderCLIProgress
+				if !barRendered {
+					fmt.Print("\n\n")
 				}
-				done = true
+
+				fmt.Printf("\r [DEBUG] Raw Bytes: %d | Delta: %d ", current, delta)
+
+				// Calculate instantaneous speed
+				speedMbps := float64(delta) * 8 / (1024 * 1024 * 0.5)
+
+				appCtx.Downloader.RenderCLIProgress(itm, speedMbps, false)
+				barRendered = true
+
+			case domain.StatusProcessing:
+				if barRendered {
+					barRendered = false
+				}
+
+			case domain.StatusCompleted, domain.StatusFailed:
+				if itm.Status == domain.StatusFailed {
+					errText := "Unknown error"
+					if itm.Error != nil {
+						errText = *itm.Error
+					}
+					appCtx.Logger.Error("Download failed: %s", errText)
+				} else {
+					appCtx.Logger.Info("Download completed successfully!")
+				}
+				return
 			}
 		}
 	}
