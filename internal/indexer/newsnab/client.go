@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/datallboy/gonzb/internal/indexer"
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type Client struct {
@@ -28,7 +28,7 @@ func New(name, baseURL, apiKey string, redirect bool) *Client {
 
 func (c *Client) Name() string { return c.name }
 
-func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResult, error) {
+func (c *Client) Search(ctx context.Context, query string) ([]*domain.Release, error) {
 	// Newsnab API search URL
 	searchURL := fmt.Sprintf("%s/api?t=search&q=%s&apikey=%s&o=xml", c.BaseURL, query, c.APIKey)
 
@@ -49,17 +49,17 @@ func (c *Client) Search(ctx context.Context, query string) ([]indexer.SearchResu
 	if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
 		return nil, err
 	}
-	// 3. Convert local structs to indexer.SearchResult
-	results := make([]indexer.SearchResult, 0, len(rss.Channel.Items))
+	// 3. Convert local structs to domain.Release
+	results := make([]*domain.Release, 0, len(rss.Channel.Items))
 	for _, item := range rss.Channel.Items {
-		res := item.ToSearchResult(c.name)
+		res := item.ToRelease(c.name)
 		res.RedirectAllowed = c.redirectAllowed
 		results = append(results, res)
 	}
 	return results, nil
 }
 
-func (c *Client) DownloadNZB(ctx context.Context, res indexer.SearchResult) (io.ReadCloser, error) {
+func (c *Client) DownloadNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
 	// Newznab uses t=getnzb and the id (guid) to fetch the file
 	u := fmt.Sprintf("%s&apikey=%s", res.DownloadURL, c.APIKey)
 

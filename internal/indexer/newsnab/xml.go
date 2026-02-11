@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/indexer"
+	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type RSSResponse struct {
@@ -69,8 +69,11 @@ func (i Item) getPubishDate() time.Time {
 	return t
 }
 
-func (i Item) ToSearchResult(sourceName string) indexer.SearchResult {
-	res := indexer.SearchResult{
+func (i Item) ToRelease(sourceName string) *domain.Release {
+	id := domain.GenerateCompositeID(sourceName, i.GUID.Value)
+
+	res := &domain.Release{
+		ID:          id,
 		Title:       i.Title,
 		GUID:        i.GUID.Value,
 		DownloadURL: i.Link,
@@ -79,7 +82,7 @@ func (i Item) ToSearchResult(sourceName string) indexer.SearchResult {
 		PublishDate: i.getPubishDate(),
 		Category:    i.getCategory(),
 	}
-	res.SetCompositeID()
+
 	return res
 }
 

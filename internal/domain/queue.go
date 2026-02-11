@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 	"time"
-
-	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 type JobStatus string
@@ -20,28 +18,28 @@ const (
 
 // QueueItem represents the entire NZB download process
 type QueueItem struct {
-	ID       string
-	Name     string
-	Password string
-	Status   JobStatus
+	ID        string   // Unique KSUID for this job
+	ReleaseID string   // Reference to the shared Release
+	Release   *Release // Populated via JOIN from store
+	Status    JobStatus
+	OutDir    string
 
-	Tasks []*nzb.DownloadFile
+	// Tasks are only present in RAM. When loaded from queue_items,
+	// this is nil until hydrated from BLOB store.
+	Tasks []*DownloadFile
 
-	BytesWritten atomic.Uint64
-	TotalBytes   uint64
+	BytesWritten atomic.Int64
 
 	StartedAt time.Time
-	Error     string
+	Error     *string
 
 	CancelFunc context.CancelFunc
 }
 
-func (item *QueueItem) CalculateTotalSize() {
-	var total int64
-	for _, file := range item.Tasks {
-		for _, seg := range file.Segments {
-			total += seg.Bytes
-		}
-	}
-	item.TotalBytes = uint64(total)
+func (q *QueueItem) AddBytes(n int64) {
+	q.BytesWritten.Add(n)
+}
+
+func (q *QueueItem) GetBytes() int64 {
+	return q.BytesWritten.Load()
 }

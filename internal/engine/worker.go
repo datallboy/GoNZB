@@ -18,8 +18,20 @@ import (
 func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) error {
 	totalSegments := 0
 	for _, f := range item.Tasks {
-		totalSegments += len(f.Segments)
+		// Only count segments for files that aren't already finished
+		if !f.IsComplete {
+			totalSegments += len(f.Segments)
+		}
 	}
+
+	// If everything is already downloaded, exit early!
+	if totalSegments == 0 {
+		return nil
+	}
+
+	// Create context for the workers that we can cancel
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
 
 	// Ask the manager for the connection limit
 	capacity := s.ctx.NNTP.TotalCapacity()
@@ -38,21 +50,16 @@ func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) 
 	// Start the Workers
 	var wg sync.WaitGroup
 
-	defer func() {
-		close(jobs)
-		wg.Wait()
-	}()
-
 	for w := 1; w <= workerCount; w++ {
 		wg.Add(1)
-		go func(id int) {
+		go func() {
 			defer wg.Done()
-			s.worker(ctx, item, jobs, results)
-		}(w)
+			s.worker(workerCtx, item, jobs, results)
+		}()
 	}
 
 	// Dispatch Jobs
-	go s.dispatchJobs(ctx, item.Tasks, jobs)
+	go s.dispatchJobs(workerCtx, item.Tasks, jobs)
 
 	// Collect Results
 	completedCount := 0
@@ -66,30 +73,27 @@ func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) 
 			if res.Error != nil {
 				// Identify the error type
 				isBusy := errors.Is(res.Error, nntp.ErrProviderBusy)
+				isMissing := errors.Is(res.Error, nntp.ErrArticleNotFound)
 
 				// If we have retires left, put it back in the pipeline
-				if isBusy || res.Job.RetryCount < 3 {
+				if (isBusy || isMissing) && res.Job.RetryCount < 3 {
 					delay := 100 * time.Millisecond // quick retry for busy error
 
 					if !isBusy {
 						res.Job.RetryCount++
-
-						// Calculate backoff: 2s, 4s, 8s...
 						delay = time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
-						s.ctx.Logger.Warn("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+						s.ctx.Logger.Debug("[Retry] Segment %s: Attempt %d/3 - Error: %v",
 							res.Job.Segment.MessageID, res.Job.RetryCount, res.Error)
+
 					}
-
-					// Use a timer to re-queue the job so we don't block this loop
-					time.AfterFunc(delay, func() {
+					go func(j DownloadJob, d time.Duration) {
+						time.Sleep(d)
 						select {
-						case <-ctx.Done():
-							return
-						case jobs <- res.Job:
+						case <-workerCtx.Done():
+						case jobs <- j:
 						}
-
-					})
+					}(res.Job, delay)
 
 					continue // Do not count as completed yet
 				}
@@ -101,6 +105,8 @@ func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) 
 		}
 	}
 
+	cancelWorkers()
+	wg.Wait()
 	return finalErr
 }
 
@@ -178,21 +184,23 @@ func (s *Downloader) processSegment(ctx context.Context, item *domain.QueueItem,
 		}
 
 		// Update progress
-		item.BytesWritten.Add(uint64(n))
+		item.BytesWritten.Add(int64(n))
 	}
 
 	return nil
 }
 
 // dispatchJobs translates the NZB structure into individual segment jobs.
-func (s *Downloader) dispatchJobs(ctx context.Context, tasks []*nzb.DownloadFile, jobs chan<- DownloadJob) {
+func (s *Downloader) dispatchJobs(ctx context.Context, tasks []*domain.DownloadFile, jobs chan<- DownloadJob) {
 	for _, task := range tasks {
+		if task.IsComplete {
+			s.ctx.Logger.Debug("Skipping segment dispatch: %s (already on disk)", task.FileName)
+			continue
+		}
+
 		var currentOffset int64 = 0
 
-		var groups []string
-		if task.Source != nil {
-			groups = task.Source.Groups
-		}
+		groups := task.Groups
 
 		for _, seg := range task.Segments {
 			select {

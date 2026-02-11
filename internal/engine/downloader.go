@@ -15,10 +15,11 @@ import (
 
 // Downloader is the concrete implementation of the download engine.
 type Downloader struct {
-	ctx       *app.Context
-	nntp      *nntp.Manager
-	processor *processor.Processor
-	writer    *FileWriter
+	ctx            *app.Context
+	nntp           *nntp.Manager
+	processor      *processor.Processor
+	writer         *FileWriter
+	onProgressDone func(*domain.QueueItem)
 }
 
 func NewDownloader(ctx *app.Context, writer *FileWriter) *Downloader {
@@ -35,14 +36,22 @@ func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error
 	defer s.writer.CloseAll()
 
 	// Reset counters for new job
-	item.BytesWritten.Store(0)
-	var totalSize uint64
-	for _, t := range item.Tasks {
-		totalSize += uint64(t.Size)
-	}
-	item.TotalBytes = totalSize
+	var alreadyDone int64
 
-	s.ctx.Logger.Info("Starting download for: %s (%d MB)", item.Name, item.TotalBytes/1024/1024)
+	for _, t := range item.Tasks {
+		if t.IsComplete {
+			alreadyDone += int64(t.Size)
+		}
+	}
+	item.BytesWritten.Store(alreadyDone)
+
+	// CHECK: If we are already at 100%, skip the pool entirely
+	if alreadyDone >= item.Release.Size && item.Release.Size > 0 {
+		s.ctx.Logger.Info("All files already verified for: %s", item.Release.Title)
+		return nil
+	}
+
+	s.ctx.Logger.Info("Starting download for: %s (%d MB)", item.Release.Title, item.Release.Size/1024/1024)
 
 	item.StartedAt = time.Now()
 
@@ -57,39 +66,20 @@ func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error
 		return fmt.Errorf("post-processing failed: %w", err)
 	}
 
+	if s.onProgressDone != nil {
+		s.onProgressDone(item)
+	}
+
 	return nil
 }
 
-func (s *Downloader) StartCLIProgress(ctx context.Context, item *domain.QueueItem) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	var lastBytes uint64
-
-	for {
-		select {
-		case <-ticker.C:
-			if item.Status != domain.StatusDownloading {
-				return
-			}
-
-			current := item.BytesWritten.Load()
-			delta := current - lastBytes
-			lastBytes = current
-
-			// Calculate instantaneous speed
-			speedMbps := float64(delta) * 8 / (1024 * 1024)
-
-			s.renderCLIProgress(item, speedMbps, false)
-		case <-ctx.Done():
-			return
-		}
-	}
+func (s *Downloader) SetProgressHandler(fn func(*domain.QueueItem)) {
+	s.onProgressDone = fn
 }
 
-func (s *Downloader) renderCLIProgress(item *domain.QueueItem, speedMbps float64, final bool) {
+func (s *Downloader) RenderCLIProgress(item *domain.QueueItem, speedMbps float64, final bool) {
 	current := item.BytesWritten.Load()
-	total := item.TotalBytes
+	total := item.Release.Size
 	if total == 0 {
 		return
 	}
@@ -100,9 +90,14 @@ func (s *Downloader) renderCLIProgress(item *domain.QueueItem, speedMbps float64
 
 	displaySpeed := speedMbps
 	etaStr := "calc..."
+	speedLabel := "Speed"
+	timeLabel := "ETA"
 
-	if final {
+	if final || current >= total {
 		percent = 100.0
+		speedLabel = "Avg"
+		timeLabel = "Time"
+		etaStr = elapsed.Truncate(time.Second).String()
 
 		// Guard against division by zero or sub-millisecond durations
 		seconds := elapsed.Seconds()
@@ -129,20 +124,18 @@ func (s *Downloader) renderCLIProgress(item *domain.QueueItem, speedMbps float64
 	// Progress Bar go brrr [====>   ]
 	const barWidth = 20
 	completedWidth := int(percent / 100 * barWidth)
+
+	// Ensure we don't exceed barWidth
+	if completedWidth > barWidth {
+		completedWidth = barWidth
+	}
+
 	bar := strings.Repeat("=", completedWidth)
 	if completedWidth < barWidth {
 		bar += ">" + strings.Repeat(" ", barWidth-completedWidth-1)
 	}
 
 	// Print UI: [Bar] 50% | Speed: 100 Mbps | ETA: 2m30s | 500/1000 MB
-	speedLabel := "Speed"
-	timeLabel := "ETA"
-	if final {
-		speedLabel = "Avg"
-		timeLabel = "Time"
-		etaStr = elapsed.Truncate(time.Second).String()
-	}
-
 	fmt.Printf("\r[%s] %5.1f%% | %s: %6.2f Mbps | %s: %-7s | %d/%d MB      ",
 		bar, percent, speedLabel, displaySpeed, timeLabel, etaStr, current/1024/1024, total/1024/1024)
 }

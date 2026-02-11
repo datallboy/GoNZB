@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
-	"github.com/datallboy/gonzb/internal/indexer"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/labstack/echo/v5"
 )
@@ -101,18 +101,25 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 	}
 
 	// Handle redirect mode
-	if res.RedirectAllowed {
-		// Send the user directly to NNTmux/Indexer
+	if res.RedirectAllowed && !ctrl.App.Store.Exists(res.ID) {
+		// Send the user directly to Indexer
 		return c.Redirect(http.StatusFound, res.DownloadURL)
 	}
 
+	// Stream from file cache or network logic
+	reader, err := ctrl.App.Indexer.GetNZB(c.Request().Context(), res)
+	if err != nil {
+		return c.String(http.StatusInternalServerError, "Failed to fetch NZB")
+	}
+	defer reader.Close()
+
 	// Handle proxy mode
 	c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s.nzb", id))
-	return ctrl.App.Indexer.FetchNZB(c.Request().Context(), id, c)
+	return c.Stream(http.StatusOK, "application/x-nzb", reader)
 }
 
-// buildRSSResponse maps internal SearchResults to the outgoing Newznab XML format
-func buildRSSResponse(results []indexer.SearchResult, baseAddr string) NewznabRSS {
+// buildRSSResponse maps internal Releases to the outgoing Newznab XML format
+func buildRSSResponse(results []*domain.Release, baseAddr string) NewznabRSS {
 	items := make([]RSSItem, 0, len(results))
 
 	for _, res := range results {

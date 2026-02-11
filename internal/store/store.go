@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -9,8 +8,6 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
-
-	"github.com/datallboy/gonzb/internal/indexer"
 )
 
 type PersistentStore struct {
@@ -50,41 +47,6 @@ func NewPersistentStore(dbPath, blobDir string) (*PersistentStore, error) {
 	}
 
 	return store, nil
-}
-
-// Satisfies app.Store for metadata
-func (s *PersistentStore) SaveReleases(ctx context.Context, results []indexer.SearchResult) error {
-	if len(results) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO releases (id, title, source, download_url, size, category, redirect_allowed) VALUES (?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, r := range results {
-		_, err := stmt.ExecContext(ctx, r.ID, r.Title, r.Source, r.DownloadURL, r.Size, r.Category, r.RedirectAllowed)
-		if err != nil {
-			return fmt.Errorf("failed to insert release %s: %w", r.ID, err)
-		}
-	}
-
-	return tx.Commit()
-}
-
-func (s *PersistentStore) GetRelease(ctx context.Context, id string) (indexer.SearchResult, error) {
-	var r indexer.SearchResult
-	err := s.db.QueryRowContext(ctx, "SELECT id, title, source, download_url, size, category, redirect_allowed FROM releases WHERE id = ?", id).
-		Scan(&r.ID, &r.Title, &r.Source, &r.DownloadURL, &r.Size, &r.Category, &r.RedirectAllowed)
-	return r, err
 }
 
 func (s *PersistentStore) GetNZBReader(id string) (io.ReadCloser, error) {
