@@ -25,9 +25,10 @@ type Release struct {
 
 // Segment represents an individual article to be fetched from Usenet
 type Segment struct {
-	Number    int
-	Bytes     int64
-	MessageID string
+	Number      int
+	Bytes       int64
+	MessageID   string
+	MissingFrom map[string]bool
 }
 
 // DownloadFile represents an individual file within a Release.
@@ -42,6 +43,7 @@ type DownloadFile struct {
 	Subject   string
 	Date      int64
 	Groups    []string
+	Poster    string
 
 	// App State (calulated at hydration)
 	PartPath   string
@@ -88,4 +90,10 @@ func (f *DownloadFile) SetActualSize(size int64) {
 
 func (f *DownloadFile) GetActualSize() int64 {
 	return f.actualSize.Load()
+}
+
+type PreparationResult struct {
+	Tasks     []*DownloadFile
+	TotalSize int64
+	Password  string
 }

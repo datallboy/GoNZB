@@ -29,11 +29,9 @@ func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueIte
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
-			p.name as poster_name
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
-		LEFT JOIN posters p ON r.poster_id = p.id
 		ORDER BY q.created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query)
@@ -51,7 +49,6 @@ func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueIte
 			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
 			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-			&rel.PosterName,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan queue row: %w", err)
@@ -70,11 +67,9 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
-			p.name as poster_name
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
-		LEFT JOIN posters p ON r.poster_id = p.id
 		WHERE q.id = ? LIMIT 1`
 
 	var qi queueItemDBO
@@ -84,7 +79,6 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
 		&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 		&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-		&rel.PosterName,
 	)
 
 	if err != nil {
@@ -102,11 +96,9 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
-			p.name as poster_name
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
-		LEFT JOIN posters p ON r.poster_id = p.id
 		WHERE q.status NOT IN ('Completed', 'Failed')
 		ORDER BY q.created_at ASC`
 
@@ -125,7 +117,6 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
 			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-			&rel.PosterName,
 		)
 		if err != nil {
 			return nil, err

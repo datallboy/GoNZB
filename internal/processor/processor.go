@@ -46,8 +46,9 @@ func New(ctx *app.Context, w Closeable) *Processor {
 }
 
 // Prepare sanitizes names and creates sparse files. Returns our internal Tasks.
-func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) ([]*domain.DownloadFile, error) {
+func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) (*domain.PreparationResult, error) {
 	var tasks []*domain.DownloadFile
+	var totalSize int64
 
 	if err := os.MkdirAll(p.ctx.Config.Download.OutDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create out_dir: %w", err)
@@ -76,9 +77,15 @@ func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilenam
 
 		// Create the Task (This calculates Size and Paths internally)
 		task := domain.NewDownloadFile(cleanName, 0, i, domSegs, p.ctx.Config.Download.OutDir, password)
+
+		// Metadata enrichment from NZB
 		task.Subject = rawFile.Subject
 		task.Date = rawFile.Date
 		task.Groups = rawFile.Groups
+		task.Poster = rawFile.Poster
+
+		// Track cumulative size
+		totalSize += task.Size
 
 		// Check if it exists, still append so PostProcess knows about the file
 		if _, err := os.Stat(task.FinalPath); err == nil {
@@ -93,7 +100,11 @@ func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilenam
 		// Populate tasks either way so Download can determine how far along the download is
 		tasks = append(tasks, task)
 	}
-	return tasks, nil
+	return &domain.PreparationResult{
+		Tasks:     tasks,
+		TotalSize: totalSize,
+		Password:  password,
+	}, nil
 }
 
 // Finalize renames .part to final names

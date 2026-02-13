@@ -62,15 +62,20 @@ func (p *nntpProvider) Priority() int { return p.conf.Priority }
 func (p *nntpProvider) MaxConnection() int { return p.conf.MaxConnection }
 
 func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
-	// Create a NEW connection for this specific fetch
 	conn, err := p.getConn()
 	if err != nil {
 		return nil, err
 	}
 
 	if len(groups) > 0 {
-		conn.tp.Cmd("GROUP %s", groups[0])
-		conn.tp.ReadCodeLine(211)
+		if _, err := conn.tp.Cmd("GROUP %s", groups[0]); err != nil {
+			p.returnConn(conn)
+			return nil, err
+		}
+		if _, _, err := conn.tp.ReadCodeLine(211); err != nil {
+			p.returnConn(conn)
+			return nil, err
+		}
 	}
 
 	formattedID := msgID
@@ -79,8 +84,7 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 	}
 
 	// The BODY command tells the server to stream the article content
-	_, err = conn.tp.Cmd("BODY %s", formattedID)
-	if err != nil {
+	if _, err := conn.tp.Cmd("BODY %s", formattedID); err != nil {
 		p.returnConn(conn)
 		return nil, err
 	}
@@ -88,7 +92,7 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 	// Expecting 222 Body follows
 	code, msg, err := conn.tp.ReadCodeLine(222)
 	if err != nil {
-		if code == 403 {
+		if code == 430 || strings.Contains(strings.ToLower(msg), "no such article") {
 			// If not found, we recycle the connection (it's still healthy)
 			p.returnConn(conn)
 			return nil, ErrArticleNotFound
@@ -108,10 +112,8 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 func (p *nntpProvider) getConn() (*nntpConn, error) {
 	select {
 	case conn := <-p.pool:
-		// Check if connection is still alive by sending a NOOP or just returning it
 		return conn, nil
 	default:
-		// Pool is empty, dial a new one
 		return p.dial()
 	}
 }
@@ -121,7 +123,7 @@ func (p *nntpProvider) returnConn(conn *nntpConn) {
 	case p.pool <- conn:
 		// Successfully returned to pool
 	default:
-		// Pool is full (shouldn't happen with our Semaphore), close it
+		// Pool is full, close it
 		conn.tp.Cmd("QUIT")
 		conn.Close()
 	}
@@ -147,9 +149,7 @@ func (p *nntpProvider) dial() (*nntpConn, error) {
 		tlsConfig := &tls.Config{
 			ServerName: p.conf.Host,
 			MinVersion: tls.VersionTLS12,
-			RootCAs:    nil,
 		}
-
 		netConn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
 	} else {
 		netConn, err = dialer.Dial("tcp", addr)
@@ -160,23 +160,29 @@ func (p *nntpProvider) dial() (*nntpConn, error) {
 	}
 
 	conn := textproto.NewConn(netConn)
-	_, _, err = conn.ReadCodeLine(200)
+
+	// Ensure we close the connection if we return an error from this point on
+	success := false
+	defer func() {
+		if !success {
+			conn.Close()
+		}
+	}()
+
+	code, msg, err := conn.ReadCodeLine(200)
 	if err != nil {
 		// Some servers return 201 (Ready, no posting allowed)
-		_, _, err = conn.ReadCodeLine(201)
+		code, msg, err = conn.ReadCodeLine(201)
 	}
 	if err != nil {
-		// Kill the socket
-		netConn.Close()
-		return nil, err
+		return nil, fmt.Errorf("NNTP greeting failed (code %d): %s", code, msg)
 	}
 
 	if err := p.authenticate(conn); err != nil {
-		// Kill the socket
-		netConn.Close()
 		return nil, err
 	}
 
+	success = true
 	return &nntpConn{
 		tp:  conn,
 		raw: netConn,
@@ -184,12 +190,10 @@ func (p *nntpProvider) dial() (*nntpConn, error) {
 }
 
 func (p *nntpProvider) authenticate(conn *textproto.Conn) error {
-
 	if p.conf.Username == "" {
 		return nil
 	}
 
-	// AUTHINFO USER
 	if _, err := conn.Cmd("AUTHINFO USER %s", p.conf.Username); err != nil {
 		return err
 	}
@@ -199,13 +203,11 @@ func (p *nntpProvider) authenticate(conn *textproto.Conn) error {
 		return err
 	}
 
-	// AUTHINFO PASS
 	if _, err := conn.Cmd("AUTHINFO PASS %s", p.conf.Password); err != nil {
 		return err
 	}
 
 	_, _, err = conn.ReadCodeLine(281) // 281: Authentication accepted
-
 	return err
 }
 
@@ -216,13 +218,11 @@ func (p *nntpProvider) TestConnection() error {
 	}
 	defer conn.Close()
 
-	// Send a 'HELP' or 'DATE' command to verify we are truly authenticated and active
-	_, err = conn.tp.Cmd("DATE")
-	if err != nil {
+	if _, err = conn.tp.Cmd("DATE"); err != nil {
 		return fmt.Errorf("DATE command failed: %w", err)
 	}
 
-	code, msg, err := conn.tp.ReadCodeLine(111) // 111 is the success code for DATE
+	code, msg, err := conn.tp.ReadCodeLine(111)
 	if err != nil {
 		return fmt.Errorf("auth check failed (code %d): %s", code, msg)
 	}
@@ -241,12 +241,10 @@ func (pr *pooledReader) Read(b []byte) (n int, err error) {
 	return pr.Reader.Read(b)
 }
 
-// Close is called by the Service worker via 'defer closer.Close()'
 func (pr *pooledReader) Close() error {
-	pr.conn.raw.SetReadDeadline(time.Now().Add(1 * time.Second))
-
+	// Ensure we read the rest of the article before returning to pool
+	pr.conn.raw.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, err := io.Copy(io.Discard, pr.Reader)
-
 	pr.conn.raw.SetReadDeadline(time.Time{})
 
 	if err != nil {

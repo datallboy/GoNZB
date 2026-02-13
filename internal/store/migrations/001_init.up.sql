@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS groups (
 CREATE TABLE IF NOT EXISTS releases (
 		id TEXT PRIMARY KEY,				-- Indexer GUID or NZB hash
         file_hash TEXT NOT NULL,            -- SHA256 content fingerprint
-		poster_id INTEGER,
 		title TEXT NOT NULL,
 		password TEXT,
 		guid TEXT,							-- Original indexer GUID
@@ -23,8 +22,7 @@ CREATE TABLE IF NOT EXISTS releases (
 		publish_date INTEGER,
 		category TEXT,
 		redirect_allowed BOOLEAN DEFAULT 1, -- 0 for false, 1 for true
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY(poster_id) REFERENCES posters(id)
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_releases_file_hash ON releases(file_hash);
@@ -39,7 +37,9 @@ CREATE TABLE IF NOT EXISTS release_files (
     is_pars BOOLEAN DEFAULT 0,
 	subject TEXT,
     date INTEGER,
+    poster_id INTEGER,
     FOREIGN KEY(release_id) REFERENCES releases(id) ON DELETE CASCADE,
+    FOREIGN KEY(poster_id) REFERENCES posters(id),
     UNIQUE(release_id, filename)
 );
 

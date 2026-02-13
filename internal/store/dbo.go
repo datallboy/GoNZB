@@ -11,19 +11,16 @@ import (
 type releaseDBO struct {
 	ID              string         `db:"id"`
 	FileHash        string         `db:"file_hash"`
-	PosterID        sql.NullInt64  `db:"poster_id"`
 	Title           string         `db:"title"`
 	Size            int64          `db:"size"`
 	Password        sql.NullString `db:"password"`
 	GUID            sql.NullString `db:"guid"`
 	Source          sql.NullString `db:"source"`
 	DownloadURL     sql.NullString `db:"download_url"`
-	PublishDate     sql.NullTime   `db:"publish_date"`
+	PublishDate     int64          `db:"publish_date"`
 	Category        sql.NullString `db:"category"`
 	RedirectAllowed bool           `db:"redirect_allowed"`
 	CreatedAt       time.Time      `db:"created_at"`
-	// Join fields (populated during query)
-	PosterName sql.NullString `db:"poster_name"`
 }
 
 // Mapper: DBO to Domain Release
@@ -37,24 +34,28 @@ func (r *releaseDBO) ToDomain() *domain.Release {
 		GUID:        r.GUID.String,
 		Source:      r.Source.String,
 		DownloadURL: r.DownloadURL.String,
-		PublishDate: r.PublishDate.Time,
+		PublishDate: time.Unix(r.PublishDate, 0),
 		Category:    r.Category.String,
-		Poster:      r.PosterName.String,
 	}
 }
 
 // Mapper: Domain Release to DBO
-func (r *releaseDBO) FromDomain(rel *domain.Release, posterID sql.NullInt64) {
+func (r *releaseDBO) FromDomain(rel *domain.Release) {
 	r.ID = rel.ID
 	r.FileHash = rel.FileHash
-	r.PosterID = posterID
 	r.Title = rel.Title
 	r.Size = rel.Size
 	r.Password = sql.NullString{String: rel.Password, Valid: rel.Password != ""}
 	r.GUID = sql.NullString{String: rel.GUID, Valid: rel.GUID != ""}
 	r.Source = sql.NullString{String: rel.Source, Valid: rel.Source != ""}
 	r.DownloadURL = sql.NullString{String: rel.DownloadURL, Valid: rel.DownloadURL != ""}
-	r.PublishDate = sql.NullTime{Time: rel.PublishDate, Valid: !rel.PublishDate.IsZero()}
+
+	if !rel.PublishDate.IsZero() {
+		r.PublishDate = rel.PublishDate.Unix()
+	} else {
+		r.PublishDate = 0
+	}
+
 	r.Category = sql.NullString{String: rel.Category, Valid: rel.Category != ""}
 	r.RedirectAllowed = rel.RedirectAllowed
 }

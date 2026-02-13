@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/segmentio/ksuid"
 )
@@ -22,6 +24,7 @@ type QueueManager struct {
 	store      app.Store
 	indexer    app.IndexerManager
 	logger     *logger.Logger
+	config     *config.Config
 
 	stopFunc   context.CancelFunc
 	newJobChan chan struct{}
@@ -39,6 +42,7 @@ func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
 		store:      app.Store,
 		indexer:    app.Indexer,
 		logger:     app.Logger,
+		config:     app.Config,
 		newJobChan: make(chan struct{}, 1),
 		queue:      make([]*domain.QueueItem, 0),
 	}
@@ -296,8 +300,6 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 		item.Error = &errorMsg
 	} else {
 		item.Status = domain.StatusCompleted
-		// This doesn't matter a whole lot since we're not updating the db
-		item.BytesWritten.Store(item.Release.Size)
 	}
 
 	// Persist the final outcome
@@ -344,29 +346,41 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 	}
 	defer reader.Close()
 
+	// 3. Parse NZB and Prepare
 	nzbModel, err := m.parser.Parse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to parse cached nzb: %w", err)
 	}
 
-	tasks, err := m.processor.Prepare(ctx, nzbModel, item.Release.Title)
+	prepRes, err := m.processor.Prepare(ctx, nzbModel, item.Release.Title)
 	if err != nil {
 		return fmt.Errorf("failed to prepare download: %w", err)
 	}
 
-	// Update the Release record (now with real size and potential poster)
+	// 4. THE ENRICHMENT: Map Prep results to the Release
+	m.mu.Lock()
+	item.Tasks = prepRes.Tasks
+
+	// Update Release metadata
+	item.Release.Size = prepRes.TotalSize
+	item.Release.Password = prepRes.Password
+
+	// Use the first task's date as a reasonable release-level default
+	if len(prepRes.Tasks) > 0 {
+		item.Release.PublishDate = time.Unix(prepRes.Tasks[0].Date, 0)
+	}
+	m.mu.Unlock()
+
+	// Update the Release record
 	if err := m.store.UpsertReleases(ctx, []*domain.Release{item.Release}); err != nil {
 		m.logger.Warn("failed to update release size: %v", err)
 	}
 
-	// Save the File Roadmap
-	if err := m.store.SaveReleaseFiles(ctx, item.ReleaseID, tasks); err != nil {
+	// Save the ReleaseFiles
+	if err := m.store.SaveReleaseFiles(ctx, item.ReleaseID, prepRes.Tasks); err != nil {
 		m.logger.Warn("failed to save files to db: %v", err)
 	}
 
-	m.mu.Lock()
-	item.Tasks = tasks
-	m.mu.Unlock()
 	return nil
 }
 

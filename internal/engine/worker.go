@@ -73,20 +73,27 @@ func (s *Downloader) runWorkerPool(ctx context.Context, item *domain.QueueItem) 
 			if res.Error != nil {
 				// Identify the error type
 				isBusy := errors.Is(res.Error, nntp.ErrProviderBusy)
-				isMissing := errors.Is(res.Error, nntp.ErrArticleNotFound)
+
+				if isBusy {
+					go func(j DownloadJob) {
+						time.Sleep(250 * time.Millisecond) // Short delay to let a slot open
+						select {
+						case <-workerCtx.Done():
+						case jobs <- j:
+						}
+					}(res.Job)
+					continue
+				}
 
 				// If we have retires left, put it back in the pipeline
-				if (isBusy || isMissing) && res.Job.RetryCount < 3 {
-					delay := 100 * time.Millisecond // quick retry for busy error
+				if res.Job.RetryCount < 3 {
+					res.Job.RetryCount++
 
-					if !isBusy {
-						res.Job.RetryCount++
-						delay = time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
+					delay := time.Duration(math.Pow(2, float64(res.Job.RetryCount))) * time.Second
 
-						s.ctx.Logger.Debug("[Retry] Segment %s: Attempt %d/3 - Error: %v",
-							res.Job.Segment.MessageID, res.Job.RetryCount, res.Error)
+					s.ctx.Logger.Debug("[Retry] Segment %s: Attempt %d/3 - Error: %v",
+						res.Job.Segment.MessageID, res.Job.RetryCount, res.Error)
 
-					}
 					go func(j DownloadJob, d time.Duration) {
 						time.Sleep(d)
 						select {
@@ -120,16 +127,16 @@ func (s *Downloader) worker(ctx context.Context, item *domain.QueueItem, jobs <-
 			if !ok {
 				return
 			}
-			err := s.processSegment(ctx, item, job)
+			err := s.processSegment(ctx, item, &job)
 			results <- DownloadResult{Job: job, Error: err}
 		}
 	}
 }
 
 // processSegment handles the unique pipleine for a single Usenet article
-func (s *Downloader) processSegment(ctx context.Context, item *domain.QueueItem, job DownloadJob) error {
+func (s *Downloader) processSegment(ctx context.Context, item *domain.QueueItem, job *DownloadJob) error {
 	// Fetch from the Manager (handles priorities, auth, and connections)
-	rawReader, err := s.ctx.NNTP.Fetch(ctx, job.Segment.MessageID, job.Groups)
+	rawReader, err := s.ctx.NNTP.Fetch(ctx, &job.Segment, job.Groups)
 	if err != nil {
 		return fmt.Errorf("fetch failed: %w", err)
 	}
