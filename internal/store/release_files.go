@@ -18,14 +18,28 @@ func (s *PersistentStore) SaveReleaseFiles(ctx context.Context, releaseID string
 	defer tx.Rollback()
 
 	for _, f := range files {
+
+		var posterID *int64 // Use a pointer in case the poster string is empty
+		if f.Poster != "" {
+			var id int64
+			err := tx.QueryRowContext(ctx, `
+				INSERT INTO posters (name) VALUES (?) 
+				ON CONFLICT(name) DO UPDATE SET name=name 
+				RETURNING id`, f.Poster).Scan(&id)
+			if err != nil {
+				return fmt.Errorf("failed to sync poster: %w", err)
+			}
+			posterID = &id
+		}
+
 		// 1. Upsert File Record
 		var fileID int64
 		err := tx.QueryRowContext(ctx, `
-			INSERT INTO release_files (release_id, filename, size, file_index, is_pars, subject, date)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO release_files (release_id, filename, size, file_index, is_pars, subject, date, poster_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(release_id, filename) DO UPDATE SET size = excluded.size
 			RETURNING id`,
-			releaseID, f.FileName, f.Size, f.Index, f.IsPars, f.Subject, f.Date,
+			releaseID, f.FileName, f.Size, f.Index, f.IsPars, f.Subject, f.Date, posterID,
 		).Scan(&fileID)
 		if err != nil {
 			return err
@@ -59,10 +73,12 @@ func (s *PersistentStore) GetReleaseFiles(ctx context.Context, releaseID string)
 		SELECT 
 			rf.id, rf.release_id, rf.filename, rf.size, rf.file_index, 
 			rf.is_pars, rf.subject, rf.date,
+			p.name as poster_name,
 			GROUP_CONCAT(g.name) as group_names
 		FROM release_files rf
 		LEFT JOIN release_file_groups rfg ON rf.id = rfg.release_file_id
 		LEFT JOIN groups g ON rfg.group_id = g.id
+		LEFT JOIN posters p ON rf.poster_id = p.id
 		WHERE rf.release_id = ?
 		GROUP BY rf.id
 		ORDER BY rf.file_index ASC`
@@ -75,12 +91,13 @@ func (s *PersistentStore) GetReleaseFiles(ctx context.Context, releaseID string)
 
 	var files []*domain.DownloadFile
 	for rows.Next() {
-		var f domain.DownloadFile
+		f := &domain.DownloadFile{}
 		var groupConcat sql.NullString
+		var posterName sql.NullString
 
 		err := rows.Scan(
 			&f.ID, &f.ReleaseID, &f.FileName, &f.Size, &f.Index,
-			&f.IsPars, &f.Subject, &f.Date, &groupConcat,
+			&f.IsPars, &f.Subject, &f.Date, &posterName, &groupConcat,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan release file: %w", err)
@@ -93,7 +110,7 @@ func (s *PersistentStore) GetReleaseFiles(ctx context.Context, releaseID string)
 			f.Groups = []string{}
 		}
 
-		files = append(files, &f)
+		files = append(files, f)
 	}
 
 	return files, nil

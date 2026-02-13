@@ -16,7 +16,7 @@ import (
 
 type NNTPManager interface {
 	// This allows the engine to call the manager without importing the nntp package
-	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
+	Fetch(ctx context.Context, seg *domain.Segment, groups []string) (io.Reader, error)
 	TotalCapacity() int
 }
 
@@ -29,7 +29,7 @@ type IndexerManager interface {
 
 type Processor interface {
 	// This allows the engine to trigger repair/extract without importing processor
-	Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) ([]*domain.DownloadFile, error)
+	Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) (*domain.PreparationResult, error)
 	Finalize(ctx context.Context, tasks []*domain.DownloadFile) error
 	PostProcess(ctx context.Context, tasks []*domain.DownloadFile) error
 }

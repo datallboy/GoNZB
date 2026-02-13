@@ -181,15 +181,11 @@ func executeDownload() {
 	// Minimal seed: just metadata and the blob
 	release := &domain.Release{
 		ID:       releaseID,
+		FileHash: releaseID,
+		GUID:     releaseID,
 		Title:    filename,
 		Source:   "manual",
 		Category: "Uncategorized",
-	}
-
-	// Save to DB so HydrateItem can find the metadata
-	err = appCtx.Store.UpsertReleases(setupCtx, []*domain.Release{release})
-	if err != nil {
-		appCtx.Logger.Fatal("Failed to save release info to database: %v", err)
 	}
 
 	// Save NZB bits to Blob Store
@@ -215,6 +211,8 @@ func executeDownload() {
 	if err != nil {
 		appCtx.Logger.Fatal("Failed to queue NZB: %v", err)
 	}
+
+	item.Release = release
 
 	// Manually call Hydrate
 	if err := appCtx.Queue.HydrateItem(setupCtx, item); err != nil {
@@ -294,6 +292,7 @@ func executeDownload() {
 				} else {
 					appCtx.Logger.Info("Download completed successfully!")
 				}
+				stop()
 				return
 			}
 		}
