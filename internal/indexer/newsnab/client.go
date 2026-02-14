@@ -71,9 +71,9 @@ func (c *Client) DownloadNZB(ctx context.Context, res *domain.Release) (io.ReadC
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, fmt.Errorf("indexer returned status: %d", resp.StatusCode)
 	}
 
