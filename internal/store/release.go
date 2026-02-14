@@ -74,6 +74,38 @@ func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Re
 	return dbo.ToDomain(), nil
 }
 
+// SearchReleases returns releases matching a title query
+func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*domain.Release, error) {
+	sqlQuery := `
+		SELECT 
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+		FROM releases r
+		WHERE r.title LIKE ? 
+		ORDER BY r.publish_date DESC 
+		LIMIT 100`
+
+	rows, err := s.db.QueryContext(ctx, sqlQuery, "%"+query+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*domain.Release
+	for rows.Next() {
+		var dbo releaseDBO
+		err := rows.Scan(
+			&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
+			&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
+		)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, dbo.ToDomain())
+	}
+
+	return results, nil
+}
+
 // UpdateReleaseHash is used when an indexer result finally downloads its NZB.
 func (s *PersistentStore) UpdateReleaseHash(ctx context.Context, id string, hash string) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE releases SET file_hash = ? WHERE id = ?", hash, id)

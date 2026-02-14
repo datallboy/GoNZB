@@ -8,6 +8,7 @@ import (
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/indexer"
 	"github.com/datallboy/gonzb/internal/indexer/newsnab"
+	storeIndexer "github.com/datallboy/gonzb/internal/indexer/store"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
@@ -64,6 +65,7 @@ type Store interface {
 	// Metadata: SQLLite
 	UpsertReleases(ctx context.Context, results []*domain.Release) error
 	GetRelease(ctx context.Context, id string) (*domain.Release, error)
+	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
 	UpdateReleaseHash(ctx context.Context, id string, hash string) error
 	GetReleaseByHash(ctx context.Context, hash string) (*domain.Release, error)
 
@@ -113,7 +115,10 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	}
 
 	// Initialize Indexer Manager
-	idxManager := indexer.NewManager(store)
+	idxManager := indexer.NewManager(store, log)
+
+	// Always add the local store indexer
+	idxManager.AddIndexer(storeIndexer.New(store))
 
 	for _, idxCfg := range cfg.Indexers {
 		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiKey, idxCfg.Redirect)
