@@ -27,6 +27,7 @@ RUN ln -s /usr/bin/7z /usr/bin/unrar
 
 # Create directories for config and download
 RUN mkdir /config /downloads
+RUN mkdir -p /store/metadata /store/nzbs
 
 COPY --from=builder /app/gonzb .
 

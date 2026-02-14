@@ -1,14 +1,20 @@
+# GoNZB Configuration Example
+
+# The port the HTTP server will listen on
+port: "8080"
+
+# Usenet Server Configuration (NNTP)
 servers:
-  - id: "1"
+  - id: "Primary"
     host: "news.example.com"
     port: 563
     username: "username"
     password: "password"
     tls: true
-    max_connections: 10
-    priority: 1
-  - id: "2"
-    host: "news.example.com"
+    max_connections: 20
+    priority: 1 # Lower number = Higher priority
+  - id: "Backup"
+    host: "news.backup.com"
     port: 563
     username: "username"
     password: "password"
@@ -16,18 +22,30 @@ servers:
     max_connections: 10
     priority: 2
 
+# Newznab compatible indexers for searching
+indexers:
+  - id: "IndexerName"
+    base_url: "https://api.indexer.com"
+    api_key: "your_api_key_here"
+    redirect: false # If true, redirects download requests directly to the indexer's URL
 
+# Download and Post-Processing settings
 download:
-  out_dir: "./downloads"
-  completed_dir: "./downloads/completed"
-  cleanup_extensions:
-    - ".par2"
+  out_dir: "/downloads"             # Temporary directory for active downloads
+  completed_dir: "/downloads/completed" # Final destination for extracted/verified files
+  cleanup_extensions:                # List of file extensions to remove after success
     - ".nzb"
-    - ".rar"
-    - ".zip"
-    - ".7z"
+    - ".par2"
+    - ".sfv"
+    - ".nfo"
 
+# Application Logging
 log:
   path: "gonzb.log"
-  level: "info"
+  level: "info" # debug, info, warn, error
   include_stdout: true
+
+# Metadata and Blob Storage
+store:
+  sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
+  blob_dir: "/store/nzbs"                # Directory to store cached NZB files
