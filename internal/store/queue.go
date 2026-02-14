@@ -99,7 +99,7 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
-		WHERE q.status NOT IN ('Completed', 'Failed')
+		WHERE q.status NOT IN ('completed', 'failed')
 		ORDER BY q.created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query)
