@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
@@ -12,9 +13,17 @@ import (
 type store interface {
 	UpsertReleases(ctx context.Context, results []*domain.Release) error
 	GetRelease(ctx context.Context, id string) (*domain.Release, error)
+	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
 	GetNZBReader(id string) (io.ReadCloser, error)
 	CreateNZBWriter(id string) (io.WriteCloser, error)
 	Exists(id string) bool
+}
+
+type logger interface {
+	Debug(format string, v ...interface{})
+	Info(format string, v ...interface{})
+	Warn(format string, v ...interface{})
+	Error(format string, v ...interface{})
 }
 
 // BaseManager is the concrete implementation of the Manager interface.
@@ -22,13 +31,15 @@ type BaseManager struct {
 	mu       sync.RWMutex
 	indexers map[string]Indexer
 	store    store
+	logger   logger
 }
 
 // NewManager initializes a new manager with a physical file store.
-func NewManager(s store) *BaseManager {
+func NewManager(s store, l logger) *BaseManager {
 	return &BaseManager{
 		indexers: make(map[string]Indexer),
 		store:    s,
+		logger:   l,
 	}
 }
 
@@ -49,8 +60,14 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]*domain.Re
 		wg.Add(1)
 		go func(i Indexer) {
 			defer wg.Done()
-			res, err := i.Search(ctx, query)
+
+			// Create a per-indexer timeout context
+			searchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+
+			res, err := i.Search(searchCtx, query)
 			if err != nil {
+				m.logger.Error("Indexer %s error: %v", i.Name(), err)
 				return
 			}
 
