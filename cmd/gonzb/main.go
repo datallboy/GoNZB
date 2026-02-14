@@ -126,7 +126,6 @@ func executeServer() {
 	e := echo.New()
 
 	appCtx.Queue = engine.NewQueueManager(appCtx, true)
-
 	// Create a "Global" context that we can cancel to trigger shutdown
 	// This context manages the entire application lifecycle
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -141,9 +140,10 @@ func executeServer() {
 	sc := echo.StartConfig{
 		Address:         ":" + appCtx.Config.Port,
 		GracefulTimeout: 10 * time.Second,
+		HidePort:        true,
+		HideBanner:      true,
 	}
-
-	appCtx.Logger.Info("GoNZB starting up on port %s", appCtx.Config.Port)
+	appCtx.Logger.Info("GoNZB listening on port %s...", appCtx.Config.Port)
 
 	if err := sc.Start(ctx, e); err != nil && err != http.ErrServerClosed {
 		appCtx.Logger.Error("failed to start server %v", err)
