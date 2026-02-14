@@ -73,3 +73,12 @@ func (l *Logger) Info(f string, v ...any)  { l.log(LevelInfo, "INFO", f, v...) }
 func (l *Logger) Warn(f string, v ...any)  { l.log(LevelWarn, "WARN", f, v...) }
 func (l *Logger) Error(f string, v ...any) { l.log(LevelError, "ERROR", f, v...) }
 func (l *Logger) Fatal(f string, v ...any) { l.log(LevelFatal, "FATAL", f, v...); os.Exit(1) }
+
+func (l *Logger) Write(p []byte) (n int, err error) {
+	// Echo and other libraries often include a newline at the end
+	msg := strings.TrimSpace(string(p))
+	if msg != "" {
+		l.Info("%s", msg)
+	}
+	return len(p), nil
+}
