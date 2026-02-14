@@ -87,7 +87,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.out_dir", "./downloads")
 	v.SetDefault("download.completed_dir", "./downloads/completed")
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
-	v.SetDefault("log.path", "gonzb.log")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
 
