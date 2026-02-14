@@ -62,17 +62,22 @@ func Load(path string) (*Config, error) {
 
 	// 1. Check if the file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// If they are using the default "config.yaml" and it's missing,
-		// check if the example exists to give a better error message.
+		// FALLBACK: If we are in Docker (or similar) and didn't provide a flag, check /config/config.yaml
 		if path == "config.yaml" {
-			if _, errEx := os.Stat("config.yaml.example"); errEx == nil {
+			if _, errEx := os.Stat("/config/config.yaml"); errEx == nil {
+				path = "/config/config.yaml"
+			} else if _, errEx := os.Stat("config.yaml.example"); errEx == nil {
+				// If config.yaml is missing but example exists, give a helpful error
 				return nil, fmt.Errorf("configuration file 'config.yaml' not found\n\n" +
 					"To fix this, run:\n" +
 					"  cp config.yaml.example config.yaml\n" +
 					"Then edit it with your Usenet credentials.")
+			} else {
+				return nil, fmt.Errorf("config file not found: %s", path)
 			}
+		} else {
+			return nil, fmt.Errorf("config file not found: %s", path)
 		}
-		return nil, fmt.Errorf("config file not found: %s", path)
 	}
 
 	v := viper.New()
