@@ -25,13 +25,18 @@ type Logger struct {
 }
 
 func New(filePath string, level Level, includeStdout bool) (*Logger, error) {
-	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
+	var fileLogger *log.Logger
+
+	if filePath != "" && filePath != "/dev/null" && filePath != "none" {
+		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, err
+		}
+		fileLogger = log.New(f, "", 0)
 	}
 
 	return &Logger{
-		fileLogger:    log.New(f, "", 0),
+		fileLogger:    fileLogger,
 		level:         level,
 		includeStdout: includeStdout,
 	}, nil
@@ -46,7 +51,9 @@ func (l *Logger) log(lvl Level, prefix string, format string, v ...interface{}) 
 	msg := fmt.Sprintf(format, v...)
 	fullMsg := fmt.Sprintf("%s [%s] %s", timestamp, prefix, msg)
 
-	l.fileLogger.Println(fullMsg)
+	if l.fileLogger != nil {
+		l.fileLogger.Println(fullMsg)
+	}
 
 	// Write to Stdout for Docker/CLI if enabled AND level is Info or higher
 	// This prevents Debug spam from breaking progress bar and other CLI UI elements

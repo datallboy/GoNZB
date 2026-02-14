@@ -46,7 +46,7 @@ cp config.yaml.example config.yaml
 | **download** | `out_dir` | Directory for active/temporary downloads (`.part` files). |
 | | `completed_dir` | Final destination for extracted and verified files. |
 | | `cleanup_extensions` | File extensions to delete after success (e.g., `[".par2", ".rar"]`). |
-| **log** | `path` | Path to the log file (e.g., `gonzb.log`). |
+| **log** | `path` | Path to the log file. Set to `""` or `"none"` to disable file logging (useful for Docker). |
 | | `level` | Verbosity: `debug`, `info`, `warn`, or `error`. |
 | | `include_stdout` | If `true`, logs also appear in the terminal. |
 | **store** | `sqlite_path` | Path to the SQLite metadata database. |

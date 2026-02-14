@@ -41,8 +41,8 @@ download:
 
 # Application Logging
 log:
-  path: "gonzb.log"
-  level: "info" # debug, info, warn, error
+  path: "gonzb.log" # Set to "" or "none" to disable file logging (recommended for Docker)
+  level: "info"     # debug, info, warn, error
   include_stdout: true
 
 # Metadata and Blob Storage
