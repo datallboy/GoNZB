@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"fmt"
 	"html"
 	"io"
 	"os"
@@ -64,11 +65,10 @@ func moveCrossDevice(sourcePath, destPath string) error {
 	tempDest := filepath.Join(filepath.Dir(destPath), "."+filepath.Base(destPath)+".tmp")
 
 	// Create the destination file
-	dst, err := os.Create(destPath)
+	dst, err := os.Create(tempDest)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
 
 	// Copy the contents. io.Copy is efficient as it uses small buffers
 	// or sendfile(2) where available.
@@ -76,17 +76,21 @@ func moveCrossDevice(sourcePath, destPath string) error {
 	if err != nil {
 		dst.Close()
 		os.Remove(tempDest)
-		return err
+		return fmt.Errorf("copy failed: %w", err)
 	}
 
 	err = dst.Sync()
 	if err != nil {
+		dst.Close()
+		os.Remove(tempDest)
 		return err
 	}
 
-	// Explicitly close before deleting the source
-	src.Close()
-	dst.Close()
+	err = dst.Close()
+	if err != nil {
+		os.Remove(tempDest)
+		return err
+	}
 
 	err = os.Rename(tempDest, destPath)
 	if err != nil {
@@ -95,11 +99,17 @@ func moveCrossDevice(sourcePath, destPath string) error {
 	}
 
 	// Remove the original file only after copy success
+	src.Close()
 	return os.Remove(sourcePath)
 }
 
 // moveFile handles the logic of moving a file, falling back to cross-device copy if rename fails.
 func moveFile(source, dest string) error {
+	// Ensure the destination directory exists
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return err
+	}
+
 	// Try simple rename first
 	err := os.Rename(source, dest)
 	if err == nil {
