@@ -61,6 +61,7 @@ func (m *QueueManager) initFromDatabase() {
 	err := m.store.ResetStuckQueueItems(ctx,
 		domain.StatusPending,
 		domain.StatusDownloading,
+		domain.StatusProcessing,
 	)
 
 	if err != nil {
@@ -82,6 +83,13 @@ func (m *QueueManager) initFromDatabase() {
 
 // Add creates a new domain.QueueItem and notifies the processor loop
 func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error) {
+	release, err := m.store.GetRelease(ctx, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate release metadata for %s: %w", releaseID, err)
+	}
+	if release == nil {
+		return nil, fmt.Errorf("release metadata missing for %s", releaseID)
+	}
 
 	item := &domain.QueueItem{
 		ID:        ksuid.New().String(),
@@ -335,6 +343,9 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 		rel, err := m.store.GetRelease(ctx, item.ReleaseID)
 		if err != nil {
 			return fmt.Errorf("could not find file metadata: %w", err)
+		}
+		if rel == nil {
+			return fmt.Errorf("release metadata not found for %s", item.ReleaseID)
 		}
 		item.Release = rel
 	}

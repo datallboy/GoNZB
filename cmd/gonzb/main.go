@@ -188,6 +188,12 @@ func executeDownload() {
 		Category: "Uncategorized",
 	}
 
+	// Persist release metadata before queue insertion so restart recovery
+	// never ends up with queue rows that cannot be joined to releases.
+	if err := appCtx.Store.UpsertReleases(setupCtx, []*domain.Release{release}); err != nil {
+		appCtx.Logger.Fatal("Failed to persist release metadata: %v", err)
+	}
+
 	// Save NZB bits to Blob Store
 	// This "primes" the cache so GetNZB doesn't try to call a web indexer
 	writer, err := appCtx.Store.CreateNZBWriter(releaseID)
