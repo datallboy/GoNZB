@@ -259,6 +259,16 @@ func (m *QueueManager) Cancel(id string) bool {
 			// 2. Call the context cancel function
 			if item.CancelFunc != nil {
 				item.CancelFunc()
+				return true
+			}
+
+			// Pending items may not have a cancel func yet. Mark terminal now.
+			item.Status = domain.StatusFailed
+			cancelErr := "Cancelled by user"
+			item.Error = &cancelErr
+			m.removeFromLiveQueue(item.ID)
+			if err := m.store.SaveQueueItem(context.Background(), item); err != nil {
+				m.logger.Error("Failed to persist cancelled queue item %s: %v", item.ID, err)
 			}
 
 			return true
@@ -290,7 +300,9 @@ func (m *QueueManager) UpdateStatus(ctx context.Context, item *domain.QueueItem,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item.Status = status
-	_ = m.store.SaveQueueItem(ctx, item)
+	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+		m.logger.Error("Failed to persist status %s for queue item %s: %v", status, item.ID, err)
+	}
 }
 
 func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, err error) {
@@ -311,7 +323,9 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 	}
 
 	// Persist the final outcome
-	_ = m.store.SaveQueueItem(ctx, item)
+	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+		m.logger.Error("Failed to persist final state for queue item %s: %v", item.ID, err)
+	}
 
 	m.activeItem = nil
 	m.removeFromLiveQueue(item.ID)

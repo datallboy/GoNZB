@@ -157,6 +157,8 @@ func executeServer() {
 
 func executeDownload() {
 	appCtx := setupApp()
+	defer appCtx.Close()
+
 	filename := filepath.Base(nzbPath)
 	setupCtx := context.Background()
 
@@ -274,8 +276,6 @@ func executeDownload() {
 				if !barRendered {
 					fmt.Print("\n\n")
 				}
-
-				fmt.Printf("\r [DEBUG] Raw Bytes: %d | Delta: %d ", current, delta)
 
 				// Calculate instantaneous speed
 				speedMbps := float64(delta) * 8 / (1024 * 1024 * 0.5)
