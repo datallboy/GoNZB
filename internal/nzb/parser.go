@@ -2,8 +2,8 @@ package nzb
 
 import (
 	"encoding/xml"
+	"fmt"
 	"io"
-	"log"
 	"os"
 )
 
@@ -16,7 +16,7 @@ func NewParser() *Parser {
 func (p *Parser) ParseFile(nzbPath string) (*Model, error) {
 	f, err := os.Open(nzbPath)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to open nzb file: %w", err)
 	}
 	defer f.Close()
 
