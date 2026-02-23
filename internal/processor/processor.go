@@ -87,9 +87,15 @@ func (p *Processor) Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilenam
 		// Track cumulative size
 		totalSize += task.Size
 
-		// Check if it exists, still append so PostProcess knows about the file
-		if _, err := os.Stat(task.FinalPath); err == nil {
-			task.IsComplete = true
+		// Check if a completed file already exists and only skip download
+		// when the on-disk size is at least what NZB metadata expects.
+		if info, err := os.Stat(task.FinalPath); err == nil {
+			if task.Size > 0 && info.Size() < task.Size {
+				p.ctx.Logger.Warn("Existing file is smaller than expected; re-downloading %s (%d < %d)",
+					task.FileName, info.Size(), task.Size)
+			} else {
+				task.IsComplete = true
+			}
 		} else {
 			// Only pre-allocate if we actually need to download it
 			if err := p.writer.PreAllocate(task.PartPath, task.Size); err != nil {

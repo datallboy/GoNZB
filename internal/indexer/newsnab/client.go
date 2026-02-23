@@ -6,35 +6,56 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
 type Client struct {
 	BaseURL         string
+	ApiPath         string
 	APIKey          string
 	name            string
 	redirectAllowed bool
+	httpClient      *http.Client
 }
 
-func New(name, baseURL, apiKey string, redirect bool) *Client {
+func New(name, baseURL, apiPath, apiKey string, redirect bool) *Client {
 	return &Client{
 		name:            name,
 		BaseURL:         baseURL,
+		ApiPath:         apiPath,
 		APIKey:          apiKey,
 		redirectAllowed: redirect,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
 func (c *Client) Name() string { return c.name }
 
 func (c *Client) Search(ctx context.Context, query string) ([]*domain.Release, error) {
-	// Newsnab API search URL
-	searchURL := fmt.Sprintf("%s/api?t=search&q=%s&apikey=%s&o=xml", c.BaseURL, query, c.APIKey)
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+
+	searchURL := base.ResolveReference(&url.URL{Path: c.ApiPath})
+	params := searchURL.Query()
+	params.Set("t", "search")
+	params.Set("q", query)
+	params.Set("apikey", c.APIKey)
+	params.Set("o", "xml")
+	searchURL.RawQuery = params.Encode()
 
 	// 1. Perform HTTP GET
-	req, _ := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
-	resp, err := http.DefaultClient.Do(req)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create search request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -61,13 +82,22 @@ func (c *Client) Search(ctx context.Context, query string) ([]*domain.Release, e
 
 func (c *Client) DownloadNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
 	// Newznab uses t=getnzb and the id (guid) to fetch the file
-	u := fmt.Sprintf("%s&apikey=%s", res.DownloadURL, c.APIKey)
+	downloadURL, err := url.Parse(res.DownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid release download URL %q: %w", res.DownloadURL, err)
+	}
+	params := downloadURL.Query()
+	params.Set("apikey", c.APIKey)
+	downloadURL.RawQuery = params.Encode()
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create download request: %w", err)
+	}
 
 	req.Header.Set("User-Agent", "GoNZB/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

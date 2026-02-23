@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Extractor defines the behavior for extracting compress archives
@@ -24,10 +25,9 @@ type Extractor interface {
 type CmdFactory func(workDir string) *exec.Cmd
 
 func baseExtract(ctx context.Context, archivePath, destDir string, factory CmdFactory) ([]string, error) {
-	// Create a subfolder for this extaction
-	workDir := filepath.Join(destDir, "_extracted"+filepath.Base(archivePath))
-
-	if err := os.MkdirAll(workDir, 0755); err != nil {
+	// Use a unique extraction workdir to avoid archive name collisions.
+	workDir, err := os.MkdirTemp(destDir, "_extracted_*")
+	if err != nil {
 		return nil, fmt.Errorf("failed to create extraction workdir: %w", err)
 	}
 
@@ -55,11 +55,18 @@ func baseExtract(ctx context.Context, archivePath, destDir string, factory CmdFa
 		}
 
 		if !d.IsDir() {
-			targetPath := filepath.Join(destDir, d.Name())
+			relPath, err := filepath.Rel(workDir, path)
+			if err != nil {
+				return fmt.Errorf("failed to resolve extracted file path: %w", err)
+			}
+			if relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("invalid extracted path outside workdir: %s", relPath)
+			}
+			targetPath := filepath.Join(destDir, relPath)
 
 			// Move file from extracted dir to main directory
-			if err := os.Rename(path, targetPath); err != nil {
-				return fmt.Errorf("failed to move extracted file %s: %w", d.Name(), err)
+			if err := moveFile(path, targetPath); err != nil {
+				return fmt.Errorf("failed to move extracted file %s: %w", relPath, err)
 			}
 
 			finalPaths = append(finalPaths, targetPath)

@@ -3,6 +3,10 @@
 # The port the HTTP server will listen on
 port: "8080"
 
+# API authentication (optional)
+api:
+  key: "" # Set to a non-empty value to require apikey on /api and /nzb routes
+
 # Usenet Server Configuration (NNTP)
 servers:
   - id: "Primary"
@@ -26,6 +30,7 @@ servers:
 indexers:
   - id: "IndexerName"
     base_url: "https://api.indexer.com"
+    api_path: "/api"
     api_key: "your_api_key_here"
     redirect: false # If true, redirects download requests directly to the indexer's URL
 
