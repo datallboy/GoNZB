@@ -97,6 +97,10 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 
 	res, err := ctrl.App.Indexer.GetResultByID(c.Request().Context(), id)
 	if err != nil {
+		ctrl.App.Logger.Error("Failed release lookup for id %s: %v", id, err)
+		return c.String(http.StatusInternalServerError, "Failed to lookup NZB")
+	}
+	if res == nil {
 		return c.String(http.StatusNotFound, "NZB not found in database")
 	}
 

@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ type store interface {
 	GetRelease(ctx context.Context, id string) (*domain.Release, error)
 	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
 	GetNZBReader(id string) (io.ReadCloser, error)
-	CreateNZBWriter(id string) (io.WriteCloser, error)
+	SaveNZBAtomically(id string, data []byte) error
 	Exists(id string) bool
 }
 
@@ -93,7 +94,9 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]*domain.Re
 
 	// Persist release records in database
 	if len(allResults) > 0 {
-		_ = m.store.UpsertReleases(ctx, allResults)
+		if err := m.store.UpsertReleases(ctx, allResults); err != nil {
+			m.logger.Warn("Failed to persist indexer search results: %v", err)
+		}
 	}
 
 	return allResults, nil
@@ -116,49 +119,29 @@ func (m *BaseManager) GetNZB(ctx context.Context, res *domain.Release) (io.ReadC
 		return nil, fmt.Errorf("indexer %s not found", res.Source)
 	}
 
-	// This calls either the raw DownloadNZB or the Cached one!
+	// This calls either the raw DownloadNZB or the local store indexer.
 	data, err := idx.DownloadNZB(ctx, res)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download from inedxer: %w", err)
 	}
+	defer data.Close()
 
-	// Cache file to disk
-	cacheFile, err := m.store.CreateNZBWriter(res.ID)
+	// Read once so we can both cache atomically and still return data on
+	// cache-write failures without re-downloading from upstream.
+	payload, err := io.ReadAll(data)
 	if err != nil {
-		// If we can't create cache, just return the raw data anyways
-		return data, nil
+		return nil, fmt.Errorf("failed reading nzb payload: %w", err)
 	}
 
-	// Return custom ReadCloser that closes both the network body and the cache file
-	return &teeReadCloser{
-		reader: io.TeeReader(data, cacheFile),
-		closer: data,
-		file:   cacheFile,
-	}, nil
+	if err := m.store.SaveNZBAtomically(res.ID, payload); err != nil {
+		m.logger.Warn("Failed to persist cached NZB for %s: %v", res.ID, err)
+		return io.NopCloser(bytes.NewReader(payload)), nil
+	}
 
+	return m.store.GetNZBReader(res.ID)
 }
 
 // GetResultByID looks up a search result in the manager's memory
 func (m *BaseManager) GetResultByID(ctx context.Context, id string) (*domain.Release, error) {
 	return m.store.GetRelease(ctx, id)
-}
-
-// teeReadCloser is a helper to ensure we close everything correctly.
-type teeReadCloser struct {
-	reader io.Reader
-	closer io.Closer
-	file   io.WriteCloser
-}
-
-func (t *teeReadCloser) Read(p []byte) (n int, err error) {
-	return t.reader.Read(p)
-}
-
-func (t *teeReadCloser) Close() error {
-	err1 := t.closer.Close()
-	err2 := t.file.Close()
-	if err1 != nil {
-		return err1
-	}
-	return err2
 }

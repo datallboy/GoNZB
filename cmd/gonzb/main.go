@@ -157,6 +157,8 @@ func executeServer() {
 
 func executeDownload() {
 	appCtx := setupApp()
+	defer appCtx.Close()
+
 	filename := filepath.Base(nzbPath)
 	setupCtx := context.Background()
 
@@ -186,6 +188,12 @@ func executeDownload() {
 		Title:    filename,
 		Source:   "manual",
 		Category: "Uncategorized",
+	}
+
+	// Persist release metadata before queue insertion so restart recovery
+	// never ends up with queue rows that cannot be joined to releases.
+	if err := appCtx.Store.UpsertReleases(setupCtx, []*domain.Release{release}); err != nil {
+		appCtx.Logger.Fatal("Failed to persist release metadata: %v", err)
 	}
 
 	// Save NZB bits to Blob Store
@@ -268,8 +276,6 @@ func executeDownload() {
 				if !barRendered {
 					fmt.Print("\n\n")
 				}
-
-				fmt.Printf("\r [DEBUG] Raw Bytes: %d | Delta: %d ", current, delta)
 
 				// Calculate instantaneous speed
 				speedMbps := float64(delta) * 8 / (1024 * 1024 * 0.5)

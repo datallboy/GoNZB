@@ -61,6 +61,7 @@ func (m *QueueManager) initFromDatabase() {
 	err := m.store.ResetStuckQueueItems(ctx,
 		domain.StatusPending,
 		domain.StatusDownloading,
+		domain.StatusProcessing,
 	)
 
 	if err != nil {
@@ -82,6 +83,13 @@ func (m *QueueManager) initFromDatabase() {
 
 // Add creates a new domain.QueueItem and notifies the processor loop
 func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error) {
+	release, err := m.store.GetRelease(ctx, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate release metadata for %s: %w", releaseID, err)
+	}
+	if release == nil {
+		return nil, fmt.Errorf("release metadata missing for %s", releaseID)
+	}
 
 	item := &domain.QueueItem{
 		ID:        ksuid.New().String(),
@@ -153,7 +161,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		// HYDRATION STEP
 		if next.Status == domain.StatusPending {
 			if len(next.Tasks) == 0 {
-				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, next.Release.Title)
+				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, releaseTitle(next))
 				jobErr = m.HydrateItem(jobCtx, next)
 			}
 
@@ -170,7 +178,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		if jobErr == nil && !isCancelled(jobCtx) && next.Status == domain.StatusDownloading {
 
 			if m.isDownloadAlreadyFinished(next) {
-				m.logger.Info("All files present on disk for: %s. Skipping download.", next.Release.Title)
+				m.logger.Info("All files present on disk for: %s. Skipping download.", releaseTitle(next))
 			} else {
 				jobErr = m.downloader.Download(jobCtx, next)
 			}
@@ -251,6 +259,16 @@ func (m *QueueManager) Cancel(id string) bool {
 			// 2. Call the context cancel function
 			if item.CancelFunc != nil {
 				item.CancelFunc()
+				return true
+			}
+
+			// Pending items may not have a cancel func yet. Mark terminal now.
+			item.Status = domain.StatusFailed
+			cancelErr := "Cancelled by user"
+			item.Error = &cancelErr
+			m.removeFromLiveQueue(item.ID)
+			if err := m.store.SaveQueueItem(context.Background(), item); err != nil {
+				m.logger.Error("Failed to persist cancelled queue item %s: %v", item.ID, err)
 			}
 
 			return true
@@ -272,7 +290,7 @@ func (m *QueueManager) Stop() {
 
 	// 2. Kill the currently active task (Hydrate, Download, or PostProcess)
 	if m.activeItem != nil && m.activeItem.CancelFunc != nil {
-		m.logger.Debug("QueueManager: Cancelling active job: %s", m.activeItem.Release.Title)
+		m.logger.Debug("QueueManager: Cancelling active job: %s", releaseTitle(m.activeItem))
 		m.activeItem.CancelFunc()
 	}
 }
@@ -282,7 +300,9 @@ func (m *QueueManager) UpdateStatus(ctx context.Context, item *domain.QueueItem,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item.Status = status
-	_ = m.store.SaveQueueItem(ctx, item)
+	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+		m.logger.Error("Failed to persist status %s for queue item %s: %v", status, item.ID, err)
+	}
 }
 
 func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, err error) {
@@ -303,7 +323,9 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 	}
 
 	// Persist the final outcome
-	_ = m.store.SaveQueueItem(ctx, item)
+	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+		m.logger.Error("Failed to persist final state for queue item %s: %v", item.ID, err)
+	}
 
 	m.activeItem = nil
 	m.removeFromLiveQueue(item.ID)
@@ -335,6 +357,9 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 		rel, err := m.store.GetRelease(ctx, item.ReleaseID)
 		if err != nil {
 			return fmt.Errorf("could not find file metadata: %w", err)
+		}
+		if rel == nil {
+			return fmt.Errorf("release metadata not found for %s", item.ReleaseID)
 		}
 		item.Release = rel
 	}
@@ -395,4 +420,17 @@ func (m *QueueManager) isDownloadAlreadyFinished(item *domain.QueueItem) bool {
 		}
 	}
 	return true
+}
+
+func releaseTitle(item *domain.QueueItem) string {
+	if item == nil {
+		return "unknown"
+	}
+	if item.Release != nil && item.Release.Title != "" {
+		return item.Release.Title
+	}
+	if item.ReleaseID != "" {
+		return item.ReleaseID
+	}
+	return item.ID
 }
