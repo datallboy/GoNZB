@@ -33,6 +33,7 @@ type ServerConfig struct {
 type IndexerConfig struct {
 	ID       string `mapstructure:"id" yaml:"id"`
 	BaseUrl  string `mapstructure:"base_url" yaml:"base_url"`
+	ApiPath  string `mapstructure:"api_path" yaml:"api_path"`
 	ApiKey   string `mapstructure:"api_key" yaml:"api_key"`
 	Redirect bool   `mapstructure:"redirect" yaml:"redirect"`
 }

@@ -121,7 +121,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	idxManager.AddIndexer(storeIndexer.New(store))
 
 	for _, idxCfg := range cfg.Indexers {
-		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiKey, idxCfg.Redirect)
+		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
 		idxManager.AddIndexer(client)
 	}
 

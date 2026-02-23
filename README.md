@@ -14,11 +14,9 @@ GoNZB combines a powerful NNTP downloader with a Newznab-compatible API server, 
 - **Post-Processing:** Built-in PAR2 repair and extraction for RAR, ZIP, and 7Z archives.
 - **Visual CLI Progress:** Real-time download speed, progress bar, and ETA for terminal usage.
 
-## Architecture
-GoNZB is designed around a "Single Source of Truth" architecture:
-1. **Metadata Database (SQLite):** Stores information about all "Releases" (from indexers or manual uploads), the download queue, and individual file tasks.
-2. **Blob Store:** Stores the raw NZB files, which are fetched as needed by the download engine.
-3. **Unified Engine:** Orchestrates the worker pool, connection management, and segment fetching.
+## Architecture Deep Dive
+
+For a detailed understanding of GoNZB's architecture, including its components, data flow, and design principles, please refer to [ARCHITECTURE.md](ARCHITECTURE.md).
 
 # Configuration
 GoNZB uses a `config.yaml` file to manage providers, indexers, and storage paths.
@@ -33,7 +31,7 @@ cp config.yaml.example config.yaml
 | **global** | `port` | The port for the HTTP API server (Default: `8080`). |
 | **servers** | `id` | A unique nickname for the server (e.g., "NewsHosting"). |
 | | `host` | The NNTP server address (e.g., `news.example.com`). |
-| | `port` | Connection port. Usually `119` (Plain) or `563` (TLS). |
+| | `port` | Connection port. Usually `119` (Plain) or `563` (TLS`). |
 | | `username` | Your Usenet provider username. |
 | | `password` | Your Usenet provider password. |
 | | `tls` | Enables encrypted communication (SSL/TLS). |
@@ -41,6 +39,7 @@ cp config.yaml.example config.yaml
 | | `priority` | Priority level (Lower = Higher priority). |
 | **indexers**| `id` | Identifier for external Newznab indexers. |
 | | `base_url` | The API URL for the indexer. |
+| | `api_path` | Specific /api path for the Indexer |
 | | `api_key` | Your API key for the indexer. |
 | | `redirect` | If true, redirects download requests directly to indexer URL. |
 | **download** | `out_dir` | Directory for active/temporary downloads (`.part` files). |
@@ -95,4 +94,3 @@ If you see `Config error: config file not found: config.yaml`, it's because the 
 
 Ensure you are passing `--config /config/config.yaml` **before** or **after** the subcommand:
 `gonzb --config /config/config.yaml serve`
-
