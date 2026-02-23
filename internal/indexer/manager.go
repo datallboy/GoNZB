@@ -94,7 +94,9 @@ func (m *BaseManager) SearchAll(ctx context.Context, query string) ([]*domain.Re
 
 	// Persist release records in database
 	if len(allResults) > 0 {
-		_ = m.store.UpsertReleases(ctx, allResults)
+		if err := m.store.UpsertReleases(ctx, allResults); err != nil {
+			m.logger.Warn("Failed to persist indexer search results: %v", err)
+		}
 	}
 
 	return allResults, nil

@@ -35,6 +35,10 @@ func NewDownloader(ctx *app.Context, writer *FileWriter) *Downloader {
 func (s *Downloader) Download(ctx context.Context, item *domain.QueueItem) error {
 	defer s.writer.CloseAll()
 
+	if item == nil || item.Release == nil {
+		return fmt.Errorf("download item is missing release metadata")
+	}
+
 	// Reset counters for new job
 	var alreadyDone int64
 

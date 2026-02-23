@@ -161,7 +161,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		// HYDRATION STEP
 		if next.Status == domain.StatusPending {
 			if len(next.Tasks) == 0 {
-				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, next.Release.Title)
+				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, releaseTitle(next))
 				jobErr = m.HydrateItem(jobCtx, next)
 			}
 
@@ -178,7 +178,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		if jobErr == nil && !isCancelled(jobCtx) && next.Status == domain.StatusDownloading {
 
 			if m.isDownloadAlreadyFinished(next) {
-				m.logger.Info("All files present on disk for: %s. Skipping download.", next.Release.Title)
+				m.logger.Info("All files present on disk for: %s. Skipping download.", releaseTitle(next))
 			} else {
 				jobErr = m.downloader.Download(jobCtx, next)
 			}
@@ -290,7 +290,7 @@ func (m *QueueManager) Stop() {
 
 	// 2. Kill the currently active task (Hydrate, Download, or PostProcess)
 	if m.activeItem != nil && m.activeItem.CancelFunc != nil {
-		m.logger.Debug("QueueManager: Cancelling active job: %s", m.activeItem.Release.Title)
+		m.logger.Debug("QueueManager: Cancelling active job: %s", releaseTitle(m.activeItem))
 		m.activeItem.CancelFunc()
 	}
 }
@@ -420,4 +420,17 @@ func (m *QueueManager) isDownloadAlreadyFinished(item *domain.QueueItem) bool {
 		}
 	}
 	return true
+}
+
+func releaseTitle(item *domain.QueueItem) string {
+	if item == nil {
+		return "unknown"
+	}
+	if item.Release != nil && item.Release.Title != "" {
+		return item.Release.Title
+	}
+	if item.ReleaseID != "" {
+		return item.ReleaseID
+	}
+	return item.ID
 }
