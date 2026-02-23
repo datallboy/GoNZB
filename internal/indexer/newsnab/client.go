@@ -14,16 +14,18 @@ import (
 
 type Client struct {
 	BaseURL         string
+	ApiPath         string
 	APIKey          string
 	name            string
 	redirectAllowed bool
 	httpClient      *http.Client
 }
 
-func New(name, baseURL, apiKey string, redirect bool) *Client {
+func New(name, baseURL, apiPath, apiKey string, redirect bool) *Client {
 	return &Client{
 		name:            name,
 		BaseURL:         baseURL,
+		ApiPath:         apiPath,
 		APIKey:          apiKey,
 		redirectAllowed: redirect,
 		httpClient: &http.Client{
@@ -40,7 +42,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]*domain.Release, e
 		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
 	}
 
-	searchURL := base.ResolveReference(&url.URL{Path: "/api"})
+	searchURL := base.ResolveReference(&url.URL{Path: c.ApiPath})
 	params := searchURL.Query()
 	params.Set("t", "search")
 	params.Set("q", query)
