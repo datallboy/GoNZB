@@ -15,6 +15,7 @@ type Config struct {
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
+	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
 	Port string `mapstructure:"port" yaml:"port"`
 }
@@ -53,6 +54,10 @@ type LogConfig struct {
 type StoreConfig struct {
 	SQLitePath string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
 	BlobDir    string `mapstructure:"blob_dir" yaml:"blob_dir"`
+}
+
+type APIConfig struct {
+	Key string `mapstructure:"key" yaml:"key"`
 }
 
 func Load(path string) (*Config, error) {

@@ -3,6 +3,10 @@
 # The port the HTTP server will listen on
 port: "8080"
 
+# API authentication (optional)
+api:
+  key: "" # Set to a non-empty value to require apikey on /api and /nzb routes
+
 # Usenet Server Configuration (NNTP)
 servers:
   - id: "Primary"
