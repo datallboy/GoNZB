@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,7 +140,7 @@ func (p *nntpProvider) Close() error {
 }
 
 func (p *nntpProvider) dial() (*nntpConn, error) {
-	addr := fmt.Sprintf("%s:%d", p.conf.Host, p.conf.Port)
+	addr := net.JoinHostPort(p.conf.Host, strconv.Itoa(p.conf.Port))
 	var netConn net.Conn
 	var err error
 
@@ -170,9 +171,11 @@ func (p *nntpProvider) dial() (*nntpConn, error) {
 	}()
 
 	code, msg, err := conn.ReadCodeLine(200)
-	if err != nil {
-		// Some servers return 201 (Ready, no posting allowed)
-		code, msg, err = conn.ReadCodeLine(201)
+	if tpErr, ok := err.(*textproto.Error); ok && tpErr.Code == 201 {
+		// 201 is a valid NNTP greeting (no posting allowed).
+		code = tpErr.Code
+		msg = tpErr.Msg
+		err = nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("NNTP greeting failed (code %d): %s", code, msg)
