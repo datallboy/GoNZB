@@ -8,13 +8,29 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build clean test install
+.PHONY: all build clean test vet lint install
 
 all: build
 
 build:
 	@echo "Building $(DIST_NAME)..."
 	go build $(LDFLAGS) -o bin/$(DIST_NAME) $(PKG)
+
+test:
+	@echo "Running tests..."
+	go test ./...
+
+vet:
+	@echo "Running go vet..."
+	go vet ./...
+
+lint:
+	@echo "Running golangci-lint..."
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint not found. Install: https://golangci-lint.run/welcome/install/"; \
+		exit 1; \
+	fi
+	GOCACHE=$${GOCACHE:-/tmp/gocache} GOLANGCI_LINT_CACHE=$${GOLANGCI_LINT_CACHE:-/tmp/golangci-lint-cache} golangci-lint run ./...
 
 # Installs the binary to /usr/local/bin or ~/go/bin
 install: build

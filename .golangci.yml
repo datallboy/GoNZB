@@ -1,0 +1,14 @@
+run:
+  timeout: 3m
+
+issues:
+  exclude-use-default: false
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - gosimple
+    - unused
