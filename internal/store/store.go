@@ -57,6 +57,42 @@ func (s *PersistentStore) CreateNZBWriter(id string) (io.WriteCloser, error) {
 	return os.Create(filepath.Join(s.blobDir, id+".nzb"))
 }
 
+func (s *PersistentStore) SaveNZBAtomically(id string, data []byte) (err error) {
+	finalPath := filepath.Join(s.blobDir, id+".nzb")
+
+	tmpFile, err := os.CreateTemp(s.blobDir, id+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp nzb file: %w", err)
+	}
+
+	tmpPath := tmpFile.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write temp nzb file: %w", err)
+	}
+
+	if err = tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync temp nzb file: %w", err)
+	}
+
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp nzb file: %w", err)
+	}
+
+	if err = os.Rename(tmpPath, finalPath); err != nil {
+		return fmt.Errorf("failed to commit nzb cache file: %w", err)
+	}
+
+	return nil
+}
+
 func (s *PersistentStore) Exists(id string) bool {
 	_, err := os.Stat(filepath.Join(s.blobDir, id+".nzb"))
 	return err == nil
