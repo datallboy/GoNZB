@@ -57,7 +57,8 @@ type StoreConfig struct {
 }
 
 type APIConfig struct {
-	Key string `mapstructure:"key" yaml:"key"`
+	Key                string   `mapstructure:"key" yaml:"key"`
+	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
 }
 
 func Load(path string) (*Config, error) {
@@ -95,6 +96,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
+	v.SetDefault("api.cors_allowed_origins", []string{
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+	})
 
 	// Read config File
 	v.SetConfigFile(path)

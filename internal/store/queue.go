@@ -10,16 +10,35 @@ import (
 )
 
 func (s *PersistentStore) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error {
+	startedAtUnix := int64(0)
+	if !item.StartedAt.IsZero() {
+		startedAtUnix = item.StartedAt.Unix()
+	}
+	completedAtUnix := int64(0)
+	if !item.CompletedAt.IsZero() {
+		completedAtUnix = item.CompletedAt.Unix()
+	}
+
 	query := `
-		INSERT INTO queue_items (id, release_id, status, out_dir, error)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO queue_items (
+			id, release_id, status, out_dir, error,
+			started_at_unix, completed_at_unix, download_seconds, postprocess_seconds, avg_bps, downloaded_bytes
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			status = excluded.status,
 			error = excluded.error,
-			out_dir = excluded.out_dir`
+			out_dir = excluded.out_dir,
+			started_at_unix = excluded.started_at_unix,
+			completed_at_unix = excluded.completed_at_unix,
+			download_seconds = excluded.download_seconds,
+			postprocess_seconds = excluded.postprocess_seconds,
+			avg_bps = excluded.avg_bps,
+			downloaded_bytes = excluded.downloaded_bytes`
 
 	_, err := s.db.ExecContext(ctx, query,
 		item.ID, item.ReleaseID, item.Status, item.OutDir, item.Error,
+		startedAtUnix, completedAtUnix, item.DownloadSeconds, item.PostProcessSeconds, item.AvgBps, item.DownloadedBytes,
 	)
 	return err
 }
@@ -28,7 +47,8 @@ func (s *PersistentStore) SaveQueueItem(ctx context.Context, item *domain.QueueI
 func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
 		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
+			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
 			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
@@ -46,7 +66,8 @@ func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueIte
 		var rel releaseDBO
 
 		err := rows.Scan(
-			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
+			&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
 			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
 		)
@@ -66,7 +87,8 @@ func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueIte
 func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error) {
 	query := `
 		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
+			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
 			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
@@ -76,7 +98,8 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 	var rel releaseDBO
 
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
-		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
+		&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
 		&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 		&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
 	)
@@ -95,7 +118,8 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
 		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at,
+			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
+			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
 			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
 		FROM queue_items q
 		JOIN releases r ON q.release_id = r.id
@@ -114,7 +138,8 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 		var rel releaseDBO
 
 		err := rows.Scan(
-			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt,
+			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
+			&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
 			&rel.ID, &rel.FileHash, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
 			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
 		)
@@ -125,6 +150,49 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 		items = append(items, qi.ToDomain(rel.ToDomain()))
 	}
 	return items, nil
+}
+
+func (s *PersistentStore) DeleteQueueItems(ctx context.Context, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf("DELETE FROM queue_items WHERE id IN (%s)", strings.Join(placeholders, ","))
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *PersistentStore) ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error) {
+	if len(statuses) == 0 {
+		statuses = []domain.JobStatus{domain.StatusCompleted, domain.StatusFailed}
+	}
+
+	placeholders := make([]string, len(statuses))
+	args := make([]any, len(statuses))
+	for i, st := range statuses {
+		placeholders[i] = "?"
+		args[i] = string(st)
+	}
+
+	query := fmt.Sprintf(
+		"DELETE FROM queue_items WHERE status IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *PersistentStore) ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error {

@@ -1,7 +1,16 @@
-# Stage 1: Build
+# Stage 1: Build UI assets
+FROM node:22-alpine AS ui-builder
+WORKDIR /app/ui
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui ./
+RUN npm run build
+
+# Stage 2: Build binary
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
+COPY --from=ui-builder /app/internal/webui/dist /app/internal/webui/dist
 RUN go mod download
 
 # Inject version info during Docker build
@@ -9,7 +18,7 @@ ARG VERSION=dev
 ARG BUILD_TIME=unknown
 RUN go build -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o gonzb cmd/gonzb/main.go
 
-# Stage 2: Run
+# Stage 3: Run
 FROM alpine:latest
 WORKDIR /app
 # Install certs for secure Usenet connections (TLS/SSL)

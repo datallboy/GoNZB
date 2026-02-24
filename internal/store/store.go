@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -46,11 +47,27 @@ func NewPersistentStore(dbPath, blobDir string) (*PersistentStore, error) {
 		return nil, fmt.Errorf("could not migrate database: %w", err)
 	}
 
+	if err := store.ReconcileReleaseCache(context.Background()); err != nil {
+		return nil, fmt.Errorf("could not reconcile release cache: %w", err)
+	}
+
 	return store, nil
 }
 
 func (s *PersistentStore) GetNZBReader(id string) (io.ReadCloser, error) {
-	return os.Open(filepath.Join(s.blobDir, id+".nzb"))
+	path := filepath.Join(s.blobDir, id+".nzb")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			_ = s.MarkReleaseCacheMissing(context.Background(), id, "missing blob on disk")
+		}
+		return nil, err
+	}
+	info, statErr := f.Stat()
+	if statErr == nil {
+		_ = s.MarkReleaseCached(context.Background(), id, info.Size(), info.ModTime().Unix())
+	}
+	return f, nil
 }
 
 func (s *PersistentStore) CreateNZBWriter(id string) (io.WriteCloser, error) {
@@ -90,12 +107,25 @@ func (s *PersistentStore) SaveNZBAtomically(id string, data []byte) (err error) 
 		return fmt.Errorf("failed to commit nzb cache file: %w", err)
 	}
 
+	info, statErr := os.Stat(finalPath)
+	if statErr == nil {
+		_ = s.MarkReleaseCached(context.Background(), id, info.Size(), info.ModTime().Unix())
+	}
+
 	return nil
 }
 
 func (s *PersistentStore) Exists(id string) bool {
-	_, err := os.Stat(filepath.Join(s.blobDir, id+".nzb"))
-	return err == nil
+	path := filepath.Join(s.blobDir, id+".nzb")
+	info, err := os.Stat(path)
+	if err == nil {
+		_ = s.MarkReleaseCached(context.Background(), id, info.Size(), info.ModTime().Unix())
+		return true
+	}
+	if os.IsNotExist(err) {
+		_ = s.MarkReleaseCacheMissing(context.Background(), id, "missing blob on disk")
+	}
+	return false
 }
 
 func (s *PersistentStore) Close() error {

@@ -54,14 +54,17 @@ func (s *PersistentStore) UpsertReleases(ctx context.Context, results []*domain.
 func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Release, error) {
 	query := `
 		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
 		FROM releases r
+		LEFT JOIN release_cache rc ON rc.release_id = r.id
 		WHERE r.id = ? LIMIT 1`
 
 	var dbo releaseDBO
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
 		&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
+		&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
 	)
 
 	if err != nil {
@@ -78,8 +81,10 @@ func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Re
 func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*domain.Release, error) {
 	sqlQuery := `
 		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
 		FROM releases r
+		LEFT JOIN release_cache rc ON rc.release_id = r.id
 		WHERE r.title LIKE ? 
 		ORDER BY r.publish_date DESC 
 		LIMIT 100`
@@ -96,6 +101,7 @@ func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*
 		err := rows.Scan(
 			&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
 			&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
+			&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -116,14 +122,17 @@ func (s *PersistentStore) UpdateReleaseHash(ctx context.Context, id string, hash
 func (s *PersistentStore) GetReleaseByHash(ctx context.Context, hash string) (*domain.Release, error) {
 	query := `
 		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
 		FROM releases r
+		LEFT JOIN release_cache rc ON rc.release_id = r.id
 		WHERE r.file_hash = ? LIMIT 1`
 
 	var dbo releaseDBO
 	err := s.db.QueryRowContext(ctx, query, hash).Scan(
 		&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
 		&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
+		&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
 	)
 
 	if err != nil {
