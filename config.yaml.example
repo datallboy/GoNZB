@@ -6,6 +6,9 @@ port: "8080"
 # API authentication (optional)
 api:
   key: "" # Set to a non-empty value to require apikey on /api and /nzb routes
+  cors_allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
 
 # Usenet Server Configuration (NNTP)
 servers:

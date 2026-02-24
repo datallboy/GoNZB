@@ -49,6 +49,7 @@ type QueueManager interface {
 	GetItem(ctx context.Context, id string) (*domain.QueueItem, bool)
 	GetAllItems() []*domain.QueueItem
 	Cancel(id string) bool
+	Delete(id string) bool
 	HydrateItem(ctx context.Context, item *domain.QueueItem) error
 	UpdateStatus(ctx context.Context, item *domain.QueueItem, status domain.JobStatus)
 }
@@ -74,6 +75,10 @@ type Store interface {
 	GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error)
 	GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
 	GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
+	DeleteQueueItems(ctx context.Context, ids []string) (int64, error)
+	ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error)
+	SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error
+	GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error)
 	ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error
 
 	// release_files: SQLite
@@ -83,6 +88,7 @@ type Store interface {
 	// Blobs: File System
 	GetNZBReader(key string) (io.ReadCloser, error)
 	CreateNZBWriter(key string) (io.WriteCloser, error)
+	SaveNZBAtomically(key string, data []byte) error
 	Exists(key string) bool
 
 	Close() error

@@ -8,21 +8,25 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build clean test vet lint install
+.PHONY: all build ui-build clean test vet lint install
 
 all: build
 
-build:
+build: ui-build
 	@echo "Building $(DIST_NAME)..."
-	go build $(LDFLAGS) -o bin/$(DIST_NAME) $(PKG)
+	GOCACHE=$${GOCACHE:-/tmp/gocache} go build $(LDFLAGS) -o bin/$(DIST_NAME) $(PKG)
+
+ui-build:
+	@echo "Building embedded web UI..."
+	npm --prefix ui run build
 
 test:
 	@echo "Running tests..."
-	go test ./...
+	GOCACHE=$${GOCACHE:-/tmp/gocache} go test ./...
 
 vet:
 	@echo "Running go vet..."
-	go vet ./...
+	GOCACHE=$${GOCACHE:-/tmp/gocache} go vet ./...
 
 lint:
 	@echo "Running golangci-lint..."

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/infra/platform"
 	"github.com/datallboy/gonzb/internal/nzb"
+	queuesvc "github.com/datallboy/gonzb/internal/queue"
 	"github.com/labstack/echo/v5"
 
 	"github.com/datallboy/gonzb/internal/engine"
@@ -159,6 +159,10 @@ func executeDownload() {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
+	// Initialize queue manager (false = don't load pending queue items from db for one-shot CLI mode)
+	appCtx.Queue = engine.NewQueueManager(appCtx, false)
+	queueService := queuesvc.NewService(appCtx)
+
 	filename := filepath.Base(nzbPath)
 	setupCtx := context.Background()
 
@@ -169,58 +173,10 @@ func executeDownload() {
 	}
 	defer nzbFile.Close()
 
-	// Generate ID based on file contents
-	releaseID, err := domain.CalculateFileHash(nzbFile)
-	if err != nil {
-		appCtx.Logger.Fatal("Hashing failed: %v", err)
-	}
-
-	// Reset file pointer to the beginning so we can read it again for the copy
-	if _, err := nzbFile.Seek(0, 0); err != nil {
-		appCtx.Logger.Fatal("Failed to reset NZB file pointer: %v", err)
-	}
-
-	// Minimal seed: just metadata and the blob
-	release := &domain.Release{
-		ID:       releaseID,
-		FileHash: releaseID,
-		GUID:     releaseID,
-		Title:    filename,
-		Source:   "manual",
-		Category: "Uncategorized",
-	}
-
-	// Persist release metadata before queue insertion so restart recovery
-	// never ends up with queue rows that cannot be joined to releases.
-	if err := appCtx.Store.UpsertReleases(setupCtx, []*domain.Release{release}); err != nil {
-		appCtx.Logger.Fatal("Failed to persist release metadata: %v", err)
-	}
-
-	// Save NZB bits to Blob Store
-	// This "primes" the cache so GetNZB doesn't try to call a web indexer
-	writer, err := appCtx.Store.CreateNZBWriter(releaseID)
-	if err != nil {
-		appCtx.Logger.Fatal("Failed to initialize blob writer: %v", err)
-	}
-
-	_, err = io.Copy(writer, nzbFile)
-	if err != nil {
-		writer.Close()
-		appCtx.Logger.Fatal("Failed to copy NZB to blob store: %v", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		appCtx.Logger.Fatal("Failed to finalize NZB file on disk: %v", err)
-	}
-
-	// Initialize the queue manager (false = don't load pending queue items from db)
-	appCtx.Queue = engine.NewQueueManager(appCtx, false)
-	item, err := appCtx.Queue.Add(setupCtx, releaseID, filename)
+	item, err := queueService.EnqueueNZB(setupCtx, filename, nzbFile)
 	if err != nil {
 		appCtx.Logger.Fatal("Failed to queue NZB: %v", err)
 	}
-
-	item.Release = release
 
 	// Manually call Hydrate
 	if err := appCtx.Queue.HydrateItem(setupCtx, item); err != nil {

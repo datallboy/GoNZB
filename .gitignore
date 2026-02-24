@@ -1,6 +1,5 @@
 # Binaries
 bin/
-gonzb
 
 # Ignore config file
 config.yaml
@@ -13,3 +12,9 @@ downloads
 
 # Ignore logs
 *.log
+
+# Ignore db
+*.db*
+
+# Web dist
+internal/webui/dist

@@ -19,6 +19,9 @@ type Release struct {
 	Size            int64     `json:"size"`
 	PublishDate     time.Time `json:"publishDate"`
 	Category        string    `json:"category"`
+	CachePresent    bool      `json:"cache_present"`
+	CacheBlobSize   int64     `json:"cache_blob_size"`
+	CacheVerifiedAt time.Time `json:"cache_verified_at"`
 	RedirectAllowed bool
 	Poster          string
 }

@@ -95,6 +95,8 @@ func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) 
 		ID:        ksuid.New().String(),
 		ReleaseID: releaseID,
 		Status:    domain.StatusPending,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 
 	// Save to database
@@ -106,6 +108,8 @@ func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) 
 	m.mu.Lock()
 	m.queue = append(m.queue, item)
 	m.mu.Unlock()
+
+	m.recordEvent(ctx, item.ID, "queue", string(domain.StatusPending), "Queued")
 
 	// Signal the Start() loop that there is work to do
 	select {
@@ -161,6 +165,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		// HYDRATION STEP
 		if next.Status == domain.StatusPending {
 			if len(next.Tasks) == 0 {
+				m.recordEvent(jobCtx, next.ID, "hydrate", "start", "Hydrating queue item")
 				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, releaseTitle(next))
 				jobErr = m.HydrateItem(jobCtx, next)
 			}
@@ -170,6 +175,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 				jobCancel()
 				continue
 			}
+			m.recordEvent(jobCtx, next.ID, "hydrate", "ok", "Hydration complete")
 
 			m.UpdateStatus(jobCtx, next, domain.StatusDownloading)
 		}
@@ -259,6 +265,7 @@ func (m *QueueManager) Cancel(id string) bool {
 			// 2. Call the context cancel function
 			if item.CancelFunc != nil {
 				item.CancelFunc()
+				m.recordEvent(context.Background(), item.ID, "queue", "cancel_requested", "Cancellation requested")
 				return true
 			}
 
@@ -266,15 +273,44 @@ func (m *QueueManager) Cancel(id string) bool {
 			item.Status = domain.StatusFailed
 			cancelErr := "Cancelled by user"
 			item.Error = &cancelErr
+			now := time.Now().UTC()
+			if item.StartedAt.IsZero() {
+				item.StartedAt = now
+			}
+			item.CompletedAt = now
+			item.UpdatedAt = now
+			item.DownloadedBytes = item.GetBytes()
 			m.removeFromLiveQueue(item.ID)
 			if err := m.store.SaveQueueItem(context.Background(), item); err != nil {
 				m.logger.Error("Failed to persist cancelled queue item %s: %v", item.ID, err)
 			}
+			m.recordEvent(context.Background(), item.ID, "queue", "cancelled", "Cancelled by user")
 
 			return true
 		}
 	}
 	return false
+}
+
+func (m *QueueManager) Delete(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, item := range m.queue {
+		if item.ID == id {
+			// Do not allow deleting live items from in-memory queue.
+			if item.Status != domain.StatusCompleted && item.Status != domain.StatusFailed {
+				return false
+			}
+		}
+	}
+
+	rows, err := m.store.DeleteQueueItems(context.Background(), []string{id})
+	if err != nil {
+		m.logger.Error("Failed to delete queue item %s: %v", id, err)
+		return false
+	}
+	return rows > 0
 }
 
 func (m *QueueManager) Stop() {
@@ -299,15 +335,62 @@ func (m *QueueManager) Stop() {
 func (m *QueueManager) UpdateStatus(ctx context.Context, item *domain.QueueItem, status domain.JobStatus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+
+	if status == domain.StatusDownloading {
+		if item.StartedAt.IsZero() {
+			item.StartedAt = now
+		}
+		if item.DownloadStartedAt.IsZero() {
+			item.DownloadStartedAt = now
+		}
+	}
+
+	if status == domain.StatusProcessing {
+		if !item.DownloadStartedAt.IsZero() && item.DownloadSeconds == 0 {
+			item.DownloadSeconds = int64(now.Sub(item.DownloadStartedAt).Seconds())
+		}
+		if item.ProcessingStartedAt.IsZero() {
+			item.ProcessingStartedAt = now
+		}
+		item.DownloadedBytes = item.GetBytes()
+		if item.DownloadSeconds > 0 {
+			item.AvgBps = item.DownloadedBytes / item.DownloadSeconds
+		}
+	}
+
 	item.Status = status
+	item.UpdatedAt = now
 	if err := m.store.SaveQueueItem(ctx, item); err != nil {
 		m.logger.Error("Failed to persist status %s for queue item %s: %v", status, item.ID, err)
 	}
+	m.recordEvent(ctx, item.ID, "queue", string(status), "Status updated")
 }
 
 func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+
+	if item.StartedAt.IsZero() {
+		item.StartedAt = now
+	}
+	if item.CompletedAt.IsZero() {
+		item.CompletedAt = now
+	}
+	if !item.DownloadStartedAt.IsZero() && item.DownloadSeconds == 0 {
+		item.DownloadSeconds = int64(now.Sub(item.DownloadStartedAt).Seconds())
+	}
+	if !item.ProcessingStartedAt.IsZero() && item.PostProcessSeconds == 0 {
+		item.PostProcessSeconds = int64(now.Sub(item.ProcessingStartedAt).Seconds())
+	}
+	item.DownloadedBytes = item.GetBytes()
+	if item.DownloadSeconds > 0 {
+		item.AvgBps = item.DownloadedBytes / item.DownloadSeconds
+	}
+	item.UpdatedAt = now
 
 	if err != nil {
 		item.Status = domain.StatusFailed
@@ -327,8 +410,27 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 		m.logger.Error("Failed to persist final state for queue item %s: %v", item.ID, err)
 	}
 
+	if item.Status == domain.StatusCompleted {
+		m.recordEvent(ctx, item.ID, "finalize", "completed", "Queue item completed")
+	} else {
+		m.recordEvent(ctx, item.ID, "finalize", "failed", "Queue item failed")
+	}
+
 	m.activeItem = nil
 	m.removeFromLiveQueue(item.ID)
+}
+
+func (m *QueueManager) recordEvent(ctx context.Context, queueID, stage, status, message string) {
+	ev := &domain.QueueItemEvent{
+		QueueID:  queueID,
+		Stage:    stage,
+		Status:   status,
+		Message:  message,
+		MetaJSON: "",
+	}
+	if err := m.store.SaveQueueEvent(ctx, ev); err != nil {
+		m.logger.Debug("Failed to persist queue event for %s: %v", queueID, err)
+	}
 }
 
 // removeFromLiveQueue keeps the active slice small by removing finished items

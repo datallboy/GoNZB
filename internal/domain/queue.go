@@ -30,10 +30,35 @@ type QueueItem struct {
 
 	BytesWritten atomic.Int64
 
+	CreatedAt time.Time
+	UpdatedAt time.Time
 	StartedAt time.Time
-	Error     *string
+	// CompletedAt is when the queue item reaches a terminal state.
+	CompletedAt time.Time
+
+	// Historical metrics persisted for queue history.
+	DownloadedBytes    int64
+	AvgBps             int64
+	DownloadSeconds    int64
+	PostProcessSeconds int64
+
+	// Internal runtime markers used to compute durations.
+	DownloadStartedAt   time.Time
+	ProcessingStartedAt time.Time
+
+	Error *string
 
 	CancelFunc context.CancelFunc
+}
+
+type QueueItemEvent struct {
+	ID        int64
+	QueueID   string
+	Stage     string
+	Status    string
+	Message   string
+	MetaJSON  string
+	CreatedAt time.Time
 }
 
 func (q *QueueItem) AddBytes(n int64) {
