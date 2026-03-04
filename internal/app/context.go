@@ -14,6 +14,8 @@ import (
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store"
+	blobstore "github.com/datallboy/gonzb/internal/store/blob"
+	"github.com/datallboy/gonzb/internal/store/sqlitejob"
 )
 
 type NNTPManager interface {
@@ -127,6 +129,9 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		return nil, fmt.Errorf("failed to initialize store: %w", err)
 	}
 
+	jobStore := sqlitejob.New(persistentStore)
+	blobStore := blobstore.NewFSBlobStore(persistentStore)
+
 	// Initialize Indexer Manager
 	aggregator := indexer.NewManager(persistentStore, log)
 
@@ -149,8 +154,8 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		ExtractionEnabled: true,
 		Aggregator:        aggregator,
 		Resolver:          releaseResolver,
-		JobStore:          persistentStore,
-		BlobStore:         persistentStore,
+		JobStore:          jobStore,
+		BlobStore:         blobStore,
 		closers:           []io.Closer{persistentStore},
 	}, nil
 }
