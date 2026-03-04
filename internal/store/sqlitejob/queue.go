@@ -1,15 +1,16 @@
-package store
+package sqlitejob
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
-func (s *PersistentStore) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error {
+func (s *Store) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error {
 	startedAtUnix := int64(0)
 	if !item.StartedAt.IsZero() {
 		startedAtUnix = item.StartedAt.Unix()
@@ -44,7 +45,7 @@ func (s *PersistentStore) SaveQueueItem(ctx context.Context, item *domain.QueueI
 }
 
 // GetQueueItems returns all items in the queue, ordered by creation date.
-func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
+func (s *Store) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
@@ -63,28 +64,18 @@ func (s *PersistentStore) GetQueueItems(ctx context.Context) ([]*domain.QueueIte
 	var items []*domain.QueueItem
 	for rows.Next() {
 		var qi queueItemDBO
-		var rel releaseDBO
-
-		err := rows.Scan(
-			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
-			&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
-			&rel.ID, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
-			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan queue row: %w", err)
+		release, scanErr := scanReleaseWithQueue(rows, &qi)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan queue row: %w", scanErr)
 		}
-
-		// Mapping DBOs to Domain via our helper methods
-		domainRelease := rel.ToDomain()
-		items = append(items, qi.ToDomain(domainRelease))
+		items = append(items, qi.ToDomain(release))
 	}
 
 	return items, nil
 }
 
 // GetQueueItem fetches a single job by its ID, fully hydrated with its Release.
-func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error) {
+func (s *Store) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error) {
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
@@ -95,14 +86,9 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 		WHERE q.id = ? LIMIT 1`
 
 	var qi queueItemDBO
-	var rel releaseDBO
 
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
-		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
-		&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
-		&rel.ID, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
-		&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-	)
+	row := s.db.QueryRowContext(ctx, query, id)
+	release, err := scanReleaseWithQueue(row, &qi)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -111,11 +97,11 @@ func (s *PersistentStore) GetQueueItem(ctx context.Context, id string) (*domain.
 		return nil, fmt.Errorf("failed to get queue item %s: %w", id, err)
 	}
 
-	return qi.ToDomain(rel.ToDomain()), nil
+	return qi.ToDomain(release), nil
 }
 
 // GetActiveQueueItems returns all jobs that are not in a terminal state (Completed/Failed).
-func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
+func (s *Store) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
 		SELECT 
 			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
@@ -135,24 +121,16 @@ func (s *PersistentStore) GetActiveQueueItems(ctx context.Context) ([]*domain.Qu
 	var items []*domain.QueueItem
 	for rows.Next() {
 		var qi queueItemDBO
-		var rel releaseDBO
-
-		err := rows.Scan(
-			&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
-			&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
-			&rel.ID, &rel.Title, &rel.Size, &rel.Password, &rel.GUID,
-			&rel.Source, &rel.DownloadURL, &rel.PublishDate, &rel.Category, &rel.RedirectAllowed,
-		)
-		if err != nil {
-			return nil, err
+		release, scanErr := scanReleaseWithQueue(rows, &qi)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-
-		items = append(items, qi.ToDomain(rel.ToDomain()))
+		items = append(items, qi.ToDomain(release))
 	}
 	return items, nil
 }
 
-func (s *PersistentStore) DeleteQueueItems(ctx context.Context, ids []string) (int64, error) {
+func (s *Store) DeleteQueueItems(ctx context.Context, ids []string) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -172,7 +150,7 @@ func (s *PersistentStore) DeleteQueueItems(ctx context.Context, ids []string) (i
 	return res.RowsAffected()
 }
 
-func (s *PersistentStore) ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error) {
+func (s *Store) ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error) {
 	if len(statuses) == 0 {
 		statuses = []domain.JobStatus{domain.StatusCompleted, domain.StatusFailed}
 	}
@@ -195,7 +173,7 @@ func (s *PersistentStore) ClearQueueHistory(ctx context.Context, statuses []doma
 	return res.RowsAffected()
 }
 
-func (s *PersistentStore) ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error {
+func (s *Store) ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error {
 	if len(oldStatuses) == 0 {
 		return nil
 	}
@@ -217,4 +195,46 @@ func (s *PersistentStore) ResetStuckQueueItems(ctx context.Context, newStatus do
 
 	_, err := s.db.Exec(query, args...)
 	return err
+}
+
+type queueReleaseScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanReleaseWithQueue(scanner queueReleaseScanner, qi *queueItemDBO) (*domain.Release, error) {
+	var (
+		releaseID       string
+		title           string
+		size            int64
+		password        sql.NullString
+		guid            sql.NullString
+		source          sql.NullString
+		downloadURL     sql.NullString
+		publishDateUnix int64
+		category        sql.NullString
+		redirectAllowed bool
+	)
+
+	err := scanner.Scan(
+		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
+		&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
+		&releaseID, &title, &size, &password, &guid, &source, &downloadURL, &publishDateUnix, &category, &redirectAllowed,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	release := &domain.Release{
+		ID:              releaseID,
+		Title:           title,
+		Size:            size,
+		Password:        password.String,
+		GUID:            guid.String,
+		Source:          source.String,
+		DownloadURL:     downloadURL.String,
+		PublishDate:     time.Unix(publishDateUnix, 0),
+		Category:        category.String,
+		RedirectAllowed: redirectAllowed,
+	}
+	return release, nil
 }
