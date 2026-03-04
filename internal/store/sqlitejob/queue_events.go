@@ -1,4 +1,4 @@
-package store
+package sqlitejob
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
-func (s *PersistentStore) SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error {
+func (s *Store) SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error {
 	if ev == nil || ev.QueueID == "" {
 		return nil
 	}
@@ -20,7 +20,7 @@ func (s *PersistentStore) SaveQueueEvent(ctx context.Context, ev *domain.QueueIt
 	return err
 }
 
-func (s *PersistentStore) GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error) {
+func (s *Store) GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error) {
 	query := `
 		SELECT id, queue_item_id, stage, status, message, meta_json, created_at
 		FROM queue_item_events

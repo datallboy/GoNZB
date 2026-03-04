@@ -1,4 +1,4 @@
-package store
+package sqlitejob
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func (s *PersistentStore) MarkReleaseCached(ctx context.Context, releaseID string, blobSize int64, blobMtimeUnix int64) error {
+func (s *Store) MarkReleaseCached(ctx context.Context, releaseID string, blobSize int64, blobMtimeUnix int64) error {
 	now := time.Now().Unix()
 	query := `
 		INSERT INTO release_cache (
@@ -27,7 +27,7 @@ func (s *PersistentStore) MarkReleaseCached(ctx context.Context, releaseID strin
 	return err
 }
 
-func (s *PersistentStore) MarkReleaseCacheMissing(ctx context.Context, releaseID, reason string) error {
+func (s *Store) MarkReleaseCacheMissing(ctx context.Context, releaseID, reason string) error {
 	now := time.Now().Unix()
 	query := `
 		INSERT INTO release_cache (
@@ -42,7 +42,7 @@ func (s *PersistentStore) MarkReleaseCacheMissing(ctx context.Context, releaseID
 	return err
 }
 
-func (s *PersistentStore) ReconcileReleaseCache(ctx context.Context) error {
+func (s *Store) ReconcileReleaseCache(ctx context.Context) error {
 	pattern := filepath.Join(s.blobDir, "*.nzb")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {

@@ -1,11 +1,10 @@
-package store
+package sqlitejob
 
 import (
 	"embed"
 	"fmt"
 
 	"github.com/golang-migrate/migrate/v4"
-
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
@@ -13,7 +12,7 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-func (s *PersistentStore) RunMigrations() error {
+func (s *Store) RunMigrations() error {
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
 		return err
