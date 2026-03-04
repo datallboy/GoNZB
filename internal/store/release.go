@@ -29,17 +29,16 @@ func (s *PersistentStore) UpsertReleases(ctx context.Context, results []*domain.
 
 		// 3. Upsert into Releases
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO releases (
-				id, file_hash, title, size, password, 
-				guid, source, download_url, publish_date, category, redirect_allowed
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				file_hash = CASE WHEN excluded.file_hash != '' THEN excluded.file_hash ELSE releases.file_hash END,
-				size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE releases.size END,
-				password = CASE WHEN excluded.password != '' THEN excluded.password ELSE releases.password END,
-                publish_date = CASE WHEN excluded.publish_date IS NOT NULL THEN excluded.publish_date ELSE releases.publish_date END,
-				category = COALESCE(excluded.category, releases.category)`,
-			dbo.ID, dbo.FileHash, dbo.Title, dbo.Size, dbo.Password,
+		INSERT INTO releases (
+			id, file_hash, title, size, password,
+			guid, source, download_url, publish_date, category, redirect_allowed
+		) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE releases.size END,
+			password = CASE WHEN excluded.password != '' THEN excluded.password ELSE releases.password END,
+			publish_date = CASE WHEN excluded.publish_date IS NOT NULL THEN excluded.publish_date ELSE releases.publish_date END,
+			category = COALESCE(excluded.category, releases.category)`,
+			dbo.ID, dbo.Title, dbo.Size, dbo.Password,
 			dbo.GUID, dbo.Source, dbo.DownloadURL, dbo.PublishDate, dbo.Category, dbo.RedirectAllowed,
 		)
 		if err != nil {
@@ -54,7 +53,7 @@ func (s *PersistentStore) UpsertReleases(ctx context.Context, results []*domain.
 func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Release, error) {
 	query := `
 		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			r.id, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
 			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
 		FROM releases r
 		LEFT JOIN release_cache rc ON rc.release_id = r.id
@@ -62,7 +61,7 @@ func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Re
 
 	var dbo releaseDBO
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
-		&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
+		&dbo.ID, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
 		&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
 		&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
 	)
@@ -81,7 +80,7 @@ func (s *PersistentStore) GetRelease(ctx context.Context, id string) (*domain.Re
 func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*domain.Release, error) {
 	sqlQuery := `
 		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
+			r.id, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
 			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
 		FROM releases r
 		LEFT JOIN release_cache rc ON rc.release_id = r.id
@@ -99,7 +98,7 @@ func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*
 	for rows.Next() {
 		var dbo releaseDBO
 		err := rows.Scan(
-			&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
+			&dbo.ID, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
 			&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
 			&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
 		)
@@ -110,37 +109,4 @@ func (s *PersistentStore) SearchReleases(ctx context.Context, query string) ([]*
 	}
 
 	return results, nil
-}
-
-// UpdateReleaseHash is used when an indexer result finally downloads its NZB.
-func (s *PersistentStore) UpdateReleaseHash(ctx context.Context, id string, hash string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE releases SET file_hash = ? WHERE id = ?", hash, id)
-	return err
-}
-
-// GetReleaseByHash is used to check for duplicates before creating a new manual upload.
-func (s *PersistentStore) GetReleaseByHash(ctx context.Context, hash string) (*domain.Release, error) {
-	query := `
-		SELECT 
-			r.id, r.file_hash, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed,
-			COALESCE(rc.present, 0), COALESCE(rc.blob_size, 0), COALESCE(rc.verified_at_unix, 0)
-		FROM releases r
-		LEFT JOIN release_cache rc ON rc.release_id = r.id
-		WHERE r.file_hash = ? LIMIT 1`
-
-	var dbo releaseDBO
-	err := s.db.QueryRowContext(ctx, query, hash).Scan(
-		&dbo.ID, &dbo.FileHash, &dbo.Title, &dbo.Size, &dbo.Password, &dbo.GUID,
-		&dbo.Source, &dbo.DownloadURL, &dbo.PublishDate, &dbo.Category, &dbo.RedirectAllowed,
-		&dbo.CachePresent, &dbo.CacheBlobSize, &dbo.CacheVerifiedAt,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	return dbo.ToDomain(), nil
 }

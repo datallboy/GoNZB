@@ -21,8 +21,8 @@ type QueueManager struct {
 	queue      []*domain.QueueItem
 	parser     app.NZBParser
 	activeItem *domain.QueueItem
-	store      app.Store
-	indexer    app.IndexerManager
+	jobStore   app.JobStore
+	resolver   app.ReleaseResolver
 	logger     *logger.Logger
 	config     *config.Config
 
@@ -39,8 +39,8 @@ func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
 		downloader: app.Downloader,
 		processor:  app.Processor,
 		parser:     app.NZBParser,
-		store:      app.Store,
-		indexer:    app.Indexer,
+		jobStore:   app.JobStore,
+		resolver:   app.Resolver,
 		logger:     app.Logger,
 		config:     app.Config,
 		newJobChan: make(chan struct{}, 1),
@@ -58,7 +58,7 @@ func (m *QueueManager) initFromDatabase() {
 
 	ctx := context.Background()
 
-	err := m.store.ResetStuckQueueItems(ctx,
+	err := m.jobStore.ResetStuckQueueItems(ctx,
 		domain.StatusPending,
 		domain.StatusDownloading,
 		domain.StatusProcessing,
@@ -68,7 +68,7 @@ func (m *QueueManager) initFromDatabase() {
 		m.logger.Error("Failed to reset stuck items in DB: %v", err)
 	}
 
-	activeItems, err := m.store.GetActiveQueueItems(ctx)
+	activeItems, err := m.jobStore.GetActiveQueueItems(ctx)
 	if err != nil {
 		m.logger.Error("Failed to load queue from database: %v", err)
 		return
@@ -83,7 +83,7 @@ func (m *QueueManager) initFromDatabase() {
 
 // Add creates a new domain.QueueItem and notifies the processor loop
 func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error) {
-	release, err := m.store.GetRelease(ctx, releaseID)
+	release, err := m.resolver.GetRelease(ctx, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate release metadata for %s: %w", releaseID, err)
 	}
@@ -100,7 +100,7 @@ func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) 
 	}
 
 	// Save to database
-	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+	if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
 		return nil, fmt.Errorf("failed to save job to database: %w", err)
 	}
 
@@ -231,7 +231,7 @@ func (m *QueueManager) GetItem(ctx context.Context, id string) (*domain.QueueIte
 	m.mu.RUnlock()
 
 	// Get from DB as a fallback
-	item, err := m.store.GetQueueItem(ctx, id)
+	item, err := m.jobStore.GetQueueItem(ctx, id)
 	if err != nil {
 		m.logger.Debug("DB Fallback for %s failed: %v", id, err)
 		return nil, false
@@ -281,7 +281,7 @@ func (m *QueueManager) Cancel(id string) bool {
 			item.UpdatedAt = now
 			item.DownloadedBytes = item.GetBytes()
 			m.removeFromLiveQueue(item.ID)
-			if err := m.store.SaveQueueItem(context.Background(), item); err != nil {
+			if err := m.jobStore.SaveQueueItem(context.Background(), item); err != nil {
 				m.logger.Error("Failed to persist cancelled queue item %s: %v", item.ID, err)
 			}
 			m.recordEvent(context.Background(), item.ID, "queue", "cancelled", "Cancelled by user")
@@ -305,7 +305,7 @@ func (m *QueueManager) Delete(id string) bool {
 		}
 	}
 
-	rows, err := m.store.DeleteQueueItems(context.Background(), []string{id})
+	rows, err := m.jobStore.DeleteQueueItems(context.Background(), []string{id})
 	if err != nil {
 		m.logger.Error("Failed to delete queue item %s: %v", id, err)
 		return false
@@ -362,7 +362,7 @@ func (m *QueueManager) UpdateStatus(ctx context.Context, item *domain.QueueItem,
 
 	item.Status = status
 	item.UpdatedAt = now
-	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+	if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
 		m.logger.Error("Failed to persist status %s for queue item %s: %v", status, item.ID, err)
 	}
 	m.recordEvent(ctx, item.ID, "queue", string(status), "Status updated")
@@ -406,7 +406,7 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 	}
 
 	// Persist the final outcome
-	if err := m.store.SaveQueueItem(ctx, item); err != nil {
+	if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
 		m.logger.Error("Failed to persist final state for queue item %s: %v", item.ID, err)
 	}
 
@@ -428,7 +428,7 @@ func (m *QueueManager) recordEvent(ctx context.Context, queueID, stage, status, 
 		Message:  message,
 		MetaJSON: "",
 	}
-	if err := m.store.SaveQueueEvent(ctx, ev); err != nil {
+	if err := m.jobStore.SaveQueueEvent(ctx, ev); err != nil {
 		m.logger.Debug("Failed to persist queue event for %s: %v", queueID, err)
 	}
 }
@@ -456,7 +456,7 @@ func isCancelled(ctx context.Context) bool {
 func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) error {
 	// 1. Fetch File Metadata from DB
 	if item.Release == nil {
-		rel, err := m.store.GetRelease(ctx, item.ReleaseID)
+		rel, err := m.resolver.GetRelease(ctx, item.ReleaseID)
 		if err != nil {
 			return fmt.Errorf("could not find file metadata: %w", err)
 		}
@@ -466,10 +466,10 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 		item.Release = rel
 	}
 
-	// 2. Fetch NZB from Blob Store
-	reader, err := m.indexer.GetNZB(ctx, item.Release)
+	// 2. Fetch NZB from Blob jobStore
+	reader, err := m.resolver.GetNZB(ctx, item.Release)
 	if err != nil {
-		return fmt.Errorf("nzb file missing from blob store: %w", err)
+		return fmt.Errorf("nzb file missing from blob jobStore: %w", err)
 	}
 	defer reader.Close()
 
@@ -499,12 +499,12 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 	m.mu.Unlock()
 
 	// Update the Release record
-	if err := m.store.UpsertReleases(ctx, []*domain.Release{item.Release}); err != nil {
+	if err := m.resolver.UpsertReleases(ctx, []*domain.Release{item.Release}); err != nil {
 		m.logger.Warn("failed to update release size: %v", err)
 	}
 
 	// Save the ReleaseFiles
-	if err := m.store.SaveReleaseFiles(ctx, item.ReleaseID, prepRes.Tasks); err != nil {
+	if err := m.jobStore.SaveReleaseFiles(ctx, item.ReleaseID, prepRes.Tasks); err != nil {
 		m.logger.Warn("failed to save files to db: %v", err)
 	}
 
