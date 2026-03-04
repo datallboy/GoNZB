@@ -10,7 +10,6 @@ import (
 // releaseDBO maps to the releases table
 type releaseDBO struct {
 	ID              string         `db:"id"`
-	FileHash        string         `db:"file_hash"`
 	Title           string         `db:"title"`
 	Size            int64          `db:"size"`
 	Password        sql.NullString `db:"password"`
@@ -35,7 +34,6 @@ func (r *releaseDBO) ToDomain() *domain.Release {
 
 	return &domain.Release{
 		ID:              r.ID,
-		FileHash:        r.FileHash,
 		Title:           r.Title,
 		Size:            r.Size,
 		Password:        r.Password.String,
@@ -53,7 +51,6 @@ func (r *releaseDBO) ToDomain() *domain.Release {
 // Mapper: Domain Release to DBO
 func (r *releaseDBO) FromDomain(rel *domain.Release) {
 	r.ID = rel.ID
-	r.FileHash = rel.FileHash
 	r.Title = rel.Title
 	r.Size = rel.Size
 	r.Password = sql.NullString{String: rel.Password, Valid: rel.Password != ""}
