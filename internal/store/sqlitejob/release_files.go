@@ -1,4 +1,4 @@
-package store
+package sqlitejob
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // SaveReleaseFiles maps the actual NZB file contents into the database.
-func (s *PersistentStore) SaveReleaseFiles(ctx context.Context, releaseID string, files []*domain.DownloadFile) error {
+func (s *Store) SaveReleaseFiles(ctx context.Context, releaseID string, files []*domain.DownloadFile) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -68,7 +68,7 @@ func (s *PersistentStore) SaveReleaseFiles(ctx context.Context, releaseID string
 }
 
 // GetReleaseFiles retrieves all files and their cross-posted groups for a specific release.
-func (s *PersistentStore) GetReleaseFiles(ctx context.Context, releaseID string) ([]*domain.DownloadFile, error) {
+func (s *Store) GetReleaseFiles(ctx context.Context, releaseID string) ([]*domain.DownloadFile, error) {
 	query := `
 		SELECT 
 			rf.id, rf.release_id, rf.filename, rf.size, rf.file_index, 

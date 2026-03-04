@@ -2,28 +2,55 @@ package sqlitejob
 
 import (
 	"context"
-
-	"github.com/datallboy/gonzb/internal/domain"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
 )
 
-type legacyStore interface {
-	SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
-	GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error)
-	GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
-	GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
-	DeleteQueueItems(ctx context.Context, ids []string) (int64, error)
-	ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error)
-	SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error
-	GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error)
-	ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error
-	SaveReleaseFiles(ctx context.Context, releaseID string, files []*domain.DownloadFile) error
-	GetReleaseFiles(ctx context.Context, releaseID string) ([]*domain.DownloadFile, error)
-}
-
 type Store struct {
-	legacy legacyStore
+	db      *sql.DB
+	blobDir string
 }
 
-func New(legacy legacyStore) *Store {
-	return &Store{legacy: legacy}
+func NewStore(dbPath, blobDir string) (*Store, error) {
+
+	dbDir := filepath.Dir(dbPath)
+
+	// Ensure the database directory exists
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
+	}
+
+	// Ensure the blob directory exist
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create blob directory: %w", err)
+	}
+
+	// Open the metadata db
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open sqlite: %w", err)
+	}
+
+	// Ping makes sure the file is actually accessible and the DSN is valid
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to connect to sqlite: %w", err)
+	}
+
+	store := &Store{db: db, blobDir: blobDir}
+
+	if err := store.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("could not migrate database: %w", err)
+	}
+
+	if err := store.ReconcileReleaseCache(context.Background()); err != nil {
+		return nil, fmt.Errorf("could not reconcile release cache: %w", err)
+	}
+
+	return store, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
 }

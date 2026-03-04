@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store"
+	"github.com/datallboy/gonzb/internal/store/adapters"
 	blobstore "github.com/datallboy/gonzb/internal/store/blob"
 	"github.com/datallboy/gonzb/internal/store/sqlitejob"
 )
@@ -124,19 +125,28 @@ type Context struct {
 // NewContext initializes the base environment.
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	// Initialize file cache for NZBs
-	persistentStore, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
+	catalogStore, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize store: %w", err)
 	}
 
-	jobStore := sqlitejob.New(persistentStore)
-	blobStore := blobstore.NewFSBlobStore(persistentStore)
+	jobStore, err := sqlitejob.NewStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize sqlite job store: %w", err)
+	}
+
+	blobStore, err := blobstore.NewFSBlobStore(cfg.Store.BlobDir, jobStore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize blob store: %w", err)
+	}
+
+	aggregatorStore := adapters.NewAggregatorStore(catalogStore, blobStore)
 
 	// Initialize Indexer Manager
-	aggregator := indexer.NewManager(persistentStore, log)
+	aggregator := indexer.NewManager(aggregatorStore, log)
 
 	// Always add the local store indexer
-	aggregator.AddIndexer(storeIndexer.New(persistentStore))
+	aggregator.AddIndexer(storeIndexer.New(aggregatorStore))
 
 	for _, idxCfg := range cfg.Indexers {
 		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
@@ -144,7 +154,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	}
 
 	releaseResolver := &resolver.DefaultReleaseResolver{
-		Catalog:    persistentStore,
+		Catalog:    catalogStore,
 		Aggregator: aggregator,
 	}
 
@@ -156,7 +166,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Resolver:          releaseResolver,
 		JobStore:          jobStore,
 		BlobStore:         blobStore,
-		closers:           []io.Closer{persistentStore},
+		closers:           []io.Closer{catalogStore, jobStore},
 	}, nil
 }
 
