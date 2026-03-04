@@ -20,12 +20,11 @@ func NewService(appCtx *app.Context) *Service {
 }
 
 func (s *Service) ListActive() []*domain.QueueItem {
-	items := s.app.Queue.GetAllItems()
-	return items
+	return s.app.Queue.GetAllItems()
 }
 
 func (s *Service) ListHistory(ctx context.Context, status string, limit, offset int) ([]*domain.QueueItem, int, error) {
-	items, err := s.app.Store.GetQueueItems(ctx)
+	items, err := s.app.JobStore.GetQueueItems(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -66,7 +65,7 @@ func (s *Service) GetItemFiles(ctx context.Context, id string) ([]*domain.Downlo
 	if !ok || item == nil {
 		return nil, nil
 	}
-	return s.app.Store.GetReleaseFiles(ctx, item.ReleaseID)
+	return s.app.JobStore.GetReleaseFiles(ctx, item.ReleaseID)
 }
 
 func (s *Service) GetItemEvents(ctx context.Context, id string) ([]*domain.QueueItemEvent, error) {
@@ -74,7 +73,7 @@ func (s *Service) GetItemEvents(ctx context.Context, id string) ([]*domain.Queue
 	if !ok || item == nil {
 		return nil, nil
 	}
-	return s.app.Store.GetQueueEvents(ctx, item.ID)
+	return s.app.JobStore.GetQueueEvents(ctx, item.ID)
 }
 
 func (s *Service) Cancel(id string) bool {
@@ -103,11 +102,11 @@ func (s *Service) DeleteMany(ctx context.Context, ids []string) (int64, error) {
 		}
 	}
 
-	return s.app.Store.DeleteQueueItems(ctx, terminal)
+	return s.app.JobStore.DeleteQueueItems(ctx, terminal)
 }
 
 func (s *Service) ClearHistory(ctx context.Context) (int64, error) {
-	return s.app.Store.ClearQueueHistory(ctx, []domain.JobStatus{domain.StatusCompleted, domain.StatusFailed})
+	return s.app.JobStore.ClearQueueHistory(ctx, []domain.JobStatus{domain.StatusCompleted, domain.StatusFailed})
 }
 
 func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error) {
@@ -122,7 +121,7 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 
 	// Fill response payload with release metadata when available.
 	if item.Release == nil {
-		rel, relErr := s.app.Store.GetRelease(ctx, item.ReleaseID)
+		rel, relErr := s.app.Resolver.GetRelease(ctx, item.ReleaseID)
 		if relErr == nil {
 			item.Release = rel
 		}
@@ -135,7 +134,7 @@ func (s *Service) SearchReleases(ctx context.Context, query string) ([]*domain.R
 	if query == "" {
 		return []*domain.Release{}, nil
 	}
-	return s.app.Store.SearchReleases(ctx, query)
+	return s.app.Resolver.SearchReleases(ctx, query)
 }
 
 func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error) {
@@ -158,18 +157,17 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 
 	release := &domain.Release{
 		ID:       releaseID,
-		FileHash: releaseID,
 		GUID:     releaseID,
 		Title:    filename,
 		Source:   "manual",
 		Category: "Uncategorized",
 	}
 
-	if err := s.app.Store.UpsertReleases(ctx, []*domain.Release{release}); err != nil {
+	if err := s.app.Resolver.UpsertReleases(ctx, []*domain.Release{release}); err != nil {
 		return nil, fmt.Errorf("failed to persist release metadata: %w", err)
 	}
 
-	if err := s.app.Store.SaveNZBAtomically(releaseID, data); err != nil {
+	if err := s.app.BlobStore.SaveNZBAtomically(releaseID, data); err != nil {
 		return nil, fmt.Errorf("failed to persist nzb in blob store: %w", err)
 	}
 

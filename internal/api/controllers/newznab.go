@@ -73,7 +73,7 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 	query := c.QueryParam("q")
 
-	results, err := ctrl.App.Indexer.SearchAll(c.Request().Context(), query)
+	results, err := ctrl.App.Aggregator.SearchAll(c.Request().Context(), query)
 	if err != nil {
 		return c.XML(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -95,7 +95,7 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 		return c.String(http.StatusBadRequest, "Missing ID")
 	}
 
-	res, err := ctrl.App.Indexer.GetResultByID(c.Request().Context(), id)
+	res, err := ctrl.App.Aggregator.GetResultByID(c.Request().Context(), id)
 	if err != nil {
 		ctrl.App.Logger.Error("Failed release lookup for id %s: %v", id, err)
 		return c.String(http.StatusInternalServerError, "Failed to lookup NZB")
@@ -105,13 +105,13 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 	}
 
 	// Handle redirect mode
-	if res.RedirectAllowed && !ctrl.App.Store.Exists(res.ID) {
+	if res.RedirectAllowed && !ctrl.App.BlobStore.Exists(res.ID) {
 		// Send the user directly to Indexer
 		return c.Redirect(http.StatusFound, res.DownloadURL)
 	}
 
 	// Stream from file cache or network logic
-	reader, err := ctrl.App.Indexer.GetNZB(c.Request().Context(), res)
+	reader, err := ctrl.App.Aggregator.GetNZB(c.Request().Context(), res)
 	if err != nil {
 		return c.String(http.StatusInternalServerError, "Failed to fetch NZB")
 	}

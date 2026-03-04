@@ -10,7 +10,6 @@ import (
 // Release represents the NZB itself, whether from an indexer or a file upload.
 type Release struct {
 	ID              string    `json:"id"`
-	FileHash        string    `json:"hash"`
 	Title           string    `json:"title"`
 	Password        string    `json:"password"`
 	GUID            string    `json:"guid"`
