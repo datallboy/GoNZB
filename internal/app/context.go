@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store"
 )
 
@@ -22,11 +23,20 @@ type NNTPManager interface {
 }
 
 // Manager defines the contract for our NZB search and download engine.
-type IndexerManager interface {
+type IndexerAggregator interface {
 	SearchAll(ctx context.Context, query string) ([]*domain.Release, error)
 	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
 	GetResultByID(ctx context.Context, id string) (*domain.Release, error)
 }
+
+type ReleaseResolver interface {
+	UpsertReleases(ctx context.Context, results []*domain.Release) error
+	GetRelease(ctx context.Context, id string) (*domain.Release, error)
+	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
+	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
+}
+
+type UsenetIndexerService interface{}
 
 type Processor interface {
 	// This allows the engine to trigger repair/extract without importing processor
@@ -62,14 +72,7 @@ type NZBParser interface {
 // Store defines the contract for NZB storage.
 // Allows to use a simple directory FileCache, or Redis / DB / S3 for NZB storage in the future.
 // Should be StoreManager similar to others, but we'll just use FileCache and keep it simple for now.
-type Store interface {
-	// Metadata: SQLLite
-	UpsertReleases(ctx context.Context, results []*domain.Release) error
-	GetRelease(ctx context.Context, id string) (*domain.Release, error)
-	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
-	UpdateReleaseHash(ctx context.Context, id string, hash string) error
-	GetReleaseByHash(ctx context.Context, hash string) (*domain.Release, error)
-
+type JobStore interface {
 	// Downloader Queue: SQLite
 	SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
 	GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error)
@@ -84,14 +87,14 @@ type Store interface {
 	// release_files: SQLite
 	SaveReleaseFiles(ctx context.Context, releaseID string, files []*domain.DownloadFile) error
 	GetReleaseFiles(ctx context.Context, releaseID string) ([]*domain.DownloadFile, error)
+}
 
+type BlobStore interface {
 	// Blobs: File System
 	GetNZBReader(key string) (io.ReadCloser, error)
 	CreateNZBWriter(key string) (io.WriteCloser, error)
 	SaveNZBAtomically(key string, data []byte) error
 	Exists(key string) bool
-
-	Close() error
 }
 
 // Context hold the core environment and shared resources for GoNZB.
@@ -101,48 +104,65 @@ type Context struct {
 	Logger *logger.Logger
 
 	// High-level interfaces for services to use
-	NNTP       NNTPManager
-	Indexer    IndexerManager
-	Processor  Processor
-	Downloader Downloader
-	Queue      QueueManager
-	NZBParser  NZBParser
-	Store      Store
+	NNTP          NNTPManager
+	Aggregator    IndexerAggregator
+	Resolver      ReleaseResolver
+	UsenetIndexer UsenetIndexerService
+	Processor     Processor
+	Downloader    Downloader
+	Queue         QueueManager
+	NZBParser     NZBParser
+	JobStore      JobStore
+	BlobStore     BlobStore
 
 	ExtractionEnabled bool
+	closers           []io.Closer
 }
 
 // NewContext initializes the base environment.
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	// Initialize file cache for NZBs
-	store, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
+	persistentStore, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize store: %w", err)
 	}
 
 	// Initialize Indexer Manager
-	idxManager := indexer.NewManager(store, log)
+	aggregator := indexer.NewManager(persistentStore, log)
 
 	// Always add the local store indexer
-	idxManager.AddIndexer(storeIndexer.New(store))
+	aggregator.AddIndexer(storeIndexer.New(persistentStore))
 
 	for _, idxCfg := range cfg.Indexers {
 		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
-		idxManager.AddIndexer(client)
+		aggregator.AddIndexer(client)
+	}
+
+	releaseResolver := &resolver.DefaultReleaseResolver{
+		Catalog:    persistentStore,
+		Aggregator: aggregator,
 	}
 
 	return &Context{
 		Config:            cfg,
 		Logger:            log,
 		ExtractionEnabled: true,
-		Indexer:           idxManager,
-		Store:             store,
+		Aggregator:        aggregator,
+		Resolver:          releaseResolver,
+		JobStore:          persistentStore,
+		BlobStore:         persistentStore,
+		closers:           []io.Closer{persistentStore},
 	}, nil
 }
 
 func (ctx *Context) Close() {
-	ctx.Logger.Info("Shutting down store...")
-	if err := ctx.Store.Close(); err != nil {
-		ctx.Logger.Error("Error closing store: %v", err)
+	for _, c := range ctx.closers {
+		if c == nil {
+			continue
+		}
+
+		if err := c.Close(); err != nil {
+			ctx.Logger.Error("Error closing resource: %v", err)
+		}
 	}
 }
