@@ -7,40 +7,28 @@ import (
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
-type catalog interface {
-	UpsertReleases(ctx context.Context, results []*domain.Release) error
-	GetRelease(ctx context.Context, id string) (*domain.Release, error)
-	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
-}
-
 type blob interface {
 	GetNZBReader(key string) (io.ReadCloser, error)
 	SaveNZBAtomically(key string, data []byte) error
 	Exists(key string) bool
 }
 
+type aggregatorCache interface {
+	UpsertAggregatorReleaseCache(ctx context.Context, releases []*domain.Release) error
+	SearchAggregatorReleaseCache(ctx context.Context, query string, limit int) ([]*domain.Release, error)
+	GetAggregatorReleaseCacheByID(ctx context.Context, id string) (*domain.Release, error)
+}
+
 type AggregatorStore struct {
-	catalog catalog
-	blob    blob
+	blob  blob
+	cache aggregatorCache
 }
 
-func NewAggregatorStore(catalog catalog, blob blob) *AggregatorStore {
+func NewAggregatorStore(blob blob, cache aggregatorCache) *AggregatorStore {
 	return &AggregatorStore{
-		catalog: catalog,
-		blob:    blob,
+		blob:  blob,
+		cache: cache,
 	}
-}
-
-func (s *AggregatorStore) UpsertReleases(ctx context.Context, results []*domain.Release) error {
-	return s.catalog.UpsertReleases(ctx, results)
-}
-
-func (s *AggregatorStore) GetRelease(ctx context.Context, id string) (*domain.Release, error) {
-	return s.catalog.GetRelease(ctx, id)
-}
-
-func (s *AggregatorStore) SearchReleases(ctx context.Context, query string) ([]*domain.Release, error) {
-	return s.catalog.SearchReleases(ctx, query)
 }
 
 func (s *AggregatorStore) GetNZBReader(id string) (io.ReadCloser, error) {
@@ -53,4 +41,25 @@ func (s *AggregatorStore) SaveNZBAtomically(id string, data []byte) error {
 
 func (s *AggregatorStore) Exists(id string) bool {
 	return s.blob.Exists(id)
+}
+
+func (s *AggregatorStore) UpsertAggregatorReleaseCache(ctx context.Context, releases []*domain.Release) error {
+	if s.cache == nil {
+		return nil
+	}
+	return s.cache.UpsertAggregatorReleaseCache(ctx, releases)
+}
+
+func (s *AggregatorStore) SearchAggregatorReleaseCache(ctx context.Context, query string, limit int) ([]*domain.Release, error) {
+	if s.cache == nil {
+		return []*domain.Release{}, nil
+	}
+	return s.cache.SearchAggregatorReleaseCache(ctx, query, limit)
+}
+
+func (s *AggregatorStore) GetAggregatorReleaseCacheByID(ctx context.Context, id string) (*domain.Release, error) {
+	if s.cache == nil {
+		return nil, nil
+	}
+	return s.cache.GetAggregatorReleaseCacheByID(ctx, id)
 }

@@ -45,6 +45,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	}))
 
 	nzbCtrl := &controllers.NewznabController{App: app}
+	aggCtrl := &controllers.AggregatorController{App: app}
 	queueCtrl := &controllers.QueueController{Service: queuesvc.NewService(app)}
 	eventCtrl := &controllers.DownloadEvent{App: app}
 	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
@@ -64,7 +65,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	v1.GET("/queue/:id", queueCtrl.GetItem)
 	v1.GET("/queue/:id/files", queueCtrl.GetItemFiles)
 	v1.GET("/queue/:id/events", queueCtrl.GetItemEvents)
-	v1.GET("/releases/search", queueCtrl.SearchReleases)
+	v1.GET("/releases/search", aggCtrl.SearchReleases)
 	v1.POST("/queue", queueCtrl.Add)
 	v1.POST("/queue/:id/cancel", queueCtrl.Cancel)
 	v1.GET("/events/queue", eventCtrl.HandleEvents)
