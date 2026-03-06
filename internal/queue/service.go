@@ -141,13 +141,6 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 	return item, nil
 }
 
-func (s *Service) SearchReleases(ctx context.Context, query string) ([]*domain.Release, error) {
-	if query == "" {
-		return []*domain.Release{}, nil
-	}
-	return s.app.Resolver.SearchReleases(ctx, query)
-}
-
 func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error) {
 	if filename == "" {
 		filename = "manual.nzb"

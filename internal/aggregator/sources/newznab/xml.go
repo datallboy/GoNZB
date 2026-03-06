@@ -1,4 +1,4 @@
-package newsnab
+package newznab
 
 import (
 	"encoding/xml"

@@ -24,16 +24,6 @@ type bulkIDsRequest struct {
 	IDs []string `json:"ids"`
 }
 
-type releaseSearchResponse struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Size          int64  `json:"size"`
-	Category      string `json:"category"`
-	Source        string `json:"source"`
-	CachePresent  bool   `json:"cache_present"`
-	CacheBlobSize int64  `json:"cache_blob_size"`
-}
-
 type queueItemResponse struct {
 	ID          string                `json:"id"`
 	ReleaseID   string                `json:"release_id"`
@@ -168,39 +158,6 @@ func (ctrl *QueueController) Add(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, mapQueueItem(item))
-}
-
-func (ctrl *QueueController) SearchReleases(c *echo.Context) error {
-	query := strings.TrimSpace(c.QueryParam("q"))
-	if len(query) < 2 {
-		return c.JSON(http.StatusOK, map[string]any{
-			"items": []releaseSearchResponse{},
-			"count": 0,
-		})
-	}
-
-	results, err := ctrl.Service.SearchReleases(c.Request().Context(), query)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-
-	items := make([]releaseSearchResponse, 0, len(results))
-	for _, rel := range results {
-		items = append(items, releaseSearchResponse{
-			ID:            rel.ID,
-			Title:         rel.Title,
-			Size:          rel.Size,
-			Category:      rel.Category,
-			Source:        rel.Source,
-			CachePresent:  rel.CachePresent,
-			CacheBlobSize: rel.CacheBlobSize,
-		})
-	}
-
-	return c.JSON(http.StatusOK, map[string]any{
-		"items": items,
-		"count": len(items),
-	})
 }
 
 func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {

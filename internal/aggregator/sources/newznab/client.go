@@ -1,4 +1,4 @@
-package newsnab
+package newznab
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]*domain.Release, e
 	return results, nil
 }
 
-func (c *Client) DownloadNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
+func (c *Client) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
 	// Newznab uses t=getnzb and the id (guid) to fetch the file
 	downloadURL, err := url.Parse(res.DownloadURL)
 	if err != nil {

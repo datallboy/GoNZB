@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"io"
 
+	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
+	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
 	"github.com/datallboy/gonzb/internal/domain"
-	"github.com/datallboy/gonzb/internal/indexer"
-	"github.com/datallboy/gonzb/internal/indexer/newsnab"
-	storeIndexer "github.com/datallboy/gonzb/internal/indexer/store"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/resolver"
-	"github.com/datallboy/gonzb/internal/store"
 	"github.com/datallboy/gonzb/internal/store/adapters"
 	blobstore "github.com/datallboy/gonzb/internal/store/blob"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
@@ -34,9 +32,7 @@ type IndexerAggregator interface {
 }
 
 type ReleaseResolver interface {
-	UpsertReleases(ctx context.Context, results []*domain.Release) error
 	GetRelease(ctx context.Context, id string) (*domain.Release, error)
-	SearchReleases(ctx context.Context, query string) ([]*domain.Release, error)
 	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
 }
 
@@ -147,12 +143,6 @@ type Context struct {
 
 // NewContext initializes the base environment.
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
-	// Initialize aggregator catalog store
-	catalogStore, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize store: %w", err)
-	}
-
 	jobStore, err := sqlitejob.NewStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize sqlite job store: %w", err)
@@ -174,21 +164,17 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		return nil, fmt.Errorf("failed to initialize settings store: %w", err)
 	}
 
-	aggregatorStore := adapters.NewAggregatorStore(catalogStore, payloadStore)
+	aggregatorStore := adapters.NewAggregatorStore(payloadStore, jobStore)
 
 	// Initialize Indexer Manager
-	aggregator := indexer.NewManager(aggregatorStore, log)
-
-	// Always add the local store indexer
-	aggregator.AddIndexer(storeIndexer.New(aggregatorStore))
+	aggregator := aggregatorpkg.NewManager(aggregatorStore, log, cfg.Store.PayloadCacheEnabled, cfg.Store.SearchPersistenceEnabled)
 
 	for _, idxCfg := range cfg.Indexers {
-		client := newsnab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
-		aggregator.AddIndexer(client)
+		client := newznab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
+		aggregator.AddSource(client)
 	}
 
 	releaseResolver := &resolver.DefaultReleaseResolver{
-		Catalog:    catalogStore,
 		Aggregator: aggregator,
 	}
 
@@ -204,7 +190,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		PayloadFetcher:    releaseResolver,
 		PayloadCacheStore: payloadStore,
 		SettingsStore:     settingsStore,
-		closers:           []io.Closer{catalogStore, jobStore, settingsStore},
+		closers:           []io.Closer{jobStore, settingsStore},
 	}, nil
 }
 

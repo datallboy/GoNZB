@@ -27,6 +27,14 @@ func (s *Store) MarkReleaseCached(ctx context.Context, releaseID string, blobSiz
 		return fmt.Errorf("upsert blob_cache_index cached row: %w", err)
 	}
 
+	if _, err := s.db.ExecContext(ctx, `
+	UPDATE aggregator_release_cache
+	SET nzb_cached = 1,
+	    updated_at = CURRENT_TIMESTAMP
+	WHERE release_id = ?`, releaseID); err != nil {
+		return fmt.Errorf("sync aggregator_release_cache cached row: %w", err)
+	}
+
 	return nil
 }
 
@@ -46,6 +54,14 @@ func (s *Store) MarkReleaseCacheMissing(ctx context.Context, releaseID, reason s
 	)
 	if err != nil {
 		return fmt.Errorf("upsert blob_cache_index missing row: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE aggregator_release_cache
+		SET nzb_cached = 0,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE release_id = ?`, releaseID); err != nil {
+		return fmt.Errorf("sync aggregator_release_cache missing row: %w", err)
 	}
 
 	return nil
