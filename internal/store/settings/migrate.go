@@ -1,4 +1,4 @@
-package sqlitejob
+package settings
 
 import (
 	"context"
@@ -11,5 +11,5 @@ import (
 var migrationFiles embed.FS
 
 func (s *Store) RunMigrations() error {
-	return sqlitemigrate.RunModuleMigrations(context.Background(), s.db, "sqlitejob", migrationFiles, "migrations")
+	return sqlitemigrate.RunModuleMigrations(context.Background(), s.db, "settings", migrationFiles, "migrations")
 }

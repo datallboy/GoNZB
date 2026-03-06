@@ -5,10 +5,63 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
+
+const queueSelectColumns = `
+q.id,
+q.status,
+q.out_dir,
+q.error,
+q.source_kind,
+q.source_release_id,
+q.release_title,
+q.release_size,
+q.release_snapshot_json,
+q.payload_mode,     
+q.resumable,       
+q.created_at,
+q.updated_at,
+q.started_at_unix,
+q.completed_at_unix,
+q.download_seconds,
+q.postprocess_seconds,
+q.avg_bps,
+q.downloaded_bytes
+`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanReleaseWithQueue(s rowScanner) (*domain.QueueItem, error) {
+	var q queueItemDBO
+	if err := s.Scan(
+		&q.ID,
+		&q.Status,
+		&q.OutDir,
+		&q.Error,
+		&q.SourceKind,
+		&q.SourceReleaseID,
+		&q.ReleaseTitle,
+		&q.ReleaseSize,
+		&q.ReleaseSnapshotJSON,
+		&q.PayloadMode,
+		&q.Resumable,
+		&q.CreatedAt,
+		&q.UpdatedAt,
+		&q.StartedAtUnix,
+		&q.CompletedAtUnix,
+		&q.DownloadSeconds,
+		&q.PostProcessSeconds,
+		&q.AvgBps,
+		&q.DownloadedBytes,
+	); err != nil {
+		return nil, err
+	}
+	return q.ToDomain(), nil
+}
 
 func (s *Store) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error {
 	startedAtUnix := int64(0)
@@ -20,25 +73,78 @@ func (s *Store) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
 		completedAtUnix = item.CompletedAt.Unix()
 	}
 
+	sourceKind := item.SourceKind
+	if sourceKind == "" {
+		sourceKind = "aggregator"
+	}
+
+	sourceReleaseID := item.SourceReleaseID
+	if sourceReleaseID == "" {
+		sourceReleaseID = item.ReleaseID
+	}
+
+	releaseTitle := item.ReleaseTitle
+	if releaseTitle == "" && item.Release != nil {
+		releaseTitle = item.Release.Title
+	}
+
+	releaseSize := item.ReleaseSize
+	if releaseSize == 0 && item.Release != nil {
+		releaseSize = item.Release.Size
+	}
+
+	releaseSnapshotJSON := item.ReleaseSnapshotJSON
+	if releaseSnapshotJSON == "" {
+		releaseSnapshotJSON = "{}"
+	}
+
+	payloadMode := item.PayloadMode
+	if payloadMode == "" {
+		payloadMode = domain.PayloadModeCached
+	}
+
+	resumable := item.Resumable
+	if payloadMode == domain.PayloadModeCached && !item.Resumable {
+		// keep explicit false if caller set it
+		resumable = false
+	}
+	if payloadMode == domain.PayloadModeCached && item.Resumable {
+		resumable = true
+	}
+	if payloadMode == domain.PayloadModeEphemeral {
+		resumable = false
+	}
+
 	query := `
-		INSERT INTO queue_items (
-			id, release_id, status, out_dir, error,
-			started_at_unix, completed_at_unix, download_seconds, postprocess_seconds, avg_bps, downloaded_bytes
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			status = excluded.status,
-			error = excluded.error,
-			out_dir = excluded.out_dir,
-			started_at_unix = excluded.started_at_unix,
-			completed_at_unix = excluded.completed_at_unix,
-			download_seconds = excluded.download_seconds,
-			postprocess_seconds = excluded.postprocess_seconds,
-			avg_bps = excluded.avg_bps,
-			downloaded_bytes = excluded.downloaded_bytes`
+	INSERT INTO queue_items (
+		id, status, out_dir, error,
+		source_kind, source_release_id, release_title, release_size, release_snapshot_json,
+		payload_mode, resumable,
+		started_at_unix, completed_at_unix, download_seconds, postprocess_seconds, avg_bps, downloaded_bytes
+	)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		status = excluded.status,
+		error = excluded.error,
+		out_dir = excluded.out_dir,
+		source_kind = excluded.source_kind,
+		source_release_id = excluded.source_release_id,
+		release_title = excluded.release_title,
+		release_size = excluded.release_size,
+		release_snapshot_json = excluded.release_snapshot_json,
+		payload_mode = excluded.payload_mode,
+		resumable = excluded.resumable,
+		started_at_unix = excluded.started_at_unix,
+		completed_at_unix = excluded.completed_at_unix,
+		download_seconds = excluded.download_seconds,
+		postprocess_seconds = excluded.postprocess_seconds,
+		avg_bps = excluded.avg_bps,
+		downloaded_bytes = excluded.downloaded_bytes`
 
 	_, err := s.db.ExecContext(ctx, query,
-		item.ID, item.ReleaseID, item.Status, item.OutDir, item.Error,
+		item.ID, item.Status, item.OutDir, item.Error,
+		sourceKind, sourceReleaseID, releaseTitle, releaseSize, releaseSnapshotJSON,
+		payloadMode, resumable,
 		startedAtUnix, completedAtUnix, item.DownloadSeconds, item.PostProcessSeconds, item.AvgBps, item.DownloadedBytes,
 	)
 	return err
@@ -47,12 +153,8 @@ func (s *Store) SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
 // GetQueueItems returns all items in the queue, ordered by creation date.
 func (s *Store) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
-		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
-			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
-			r.id, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+		SELECT ` + queueSelectColumns + `
 		FROM queue_items q
-		JOIN releases r ON q.release_id = r.id
 		ORDER BY q.created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query)
@@ -63,12 +165,15 @@ func (s *Store) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) 
 
 	var items []*domain.QueueItem
 	for rows.Next() {
-		var qi queueItemDBO
-		release, scanErr := scanReleaseWithQueue(rows, &qi)
+		item, scanErr := scanReleaseWithQueue(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan queue row: %w", scanErr)
 		}
-		items = append(items, qi.ToDomain(release))
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("queue rows iteration error: %w", err)
 	}
 
 	return items, nil
@@ -77,18 +182,12 @@ func (s *Store) GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error) 
 // GetQueueItem fetches a single job by its ID, fully hydrated with its Release.
 func (s *Store) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error) {
 	query := `
-		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
-			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
-			r.id, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+		SELECT ` + queueSelectColumns + `
 		FROM queue_items q
-		JOIN releases r ON q.release_id = r.id
 		WHERE q.id = ? LIMIT 1`
 
-	var qi queueItemDBO
-
 	row := s.db.QueryRowContext(ctx, query, id)
-	release, err := scanReleaseWithQueue(row, &qi)
+	item, err := scanReleaseWithQueue(row)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -97,18 +196,14 @@ func (s *Store) GetQueueItem(ctx context.Context, id string) (*domain.QueueItem,
 		return nil, fmt.Errorf("failed to get queue item %s: %w", id, err)
 	}
 
-	return qi.ToDomain(release), nil
+	return item, nil
 }
 
 // GetActiveQueueItems returns all jobs that are not in a terminal state (Completed/Failed).
 func (s *Store) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error) {
 	query := `
-		SELECT 
-			q.id, q.release_id, q.status, q.out_dir, q.error, q.created_at, q.updated_at,
-			q.started_at_unix, q.completed_at_unix, q.download_seconds, q.postprocess_seconds, q.avg_bps, q.downloaded_bytes,
-			r.id, r.title, r.size, r.password, r.guid, r.source, r.download_url, r.publish_date, r.category, r.redirect_allowed
+		SELECT ` + queueSelectColumns + `
 		FROM queue_items q
-		JOIN releases r ON q.release_id = r.id
 		WHERE q.status NOT IN ('completed', 'failed')
 		ORDER BY q.created_at ASC`
 
@@ -120,13 +215,17 @@ func (s *Store) GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, e
 
 	var items []*domain.QueueItem
 	for rows.Next() {
-		var qi queueItemDBO
-		release, scanErr := scanReleaseWithQueue(rows, &qi)
+		item, scanErr := scanReleaseWithQueue(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		items = append(items, qi.ToDomain(release))
+		items = append(items, item)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active queue rows iteration error: %w", err)
+	}
+
 	return items, nil
 }
 
@@ -195,46 +294,4 @@ func (s *Store) ResetStuckQueueItems(ctx context.Context, newStatus domain.JobSt
 
 	_, err := s.db.Exec(query, args...)
 	return err
-}
-
-type queueReleaseScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanReleaseWithQueue(scanner queueReleaseScanner, qi *queueItemDBO) (*domain.Release, error) {
-	var (
-		releaseID       string
-		title           string
-		size            int64
-		password        sql.NullString
-		guid            sql.NullString
-		source          sql.NullString
-		downloadURL     sql.NullString
-		publishDateUnix int64
-		category        sql.NullString
-		redirectAllowed bool
-	)
-
-	err := scanner.Scan(
-		&qi.ID, &qi.ReleaseID, &qi.Status, &qi.OutDir, &qi.Error, &qi.CreatedAt, &qi.UpdatedAt,
-		&qi.StartedAtUnix, &qi.CompletedAtUnix, &qi.DownloadSeconds, &qi.PostProcessSeconds, &qi.AvgBps, &qi.DownloadedBytes,
-		&releaseID, &title, &size, &password, &guid, &source, &downloadURL, &publishDateUnix, &category, &redirectAllowed,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	release := &domain.Release{
-		ID:              releaseID,
-		Title:           title,
-		Size:            size,
-		Password:        password.String,
-		GUID:            guid.String,
-		Source:          source.String,
-		DownloadURL:     downloadURL.String,
-		PublishDate:     time.Unix(publishDateUnix, 0),
-		Category:        category.String,
-		RedirectAllowed: redirectAllowed,
-	}
-	return release, nil
 }

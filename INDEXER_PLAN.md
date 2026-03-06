@@ -44,7 +44,8 @@ Use these terms exactly throughout code, docs, config, and PR descriptions.
 - Rule: do not treat release id as queue item id; they are distinct identifiers.
 
 6. **Queue Item Files**
-- Meaning: downloader-owned per-queue-item file metadata for API/UI (`queue_item_files`).
+- Meaning: downloader-owned per-queue-item file metadata for API/UI (logical queue item file view).
+- Physical storage: deduplicated file-set model (`queue_file_sets` + `queue_file_set_items`) referenced by `queue_items.file_set_id`.
 - Preferred usage: `queue item files`.
 - Avoid: referring to these as catalog `release_files`.
 
@@ -139,7 +140,8 @@ API ownership rule:
 |---|---|---|---|---|
 | `queue_items` | Downloader | SQLite | Runtime + history | Core queue state |
 | `queue_item_events` | Downloader | SQLite | Runtime + history | Stage/event timeline |
-| `queue_item_files` | Downloader | SQLite | Runtime + history | Queue-scoped file details for API/UI |
+| `queue_file_sets` + `queue_file_set_items` (+ `queue_items.file_set_id`) | Downloader | SQLite | Runtime + history | Deduplicated queue item file details backing `GET /api/v1/queue/:id/files` |
+for API/UI |
 | `blob_cache_index` | Payload Cache Module | SQLite | Runtime cache metadata | Present only when payload cache module is enabled |
 | NZB blob files (`*.nzb`) | Payload Cache Module | Filesystem | Runtime cache | Source payload storage for cache/streaming-ready future |
 | `aggregator_release_cache` | Aggregator | SQLite (optional) | Search cache | Not required for aggregator operation |
@@ -230,11 +232,18 @@ CREATE INDEX IF NOT EXISTS idx_queue_item_events_queue_item_id_created_at
 ON queue_item_events(queue_item_id, created_at);
 ```
 
-### A3. `queue_item_files` (downloader-owned file detail cache for API/UI)
+### A3. Queue item files (downloader-owned deduplicated file-set model for API/UI)
 ```sql
-CREATE TABLE IF NOT EXISTS queue_item_files (
+CREATE TABLE IF NOT EXISTS queue_file_sets (
+  id TEXT PRIMARY KEY,                        -- KSUID
+  content_hash TEXT NOT NULL UNIQUE,          -- sha256(normalized file list)
+  total_files INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS queue_file_set_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  queue_item_id TEXT NOT NULL,
+  file_set_id TEXT NOT NULL,
   file_name TEXT NOT NULL,
   size INTEGER NOT NULL DEFAULT 0,
   file_index INTEGER NOT NULL DEFAULT 0,
@@ -244,12 +253,16 @@ CREATE TABLE IF NOT EXISTS queue_item_files (
   poster TEXT NOT NULL DEFAULT '',
   groups_json TEXT NOT NULL DEFAULT '[]',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(queue_item_id) REFERENCES queue_items(id) ON DELETE CASCADE,
-  UNIQUE(queue_item_id, file_index)
+  FOREIGN KEY(file_set_id) REFERENCES queue_file_sets(id) ON DELETE CASCADE,
+  UNIQUE(file_set_id, file_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_queue_item_files_queue_item_id ON queue_item_files(queue_item_id);
+CREATE INDEX IF NOT EXISTS idx_queue_file_set_items_file_set_id
+ON queue_file_set_items(file_set_id);
+
+-- queue_items includes:
+-- file_set_id TEXT NULL REFERENCES queue_file_sets(id)
+CREATE INDEX IF NOT EXISTS idx_queue_items_file_set_id ON queue_items(file_set_id);
 ```
 
 ### A4. `blob_cache_index` (optional metadata for local NZB blobs)
@@ -439,7 +452,9 @@ Exit gates (required to mark milestone complete):
 1. Keep SQLite tables limited to:
 - `queue_items`
 - `queue_item_events`
-- `queue_item_files`
+- `queue_file_sets`
+- `queue_file_set_items`
+- `queue_items.file_set_id` reference
 - `blob_cache_index` (only when payload cache module is enabled)
 - optional `aggregator_release_cache`
 - `module_schema_version`
@@ -449,7 +464,7 @@ Exit gates (required to mark milestone complete):
 - `groups`
 - `posters`
 - `release_cache`
-3. Preserve queue file API behavior via `queue_item_files` (queue-scoped), not release-scoped catalog tables.
+3. Preserve queue file API behavior via downloader-owned queue item file view backed by deduplicated file sets (`queue_file_sets` + `queue_file_set_items`), not release-scoped catalog tables.
 4. Add queue payload durability fields/semantics (`payload_mode`, `resumable`) and restart handling rules for non-cached jobs.
 5. Preserve manual NZB enqueue and queue/history endpoints.
 
@@ -532,7 +547,7 @@ Exit gates (required to mark milestone complete):
 2. Manual source does not require aggregator/PG.
 3. Aggregator source resolves via aggregator interfaces.
 4. Usenet index source resolves via PG-backed resolver.
-5. Queue item file details continue from downloader-owned `queue_item_files`.
+5. Queue item file details continue from downloader-owned deduplicated file-set storage (`queue_file_sets` + `queue_file_set_items`) exposed as queue item files API.
 
 ### Exit criteria
 - downloader works in downloader-only mode with full queue API/UI behavior.
@@ -601,6 +616,7 @@ Exit gates (required to mark milestone complete):
 - `source_kind`, `source_release_id`, `release_snapshot_json`
 2. Queue file API remains (downloader-owned data):
 - `GET /api/v1/queue/:id/files` remains supported.
+- Physical SQLite backing is deduplicated (`queue_file_sets`/`queue_file_set_items` + `queue_items.file_set_id`).
 3. API module split:
 - downloader queue endpoints vs aggregator search endpoints.
 4. Web UI decoupled as optional module.
@@ -613,6 +629,7 @@ Exit gates (required to mark milestone complete):
 - queue item file persistence and retrieval
 - resolver routing by `source_kind`
 - config validation by module combinations
+- queue item file-set dedup hash/reuse behavior (same file list -> same file_set_id)
 
 2. Integration
 - downloader-only (cache enabled and cache disabled)
@@ -631,6 +648,7 @@ Exit gates (required to mark milestone complete):
 - queue/history/events/file-details endpoints remain functional
 - existing Newznab behavior under aggregator remains intact
 - pass-through NZB fetch works when payload cache module is disabled
+- repeated enqueue/hydrate of identical payload does not duplicate file-set rows
 
 ---
 

@@ -16,6 +16,11 @@ const (
 	StatusFailed      JobStatus = "failed"
 )
 
+const (
+	PayloadModeCached    = "cached"
+	PayloadModeEphemeral = "ephemeral"
+)
+
 // QueueItem represents the entire NZB download process
 type QueueItem struct {
 	ID        string   // Unique KSUID for this job
@@ -23,6 +28,17 @@ type QueueItem struct {
 	Release   *Release // Populated via JOIN from store
 	Status    JobStatus
 	OutDir    string
+
+	// MIlestone 3 snapshot/reference fields
+	SourceKind          string // manaual | aggregator | usenet_index
+	SourceReleaseID     string
+	ReleaseTitle        string
+	ReleaseSize         int64
+	ReleaseSnapshotJSON string
+
+	// payload durability fields.
+	PayloadMode string // cached | ephemeral
+	Resumable   bool
 
 	// Tasks are only present in RAM. When loaded from queue_items,
 	// this is nil until hydrated from BLOB store.

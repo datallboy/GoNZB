@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -15,16 +16,18 @@ import (
 )
 
 type QueueManager struct {
-	mu         sync.RWMutex
-	downloader app.Downloader
-	processor  app.Processor
-	queue      []*domain.QueueItem
-	parser     app.NZBParser
-	activeItem *domain.QueueItem
-	jobStore   app.JobStore
-	resolver   app.ReleaseResolver
-	logger     *logger.Logger
-	config     *config.Config
+	mu             sync.RWMutex
+	downloader     app.Downloader
+	processor      app.Processor
+	queue          []*domain.QueueItem
+	parser         app.NZBParser
+	activeItem     *domain.QueueItem
+	jobStore       app.JobStore
+	queueFiles     app.QueueFileStore
+	resolver       app.ReleaseResolver
+	payloadFetcher app.PayloadFetcher
+	logger         *logger.Logger
+	config         *config.Config
 
 	stopFunc   context.CancelFunc
 	newJobChan chan struct{}
@@ -36,15 +39,17 @@ type QueueManager struct {
 // if loadExisting is false, will skip the database lookup (for CLI mode)
 func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
 	m := &QueueManager{
-		downloader: app.Downloader,
-		processor:  app.Processor,
-		parser:     app.NZBParser,
-		jobStore:   app.JobStore,
-		resolver:   app.Resolver,
-		logger:     app.Logger,
-		config:     app.Config,
-		newJobChan: make(chan struct{}, 1),
-		queue:      make([]*domain.QueueItem, 0),
+		downloader:     app.Downloader,
+		processor:      app.Processor,
+		parser:         app.NZBParser,
+		jobStore:       app.JobStore,
+		queueFiles:     app.QueueFileStore,
+		resolver:       app.Resolver,
+		payloadFetcher: app.PayloadFetcher,
+		logger:         app.Logger,
+		config:         app.Config,
+		newJobChan:     make(chan struct{}, 1),
+		queue:          make([]*domain.QueueItem, 0),
 	}
 
 	if loadExisting {
@@ -74,6 +79,33 @@ func (m *QueueManager) initFromDatabase() {
 		return
 	}
 
+	if m.config != nil && !m.config.Store.PayloadCacheEnabled {
+		survivors := make([]*domain.QueueItem, 0, len(activeItems))
+		for _, item := range activeItems {
+			if item.Resumable {
+				survivors = append(survivors, item)
+				continue
+			}
+
+			reason := "payload_not_persisted"
+			now := time.Now().UTC()
+			item.Status = domain.StatusFailed
+			item.Error = &reason
+			if item.StartedAt.IsZero() {
+				item.StartedAt = now
+			}
+			item.CompletedAt = now
+			item.UpdatedAt = now
+			item.DownloadedBytes = item.GetBytes()
+
+			if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
+				m.logger.Error("Failed to persist non-resumable failure for %s: %v", item.ID, err)
+			}
+			m.recordEvent(ctx, item.ID, "hydrate", "failed", reason)
+		}
+		activeItems = survivors
+	}
+
 	m.mu.Lock()
 	m.queue = activeItems
 	m.mu.Unlock()
@@ -83,20 +115,67 @@ func (m *QueueManager) initFromDatabase() {
 
 // Add creates a new domain.QueueItem and notifies the processor loop
 func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error) {
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
 	release, err := m.resolver.GetRelease(ctx, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate release metadata for %s: %w", releaseID, err)
+		m.logger.Debug("resolver lookup failed for %s, using queue snapshot fallback: %v", releaseID, err)
 	}
+
 	if release == nil {
-		return nil, fmt.Errorf("release metadata missing for %s", releaseID)
+		if title == "" {
+			return nil, fmt.Errorf("release metadata missing for %s", releaseID)
+		}
+		release = &domain.Release{
+			ID:       releaseID,
+			GUID:     releaseID,
+			Title:    title,
+			Source:   "manual",
+			Category: "Uncategorized",
+		}
+	}
+
+	if release.Title == "" {
+		release.Title = title
+	}
+	if release.Title == "" {
+		release.Title = releaseID
+	}
+	if release.Source == "" {
+		release.Source = "aggregator"
+	}
+
+	sourceKind := "aggregator"
+	switch release.Source {
+	case "manual":
+		sourceKind = "manual"
+	case "usenet_index":
+		sourceKind = "usenet_index"
+	}
+
+	payloadMode := domain.PayloadModeCached
+	resumable := true
+	if m.config != nil && !m.config.Store.PayloadCacheEnabled {
+		payloadMode = domain.PayloadModeEphemeral
+		resumable = false
 	}
 
 	item := &domain.QueueItem{
-		ID:        ksuid.New().String(),
-		ReleaseID: releaseID,
-		Status:    domain.StatusPending,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:                  ksuid.New().String(),
+		ReleaseID:           releaseID,
+		Release:             release,
+		Status:              domain.StatusPending,
+		SourceKind:          sourceKind,
+		SourceReleaseID:     releaseID,
+		ReleaseTitle:        release.Title,
+		ReleaseSize:         release.Size,
+		ReleaseSnapshotJSON: buildReleaseSnapshotJSON(release),
+		PayloadMode:         payloadMode,
+		Resumable:           resumable,
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
 	}
 
 	// Save to database
@@ -457,19 +536,36 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 	// 1. Fetch File Metadata from DB
 	if item.Release == nil {
 		rel, err := m.resolver.GetRelease(ctx, item.ReleaseID)
+
 		if err != nil {
-			return fmt.Errorf("could not find file metadata: %w", err)
+			m.logger.Debug("resolver lookup failed for queue item %s: %v", item.ID, err)
 		}
+
 		if rel == nil {
-			return fmt.Errorf("release metadata not found for %s", item.ReleaseID)
+			// CHANGED: hydrate from queue snapshot fields (no hard catalog dependency)
+			rel = &domain.Release{
+				ID:       item.SourceReleaseID,
+				GUID:     item.SourceReleaseID,
+				Title:    item.ReleaseTitle,
+				Size:     item.ReleaseSize,
+				Source:   item.SourceKind,
+				Category: "Uncategorized",
+			}
+			if rel.ID == "" {
+				rel.ID = item.ReleaseID
+				rel.GUID = item.ReleaseID
+			}
+			if rel.Title == "" {
+				rel.Title = item.ID
+			}
 		}
 		item.Release = rel
 	}
 
-	// 2. Fetch NZB from Blob jobStore
-	reader, err := m.resolver.GetNZB(ctx, item.Release)
+	// 2. Fetch NZB from payload store
+	reader, err := m.payloadFetcher.GetNZB(ctx, item.Release)
 	if err != nil {
-		return fmt.Errorf("nzb file missing from blob jobStore: %w", err)
+		return fmt.Errorf("nzb file missing from payload store: %w", err)
 	}
 	defer reader.Close()
 
@@ -498,14 +594,9 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 	}
 	m.mu.Unlock()
 
-	// Update the Release record
-	if err := m.resolver.UpsertReleases(ctx, []*domain.Release{item.Release}); err != nil {
-		m.logger.Warn("failed to update release size: %v", err)
-	}
-
-	// Save the ReleaseFiles
-	if err := m.jobStore.SaveReleaseFiles(ctx, item.ReleaseID, prepRes.Tasks); err != nil {
-		m.logger.Warn("failed to save files to db: %v", err)
+	// Save downloader queue item files
+	if err := m.queueFiles.SaveQueueItemFiles(ctx, item.ID, prepRes.Tasks); err != nil {
+		m.logger.Warn("failed to save queue files: %v", err)
 	}
 
 	return nil
@@ -535,4 +626,38 @@ func releaseTitle(item *domain.QueueItem) string {
 		return item.ReleaseID
 	}
 	return item.ID
+}
+
+func buildReleaseSnapshotJSON(rel *domain.Release) string {
+	if rel == nil {
+		return "{}"
+	}
+
+	type releaseSnapshot struct {
+		ID              string `json:"id"`
+		Title           string `json:"title"`
+		GUID            string `json:"guid"`
+		Source          string `json:"source"`
+		DownloadURL     string `json:"download_url"`
+		Size            int64  `json:"size"`
+		Category        string `json:"category"`
+		RedirectAllowed bool   `json:"redirect_allowed"`
+	}
+
+	payload := releaseSnapshot{
+		ID:              rel.ID,
+		Title:           rel.Title,
+		GUID:            rel.GUID,
+		Source:          rel.Source,
+		DownloadURL:     rel.DownloadURL,
+		Size:            rel.Size,
+		Category:        rel.Category,
+		RedirectAllowed: rel.RedirectAllowed,
+	}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }

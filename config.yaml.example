@@ -57,3 +57,4 @@ log:
 store:
   sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
   blob_dir: "/store/nzbs"                # Directory to store cached NZB files
+  payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
