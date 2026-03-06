@@ -65,7 +65,7 @@ func (s *Service) GetItemFiles(ctx context.Context, id string) ([]*domain.Downlo
 	if !ok || item == nil {
 		return nil, nil
 	}
-	return s.app.JobStore.GetReleaseFiles(ctx, item.ReleaseID)
+	return s.app.QueueFileStore.GetQueueItemFiles(ctx, item.ID)
 }
 
 func (s *Service) GetItemEvents(ctx context.Context, id string) ([]*domain.QueueItemEvent, error) {
@@ -114,17 +114,28 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 		return nil, fmt.Errorf("release_id is required")
 	}
 
-	item, err := s.app.Queue.Add(ctx, releaseID, title)
+	rel, err := s.app.Resolver.GetRelease(ctx, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve release %s: %w", releaseID, err)
+	}
+	if rel == nil {
+		return nil, fmt.Errorf("release %s not found", releaseID)
+	}
+
+	// request title can override display title if caller supplied one
+	effectiveTitle := rel.Title
+	if title != "" {
+		effectiveTitle = title
+	}
+
+	item, err := s.app.Queue.Add(ctx, releaseID, effectiveTitle)
 	if err != nil {
 		return nil, err
 	}
 
 	// Fill response payload with release metadata when available.
 	if item.Release == nil {
-		rel, relErr := s.app.Resolver.GetRelease(ctx, item.ReleaseID)
-		if relErr == nil {
-			item.Release = rel
-		}
+		item.Release = rel
 	}
 
 	return item, nil
@@ -155,18 +166,6 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 		return nil, fmt.Errorf("failed to hash uploaded nzb: %w", err)
 	}
 
-	release := &domain.Release{
-		ID:       releaseID,
-		GUID:     releaseID,
-		Title:    filename,
-		Source:   "manual",
-		Category: "Uncategorized",
-	}
-
-	if err := s.app.Resolver.UpsertReleases(ctx, []*domain.Release{release}); err != nil {
-		return nil, fmt.Errorf("failed to persist release metadata: %w", err)
-	}
-
 	if err := s.app.BlobStore.SaveNZBAtomically(releaseID, data); err != nil {
 		return nil, fmt.Errorf("failed to persist nzb in blob store: %w", err)
 	}
@@ -175,7 +174,17 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 	if err != nil {
 		return nil, err
 	}
-	item.Release = release
+
+	// best-effort in-memory release shape for response payloads
+	if item.Release == nil {
+		item.Release = &domain.Release{
+			ID:       releaseID,
+			GUID:     releaseID,
+			Title:    filename,
+			Source:   "manual",
+			Category: "Uncategorized",
+		}
+	}
 
 	return item, nil
 }

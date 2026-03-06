@@ -44,8 +44,8 @@ func NewStore(dbPath, blobDir string) (*Store, error) {
 		return nil, fmt.Errorf("could not migrate database: %w", err)
 	}
 
-	if err := store.ReconcileReleaseCache(context.Background()); err != nil {
-		return nil, fmt.Errorf("could not reconcile release cache: %w", err)
+	if err := store.ReconcileBlobCacheIndex(context.Background()); err != nil {
+		return nil, fmt.Errorf("could not reconcile blob cache index: %w", err)
 	}
 
 	return store, nil

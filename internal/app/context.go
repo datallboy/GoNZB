@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/store"
 	"github.com/datallboy/gonzb/internal/store/adapters"
 	blobstore "github.com/datallboy/gonzb/internal/store/blob"
+	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 	"github.com/datallboy/gonzb/internal/store/sqlitejob"
 )
 
@@ -72,9 +73,7 @@ type NZBParser interface {
 	Parse(r io.Reader) (*nzb.Model, error)
 }
 
-// Store defines the contract for NZB storage.
-// Allows to use a simple directory FileCache, or Redis / DB / S3 for NZB storage in the future.
-// Should be StoreManager similar to others, but we'll just use FileCache and keep it simple for now.
+// JobStore defines downloader queue/event/history persistence.
 type JobStore interface {
 	// Downloader Queue: SQLite
 	SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
@@ -86,10 +85,12 @@ type JobStore interface {
 	SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error
 	GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error)
 	ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error
+}
 
-	// release_files: SQLite
-	SaveReleaseFiles(ctx context.Context, releaseID string, files []*domain.DownloadFile) error
-	GetReleaseFiles(ctx context.Context, releaseID string) ([]*domain.DownloadFile, error)
+// downloader-owned queue item file metadata
+type QueueFileStore interface {
+	SaveQueueItemFiles(ctx context.Context, queueItemID string, files []*domain.DownloadFile) error
+	GetQueueItemFiles(ctx context.Context, queueItemID string) ([]*domain.DownloadFile, error)
 }
 
 type BlobStore interface {
@@ -100,6 +101,24 @@ type BlobStore interface {
 	Exists(key string) bool
 }
 
+type PayloadFetcher interface {
+	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
+}
+
+type PayloadCacheStore interface {
+	GetNZBReader(key string) (io.ReadCloser, error)
+	CreateNZBWriter(key string) (io.WriteCloser, error)
+	SaveNZBAtomically(key string, data []byte) error
+	Exists(key string) bool
+}
+
+// Runtime settings
+type SettingsStore interface {
+	LoadEffectiveSettings(ctx context.Context) error
+	UpdateSettings(ctx context.Context, patch any) error
+	WatchSettingsChanges(ctx context.Context) (<-chan struct{}, error)
+}
+
 // Context hold the core environment and shared resources for GoNZB.
 // It acts as the "Single Source of Truth" for the application state.
 type Context struct {
@@ -107,16 +126,20 @@ type Context struct {
 	Logger *logger.Logger
 
 	// High-level interfaces for services to use
-	NNTP          NNTPManager
-	Aggregator    IndexerAggregator
-	Resolver      ReleaseResolver
-	UsenetIndexer UsenetIndexerService
-	Processor     Processor
-	Downloader    Downloader
-	Queue         QueueManager
-	NZBParser     NZBParser
-	JobStore      JobStore
-	BlobStore     BlobStore
+	NNTP              NNTPManager
+	Aggregator        IndexerAggregator
+	Resolver          ReleaseResolver
+	UsenetIndexer     UsenetIndexerService
+	Processor         Processor
+	Downloader        Downloader
+	Queue             QueueManager
+	NZBParser         NZBParser
+	JobStore          JobStore
+	QueueFileStore    QueueFileStore
+	BlobStore         BlobStore
+	PayloadFetcher    PayloadFetcher
+	PayloadCacheStore PayloadCacheStore
+	SettingsStore     SettingsStore
 
 	ExtractionEnabled bool
 	closers           []io.Closer
@@ -124,7 +147,7 @@ type Context struct {
 
 // NewContext initializes the base environment.
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
-	// Initialize file cache for NZBs
+	// Initialize aggregator catalog store
 	catalogStore, err := store.NewPersistentStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize store: %w", err)
@@ -135,12 +158,23 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		return nil, fmt.Errorf("failed to initialize sqlite job store: %w", err)
 	}
 
-	blobStore, err := blobstore.NewFSBlobStore(cfg.Store.BlobDir, jobStore)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize blob store: %w", err)
+	var payloadStore PayloadCacheStore
+	if cfg.Store.PayloadCacheEnabled {
+		fsStore, err := blobstore.NewFSBlobStore(cfg.Store.BlobDir, jobStore)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize fs blob store: %w", err)
+		}
+		payloadStore = fsStore
+	} else {
+		payloadStore = blobstore.NewEphemeralBlobStore()
 	}
 
-	aggregatorStore := adapters.NewAggregatorStore(catalogStore, blobStore)
+	settingsStore, err := settingsstore.NewStore(cfg.Store.SQLitePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize settings store: %w", err)
+	}
+
+	aggregatorStore := adapters.NewAggregatorStore(catalogStore, payloadStore)
 
 	// Initialize Indexer Manager
 	aggregator := indexer.NewManager(aggregatorStore, log)
@@ -165,8 +199,12 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Aggregator:        aggregator,
 		Resolver:          releaseResolver,
 		JobStore:          jobStore,
-		BlobStore:         blobStore,
-		closers:           []io.Closer{catalogStore, jobStore},
+		QueueFileStore:    jobStore,
+		BlobStore:         payloadStore,
+		PayloadFetcher:    releaseResolver,
+		PayloadCacheStore: payloadStore,
+		SettingsStore:     settingsStore,
+		closers:           []io.Closer{catalogStore, jobStore, settingsStore},
 	}, nil
 }
 

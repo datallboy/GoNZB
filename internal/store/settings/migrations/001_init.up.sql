@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS settings_revision (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings_nntp_servers (
+  id TEXT PRIMARY KEY,
+  host TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  password_ciphertext TEXT NOT NULL DEFAULT '',
+  tls BOOLEAN NOT NULL DEFAULT 0,
+  max_connections INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings_indexers (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL DEFAULT '',
+  api_path TEXT NOT NULL DEFAULT '',
+  api_key_ciphertext TEXT NOT NULL DEFAULT '',
+  redirect BOOLEAN NOT NULL DEFAULT 0,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings_download (
+  singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+  out_dir TEXT NOT NULL DEFAULT '',
+  completed_dir TEXT NOT NULL DEFAULT '',
+  cleanup_extensions_json TEXT NOT NULL DEFAULT '[]',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings_module_options (
+  module_name TEXT PRIMARY KEY,
+  options_json TEXT NOT NULL DEFAULT '{}',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

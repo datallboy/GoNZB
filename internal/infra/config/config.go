@@ -52,8 +52,9 @@ type LogConfig struct {
 }
 
 type StoreConfig struct {
-	SQLitePath string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
-	BlobDir    string `mapstructure:"blob_dir" yaml:"blob_dir"`
+	SQLitePath          string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
+	BlobDir             string `mapstructure:"blob_dir" yaml:"blob_dir"`
+	PayloadCacheEnabled bool   `mapstructure:"payload_cache_enabled" yaml:"payload_cache_enabled"`
 }
 
 type APIConfig struct {
@@ -96,6 +97,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
+	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
