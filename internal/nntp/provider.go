@@ -1,6 +1,7 @@
 package nntp
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -13,6 +14,28 @@ import (
 
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+// group-level metadata for scraping.
+type GroupStats struct {
+	Count int64
+	Low   int64
+	High  int64
+	Group string
+}
+
+// overview header shape for XOVER scraping.
+type OverviewHeader struct {
+	ArticleNumber int64
+	Subject       string
+	Poster        string
+	DateUTC       *time.Time
+	MessageID     string
+	References    string
+	Bytes         int64
+	Lines         int
+	Xref          string
+	RawOverview   map[string]any
+}
 
 // nntpConn pairs the high-level protocol helper with the raw network socket.
 type nntpConn struct {
@@ -49,6 +72,8 @@ type Provider interface {
 	Priority() int
 	MaxConnection() int
 	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
+	GroupStats(ctx context.Context, group string) (GroupStats, error)
+	XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error)
 	TestConnection() error
 	Close() error
 }
@@ -108,6 +133,197 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 		conn:   conn,
 		p:      p,
 	}, nil
+}
+
+// GroupStats issues GROUP and parses high/low/count.
+func (p *nntpProvider) GroupStats(ctx context.Context, group string) (GroupStats, error) {
+	if err := ctx.Err(); err != nil {
+		return GroupStats{}, err
+	}
+
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return GroupStats{}, fmt.Errorf("group is required")
+	}
+
+	conn, err := p.getConn()
+	if err != nil {
+		return GroupStats{}, err
+	}
+	defer p.returnConn(conn)
+
+	stats, err := p.selectGroup(conn, group)
+	if err != nil {
+		return GroupStats{}, err
+	}
+
+	return stats, nil
+}
+
+// XOver reads overview rows for [from,to] after GROUP select.
+func (p *nntpProvider) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if from <= 0 || to <= 0 || to < from {
+		return nil, fmt.Errorf("invalid xover range %d-%d", from, to)
+	}
+
+	conn, err := p.getConn()
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep a healthy connection in pool on success, close on protocol errors.
+	returnConn := true
+	defer func() {
+		if returnConn {
+			p.returnConn(conn)
+		} else {
+			conn.Close()
+		}
+	}()
+
+	if _, err := p.selectGroup(conn, group); err != nil {
+		return nil, err
+	}
+
+	if _, err := conn.tp.Cmd("XOVER %d-%d", from, to); err != nil {
+		return nil, err
+	}
+
+	code, msg, err := conn.tp.ReadCodeLine(224)
+	if err != nil {
+		returnConn = false
+		return nil, fmt.Errorf("XOVER failed (code %d): %s", code, msg)
+	}
+
+	dr := conn.tp.DotReader()
+	sc := bufio.NewScanner(dr)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	headers := make([]OverviewHeader, 0, to-from+1)
+	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		line := sc.Text()
+		h, ok := parseOverviewLine(line)
+		if !ok {
+			continue
+		}
+		headers = append(headers, h)
+	}
+
+	if err := sc.Err(); err != nil {
+		returnConn = false
+		return nil, fmt.Errorf("read XOVER stream: %w", err)
+	}
+
+	return headers, nil
+}
+
+func (p *nntpProvider) selectGroup(conn *nntpConn, group string) (GroupStats, error) {
+	if _, err := conn.tp.Cmd("GROUP %s", group); err != nil {
+		return GroupStats{}, err
+	}
+
+	code, msg, err := conn.tp.ReadCodeLine(211)
+	if err != nil {
+		return GroupStats{}, fmt.Errorf("GROUP %s failed (code %d): %s", group, code, msg)
+	}
+
+	// 211 n f l s
+	parts := strings.Fields(msg)
+	if len(parts) < 4 {
+		return GroupStats{}, fmt.Errorf("unexpected GROUP response for %s: %q", group, msg)
+	}
+
+	count, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return GroupStats{}, fmt.Errorf("parse GROUP count: %w", err)
+	}
+	low, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return GroupStats{}, fmt.Errorf("parse GROUP low: %w", err)
+	}
+	high, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return GroupStats{}, fmt.Errorf("parse GROUP high: %w", err)
+	}
+
+	return GroupStats{
+		Count: count,
+		Low:   low,
+		High:  high,
+		Group: group,
+	}, nil
+}
+
+func parseOverviewLine(line string) (OverviewHeader, bool) {
+	// RFC-style xover fields:
+	// 0:number 1:subject 2:from 3:date 4:message-id 5:references 6:bytes 7:lines 8:xref(optional)
+	fields := strings.Split(line, "\t")
+	if len(fields) < 8 {
+		return OverviewHeader{}, false
+	}
+
+	articleNumber, err := strconv.ParseInt(strings.TrimSpace(fields[0]), 10, 64)
+	if err != nil || articleNumber <= 0 {
+		return OverviewHeader{}, false
+	}
+
+	bytesVal, _ := strconv.ParseInt(strings.TrimSpace(fields[6]), 10, 64)
+	linesVal64, _ := strconv.ParseInt(strings.TrimSpace(fields[7]), 10, 64)
+
+	dateUTC := parseNNTPDate(strings.TrimSpace(fields[3]))
+
+	xref := ""
+	if len(fields) > 8 {
+		xref = strings.TrimSpace(fields[8])
+	}
+
+	raw := map[string]any{
+		"line":       line,
+		"references": strings.TrimSpace(fields[5]),
+	}
+
+	return OverviewHeader{
+		ArticleNumber: articleNumber,
+		Subject:       strings.TrimSpace(fields[1]),
+		Poster:        strings.TrimSpace(fields[2]),
+		DateUTC:       dateUTC,
+		MessageID:     strings.TrimSpace(fields[4]),
+		References:    strings.TrimSpace(fields[5]),
+		Bytes:         bytesVal,
+		Lines:         int(linesVal64),
+		Xref:          xref,
+		RawOverview:   raw,
+	}, true
+}
+
+func parseNNTPDate(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+
+	layouts := []string{
+		time.RFC1123Z,
+		time.RFC1123,
+		"Mon, 2 Jan 2006 15:04:05 -0700",
+		"2 Jan 2006 15:04:05 -0700",
+		time.RFC3339,
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			tt := t.UTC()
+			return &tt
+		}
+	}
+
+	return nil
 }
 
 func (p *nntpProvider) getConn() (*nntpConn, error) {

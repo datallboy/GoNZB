@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
@@ -14,6 +15,7 @@ import (
 	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store/adapters"
 	blobstore "github.com/datallboy/gonzb/internal/store/blob"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 	"github.com/datallboy/gonzb/internal/store/sqlitejob"
 )
@@ -36,7 +38,10 @@ type ReleaseResolver interface {
 	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
 }
 
-type UsenetIndexerService interface{}
+type UsenetIndexerService interface {
+	ScrapeOnce(ctx context.Context) error
+	Start(ctx context.Context, interval time.Duration) error
+}
 
 type Processor interface {
 	// This allows the engine to trigger repair/extract without importing processor
@@ -136,6 +141,7 @@ type Context struct {
 	PayloadFetcher    PayloadFetcher
 	PayloadCacheStore PayloadCacheStore
 	SettingsStore     SettingsStore
+	PGIndexStore      *pgindex.Store
 
 	ExtractionEnabled bool
 	closers           []io.Closer
@@ -178,6 +184,19 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Aggregator: aggregator,
 	}
 
+	var pgStore *pgindex.Store
+	if cfg.Store.PGDSN != "" {
+		pgStore, err = pgindex.NewStore(cfg.Store.PGDSN)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize pg index store: %w", err)
+		}
+	}
+
+	closers := []io.Closer{jobStore, settingsStore}
+	if pgStore != nil {
+		closers = append(closers, pgStore)
+	}
+
 	return &Context{
 		Config:            cfg,
 		Logger:            log,
@@ -190,8 +209,17 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		PayloadFetcher:    releaseResolver,
 		PayloadCacheStore: payloadStore,
 		SettingsStore:     settingsStore,
-		closers:           []io.Closer{jobStore, settingsStore},
+		PGIndexStore:      pgStore,
+		closers:           closers,
 	}, nil
+}
+
+// allow runtime wiring (from main) to register additional closers.
+func (ctx *Context) AddCloser(c io.Closer) {
+	if c == nil {
+		return
+	}
+	ctx.closers = append(ctx.closers, c)
 }
 
 func (ctx *Context) Close() {

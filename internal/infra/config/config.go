@@ -17,6 +17,8 @@ type Config struct {
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
+	Indexing IndexingConfig `mapstructure:"indexing" yaml:"indexing"`
+
 	Port string `mapstructure:"port" yaml:"port"`
 }
 
@@ -56,11 +58,20 @@ type StoreConfig struct {
 	BlobDir                  string `mapstructure:"blob_dir" yaml:"blob_dir"`
 	PayloadCacheEnabled      bool   `mapstructure:"payload_cache_enabled" yaml:"payload_cache_enabled"`
 	SearchPersistenceEnabled bool   `mapstructure:"search_persistence_enabled" yaml:"search_persistence_enabled"`
+
+	// PostgreSQL DSN for Usenet/NZB Indexer module.
+	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
 }
 
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
+}
+
+type IndexingConfig struct {
+	Newsgroups              []string `mapstructure:"newsgroups" yaml:"newsgroups"`
+	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
+	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
 }
 
 func Load(path string) (*Config, error) {
@@ -100,6 +111,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("log.include_stdout", true)
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
+
+	v.SetDefault("store.pg_dsn", "")
+	v.SetDefault("indexing.newsgroups", []string{})
+	v.SetDefault("indexing.scrape_batch_size", 5000)
+	v.SetDefault("indexing.schedule_interval_minutes", 10)
+
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
@@ -165,6 +182,26 @@ func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
+	}
+
+	if c.Indexing.ScrapeBatchSize <= 0 {
+		c.Indexing.ScrapeBatchSize = 5000
+	}
+
+	if c.Indexing.ScheduleIntervalMinutes <= 0 {
+		c.Indexing.ScheduleIntervalMinutes = 10
+	}
+
+	// only require PG when indexing is configured.
+	hasGroups := false
+	for _, g := range c.Indexing.Newsgroups {
+		if strings.TrimSpace(g) != "" {
+			hasGroups = true
+			break
+		}
+	}
+	if hasGroups && strings.TrimSpace(c.Store.PGDSN) == "" {
+		return errors.New("store.pg_dsn is required when indexing.newsgroups is configured")
 	}
 
 	return nil
