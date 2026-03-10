@@ -14,6 +14,9 @@ import (
 	"github.com/datallboy/gonzb/internal/api"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/indexing"
+	"github.com/datallboy/gonzb/internal/indexing/scheduler"
+	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/infra/platform"
@@ -35,6 +38,8 @@ var (
 	BuildTime = "unknown"
 	nzbPath   string
 	cfgFile   string = "config.yaml"
+
+	scrapeOnce bool
 )
 
 var rootCmd = &cobra.Command{
@@ -69,6 +74,20 @@ var serveCmd = &cobra.Command{
 	},
 }
 
+// gonzb indexer scrape --once
+var indexerCmd = &cobra.Command{
+	Use:   "indexer",
+	Short: "Usenet/NZB indexer operations",
+}
+
+var indexerScrapeCmd = &cobra.Command{
+	Use:   "scrape",
+	Short: "Scrape article headers into PostgreSQL",
+	Run: func(cmd *cobra.Command, args []string) {
+		executeIndexerScrape(scrapeOnce)
+	},
+}
+
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
@@ -76,6 +95,9 @@ func init() {
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
+
+	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
+	indexerCmd.AddCommand(indexerScrapeCmd)
 }
 
 func setupApp() *app.Context {
@@ -112,6 +134,33 @@ func setupApp() *app.Context {
 	appCtx.NNTP, err = nntp.NewManager(appCtx)
 	if err != nil {
 		appLogger.Fatal("Provider initializiation failed: %v", err)
+	}
+
+	// wire optional Usenet/NZB Indexer runtime through app context.
+	// Uses first configured provider for scrape foundation milestone.
+	if appCtx.PGIndexStore != nil && len(cfg.Indexing.Newsgroups) > 0 {
+		scrapeProvider := nntp.NewNNTPProvider(cfg.Servers[0])
+
+		if err := scrapeProvider.TestConnection(); err != nil {
+			appLogger.Fatal("Scrape provider initialization failed: %v", err)
+		}
+		appCtx.AddCloser(scrapeProvider)
+
+		scrapeAdapter := scrape.NewNNTPAdapter(scrapeProvider)
+		scrapeSvc := scrape.NewService(
+			appCtx.PGIndexStore,
+			scrapeAdapter,
+			appLogger,
+			scrape.Options{
+				Newsgroups: cfg.Indexing.Newsgroups,
+				BatchSize:  cfg.Indexing.ScrapeBatchSize,
+			},
+		)
+
+		interval := time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute
+		schedulerSvc := scheduler.NewService(scrapeSvc, appLogger, interval)
+
+		appCtx.UsenetIndexer = indexing.NewService(scrapeSvc, schedulerSvc)
 	}
 
 	appCtx.Processor = processor.New(appCtx, writer)
@@ -261,10 +310,41 @@ func executeDownload() {
 	}
 }
 
+// indexer scrape command executor.
+func executeIndexerScrape(once bool) {
+	appCtx := setupApp()
+	defer appCtx.Close()
+
+	if appCtx.UsenetIndexer == nil {
+		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn and indexing.newsgroups.")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if once {
+		if err := appCtx.UsenetIndexer.ScrapeOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer scrape --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer scrape --once completed")
+		return
+	}
+
+	interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+
+	if err := appCtx.UsenetIndexer.Start(ctx, interval); err != nil {
+		appCtx.Logger.Fatal("indexer scheduler failed: %v", err)
+	}
+}
+
 func main() {
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(indexerCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
