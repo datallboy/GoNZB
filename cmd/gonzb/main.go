@@ -15,6 +15,9 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/indexing"
+	"github.com/datallboy/gonzb/internal/indexing/assemble"
+	"github.com/datallboy/gonzb/internal/indexing/match"
+	"github.com/datallboy/gonzb/internal/indexing/release"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -39,7 +42,10 @@ var (
 	nzbPath   string
 	cfgFile   string = "config.yaml"
 
-	scrapeOnce bool
+	scrapeOnce   bool
+	assembleOnce bool
+	releaseOnce  bool
+	pipelineOnce bool
 )
 
 var rootCmd = &cobra.Command{
@@ -88,6 +94,30 @@ var indexerScrapeCmd = &cobra.Command{
 	},
 }
 
+var indexerAssembleCmd = &cobra.Command{
+	Use:   "assemble",
+	Short: "Assemble binaries and parts from article headers",
+	Run: func(cmd *cobra.Command, args []string) {
+		executeIndexerAssemble(assembleOnce)
+	},
+}
+
+var indexerReleaseCmd = &cobra.Command{
+	Use:   "release",
+	Short: "Form release catalog rows from assembled binaries",
+	Run: func(cmd *cobra.Command, args []string) {
+		executeIndexerRelease(releaseOnce)
+	},
+}
+
+var indexerPipelineCmd = &cobra.Command{
+	Use:   "pipeline",
+	Short: "Run scrape, assemble, and release passes in sequence",
+	Run: func(cmd *cobra.Command, args []string) {
+		executeIndexerPipeline(pipelineOnce)
+	},
+}
+
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
@@ -97,7 +127,14 @@ func init() {
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
+	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit")
+	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit")
+	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
+
 	indexerCmd.AddCommand(indexerScrapeCmd)
+	indexerCmd.AddCommand(indexerAssembleCmd)
+	indexerCmd.AddCommand(indexerReleaseCmd)
+	indexerCmd.AddCommand(indexerPipelineCmd)
 }
 
 func setupApp() *app.Context {
@@ -138,29 +175,52 @@ func setupApp() *app.Context {
 
 	// wire optional Usenet/NZB Indexer runtime through app context.
 	// Uses first configured provider for scrape foundation milestone.
-	if appCtx.PGIndexStore != nil && len(cfg.Indexing.Newsgroups) > 0 {
-		scrapeProvider := nntp.NewNNTPProvider(cfg.Servers[0])
-
-		if err := scrapeProvider.TestConnection(); err != nil {
-			appLogger.Fatal("Scrape provider initialization failed: %v", err)
-		}
-		appCtx.AddCloser(scrapeProvider)
-
-		scrapeAdapter := scrape.NewNNTPAdapter(scrapeProvider)
-		scrapeSvc := scrape.NewService(
+	if appCtx.PGIndexStore != nil {
+		matcherSvc := match.NewService()
+		assembleSvc := assemble.NewService(
 			appCtx.PGIndexStore,
-			scrapeAdapter,
+			matcherSvc,
 			appLogger,
-			scrape.Options{
-				Newsgroups: cfg.Indexing.Newsgroups,
-				BatchSize:  cfg.Indexing.ScrapeBatchSize,
+			assemble.Options{
+				BatchSize: int(cfg.Indexing.ScrapeBatchSize),
 			},
 		)
 
-		interval := time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute
-		schedulerSvc := scheduler.NewService(scrapeSvc, appLogger, interval)
+		releaseSvc := release.NewService(
+			appCtx.PGIndexStore,
+			appLogger,
+			release.Options{
+				BatchSize: 1000,
+			},
+		)
 
-		appCtx.UsenetIndexer = indexing.NewService(scrapeSvc, schedulerSvc)
+		var scrapeSvc *scrape.Service
+		var schedulerSvc *scheduler.Service
+
+		if len(cfg.Indexing.Newsgroups) > 0 {
+			scrapeProvider := nntp.NewNNTPProvider(cfg.Servers[0])
+
+			if err := scrapeProvider.TestConnection(); err != nil {
+				appLogger.Fatal("Scrape provider initialization failed: %v", err)
+			}
+			appCtx.AddCloser(scrapeProvider)
+
+			scrapeAdapter := scrape.NewNNTPAdapter(scrapeProvider)
+			scrapeSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appLogger,
+				scrape.Options{
+					Newsgroups: cfg.Indexing.Newsgroups,
+					BatchSize:  cfg.Indexing.ScrapeBatchSize,
+				},
+			)
+
+			interval := time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute
+			schedulerSvc = scheduler.NewService(scrapeSvc, appLogger, interval)
+		}
+
+		appCtx.UsenetIndexer = indexing.NewService(scrapeSvc, assembleSvc, releaseSvc, schedulerSvc)
 	}
 
 	appCtx.Processor = processor.New(appCtx, writer)
@@ -338,6 +398,72 @@ func executeIndexerScrape(once bool) {
 	if err := appCtx.UsenetIndexer.Start(ctx, interval); err != nil {
 		appCtx.Logger.Fatal("indexer scheduler failed: %v", err)
 	}
+}
+
+// one-shot assembly executor.
+func executeIndexerAssemble(once bool) {
+	appCtx := setupApp()
+	defer appCtx.Close()
+
+	if appCtx.UsenetIndexer == nil {
+		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer assemble currently supports --once only")
+	}
+
+	if err := appCtx.UsenetIndexer.AssembleOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer assemble --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer assemble --once completed")
+}
+
+// one-shot release executor.
+func executeIndexerRelease(once bool) {
+	appCtx := setupApp()
+	defer appCtx.Close()
+
+	if appCtx.UsenetIndexer == nil {
+		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer release currently supports --once only")
+	}
+
+	if err := appCtx.UsenetIndexer.ReleaseOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer release --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer release --once completed")
+}
+
+// one-shot full pipeline executor.
+func executeIndexerPipeline(once bool) {
+	appCtx := setupApp()
+	defer appCtx.Close()
+
+	if appCtx.UsenetIndexer == nil {
+		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer pipeline currently supports --once only")
+	}
+
+	if err := appCtx.UsenetIndexer.RunPipelineOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer pipeline --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer pipeline --once completed")
 }
 
 func main() {
