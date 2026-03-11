@@ -33,9 +33,15 @@ type IndexerAggregator interface {
 	GetResultByID(ctx context.Context, id string) (*domain.Release, error)
 }
 
+// minimal PG catalog boundary for Milestone 7 resolver routing.
+type UsenetIndexCatalog interface {
+	GetCatalogReleaseByID(ctx context.Context, releaseID string) (*domain.Release, error)
+}
+
+// resolver routes by source kind instead of assuming aggregator-only resolution.
 type ReleaseResolver interface {
-	GetRelease(ctx context.Context, id string) (*domain.Release, error)
-	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
+	GetRelease(ctx context.Context, sourceKind, sourceReleaseID string) (*domain.Release, error)
+	GetNZB(ctx context.Context, sourceKind string, res *domain.Release) (io.ReadCloser, error)
 }
 
 type UsenetIndexerService interface {
@@ -183,10 +189,6 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		aggregator.AddSource(client)
 	}
 
-	releaseResolver := &resolver.DefaultReleaseResolver{
-		Aggregator: aggregator,
-	}
-
 	var pgStore *pgindex.Store
 	if cfg.Store.PGDSN != "" {
 		pgStore, err = pgindex.NewStore(cfg.Store.PGDSN)
@@ -194,6 +196,12 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 			return nil, fmt.Errorf("failed to initialize pg index store: %w", err)
 		}
 	}
+
+	releaseResolver := resolver.NewDefaultReleaseResolver(
+		resolver.NewManualResolver(payloadStore),
+		resolver.NewAggregatorResolver(aggregator),
+		resolver.NewUsenetIndexResolver(pgStore),
+	)
 
 	closers := []io.Closer{jobStore, settingsStore}
 	if pgStore != nil {
