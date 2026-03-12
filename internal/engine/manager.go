@@ -113,46 +113,47 @@ func (m *QueueManager) initFromDatabase() {
 	m.logger.Info("Queue initialized with %d items", len(m.queue))
 }
 
-// Add creates a new domain.QueueItem and notifies the processor loop
-func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error) {
-	if releaseID == "" {
-		return nil, fmt.Errorf("release id is required")
+// Add creates a new queue item and persists explicit source provenance.
+// resolver lookup is no longer done here; caller must provide source kind + snapshot.
+func (m *QueueManager) Add(ctx context.Context, req app.QueueAddRequest) (*domain.QueueItem, error) {
+	sourceKind := req.SourceKind
+	sourceReleaseID := req.SourceReleaseID
+
+	if sourceKind == "" {
+		return nil, fmt.Errorf("source kind is required")
+	}
+	if sourceReleaseID == "" {
+		return nil, fmt.Errorf("source release id is required")
 	}
 
-	release, err := m.resolver.GetRelease(ctx, releaseID)
-	if err != nil {
-		m.logger.Debug("resolver lookup failed for %s, using queue snapshot fallback: %v", releaseID, err)
-	}
-
+	release := req.Release
 	if release == nil {
-		if title == "" {
-			return nil, fmt.Errorf("release metadata missing for %s", releaseID)
-		}
 		release = &domain.Release{
-			ID:       releaseID,
-			GUID:     releaseID,
-			Title:    title,
-			Source:   "manual",
+			ID:       sourceReleaseID,
+			GUID:     sourceReleaseID,
+			Title:    req.Title,
+			Source:   sourceKind,
 			Category: "Uncategorized",
 		}
 	}
 
-	if release.Title == "" {
-		release.Title = title
+	if release.ID == "" {
+		release.ID = sourceReleaseID
+	}
+	if release.GUID == "" {
+		release.GUID = sourceReleaseID
 	}
 	if release.Title == "" {
-		release.Title = releaseID
+		release.Title = req.Title
+	}
+	if release.Title == "" {
+		release.Title = sourceReleaseID
 	}
 	if release.Source == "" {
-		release.Source = "aggregator"
+		release.Source = sourceKind
 	}
-
-	sourceKind := "aggregator"
-	switch release.Source {
-	case "manual":
-		sourceKind = "manual"
-	case "usenet_index":
-		sourceKind = "usenet_index"
+	if release.Category == "" {
+		release.Category = "Uncategorized"
 	}
 
 	payloadMode := domain.PayloadModeCached
@@ -164,11 +165,11 @@ func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) 
 
 	item := &domain.QueueItem{
 		ID:                  ksuid.New().String(),
-		ReleaseID:           releaseID,
+		ReleaseID:           sourceReleaseID,
 		Release:             release,
 		Status:              domain.StatusPending,
 		SourceKind:          sourceKind,
-		SourceReleaseID:     releaseID,
+		SourceReleaseID:     sourceReleaseID,
 		ReleaseTitle:        release.Title,
 		ReleaseSize:         release.Size,
 		ReleaseSnapshotJSON: buildReleaseSnapshotJSON(release),
@@ -178,23 +179,19 @@ func (m *QueueManager) Add(ctx context.Context, releaseID string, title string) 
 		UpdatedAt:           time.Now().UTC(),
 	}
 
-	// Save to database
 	if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
 		return nil, fmt.Errorf("failed to save job to database: %w", err)
 	}
 
-	// Add to RAM queue
 	m.mu.Lock()
 	m.queue = append(m.queue, item)
 	m.mu.Unlock()
 
 	m.recordEvent(ctx, item.ID, "queue", string(domain.StatusPending), "Queued")
 
-	// Signal the Start() loop that there is work to do
 	select {
 	case m.newJobChan <- struct{}{}:
 	default:
-		// Signal already pending, no need to block
 	}
 
 	return item, nil
@@ -533,46 +530,66 @@ func isCancelled(ctx context.Context) bool {
 }
 
 func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) error {
+
+	if item == nil {
+		return fmt.Errorf("queue item is required")
+	}
+	if item.SourceKind == "" {
+		return fmt.Errorf("queue item %s missing source kind", item.ID)
+	}
+	if item.SourceReleaseID == "" {
+		item.SourceReleaseID = item.ReleaseID
+	}
+
 	// 1. Fetch File Metadata from DB
 	if item.Release == nil {
-		rel, err := m.resolver.GetRelease(ctx, item.ReleaseID)
-
+		rel, err := m.resolver.GetRelease(ctx, item.SourceKind, item.SourceReleaseID)
 		if err != nil {
-			m.logger.Debug("resolver lookup failed for queue item %s: %v", item.ID, err)
+			m.logger.Debug("resolver lookup failed for queue item %s (%s/%s): %v", item.ID, item.SourceKind, item.SourceReleaseID, err)
 		}
 
 		if rel == nil {
-			// CHANGED: hydrate from queue snapshot fields (no hard catalog dependency)
-			rel = &domain.Release{
-				ID:       item.SourceReleaseID,
-				GUID:     item.SourceReleaseID,
-				Title:    item.ReleaseTitle,
-				Size:     item.ReleaseSize,
-				Source:   item.SourceKind,
-				Category: "Uncategorized",
-			}
-			if rel.ID == "" {
-				rel.ID = item.ReleaseID
-				rel.GUID = item.ReleaseID
-			}
-			if rel.Title == "" {
-				rel.Title = item.ID
-			}
+			// CHANGED: snapshot is the first fallback, not ad-hoc inference.
+			rel = hydrateReleaseFromSnapshot(item)
 		}
+
+		if rel == nil {
+			return fmt.Errorf("release metadata missing for queue item %s", item.ID)
+		}
+
+		if rel.ID == "" {
+			rel.ID = item.SourceReleaseID
+		}
+		if rel.GUID == "" {
+			rel.GUID = item.SourceReleaseID
+		}
+		if rel.Source == "" {
+			rel.Source = item.SourceKind
+		}
+		if rel.Title == "" {
+			rel.Title = item.ReleaseTitle
+		}
+		if rel.Title == "" {
+			rel.Title = item.ID
+		}
+		if rel.Category == "" {
+			rel.Category = "Uncategorized"
+		}
+
 		item.Release = rel
 	}
 
-	// 2. Fetch NZB from payload store
-	reader, err := m.payloadFetcher.GetNZB(ctx, item.Release)
+	// 2. Fetch NZB using source-kind routing.
+	reader, err := m.payloadFetcher.GetNZB(ctx, item.SourceKind, item.Release)
 	if err != nil {
-		return fmt.Errorf("nzb file missing from payload store: %w", err)
+		return fmt.Errorf("failed to fetch nzb for queue item %s: %w", item.ID, err)
 	}
 	defer reader.Close()
 
-	// 3. Parse NZB and Prepare
+	// 3. Parse NZB and prepare downloader tasks.
 	nzbModel, err := m.parser.Parse(reader)
 	if err != nil {
-		return fmt.Errorf("failed to parse cached nzb: %w", err)
+		return fmt.Errorf("failed to parse nzb payload: %w", err)
 	}
 
 	prepRes, err := m.processor.Prepare(ctx, nzbModel, item.Release.Title)
@@ -594,7 +611,7 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 	}
 	m.mu.Unlock()
 
-	// Save downloader queue item files
+	// 5. Persist downloader-owned queue item files.
 	if err := m.queueFiles.SaveQueueItemFiles(ctx, item.ID, prepRes.Tasks); err != nil {
 		m.logger.Warn("failed to save queue files: %v", err)
 	}
@@ -626,6 +643,75 @@ func releaseTitle(item *domain.QueueItem) string {
 		return item.ReleaseID
 	}
 	return item.ID
+}
+
+// reconstruct release metadata from persisted queue snapshot.
+// This keeps downloader hydration functional without a live aggregator/PG lookup.
+func hydrateReleaseFromSnapshot(item *domain.QueueItem) *domain.Release {
+	if item == nil {
+		return nil
+	}
+
+	type releaseSnapshot struct {
+		ID              string `json:"id"`
+		Title           string `json:"title"`
+		GUID            string `json:"guid"`
+		Source          string `json:"source"`
+		DownloadURL     string `json:"download_url"`
+		Size            int64  `json:"size"`
+		Category        string `json:"category"`
+		RedirectAllowed bool   `json:"redirect_allowed"`
+	}
+
+	var snap releaseSnapshot
+	if item.ReleaseSnapshotJSON != "" && item.ReleaseSnapshotJSON != "{}" {
+		if err := json.Unmarshal([]byte(item.ReleaseSnapshotJSON), &snap); err == nil {
+			rel := &domain.Release{
+				ID:              snap.ID,
+				Title:           snap.Title,
+				GUID:            snap.GUID,
+				Source:          snap.Source,
+				DownloadURL:     snap.DownloadURL,
+				Size:            snap.Size,
+				Category:        snap.Category,
+				RedirectAllowed: snap.RedirectAllowed,
+			}
+			if rel.ID == "" {
+				rel.ID = item.SourceReleaseID
+			}
+			if rel.GUID == "" {
+				rel.GUID = item.SourceReleaseID
+			}
+			if rel.Source == "" {
+				rel.Source = item.SourceKind
+			}
+			if rel.Title == "" {
+				rel.Title = item.ReleaseTitle
+			}
+			if rel.Category == "" {
+				rel.Category = "Uncategorized"
+			}
+			return rel
+		}
+	}
+
+	// Final fallback stays queue-owned and source-kind aware.
+	rel := &domain.Release{
+		ID:       item.SourceReleaseID,
+		GUID:     item.SourceReleaseID,
+		Title:    item.ReleaseTitle,
+		Size:     item.ReleaseSize,
+		Source:   item.SourceKind,
+		Category: "Uncategorized",
+	}
+	if rel.ID == "" {
+		rel.ID = item.ReleaseID
+		rel.GUID = item.ReleaseID
+	}
+	if rel.Title == "" {
+		rel.Title = item.ID
+	}
+	return rel
 }
 
 func buildReleaseSnapshotJSON(rel *domain.Release) string {

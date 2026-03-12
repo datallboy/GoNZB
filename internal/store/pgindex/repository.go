@@ -1,6 +1,7 @@
 package pgindex
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/segmentio/ksuid"
@@ -131,6 +133,24 @@ type ReleaseFileRecord struct {
 	Poster    string
 	PostedAt  *time.Time
 	Articles  []ReleaseFileArticleRecord
+}
+
+// read DTOs for PG-backed NZB materialization in Milestone 7.
+type CatalogReleaseFile struct {
+	ID        int64
+	FileName  string
+	Subject   string
+	Poster    string
+	PostedAt  *time.Time
+	SizeBytes int64
+	IsPars    bool
+	FileIndex int
+}
+
+type CatalogArticleRef struct {
+	MessageID  string
+	Bytes      int64
+	PartNumber int
 }
 
 // StableReleaseGUID returns a deterministic GUID for PG release rows.
@@ -325,22 +345,23 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 
 	var inserted int64
 	for _, h := range headers {
-		msgID := strings.TrimSpace(h.MessageID)
+		msgID := sanitizeUTF8(h.MessageID)
 		if h.ArticleNumber <= 0 || msgID == "" {
 			continue
 		}
 
-		subject := strings.TrimSpace(h.Subject)
-		poster := strings.TrimSpace(h.Poster)
-		xref := strings.TrimSpace(h.Xref)
+		subject := sanitizeUTF8(h.Subject)
+		poster := sanitizeUTF8(h.Poster)
+		xref := sanitizeUTF8(h.Xref)
 
 		raw := "{}"
 		if len(h.RawOverview) > 0 {
-			b, marshalErr := json.Marshal(h.RawOverview)
+			cleanRaw := sanitizeStringMap(h.RawOverview)
+			b, marshalErr := json.Marshal(cleanRaw)
 			if marshalErr != nil {
 				return inserted, fmt.Errorf("marshal raw_overview for article %d: %w", h.ArticleNumber, marshalErr)
 			}
-			raw = string(b)
+			raw = string(bytes.ToValidUTF8(b, []byte{}))
 		}
 
 		var date any
@@ -1138,6 +1159,134 @@ func (s *Store) SearchCatalogReleases(ctx context.Context, query string, limit i
 	return out, nil
 }
 
+// CHANGED: list release files for one formed PG release.
+func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) ([]CatalogReleaseFile, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id,
+			file_name,
+			subject,
+			poster,
+			posted_at,
+			size_bytes,
+			is_pars,
+			file_index
+		FROM release_files
+		WHERE release_id = $1
+		ORDER BY file_index, id`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog release files %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	out := make([]CatalogReleaseFile, 0, 32)
+	for rows.Next() {
+		var item CatalogReleaseFile
+		var postedAt sql.NullTime
+
+		if err := rows.Scan(
+			&item.ID,
+			&item.FileName,
+			&item.Subject,
+			&item.Poster,
+			&postedAt,
+			&item.SizeBytes,
+			&item.IsPars,
+			&item.FileIndex,
+		); err != nil {
+			return nil, fmt.Errorf("scan catalog release file: %w", err)
+		}
+
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+
+		out = append(out, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate catalog release files: %w", err)
+	}
+
+	return out, nil
+}
+
+// CHANGED: list article refs for one release_file row.
+func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]CatalogArticleRef, error) {
+	if releaseFileID <= 0 {
+		return nil, fmt.Errorf("release file id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ah.message_id,
+			ah.bytes,
+			rfa.part_number
+		FROM release_file_articles rfa
+		JOIN article_headers ah ON ah.id = rfa.article_header_id
+		WHERE rfa.release_file_id = $1
+		ORDER BY rfa.part_number`, releaseFileID)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog release file articles %d: %w", releaseFileID, err)
+	}
+	defer rows.Close()
+
+	out := make([]CatalogArticleRef, 0, 128)
+	for rows.Next() {
+		var item CatalogArticleRef
+		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber); err != nil {
+			return nil, fmt.Errorf("scan catalog article ref: %w", err)
+		}
+		out = append(out, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
+	}
+
+	return out, nil
+}
+
+// CHANGED: list newsgroups attached to a formed release.
+func (s *Store) ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ng.group_name
+		FROM release_newsgroups rng
+		JOIN newsgroups ng ON ng.id = rng.newsgroup_id
+		WHERE rng.release_id = $1
+		ORDER BY ng.group_name`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog release newsgroups %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var groupName string
+		if err := rows.Scan(&groupName); err != nil {
+			return nil, fmt.Errorf("scan catalog release newsgroup: %w", err)
+		}
+		out = append(out, strings.TrimSpace(groupName))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate catalog release newsgroups: %w", err)
+	}
+
+	return out, nil
+}
+
 type releaseScanner interface {
 	Scan(dest ...any) error
 }
@@ -1176,4 +1325,63 @@ func nullIfZero(v int64) any {
 		return nil
 	}
 	return v
+}
+
+// PostgreSQL text/jsonb columns require valid UTF-8.
+// Use byte-level repair so raw NNTP bytes cannot leak through.
+func sanitizeUTF8(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if utf8.ValidString(s) {
+		return s
+	}
+	return string(bytes.ToValidUTF8([]byte(s), []byte{}))
+}
+
+func sanitizeStringMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{}
+	}
+
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		cleanKey := sanitizeUTF8(k)
+
+		switch tv := v.(type) {
+		case string:
+			out[cleanKey] = sanitizeUTF8(tv)
+		case map[string]any:
+			out[cleanKey] = sanitizeStringMap(tv)
+		case []any:
+			out[cleanKey] = sanitizeAnySlice(tv)
+		default:
+			out[cleanKey] = v
+		}
+	}
+
+	return out
+}
+
+func sanitizeAnySlice(in []any) []any {
+	if len(in) == 0 {
+		return []any{}
+	}
+
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		switch tv := v.(type) {
+		case string:
+			out = append(out, sanitizeUTF8(tv))
+		case map[string]any:
+			out = append(out, sanitizeStringMap(tv))
+		case []any:
+			out = append(out, sanitizeAnySlice(tv))
+		default:
+			out = append(out, v)
+		}
+	}
+
+	return out
 }

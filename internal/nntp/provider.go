@@ -104,7 +104,7 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 		}
 	}
 
-	formattedID := msgID
+	formattedID := strings.TrimSpace(msgID)
 	if !strings.HasPrefix(formattedID, "<") {
 		formattedID = "<" + formattedID + ">"
 	}
