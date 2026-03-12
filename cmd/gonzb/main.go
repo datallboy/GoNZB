@@ -138,24 +138,14 @@ func init() {
 }
 
 func setupApp() *app.Context {
-	// 1. Initialize  application context
-	// Load core app infrastructure (dependency check, config & logger)
-	if err := platform.ValidateDependencies(); err != nil {
-		log.Fatalf("Missing dependencies. Please check your Dockerfile or local installation: %v", err)
-	}
+	cfg, appLogger := loadRuntimeConfig()
 
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		log.Fatalf("Config error: %v", err)
-	}
-
-	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
-	if err != nil {
-		log.Fatalf("Could not initialize logger %v\n", err)
-	}
-
-	if cfg.Log.Level == "debug" {
-		appLogger.Debug("Debug logging enabled")
+	// downloader-only external dependency validation should not block
+	// aggregator-only or usenet-indexer-only startup.
+	if cfg.Modules.Downloader.Enabled {
+		if err := platform.ValidateDependencies(); err != nil {
+			log.Fatalf("Missing dependencies. Please check your Dockerfile or local installation: %v", err)
+		}
 	}
 
 	// Initialize app context
@@ -164,18 +154,29 @@ func setupApp() *app.Context {
 		appLogger.Fatal("Failed to initialize application context %v", err)
 	}
 
-	// Initialize shared writer
-	writer := engine.NewFileWriter()
+	// downloader runtime pieces are only built when downloader is enabled.
+	if cfg.Modules.Downloader.Enabled {
+		// Initialize shared writer
+		writer := engine.NewFileWriter()
 
-	// Initialize the NNTP Manager (The provider load balancer)
-	appCtx.NNTP, err = nntp.NewManager(appCtx)
-	if err != nil {
-		appLogger.Fatal("Provider initializiation failed: %v", err)
+		// Initialize the NNTP Manager (The provider load balancer)
+		appCtx.NNTP, err = nntp.NewManager(appCtx)
+		if err != nil {
+			appLogger.Fatal("Provider initializiation failed: %v", err)
+		}
+
+		appCtx.Processor = processor.New(appCtx, writer)
+		appCtx.Downloader = engine.NewDownloader(appCtx, writer)
+		appCtx.NZBParser = nzb.NewParser()
 	}
 
 	// wire optional Usenet/NZB Indexer runtime through app context.
 	// Uses first configured provider for scrape foundation milestone.
-	if appCtx.PGIndexStore != nil {
+	if cfg.Modules.UsenetIndexer.Enabled {
+		if appCtx.PGIndexStore == nil {
+			appLogger.Fatal("Usenet/NZB Indexer is enabled but PGIndexStore is not initialized")
+		}
+
 		matcherSvc := match.NewService()
 		assembleSvc := assemble.NewService(
 			appCtx.PGIndexStore,
@@ -221,29 +222,57 @@ func setupApp() *app.Context {
 		}
 
 		appCtx.UsenetIndexer = indexing.NewService(scrapeSvc, assembleSvc, releaseSvc, schedulerSvc)
+
 	}
 
-	appCtx.Processor = processor.New(appCtx, writer)
-	appCtx.Downloader = engine.NewDownloader(appCtx, writer)
-	appCtx.NZBParser = nzb.NewParser()
-
 	return appCtx
+}
+
+// central config/logger load so command handlers can validate module mode cleanly.
+func loadRuntimeConfig() (*config.Config, *logger.Logger) {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		log.Fatalf("Config error: %v", err)
+	}
+
+	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
+	if err != nil {
+		log.Fatalf("Could not initialize logger %v\n", err)
+	}
+
+	if cfg.Log.Level == "debug" {
+		appLogger.Debug("Debug logging enabled")
+	}
+
+	return cfg, appLogger
 }
 
 func executeServer() {
 	appCtx := setupApp()
 	e := echo.New()
 
-	appCtx.Queue = engine.NewQueueManager(appCtx, true)
+	// serve should expose an HTTP surface, otherwise it is meaningless.
+	if !appCtx.Config.Modules.API.Enabled && !appCtx.Config.Modules.WebUI.Enabled {
+		appCtx.Logger.Fatal("serve requires modules.api.enabled or modules.web_ui.enabled")
+	}
+
+	// downloader queue runtime only exists when downloader is enabled.
+	if appCtx.Config.Modules.Downloader.Enabled {
+		appCtx.Queue = engine.NewQueueManager(appCtx, true)
+	}
+
 	// Create a "Global" context that we can cancel to trigger shutdown
 	// This context manages the entire application lifecycle
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Start background worker for the queue
-	go appCtx.Queue.Start(ctx)
+	if appCtx.Queue != nil {
+		go appCtx.Queue.Start(ctx)
+	}
 
 	// Register routes via the router
+	// router internally gates downloader/aggreagator/web UI ownership
 	api.RegisterRoutes(e, appCtx)
 
 	sc := echo.StartConfig{
@@ -260,13 +289,20 @@ func executeServer() {
 
 	appCtx.Logger.Info("Server stopped. Finalizing store...")
 	appCtx.Close()
-
 	appCtx.Logger.Info("GoNZB shutdown gracefully")
 }
 
 func executeDownload() {
 	appCtx := setupApp()
 	defer appCtx.Close()
+
+	// CHANGED: one-shot download command is downloader-owned.
+	if !appCtx.Config.Modules.Downloader.Enabled {
+		appCtx.Logger.Fatal("downloader module is disabled")
+	}
+	if appCtx.NNTP == nil || appCtx.Processor == nil || appCtx.Downloader == nil || appCtx.NZBParser == nil {
+		appCtx.Logger.Fatal("downloader runtime is not initialized")
+	}
 
 	// Initialize queue manager (false = don't load pending queue items from db for one-shot CLI mode)
 	appCtx.Queue = engine.NewQueueManager(appCtx, false)
@@ -375,6 +411,10 @@ func executeIndexerScrape(once bool) {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
+	// indexer commands are owned by the Usenet/NZB Indexer module.
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
 	if appCtx.UsenetIndexer == nil {
 		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn and indexing.newsgroups.")
 	}
@@ -405,6 +445,9 @@ func executeIndexerAssemble(once bool) {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
 	if appCtx.UsenetIndexer == nil {
 		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	}
@@ -427,6 +470,9 @@ func executeIndexerRelease(once bool) {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
 	if appCtx.UsenetIndexer == nil {
 		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	}
@@ -449,6 +495,9 @@ func executeIndexerPipeline(once bool) {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
 	if appCtx.UsenetIndexer == nil {
 		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	}
