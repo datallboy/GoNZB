@@ -44,33 +44,46 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		},
 	}))
 
-	nzbCtrl := &controllers.NewznabController{App: app}
-	aggCtrl := &controllers.AggregatorController{App: app}
-	queueCtrl := &controllers.QueueController{Service: queuesvc.NewService(app)}
-	eventCtrl := &controllers.DownloadEvent{App: app}
+	// route registration is now module-aware per Milestone 8.
+	modules := app.Config.Modules
 	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
 
-	// Newznab API Endpoint (for Prowlarr/Sonarr)
-	e.GET("/api", nzbCtrl.Handle, apiKeyMW)
+	// Aggregator-owned API surface.
+	if modules.API.Enabled && modules.Aggregator.Enabled {
+		nzbCtrl := &controllers.NewznabController{App: app}
+		aggCtrl := &controllers.AggregatorController{App: app}
 
-	// Direct NZB Download Endpoint
-	e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
+		// Newznab compatibility endpoints.
+		e.GET("/api", nzbCtrl.Handle, apiKeyMW)
+		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
 
-	v1 := e.Group("/api/v1", apiKeyMW)
-	v1.GET("/queue", queueCtrl.ListActive)
-	v1.GET("/queue/history", queueCtrl.ListHistory)
-	v1.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
-	v1.POST("/queue/bulk/delete", queueCtrl.DeleteMany)
-	v1.POST("/queue/history/clear", queueCtrl.ClearHistory)
-	v1.GET("/queue/:id", queueCtrl.GetItem)
-	v1.GET("/queue/:id/files", queueCtrl.GetItemFiles)
-	v1.GET("/queue/:id/events", queueCtrl.GetItemEvents)
-	v1.GET("/releases/search", aggCtrl.SearchReleases)
-	v1.POST("/queue", queueCtrl.Add)
-	v1.POST("/queue/:id/cancel", queueCtrl.Cancel)
-	v1.GET("/events/queue", eventCtrl.HandleEvents)
+		v1Agg := e.Group("/api/v1", apiKeyMW)
+		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
+	}
 
-	registerWebUIRoutes(e)
+	// Downloader-owned API surface.
+	if modules.API.Enabled && modules.Downloader.Enabled {
+		queueCtrl := &controllers.QueueController{Service: queuesvc.NewService(app)}
+		eventCtrl := &controllers.DownloadEvent{App: app}
+
+		v1Queue := e.Group("/api/v1", apiKeyMW)
+		v1Queue.GET("/queue", queueCtrl.ListActive)
+		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
+		v1Queue.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
+		v1Queue.POST("/queue/bulk/delete", queueCtrl.DeleteMany)
+		v1Queue.POST("/queue/history/clear", queueCtrl.ClearHistory)
+		v1Queue.GET("/queue/:id", queueCtrl.GetItem)
+		v1Queue.GET("/queue/:id/files", queueCtrl.GetItemFiles)
+		v1Queue.GET("/queue/:id/events", queueCtrl.GetItemEvents)
+		v1Queue.POST("/queue", queueCtrl.Add)
+		v1Queue.POST("/queue/:id/cancel", queueCtrl.Cancel)
+		v1Queue.GET("/events/queue", eventCtrl.HandleEvents)
+	}
+
+	// Web UI is served only when explicitly enabled.
+	if modules.WebUI.Enabled {
+		registerWebUIRoutes(e)
+	}
 }
 
 func apiKeyMiddleware(requiredKey string) echo.MiddlewareFunc {

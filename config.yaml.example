@@ -3,6 +3,19 @@
 # The port the HTTP server will listen on
 port: "8080"
 
+# Default example remains all-in-one.
+modules:
+  downloader:
+    enabled: true
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: true
+  web_ui:
+    enabled: true
+  api:
+    enabled: true
+
 # API authentication (optional)
 api:
   key: "" # Set to a non-empty value to require apikey on /api and /nzb routes

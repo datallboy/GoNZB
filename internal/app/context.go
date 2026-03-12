@@ -165,43 +165,109 @@ type Context struct {
 	closers           []io.Closer
 }
 
-// NewContext initializes the base environment.
+// allows filesystem payload cache without SQLite blob index state.
+type noopBlobCacheIndexer struct{}
+
+func (noopBlobCacheIndexer) MarkReleaseCached(ctx context.Context, releaseID string, blobSize int64, blobMtimeUnix int64) error {
+	return nil
+}
+
+func (noopBlobCacheIndexer) MarkReleaseCacheMissing(ctx context.Context, releaseID, reason string) error {
+	return nil
+}
+
+// NewContext initializes context based on enabled modules
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
-	jobStore, err := sqlitejob.NewStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize sqlite job store: %w", err)
+
+	modules := cfg.Modules
+
+	// SQLite queue/job store is required for downloader and optional for aggregator cache.
+	needsJobStore := modules.Downloader.Enabled || (modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled)
+	//  SQLite settings store remains available for runtime control plane/state.
+	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled
+
+	var (
+		jobStore      *sqlitejob.Store
+		settingsStore *settingsstore.Store
+		pgStore       *pgindex.Store
+		err           error
+	)
+
+	if needsJobStore {
+		jobStore, err = sqlitejob.NewStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize sqlite job store: %w", err)
+		}
+	}
+
+	if needsSettingsStore {
+		settingsStore, err = settingsstore.NewStore(cfg.Store.SQLitePath)
+		if err != nil {
+			if jobStore != nil {
+				_ = jobStore.Close()
+			}
+			return nil, fmt.Errorf("failed to initialize settings store: %w", err)
+		}
 	}
 
 	var payloadStore PayloadCacheStore
 	if cfg.Store.PayloadCacheEnabled {
-		fsStore, err := blobstore.NewFSBlobStore(cfg.Store.BlobDir, jobStore)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize fs blob store: %w", err)
+		var (
+			fsStore *blobstore.FSBlobStore
+			fsErr   error
+		)
+
+		if jobStore != nil {
+			// downloader/aggregator cache mode with SQLite-backed blob index.
+			fsStore, fsErr = blobstore.NewFSBlobStore(cfg.Store.BlobDir, jobStore)
+		} else {
+			// stateless aggregator mode with filesystem payload cache but no SQLite cache index.
+			fsStore, fsErr = blobstore.NewFSBlobStore(cfg.Store.BlobDir, noopBlobCacheIndexer{})
+		}
+
+		if fsErr != nil {
+			if settingsStore != nil {
+				_ = settingsStore.Close()
+			}
+			if jobStore != nil {
+				_ = jobStore.Close()
+			}
+			return nil, fmt.Errorf("failed to initialize fs blob store: %w", fsErr)
 		}
 		payloadStore = fsStore
 	} else {
 		payloadStore = blobstore.NewEphemeralBlobStore()
 	}
 
-	settingsStore, err := settingsstore.NewStore(cfg.Store.SQLitePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize settings store: %w", err)
+	//  Aggregator is optional and SQLite cache is optional.
+	var aggregator IndexerAggregator
+	if modules.Aggregator.Enabled {
+		aggregatorStore := adapters.NewAggregatorStore(payloadStore, jobStore)
+		manager := aggregatorpkg.NewManager(
+			aggregatorStore,
+			log,
+			cfg.Store.PayloadCacheEnabled,
+			cfg.Store.SearchPersistenceEnabled && jobStore != nil,
+		)
+
+		for _, idxCfg := range cfg.Indexers {
+			client := newznab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
+			manager.AddSource(client)
+		}
+
+		aggregator = manager
 	}
 
-	aggregatorStore := adapters.NewAggregatorStore(payloadStore, jobStore)
-
-	// Initialize Indexer Manager
-	aggregator := aggregatorpkg.NewManager(aggregatorStore, log, cfg.Store.PayloadCacheEnabled, cfg.Store.SearchPersistenceEnabled)
-
-	for _, idxCfg := range cfg.Indexers {
-		client := newznab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
-		aggregator.AddSource(client)
-	}
-
-	var pgStore *pgindex.Store
-	if cfg.Store.PGDSN != "" {
+	// PG store is only a Usenet/NZB Indexer concern.
+	if modules.UsenetIndexer.Enabled && cfg.Store.PGDSN != "" {
 		pgStore, err = pgindex.NewStore(cfg.Store.PGDSN)
 		if err != nil {
+			if settingsStore != nil {
+				_ = settingsStore.Close()
+			}
+			if jobStore != nil {
+				_ = jobStore.Close()
+			}
 			return nil, fmt.Errorf("failed to initialize pg index store: %w", err)
 		}
 	}
@@ -212,7 +278,13 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		resolver.NewUsenetIndexResolver(pgStore),
 	)
 
-	closers := []io.Closer{jobStore, settingsStore}
+	closers := make([]io.Closer, 0, 3)
+	if jobStore != nil {
+		closers = append(closers, jobStore)
+	}
+	if settingsStore != nil {
+		closers = append(closers, settingsStore)
+	}
 	if pgStore != nil {
 		closers = append(closers, pgStore)
 	}
