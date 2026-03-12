@@ -579,6 +579,58 @@ Exit gates (required to mark milestone complete):
 
 ---
 
+## Milestone 8.5: Scrape mode split (`latest` vs `backfill`)
+### Why this is deferred
+- This is a real product requirement for the Usenet/NZB Indexer, but it is not required to complete Milestones 7-8 module decoupling.
+- It changes scrape operational policy, not downloader/aggregator ownership boundaries.
+- Deferring it avoids expanding current milestone scope while preserving the design decision in the plan.
+
+### Goal
+- Split current scrape behavior into two explicit commands/modes:
+  1. `latest`: prioritize current content near the head of the group.
+  2. `backfill`: walk backward through older content intentionally and with its own cursor.
+
+### Files
+- `internal/store/pgindex/migrations/004_*.sql` (or next available migration number)
+- `internal/store/pgindex/repository.go`
+- `internal/indexing/scrape/service.go`
+- `internal/indexing/service.go`
+- `cmd/gonzb/main.go`
+- `internal/infra/config/config.go`
+- `config.yaml.example`
+
+### Tasks
+1. Add separate scrape cursor state for backward traversal.
+- Keep existing forward/latest checkpoint semantics.
+- Add a separate backfill cursor; do not overload the forward checkpoint for both directions.
+
+2. Split scrape execution into explicit modes.
+- `RunLatestOnce(ctx)` for head-following scrape behavior.
+- `RunBackfillOnce(ctx)` for reverse historical ingestion.
+- `RunOnce(ctx)` may remain an alias for `RunLatestOnce(ctx)` for compatibility.
+
+3. Add explicit CLI/API/runtime ownership for scrape modes.
+- Preferred CLI shape:
+  - `gonzb indexer scrape latest --once`
+  - `gonzb indexer scrape backfill --once`
+- Scheduler should run `latest` only by default.
+- Backfill should remain manual/intentional unless separately scheduled later.
+
+4. Define cold-start/latest policy explicitly.
+- On no forward checkpoint, `latest` should begin near `GROUP high`, bounded by batch size or configured overlap.
+- It should not default to oldest-first ingestion.
+
+5. Preserve module boundaries.
+- This remains a Usenet/NZB Indexer concern only.
+- Downloader and Aggregator must not gain hidden dependencies on scrape mode behavior.
+
+### Exit criteria
+- `latest` and `backfill` are separate commands with separate cursor behavior.
+- Cold-start indexing prioritizes recent content.
+- Historical ingestion is possible without corrupting or reusing the forward/latest checkpoint.
+
+---
+
 ## Milestone 9: SAB-compatible downloader API subset
 ### Files
 - `internal/api/controllers/*`
