@@ -1,10 +1,12 @@
 package scrape
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -184,16 +186,27 @@ func (s *Service) runGroup(ctx context.Context, providerID int64, group string) 
 			if r.ArticleNumber <= 0 || strings.TrimSpace(r.MessageID) == "" {
 				continue
 			}
+			cleanRaw := make(map[string]any, len(r.RawOverview))
+			for k, v := range r.RawOverview {
+				cleanKey := sanitizeScrapeUTF8(k)
+				switch tv := v.(type) {
+				case string:
+					cleanRaw[cleanKey] = sanitizeScrapeUTF8(tv)
+				default:
+					cleanRaw[cleanKey] = v
+				}
+			}
+
 			headers = append(headers, pgindex.ArticleHeader{
 				ArticleNumber: r.ArticleNumber,
-				MessageID:     r.MessageID,
-				Subject:       r.Subject,
-				Poster:        r.Poster,
+				MessageID:     sanitizeScrapeUTF8(r.MessageID),
+				Subject:       sanitizeScrapeUTF8(r.Subject),
+				Poster:        sanitizeScrapeUTF8(r.Poster),
 				DateUTC:       r.DateUTC,
 				Bytes:         r.Bytes,
 				Lines:         r.Lines,
-				Xref:          r.Xref,
-				RawOverview:   r.RawOverview,
+				Xref:          sanitizeScrapeUTF8(r.Xref),
+				RawOverview:   cleanRaw,
 			})
 		}
 
@@ -212,4 +225,15 @@ func (s *Service) runGroup(ctx context.Context, providerID int64, group string) 
 	}
 
 	return nil
+}
+
+func sanitizeScrapeUTF8(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if utf8.ValidString(s) {
+		return s
+	}
+	return string(bytes.ToValidUTF8([]byte(s), []byte{}))
 }

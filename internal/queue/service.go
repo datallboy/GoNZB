@@ -114,28 +114,32 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 		return nil, fmt.Errorf("release_id is required")
 	}
 
-	rel, err := s.app.Resolver.GetRelease(ctx, releaseID)
+	rel, err := s.app.Resolver.GetRelease(ctx, "aggregator", releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve release %s: %w", releaseID, err)
+		return nil, fmt.Errorf("failed to resolve aggregator release %s: %w", releaseID, err)
 	}
 	if rel == nil {
 		return nil, fmt.Errorf("release %s not found", releaseID)
 	}
 
-	// request title can override display title if caller supplied one
-	effectiveTitle := rel.Title
+	// snapshot title override happens before queue persistence.
+	releaseCopy := *rel
 	if title != "" {
-		effectiveTitle = title
+		releaseCopy.Title = title
 	}
 
-	item, err := s.app.Queue.Add(ctx, releaseID, effectiveTitle)
+	item, err := s.app.Queue.Add(ctx, app.QueueAddRequest{
+		SourceKind:      "aggregator",
+		SourceReleaseID: releaseCopy.ID,
+		Release:         &releaseCopy,
+		Title:           releaseCopy.Title,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Fill response payload with release metadata when available.
 	if item.Release == nil {
-		item.Release = rel
+		item.Release = &releaseCopy
 	}
 
 	return item, nil
@@ -163,20 +167,27 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 		return nil, fmt.Errorf("failed to persist nzb in blob store: %w", err)
 	}
 
-	item, err := s.app.Queue.Add(ctx, releaseID, filename)
+	// manual uploads enqueue with explicit source provenance and snapshot.
+	manualRelease := &domain.Release{
+		ID:       releaseID,
+		GUID:     releaseID,
+		Title:    filename,
+		Source:   "manual",
+		Category: "Uncategorized",
+	}
+
+	item, err := s.app.Queue.Add(ctx, app.QueueAddRequest{
+		SourceKind:      "manual",
+		SourceReleaseID: releaseID,
+		Release:         manualRelease,
+		Title:           filename,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// best-effort in-memory release shape for response payloads
 	if item.Release == nil {
-		item.Release = &domain.Release{
-			ID:       releaseID,
-			GUID:     releaseID,
-			Title:    filename,
-			Source:   "manual",
-			Category: "Uncategorized",
-		}
+		item.Release = manualRelease
 	}
 
 	return item, nil

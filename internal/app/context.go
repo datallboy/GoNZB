@@ -66,9 +66,17 @@ type Downloader interface {
 	SetProgressHandler(fn func(*domain.QueueItem))
 }
 
+// explicit queue enqueue contract so downloader does not infer source provenance.
+type QueueAddRequest struct {
+	SourceKind      string
+	SourceReleaseID string
+	Release         *domain.Release
+	Title           string
+}
+
 type QueueManager interface {
 	Start(ctx context.Context)
-	Add(ctx context.Context, releaseID string, title string) (*domain.QueueItem, error)
+	Add(ctx context.Context, req QueueAddRequest) (*domain.QueueItem, error)
 	GetActiveItem() *domain.QueueItem
 	GetItem(ctx context.Context, id string) (*domain.QueueItem, bool)
 	GetAllItems() []*domain.QueueItem
@@ -111,8 +119,9 @@ type BlobStore interface {
 	Exists(key string) bool
 }
 
+// payload fetch now routes by persisted source kind.
 type PayloadFetcher interface {
-	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
+	GetNZB(ctx context.Context, sourceKind string, res *domain.Release) (io.ReadCloser, error)
 }
 
 type PayloadCacheStore interface {
