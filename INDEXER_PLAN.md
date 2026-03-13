@@ -631,6 +631,115 @@ Exit gates (required to mark milestone complete):
 
 ---
 
+## Milestone 8.X: Runtime Settings Completion (SQLite control plane)
+### Why this is tracked separately
+- Milestone 8 core module wiring can be completed first, but the plan also requires runtime settings API/live reload work before Milestone 8 is truly closed.
+- This work should be completed before moving on to Milestone 8.5 or later milestones.
+- It is intentionally narrower than a full configuration subsystem rewrite.
+
+### Scope
+- Make SQLite settings state real for runtime-editable operational settings.
+- Preserve bootstrap-only ownership for YAML/env keys marked restart-only in this plan.
+- Apply SQLite runtime settings as an overlay after bootstrap load.
+
+### Chunk 1: Settings domain model + effective overlay
+#### Goal
+- Replace settings scaffolding with a real runtime settings model and effective-config overlay.
+
+#### Files
+- `internal/store/settings/store.go`
+- `internal/store/settings/types.go` (or equivalent)
+- `internal/infra/config/config.go`
+- `internal/app/context.go`
+
+#### Tasks
+1. Define runtime-editable settings payload shape for initial scope:
+- `servers[*]`
+- `indexers[*]`
+- `download.*`
+- `usenet_indexer.*` scheduler/admin knobs needed by current runtime
+2. Change settings store contract from scaffold/no-op to real reads/writes.
+3. Load effective config by overlaying SQLite runtime settings on bootstrap YAML/env.
+4. Validate effective config by enabled modules after overlay is applied.
+
+#### Exit criteria
+- SQLite runtime settings can be read and overlaid onto bootstrap config.
+- Effective runtime config is validated after overlay.
+
+### Chunk 2: Settings revision watch + live reload bus
+#### Goal
+- Make runtime settings changes observable and safely reloadable.
+
+#### Files
+- `internal/store/settings/store.go`
+- `internal/app/*` runtime reload helpers
+- `cmd/gonzb/main.go`
+
+#### Tasks
+1. Implement `WatchSettingsChanges(...)` using revision polling or equivalent.
+2. Start settings watcher during runtime startup.
+3. On runtime settings update, rebuild/reload affected subsystems where safe:
+- downloader NNTP providers
+- aggregator source list
+- usenet-indexer scheduler knobs
+4. Prefer whole-subsystem rebuild/swap over ad-hoc mutable patching in initial scope.
+
+#### Exit criteria
+- Settings revisions are observable at runtime.
+- At least one enabled subsystem reloads live from SQLite settings updates.
+
+### Chunk 3: Admin settings API
+#### Goal
+- Expose runtime settings read/update through API.
+
+#### Files
+- `internal/api/controllers/settings.go`
+- `internal/api/router.go`
+- supporting DTO files as needed
+
+#### Tasks
+1. Add `GET /api/v1/admin/settings`
+2. Add `PUT /api/v1/admin/settings`
+3. Return effective runtime-editable settings only.
+4. Redact secrets on read.
+5. Accept only runtime-editable fields defined in this plan.
+
+#### Exit criteria
+- Runtime settings can be retrieved and updated through the admin API.
+
+### Chunk 4: Startup and reload integration
+#### Goal
+- Ensure runtime services use effective settings rather than raw bootstrap config alone.
+
+#### Files
+- `cmd/gonzb/main.go`
+- `internal/app/context.go`
+
+#### Tasks
+1. Load effective settings after bootstrap config and SQLite settings initialization.
+2. Build runtime services from effective config.
+3. Apply safe live reload on settings revision updates.
+4. Keep bootstrap-only keys restart-only:
+- `modules.*`
+- `port`
+- `log.*` (initial scope)
+- `store.sqlite_path`
+- `store.blob_dir`
+- `api.key`
+- `api.cors_allowed_origins`
+- `postgres.dsn`
+
+#### Exit criteria
+- Runtime uses effective settings from bootstrap + SQLite overlay.
+- Live reload works for initial runtime-editable setting groups.
+
+### Explicit Deferrals
+1. Secret encryption-at-rest implementation details may be completed later if needed, but the settings model/API should already be structured for secret fields.
+2. `modules.*` remain bootstrap-only in initial scope.
+3. Scrape-mode split (`latest` vs `backfill`) remains Milestone 8.5 and must not be folded into this settings work.
+
+---
+
 ## Milestone 9: SAB-compatible downloader API subset
 ### Files
 - `internal/api/controllers/*`
