@@ -305,6 +305,71 @@ func (s *Store) UpsertCheckpoint(ctx context.Context, providerID, newsgroupID, l
 	return nil
 }
 
+// explicit latest/forward checkpoint accessor for Milestone 8.5.
+func (s *Store) GetLatestCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error) {
+	return s.GetCheckpoint(ctx, providerID, newsgroupID)
+}
+
+// explicit latest/forward checkpoint upsert for Milestone 8.5.
+func (s *Store) UpsertLatestCheckpoint(ctx context.Context, providerID, newsgroupID, lastArticleNumber int64) error {
+	return s.UpsertCheckpoint(ctx, providerID, newsgroupID, lastArticleNumber)
+}
+
+// separate backward cursor for historical scrape mode.
+// Returns 0 when no backfill checkpoint exists yet.
+func (s *Store) GetBackfillCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error) {
+	var backfillArticleNumber int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT backfill_article_number
+		FROM scrape_checkpoints
+		WHERE provider_id = $1 AND newsgroup_id = $2`,
+		providerID, newsgroupID,
+	).Scan(&backfillArticleNumber)
+
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get backfill checkpoint p=%d g=%d: %w", providerID, newsgroupID, err)
+	}
+
+	return backfillArticleNumber, nil
+}
+
+// persist backward/historical scrape cursor independently of latest cursor.
+func (s *Store) UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error {
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+	if backfillArticleNumber < 0 {
+		backfillArticleNumber = 0
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO scrape_checkpoints (
+			provider_id,
+			newsgroup_id,
+			last_article_number,
+			backfill_article_number,
+			updated_at
+		)
+		VALUES ($1, $2, 0, $3, NOW())
+		ON CONFLICT (provider_id, newsgroup_id)
+		DO UPDATE SET
+			backfill_article_number = EXCLUDED.backfill_article_number,
+			updated_at = NOW()`,
+		providerID, newsgroupID, backfillArticleNumber,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert backfill checkpoint p=%d g=%d: %w", providerID, newsgroupID, err)
+	}
+
+	return nil
+}
+
 // InsertArticleHeaders inserts header rows with ingest constraints enforced by DB.
 // Returns number of inserted rows (conflicts are ignored via DO NOTHING).
 func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []ArticleHeader) (int64, error) {

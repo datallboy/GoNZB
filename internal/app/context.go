@@ -47,6 +47,8 @@ type ReleaseResolver interface {
 
 type UsenetIndexerService interface {
 	ScrapeOnce(ctx context.Context) error
+	ScrapeLatestOnce(ctx context.Context) error
+	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
 	RunPipelineOnce(ctx context.Context) error
