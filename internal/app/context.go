@@ -24,6 +24,7 @@ type NNTPManager interface {
 	// This allows the engine to call the manager without importing the nntp package
 	Fetch(ctx context.Context, seg *domain.Segment, groups []string) (io.Reader, error)
 	TotalCapacity() int
+	Close() error // allows idle runtime swaps on settings reload
 }
 
 // Manager defines the contract for our NZB search and download engine.
@@ -84,6 +85,7 @@ type QueueManager interface {
 	Delete(id string) bool
 	HydrateItem(ctx context.Context, item *domain.QueueItem) error
 	UpdateStatus(ctx context.Context, item *domain.QueueItem, status domain.JobStatus)
+	ReloadRuntime(appCtx *Context) // refresh future-job dependencies after settings reload
 }
 
 type NZBParser interface {
@@ -133,7 +135,8 @@ type PayloadCacheStore interface {
 
 // Runtime settings
 type SettingsStore interface {
-	LoadEffectiveSettings(ctx context.Context) error
+	LoadEffectiveSettings(ctx context.Context, base *config.Config) (*config.Config, error)
+	GetRuntimeSettings(ctx context.Context, base ...*config.Config) (*settingsstore.RuntimeSettings, error)
 	UpdateSettings(ctx context.Context, patch any) error
 	WatchSettingsChanges(ctx context.Context) (<-chan struct{}, error)
 }
@@ -141,8 +144,9 @@ type SettingsStore interface {
 // Context hold the core environment and shared resources for GoNZB.
 // It acts as the "Single Source of Truth" for the application state.
 type Context struct {
-	Config *config.Config
-	Logger *logger.Logger
+	BootstrapConfig *config.Config
+	Config          *config.Config
+	Logger          *logger.Logger
 
 	// High-level interfaces for services to use
 	NNTP              NNTPManager
@@ -290,6 +294,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	}
 
 	return &Context{
+		BootstrapConfig:   cfg,
 		Config:            cfg,
 		Logger:            log,
 		ExtractionEnabled: true,

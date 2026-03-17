@@ -84,7 +84,7 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 				if errors.Is(err, ErrArticleNotFound) {
 					m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.ID(), seg.MessageID)
 					seg.MissingFrom[mp.ID()] = true
-					
+
 					// Small sleep before trying next provider in failover
 					time.Sleep(100 * time.Millisecond)
 					continue
@@ -172,4 +172,24 @@ func (m *Manager) TotalCapacity() int {
 		total += cap(mp.semaphore)
 	}
 	return total
+}
+
+// allows safe teardown when reloading downloader runtime while idle
+func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
+
+	var firstErr error
+	for _, mp := range m.providers {
+		if mp == nil || mp.Provider == nil {
+			continue
+		}
+
+		if err := mp.Provider.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
 }

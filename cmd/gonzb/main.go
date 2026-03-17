@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -47,6 +49,8 @@ var (
 	releaseOnce  bool
 	pipelineOnce bool
 )
+
+var errDownloaderReloadDeferred = fmt.Errorf("downloader runtime reload deferred until queue is idle")
 
 var rootCmd = &cobra.Command{
 	Use:     "gonzb",
@@ -154,8 +158,13 @@ func setupApp() *app.Context {
 		appLogger.Fatal("Failed to initialize application context %v", err)
 	}
 
+	// overlay SQLite runtime settings onto bootstrap config before wiring runtime services.
+	if err := app.LoadAndApplyEffectiveConfig(context.Background(), appCtx); err != nil {
+		appLogger.Fatal("Failed to load effective runtime settings: %v", err)
+	}
+
 	// downloader runtime pieces are only built when downloader is enabled.
-	if cfg.Modules.Downloader.Enabled {
+	if appCtx.Config.Modules.Downloader.Enabled {
 		// Initialize shared writer
 		writer := engine.NewFileWriter()
 
@@ -172,57 +181,16 @@ func setupApp() *app.Context {
 
 	// wire optional Usenet/NZB Indexer runtime through app context.
 	// Uses first configured provider for scrape foundation milestone.
-	if cfg.Modules.UsenetIndexer.Enabled {
-		if appCtx.PGIndexStore == nil {
-			appLogger.Fatal("Usenet/NZB Indexer is enabled but PGIndexStore is not initialized")
+	if appCtx.Config.Modules.UsenetIndexer.Enabled {
+		indexerRuntime, buildErr := buildUsenetIndexerRuntime(appCtx)
+		if buildErr != nil {
+			appLogger.Fatal("Failed to build Usenet/NZB Indexer runtime: %v", buildErr)
 		}
 
-		matcherSvc := match.NewService()
-		assembleSvc := assemble.NewService(
-			appCtx.PGIndexStore,
-			matcherSvc,
-			appLogger,
-			assemble.Options{
-				BatchSize: int(cfg.Indexing.ScrapeBatchSize),
-			},
-		)
-
-		releaseSvc := release.NewService(
-			appCtx.PGIndexStore,
-			appLogger,
-			release.Options{
-				BatchSize: 1000,
-			},
-		)
-
-		var scrapeSvc *scrape.Service
-		var schedulerSvc *scheduler.Service
-
-		if len(cfg.Indexing.Newsgroups) > 0 {
-			scrapeProvider := nntp.NewNNTPProvider(cfg.Servers[0])
-
-			if err := scrapeProvider.TestConnection(); err != nil {
-				appLogger.Fatal("Scrape provider initialization failed: %v", err)
-			}
-			appCtx.AddCloser(scrapeProvider)
-
-			scrapeAdapter := scrape.NewNNTPAdapter(scrapeProvider)
-			scrapeSvc = scrape.NewService(
-				appCtx.PGIndexStore,
-				scrapeAdapter,
-				appLogger,
-				scrape.Options{
-					Newsgroups: cfg.Indexing.Newsgroups,
-					BatchSize:  cfg.Indexing.ScrapeBatchSize,
-				},
-			)
-
-			interval := time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute
-			schedulerSvc = scheduler.NewService(scrapeSvc, appLogger, interval)
+		appCtx.UsenetIndexer = indexerRuntime.service
+		if indexerRuntime.scrapeProvider != nil {
+			appCtx.AddCloser(indexerRuntime.scrapeProvider)
 		}
-
-		appCtx.UsenetIndexer = indexing.NewService(scrapeSvc, assembleSvc, releaseSvc, schedulerSvc)
-
 	}
 
 	return appCtx
@@ -247,6 +215,84 @@ func loadRuntimeConfig() (*config.Config, *logger.Logger) {
 	return cfg, appLogger
 }
 
+type usenetIndexerRuntime struct {
+	service        app.UsenetIndexerService
+	scheduler      *scheduler.Service
+	scrapeProvider io.Closer
+	interval       time.Duration
+}
+
+func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, error) {
+	if appCtx == nil {
+		return nil, fmt.Errorf("app context is required")
+	}
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		return &usenetIndexerRuntime{}, nil
+	}
+	if appCtx.PGIndexStore == nil {
+		return nil, fmt.Errorf("usenet indexer is enabled but PGIndexStore is not initialized")
+	}
+
+	matcherSvc := match.NewService()
+	assembleSvc := assemble.NewService(
+		appCtx.PGIndexStore,
+		matcherSvc,
+		appCtx.Logger,
+		assemble.Options{
+			BatchSize: int(appCtx.Config.Indexing.ScrapeBatchSize),
+		},
+	)
+
+	releaseSvc := release.NewService(
+		appCtx.PGIndexStore,
+		appCtx.Logger,
+		release.Options{
+			BatchSize: 1000,
+		},
+	)
+
+	var (
+		scrapeSvc      *scrape.Service
+		schedulerSvc   *scheduler.Service
+		scrapeProvider io.Closer
+	)
+
+	if len(appCtx.Config.Indexing.Newsgroups) > 0 {
+		if len(appCtx.Config.Servers) == 0 {
+			return nil, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
+		}
+
+		provider := nntp.NewNNTPProvider(appCtx.Config.Servers[0])
+		if err := provider.TestConnection(); err != nil {
+			return nil, fmt.Errorf("scrape provider initialization failed: %w", err)
+		}
+
+		scrapeAdapter := scrape.NewNNTPAdapter(provider)
+		scrapeSvc = scrape.NewService(
+			appCtx.PGIndexStore,
+			scrapeAdapter,
+			appCtx.Logger,
+			scrape.Options{
+				Newsgroups: appCtx.Config.Indexing.Newsgroups,
+				BatchSize:  appCtx.Config.Indexing.ScrapeBatchSize,
+			},
+		)
+
+		interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute
+		schedulerSvc = scheduler.NewService(scrapeSvc, appCtx.Logger, interval)
+		scrapeProvider = provider
+	}
+
+	service := indexing.NewService(scrapeSvc, assembleSvc, releaseSvc, schedulerSvc)
+
+	return &usenetIndexerRuntime{
+		service:        service,
+		scheduler:      schedulerSvc,
+		scrapeProvider: scrapeProvider,
+		interval:       time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute,
+	}, nil
+}
+
 func executeServer() {
 	appCtx := setupApp()
 	e := echo.New()
@@ -265,6 +311,11 @@ func executeServer() {
 	// This context manages the entire application lifecycle
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// watch runtime settings revisions and live-apply safe reload targets.
+	if appCtx.SettingsStore != nil {
+		go watchRuntimeSettings(ctx, appCtx)
+	}
 
 	// Start background worker for the queue
 	if appCtx.Queue != nil {
@@ -411,7 +462,6 @@ func executeIndexerScrape(once bool) {
 	appCtx := setupApp()
 	defer appCtx.Close()
 
-	// indexer commands are owned by the Usenet/NZB Indexer module.
 	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
 		appCtx.Logger.Fatal("usenet_indexer module is disabled")
 	}
@@ -430,13 +480,90 @@ func executeIndexerScrape(once bool) {
 		return
 	}
 
-	interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute
-	if interval <= 0 {
-		interval = 10 * time.Minute
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	type runtimeState struct {
+		cancel func()
+		closer io.Closer
 	}
 
-	if err := appCtx.UsenetIndexer.Start(ctx, interval); err != nil {
-		appCtx.Logger.Fatal("indexer scheduler failed: %v", err)
+	var state runtimeState
+
+	startRuntime := func(parent context.Context) error {
+		indexerRuntime, err := buildUsenetIndexerRuntime(appCtx)
+		if err != nil {
+			return err
+		}
+		if indexerRuntime.service == nil {
+			return fmt.Errorf("usenet indexer runtime is not configured")
+		}
+
+		appCtx.UsenetIndexer = indexerRuntime.service
+
+		childCtx, childCancel := context.WithCancel(parent)
+		state.cancel = childCancel
+		state.closer = indexerRuntime.scrapeProvider
+
+		go func() {
+			if err := appCtx.UsenetIndexer.Start(childCtx, indexerRuntime.interval); err != nil && childCtx.Err() == nil {
+				appCtx.Logger.Error("indexer scheduler failed: %v", err)
+			}
+		}()
+
+		return nil
+	}
+
+	stopRuntime := func() {
+		if state.cancel != nil {
+			state.cancel()
+			state.cancel = nil
+		}
+		if state.closer != nil {
+			if err := state.closer.Close(); err != nil {
+				appCtx.Logger.Warn("failed to close previous scrape provider: %v", err)
+			}
+			state.closer = nil
+		}
+	}
+
+	if err := startRuntime(runCtx); err != nil {
+		appCtx.Logger.Fatal("failed to start indexer scheduler runtime: %v", err)
+	}
+	defer stopRuntime()
+
+	if appCtx.SettingsStore == nil {
+		<-ctx.Done()
+		return
+	}
+
+	ch, err := appCtx.SettingsStore.WatchSettingsChanges(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("failed to start settings watcher: %v", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+
+			if err := app.LoadAndApplyEffectiveConfig(ctx, appCtx); err != nil {
+				appCtx.Logger.Error("failed to apply runtime settings update: %v", err)
+				continue
+			}
+
+			stopRuntime()
+			if err := startRuntime(runCtx); err != nil {
+				appCtx.Logger.Error("failed to rebuild indexer scheduler runtime: %v", err)
+				continue
+			}
+
+			appCtx.Logger.Info("Applied runtime settings update to indexer scheduler runtime")
+		}
 	}
 }
 
@@ -524,4 +651,104 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func watchRuntimeSettings(ctx context.Context, appCtx *app.Context) {
+	ch, err := appCtx.SettingsStore.WatchSettingsChanges(ctx)
+	if err != nil {
+		appCtx.Logger.Error("Failed to start settings watcher: %v", err)
+		return
+	}
+
+	// f a settings update lands during an active download, keep retrying
+	// until the queue becomes idle so downloader live reload is eventually applied.
+	retryTicker := time.NewTicker(2 * time.Second)
+	defer retryTicker.Stop()
+
+	pendingDownloaderReload := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+
+			if err := app.LoadAndApplyEffectiveConfig(ctx, appCtx); err != nil {
+				appCtx.Logger.Error("Failed to apply runtime settings update: %v", err)
+				continue
+			}
+
+			if err := reloadDownloaderRuntimeIfIdle(appCtx); err != nil {
+				if errors.Is(err, errDownloaderReloadDeferred) {
+					pendingDownloaderReload = true
+					appCtx.Logger.Warn("Runtime settings applied; downloader runtime reload deferred until queue is idle")
+				} else {
+					appCtx.Logger.Warn("Runtime settings applied, but downloader runtime reload failed: %v", err)
+				}
+			} else {
+				pendingDownloaderReload = false
+			}
+
+			appCtx.Logger.Info("Applied runtime settings update")
+
+		case <-retryTicker.C:
+			if !pendingDownloaderReload {
+				continue
+			}
+
+			if err := reloadDownloaderRuntimeIfIdle(appCtx); err != nil {
+				if !errors.Is(err, errDownloaderReloadDeferred) {
+					appCtx.Logger.Warn("Deferred downloader runtime reload failed: %v", err)
+				}
+				continue
+			}
+
+			pendingDownloaderReload = false
+			appCtx.Logger.Info("Applied deferred downloader runtime reload")
+		}
+	}
+}
+
+func reloadDownloaderRuntimeIfIdle(appCtx *app.Context) error {
+	if appCtx == nil {
+		return fmt.Errorf("app context is required")
+	}
+	if !appCtx.Config.Modules.Downloader.Enabled {
+		return nil
+	}
+	if appCtx.Queue == nil {
+		return nil
+	}
+	if active := appCtx.Queue.GetActiveItem(); active != nil {
+		return errDownloaderReloadDeferred
+	}
+
+	oldNNTP := appCtx.NNTP
+
+	writer := engine.NewFileWriter()
+
+	newNNTP, err := nntp.NewManager(appCtx)
+	if err != nil {
+		return fmt.Errorf("rebuild nntp manager: %w", err)
+	}
+
+	appCtx.NNTP = newNNTP
+	appCtx.Processor = processor.New(appCtx, writer)
+	appCtx.Downloader = engine.NewDownloader(appCtx, writer)
+	appCtx.NZBParser = nzb.NewParser()
+
+	// CHANGED: queue manager keeps copied dependencies, so refresh them too.
+	appCtx.Queue.ReloadRuntime(appCtx)
+
+	if oldNNTP != nil {
+		if err := oldNNTP.Close(); err != nil {
+			appCtx.Logger.Warn("Failed to close previous NNTP manager: %v", err)
+		}
+	}
+
+	return nil
 }
