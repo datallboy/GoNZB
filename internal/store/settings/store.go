@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/datallboy/gonzb/internal/infra/config"
 	_ "modernc.org/sqlite"
 )
 
@@ -44,15 +46,80 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// milestone-2 scaffold only (effective overlay wiring comes later).
-func (s *Store) LoadEffectiveSettings(ctx context.Context) error {
-	_ = ctx
-	return nil
+// load latest runtime settings revision and overlay it onto bootstrap config.
+func (s *Store) LoadEffectiveSettings(ctx context.Context, base *config.Config) (*config.Config, error) {
+	runtime, err := s.GetRuntimeSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load runtime settings: %w", err)
+	}
+
+	effective := ApplyToConfig(base, runtime)
+	if effective == nil {
+		return nil, fmt.Errorf("effective config is nil")
+	}
+
+	// CHANGED: validate the overlaid config, not just bootstrap config.
+	if err := effective.ValidateEffective(); err != nil {
+		return nil, fmt.Errorf("validate effective config: %w", err)
+	}
+
+	return effective, nil
 }
 
-// stores revision payload as JSON; normalization comes in later milestone.
+// return the latest persisted runtime settings revision.
+// If no row exists yet, fall back to bootstrap-derived defaults.
+func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) (*RuntimeSettings, error) {
+	var (
+		id      int64
+		payload string
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, payload_json
+		FROM settings_revision
+		ORDER BY id DESC
+		LIMIT 1`).Scan(&id, &payload)
+
+	if err == sql.ErrNoRows {
+		if len(base) > 0 && base[0] != nil {
+			out := FromConfig(base[0])
+			out.Revision = 0
+			return out, nil
+		}
+		return &RuntimeSettings{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("select latest settings revision: %w", err)
+	}
+
+	if payload == "" {
+		payload = "{}"
+	}
+
+	var runtime RuntimeSettings
+	if err := json.Unmarshal([]byte(payload), &runtime); err != nil {
+		return nil, fmt.Errorf("unmarshal settings revision %d: %w", id, err)
+	}
+	runtime.Revision = id
+
+	return &runtime, nil
+}
+
+// patch and persist the latest runtime settings state as a new atomic revision.
 func (s *Store) UpdateSettings(ctx context.Context, patch any) error {
-	b, err := json.Marshal(patch)
+	settingsPatch, ok := patch.(*RuntimeSettingsPatch)
+	if !ok {
+		return fmt.Errorf("settings patch must be *settings.RuntimeSettingsPatch")
+	}
+
+	current, err := s.GetRuntimeSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("load current runtime settings: %w", err)
+	}
+
+	next := mergeRuntimeSettings(current, settingsPatch)
+
+	b, err := encodeRuntimeSettings(next)
 	if err != nil {
 		return fmt.Errorf("marshal settings patch: %w", err)
 	}
@@ -66,12 +133,56 @@ func (s *Store) UpdateSettings(ctx context.Context, patch any) error {
 	return nil
 }
 
-// watcher scaffold; real pub/sub later.
+// poll settings_revision for new ids and publish a lightweight signal.
+// This is intentionally simple for the first live-reload slice.
 func (s *Store) WatchSettingsChanges(ctx context.Context) (<-chan struct{}, error) {
-	ch := make(chan struct{})
+	lastSeen, err := s.latestRevisionID(ctx)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("read initial settings revision: %w", err)
+	}
+	if err == sql.ErrNoRows {
+		lastSeen = 0
+	}
+
+	ch := make(chan struct{}, 1)
+
 	go func() {
-		<-ctx.Done()
-		close(ch)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		defer close(ch)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				current, currentErr := s.latestRevisionID(ctx)
+				if currentErr != nil {
+					continue
+				}
+				if current > lastSeen {
+					lastSeen = current
+					select {
+					case ch <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
 	}()
+
 	return ch, nil
+}
+
+func (s *Store) latestRevisionID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM settings_revision
+		ORDER BY id DESC
+		LIMIT 1`).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }

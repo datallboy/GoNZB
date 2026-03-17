@@ -59,6 +59,24 @@ func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
 	return m
 }
 
+// refresh future-job runtime dependencies after settings reload
+// Active downloads are not interrupted; this only affects subsequent hydation/download steps
+func (m *QueueManager) ReloadRuntime(appCtx *app.Context) {
+	if m == nil || appCtx == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.downloader = appCtx.Downloader
+	m.processor = appCtx.Processor
+	m.parser = appCtx.NZBParser
+	m.resolver = appCtx.Resolver
+	m.payloadFetcher = appCtx.PayloadFetcher
+	m.config = appCtx.Config
+}
+
 func (m *QueueManager) initFromDatabase() {
 
 	ctx := context.Background()

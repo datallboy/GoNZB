@@ -48,6 +48,15 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	modules := app.Config.Modules
 	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
 
+	settingsCtrl := &controllers.SettingsController{App: app}
+
+	// runtime settings admin API for modules with SQLite settings state.
+	if modules.API.Enabled && app.SettingsStore != nil {
+		v1Admin := e.Group("/api/v1/admin", apiKeyMW)
+		v1Admin.GET("/settings", settingsCtrl.GetSettings)
+		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
+	}
+
 	// Aggregator-owned API surface.
 	if modules.API.Enabled && modules.Aggregator.Enabled {
 		nzbCtrl := &controllers.NewznabController{App: app}

@@ -167,6 +167,11 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// exported validation entrypoint for effective bootstrap+runtime settings.
+func (c *Config) ValidateEffective() error {
+	return c.validate()
+}
+
 func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
