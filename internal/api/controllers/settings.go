@@ -40,8 +40,8 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// preview the merged runtime settings before persisting, so we
-	// validate the effective config and reject bad runtime patches.
+	// build the full next snapshot against the bootstrap/effective view,
+	// validate it, then persist that full runtime snapshot into structured tables.
 	next := settingsstore.ApplyPatch(current, &patch)
 	effective := settingsstore.ApplyToConfig(ctrl.App.BootstrapConfig, next)
 	if effective == nil {

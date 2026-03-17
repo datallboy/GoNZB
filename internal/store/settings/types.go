@@ -177,34 +177,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 // exported patch helper for admin API preview/validation path.
 func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeSettings {
-	return mergeRuntimeSettings(current, patch)
-}
-
-// redact runtime secrets before returning settings through API.
-func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
-	if in == nil {
-		return &RuntimeSettings{}
-	}
-
-	out := &RuntimeSettings{
-		Servers:  append([]ServerRuntimeSettings(nil), in.Servers...),
-		Indexers: append([]IndexerRuntimeSettings(nil), in.Indexers...),
-		Download: cloneDownload(in.Download),
-		Indexing: cloneIndexing(in.Indexing),
-		Revision: in.Revision,
-	}
-
-	for i := range out.Servers {
-		out.Servers[i].Password = ""
-	}
-	for i := range out.Indexers {
-		out.Indexers[i].APIKey = ""
-	}
-
-	return out
-}
-
-func mergeRuntimeSettings(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeSettings {
 	if current == nil {
 		current = &RuntimeSettings{}
 	}
@@ -234,6 +206,33 @@ func mergeRuntimeSettings(current *RuntimeSettings, patch *RuntimeSettingsPatch)
 	}
 
 	return next
+}
+
+// explicit clone used when persisting a validated full snapshot.
+func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
+	if in == nil {
+		return &RuntimeSettings{}
+	}
+
+	return &RuntimeSettings{
+		Servers:  append([]ServerRuntimeSettings(nil), in.Servers...),
+		Indexers: append([]IndexerRuntimeSettings(nil), in.Indexers...),
+		Download: cloneDownload(in.Download),
+		Indexing: cloneIndexing(in.Indexing),
+		Revision: in.Revision,
+	}
+}
+
+// redact runtime secrets before returning settings through API.
+func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
+	out := CloneRuntimeSettings(in)
+	for i := range out.Servers {
+		out.Servers[i].Password = ""
+	}
+	for i := range out.Indexers {
+		out.Indexers[i].APIKey = ""
+	}
+	return out
 }
 
 func cloneDownload(in *DownloadRuntimeSettings) *DownloadRuntimeSettings {
