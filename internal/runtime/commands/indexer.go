@@ -10,6 +10,11 @@ import (
 )
 
 func (r *Runner) ExecuteIndexerScrape(once bool) {
+	// compatibility path remains "latest".
+	r.ExecuteIndexerScrapeLatest(once)
+}
+
+func (r *Runner) ExecuteIndexerScrapeLatest(once bool) {
 	appCtx := r.setupApp(context.Background())
 	defer appCtx.Close()
 
@@ -34,6 +39,30 @@ func (r *Runner) ExecuteIndexerScrape(once bool) {
 	if err := wiring.RunIndexerScrapeScheduler(ctx, appCtx); err != nil {
 		appCtx.Logger.Fatal("indexer scheduler failed: %v", err)
 	}
+}
+
+func (r *Runner) ExecuteIndexerScrapeBackfill(once bool) {
+	appCtx := r.setupApp(context.Background())
+	defer appCtx.Close()
+
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
+	if appCtx.UsenetIndexer == nil {
+		appCtx.Logger.Fatal("Usenet/NZB Indexer is not configured. Set store.pg_dsn and indexing.newsgroups.")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer scrape backfill currently supports --once only")
+	}
+
+	if err := appCtx.UsenetIndexer.ScrapeBackfillOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer scrape backfill --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer scrape backfill --once completed")
 }
 
 func (r *Runner) ExecuteIndexerAssemble(once bool) {

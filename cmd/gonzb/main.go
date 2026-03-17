@@ -59,11 +59,28 @@ var indexerCmd = &cobra.Command{
 	Short: "Usenet/NZB indexer operations",
 }
 
+// compatibility command; defaults to latest.
 var indexerScrapeCmd = &cobra.Command{
 	Use:   "scrape",
-	Short: "Scrape article headers into PostgreSQL",
+	Short: "Scrape article headers into PostgreSQL (default mode: latest)",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerScrape(scrapeOnce)
+	},
+}
+
+var indexerScrapeLatestCmd = &cobra.Command{
+	Use:   "latest",
+	Short: "Scrape the most recent article ranges first, then continue forward",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerScrapeLatest(scrapeOnce)
+	},
+}
+
+var indexerScrapeBackfillCmd = &cobra.Command{
+	Use:   "backfill",
+	Short: "Scrape older article ranges by walking backward from the latest frontier",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerScrapeBackfill(scrapeOnce)
 	},
 }
 
@@ -100,11 +117,17 @@ func init() {
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
+	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
+	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit")
+
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
+	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
+	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
+
 	indexerCmd.AddCommand(indexerAssembleCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)

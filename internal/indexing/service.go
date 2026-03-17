@@ -32,11 +32,28 @@ func NewService(
 	}
 }
 
+// backward-compatible alias to latest mode.
 func (s *Service) ScrapeOnce(ctx context.Context) error {
 	if s.scrape == nil {
 		return fmt.Errorf("scrape service is not configured")
 	}
-	return s.scrape.RunOnce(ctx)
+	return s.scrape.RunLatestOnce(ctx)
+}
+
+// explicit latest scrape mode
+func (s *Service) ScrapeLatestOnce(ctx context.Context) error {
+	if s.scrape == nil {
+		return fmt.Errorf("scrape service is not configured")
+	}
+	return s.scrape.RunLatestOnce(ctx)
+}
+
+// explicit backfill scrape mode
+func (s *Service) ScrapeBackfillOnce(ctx context.Context) error {
+	if s.scrape == nil {
+		return fmt.Errorf("scrape service is not configured")
+	}
+	return s.scrape.RunBackfillOnce(ctx)
 }
 
 func (s *Service) Start(ctx context.Context, interval time.Duration) error {
