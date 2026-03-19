@@ -36,6 +36,16 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 				continue
 			}
 
+			if err := BuildArrNotifier(ctx, appCtx); err != nil {
+				appCtx.Logger.Warn("Failed to rebuild Arr notifier runtime: %v", err)
+			}
+
+			// notifier/settings-only runtime changes should apply immediately,
+			// even if downloader rebuild still needs to wait for an idle queue.
+			if appCtx.Queue != nil {
+				appCtx.Queue.ReloadRuntime(appCtx)
+			}
+
 			if err := ReloadDownloaderIfIdle(appCtx); err != nil {
 				if IsDownloaderReloadDeferred(err) {
 					pendingDownloaderReload = true

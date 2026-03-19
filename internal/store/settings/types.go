@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -10,18 +11,20 @@ import (
 // runtime-editable settings model for Milestone 8.X chunk 1.
 // Bootstrap-only fields stay in config.yaml/env and are not represented here.
 type RuntimeSettings struct {
-	Servers  []ServerRuntimeSettings  `json:"servers,omitempty"`
-	Indexers []IndexerRuntimeSettings `json:"indexers,omitempty"`
-	Download *DownloadRuntimeSettings `json:"download,omitempty"`
-	Indexing *IndexingRuntimeSettings `json:"indexing,omitempty"`
-	Revision int64                    `json:"revision,omitempty"`
+	Servers         []ServerRuntimeSettings         `json:"servers,omitempty"`
+	Indexers        []IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	Download        *DownloadRuntimeSettings        `json:"download,omitempty"`
+	Indexing        *IndexingRuntimeSettings        `json:"indexing,omitempty"`
+	ArrIntegrations []ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
+	Revision        int64                           `json:"revision,omitempty"`
 }
 
 type RuntimeSettingsPatch struct {
-	Servers  *[]ServerRuntimeSettings  `json:"servers,omitempty"`
-	Indexers *[]IndexerRuntimeSettings `json:"indexers,omitempty"`
-	Download *DownloadRuntimeSettings  `json:"download,omitempty"`
-	Indexing *IndexingRuntimeSettings  `json:"indexing,omitempty"`
+	Servers         *[]ServerRuntimeSettings         `json:"servers,omitempty"`
+	Indexers        *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	Download        *DownloadRuntimeSettings         `json:"download,omitempty"`
+	Indexing        *IndexingRuntimeSettings         `json:"indexing,omitempty"`
+	ArrIntegrations *[]ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
 }
 
 type ServerRuntimeSettings struct {
@@ -55,6 +58,16 @@ type IndexingRuntimeSettings struct {
 	ScheduleIntervalMinutes int      `json:"schedule_interval_minutes,omitempty"`
 }
 
+type ArrIntegrationRuntimeSettings struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"` // radarr | sonarr
+	Enabled    bool   `json:"enabled"`
+	BaseURL    string `json:"base_url"`
+	APIKey     string `json:"api_key"`
+	ClientName string `json:"client_name,omitempty"`
+	Category   string `json:"category,omitempty"`
+}
+
 // derive editable runtime state from current effective config.
 func FromConfig(cfg *config.Config) *RuntimeSettings {
 	if cfg == nil {
@@ -62,8 +75,9 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 	}
 
 	out := &RuntimeSettings{
-		Servers:  make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
-		Indexers: make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
+		Servers:         make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		Indexers:        make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
+		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
 		Download: &DownloadRuntimeSettings{
 			OutDir:            cfg.Download.OutDir,
 			CompletedDir:      cfg.Download.CompletedDir,
@@ -204,6 +218,9 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	if patch.Indexing != nil {
 		next.Indexing = cloneIndexing(patch.Indexing)
 	}
+	if patch.ArrIntegrations != nil {
+		next.ArrIntegrations = append([]ArrIntegrationRuntimeSettings(nil), (*patch.ArrIntegrations)...)
+	}
 
 	return next
 }
@@ -215,11 +232,12 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 	}
 
 	return &RuntimeSettings{
-		Servers:  append([]ServerRuntimeSettings(nil), in.Servers...),
-		Indexers: append([]IndexerRuntimeSettings(nil), in.Indexers...),
-		Download: cloneDownload(in.Download),
-		Indexing: cloneIndexing(in.Indexing),
-		Revision: in.Revision,
+		Servers:         append([]ServerRuntimeSettings(nil), in.Servers...),
+		Indexers:        append([]IndexerRuntimeSettings(nil), in.Indexers...),
+		ArrIntegrations: append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
+		Download:        cloneDownload(in.Download),
+		Indexing:        cloneIndexing(in.Indexing),
+		Revision:        in.Revision,
 	}
 }
 
@@ -232,7 +250,42 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 	for i := range out.Indexers {
 		out.Indexers[i].APIKey = ""
 	}
+	for i := range out.ArrIntegrations {
+		out.ArrIntegrations[i].APIKey = ""
+	}
 	return out
+}
+
+func ValidateArrIntegrations(integrations []ArrIntegrationRuntimeSettings) error {
+	seen := make(map[string]struct{}, len(integrations))
+
+	for _, integration := range integrations {
+		if !integration.Enabled {
+			continue
+		}
+
+		id := strings.TrimSpace(integration.ID)
+		if id == "" {
+			return fmt.Errorf("arr integration id is required")
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate arr integration id %q", id)
+		}
+		seen[id] = struct{}{}
+
+		kind := strings.ToLower(strings.TrimSpace(integration.Kind))
+		if kind != "radarr" && kind != "sonarr" {
+			return fmt.Errorf("arr integration %q kind must be radarr or sonarr", id)
+		}
+		if strings.TrimSpace(integration.BaseURL) == "" {
+			return fmt.Errorf("arr integration %q base_url is required", id)
+		}
+		if strings.TrimSpace(integration.APIKey) == "" {
+			return fmt.Errorf("arr integration %q api_key is required", id)
+		}
+	}
+
+	return nil
 }
 
 func cloneDownload(in *DownloadRuntimeSettings) *DownloadRuntimeSettings {

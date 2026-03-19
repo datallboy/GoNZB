@@ -17,6 +17,10 @@ func BuildInitialRuntime(appCtx *app.Context) error {
 		return err
 	}
 
+	if err := BuildArrNotifier(context.Background(), appCtx); err != nil {
+		return fmt.Errorf("build arr notifier: %w", err)
+	}
+
 	if err := BuildDownloader(appCtx); err != nil {
 		return err
 	}

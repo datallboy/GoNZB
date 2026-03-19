@@ -40,9 +40,11 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// build the full next snapshot against the bootstrap/effective view,
-	// validate it, then persist that full runtime snapshot into structured tables.
 	next := settingsstore.ApplyPatch(current, &patch)
+	if err := settingsstore.ValidateArrIntegrations(next.ArrIntegrations); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	effective := settingsstore.ApplyToConfig(ctrl.App.BootstrapConfig, next)
 	if effective == nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to build effective config"})
@@ -51,10 +53,9 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	if err := ctrl.App.SettingsStore.UpdateSettings(c.Request().Context(), &patch); err != nil {
+	if err := ctrl.App.SettingsStore.UpdateSettings(c.Request().Context(), next); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// Return the redacted effective runtime settings state that was just accepted.
 	return c.JSON(http.StatusOK, settingsstore.RedactedCopy(next))
 }
