@@ -57,23 +57,32 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
 	}
 
+	var (
+		nzbCtrl *controllers.NewznabController
+		sabCtrl *controllers.SABController
+	)
+
 	// Aggregator-owned API surface.
 	if modules.API.Enabled && modules.Aggregator.Enabled {
-		nzbCtrl := &controllers.NewznabController{App: app}
+		nzbCtrl = &controllers.NewznabController{App: app}
 		aggCtrl := &controllers.AggregatorController{App: app}
-
-		// Newznab compatibility endpoints.
-		e.GET("/api", nzbCtrl.Handle, apiKeyMW)
-		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
 
 		v1Agg := e.Group("/api/v1", apiKeyMW)
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
+
+		// Keep direct NZB download endpoint under aggregator ownership.
+		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
 	}
 
 	// Downloader-owned API surface.
 	if modules.API.Enabled && modules.Downloader.Enabled {
-		queueCtrl := &controllers.QueueController{Service: queuesvc.NewService(app)}
+		queueService := queuesvc.NewService(app)
+		queueCtrl := &controllers.QueueController{Service: queueService}
 		eventCtrl := &controllers.DownloadEvent{App: app}
+		sabCtrl = &controllers.SABController{
+			App:     app,
+			Service: queueService,
+		}
 
 		v1Queue := e.Group("/api/v1", apiKeyMW)
 		v1Queue.GET("/queue", queueCtrl.ListActive)
@@ -87,6 +96,25 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		v1Queue.POST("/queue", queueCtrl.Add)
 		v1Queue.POST("/queue/:id/cancel", queueCtrl.Cancel)
 		v1Queue.GET("/events/queue", eventCtrl.HandleEvents)
+
+		// staging SAB compatibility route for Milestone 9 Chunk 1.
+		// We keep this off `/api` for now to avoid colliding with the existing
+		// Newznab compatibility route. A unified `/api` dispatcher comes next.
+		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW)
+		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW)
+	}
+
+	//  unified compatibility `/api` endpoint.
+	// Dispatches to SAB or Newznab depending on query selector.
+	if modules.API.Enabled && (modules.Aggregator.Enabled || modules.Downloader.Enabled) {
+		compatCtrl := &controllers.CompatAPIController{
+			SABEnabled:     modules.Downloader.Enabled,
+			NewznabEnabled: modules.Aggregator.Enabled,
+			SAB:            sabCtrl,
+			Newznab:        nzbCtrl,
+		}
+		e.GET("/api", compatCtrl.Handle, apiKeyMW)
+		e.POST("/api", compatCtrl.Handle, apiKeyMW)
 	}
 
 	// Web UI is served only when explicitly enabled.

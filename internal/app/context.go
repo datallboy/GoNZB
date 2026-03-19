@@ -30,6 +30,7 @@ type NNTPManager interface {
 // Manager defines the contract for our NZB search and download engine.
 type IndexerAggregator interface {
 	SearchAll(ctx context.Context, query string) ([]*domain.Release, error)
+	SearchAllWithRequest(ctx context.Context, req aggregatorpkg.SearchRequest) ([]*domain.Release, error)
 	GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error)
 	GetResultByID(ctx context.Context, id string) (*domain.Release, error)
 }
@@ -56,10 +57,10 @@ type UsenetIndexerService interface {
 }
 
 type Processor interface {
-	// This allows the engine to trigger repair/extract without importing processor
-	Prepare(ctx context.Context, nzbModel *nzb.Model, nzbFilename string) (*domain.PreparationResult, error)
+	// processor now needs the queue item so it can use a per-job work dir
+	Prepare(ctx context.Context, item *domain.QueueItem, nzbModel *nzb.Model, nzbFilename string) (*domain.PreparationResult, error)
 	Finalize(ctx context.Context, tasks []*domain.DownloadFile) error
-	PostProcess(ctx context.Context, tasks []*domain.DownloadFile) error
+	PostProcess(ctx context.Context, item *domain.QueueItem, tasks []*domain.DownloadFile) error
 }
 
 type Downloader interface {
@@ -85,6 +86,11 @@ type QueueManager interface {
 	GetAllItems() []*domain.QueueItem
 	Cancel(id string) bool
 	Delete(id string) bool
+
+	Pause() bool
+	Resume() bool
+	IsPaused() bool
+
 	HydrateItem(ctx context.Context, item *domain.QueueItem) error
 	UpdateStatus(ctx context.Context, item *domain.QueueItem, status domain.JobStatus)
 	ReloadRuntime(appCtx *Context) // refresh future-job dependencies after settings reload
@@ -143,6 +149,10 @@ type SettingsStore interface {
 	WatchSettingsChanges(ctx context.Context) (<-chan struct{}, error)
 }
 
+type ArrNotifier interface {
+	NotifyQueueTerminal(ctx context.Context, item *domain.QueueItem) error
+}
+
 // Context hold the core environment and shared resources for GoNZB.
 // It acts as the "Single Source of Truth" for the application state.
 type Context struct {
@@ -166,6 +176,7 @@ type Context struct {
 	PayloadCacheStore PayloadCacheStore
 	SettingsStore     SettingsStore
 	PGIndexStore      *pgindex.Store
+	ArrNotifier       ArrNotifier
 
 	ExtractionEnabled bool
 	closers           []io.Closer
