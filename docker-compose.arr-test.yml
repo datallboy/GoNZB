@@ -1,0 +1,66 @@
+services:
+  gonzb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gonzb
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./testdata/gonzb/sqlite:/data/sqlite
+      - ./testdata/gonzb/blobs:/data/blobs
+      - ./testdata/downloads:/downloads
+      - ./testdata/completed:/completed
+    command: ["serve", "--config", "/app/config.yaml"]
+    networks:
+      - arrtest
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    ports:
+      - "8989:8989"
+    volumes:
+      - ./testdata/sonarr/config:/config
+      - ./testdata/tv:/tv
+      - ./testdata/downloads:/downloads
+      - ./testdata/completed:/completed
+    depends_on:
+      - gonzb
+    networks:
+      - arrtest
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    ports:
+      - "7878:7878"
+    volumes:
+      - ./testdata/radarr/config:/config
+      - ./testdata/movies:/movies
+      - ./testdata/downloads:/downloads
+      - ./testdata/completed:/completed
+    depends_on:
+      - gonzb
+    networks:
+      - arrtest
+
+networks:
+  arrtest:
+    driver: bridge

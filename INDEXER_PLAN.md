@@ -740,18 +740,138 @@ Exit gates (required to mark milestone complete):
 
 ---
 
-## Milestone 9: SAB-compatible downloader API subset
+## Milestone 9: SAB-compatible downloader API + Arr integration
+### Why this milestone is broader than a pure API shim
+- To act as a practical drop-in replacement downloader for Radarr/Sonarr, GoNZB must implement both:
+  1. a SAB-compatible downloader API surface
+  2. downloader-to-Arr notification/reporting behavior for success/failure state changes
+- A compatibility transport without notifier/reporting support is not sufficient for a real Radarr/Sonarr replacement workflow.
+
+### Goal
+- Implement a SAB-compatible downloader API surface that can be used by Radarr/Sonarr as a downloader integration target.
+- Preserve downloader-owned queue state and queue item files as the source of truth.
+- Add Arr-facing runtime settings and outbound notification behavior for completed/failed downloads.
+
 ### Files
 - `internal/api/controllers/*`
 - API routing/DTO mapping
+- `internal/queue/*`
+- `internal/runtime/commands/*`
+- `internal/store/settings/*`
+- notifier/integration package(s) as needed
 
-### Tasks
-1. Implement enqueue/queue/history/pause/resume/cancel subset.
-2. Keep snapshot fields and queue-item-file details mapped.
-3. Add compatibility tests with Sonarr/Radarr/Prowlarr flows.
+### Chunk 1: Compatibility contract + DTOs
+#### Goal
+- Define SAB-compatible request/response structs before implementing handlers.
+
+#### Tasks
+1. Add dedicated SAB compatibility DTOs separate from existing app-native queue controller DTOs.
+2. Define queue/history/command envelopes and item mappers.
+3. Keep the existing downloader queue API unchanged; SAB compatibility is an additional transport surface.
+4. Document which SAB fields are exact matches vs approximations from downloader-owned queue item state.
+
+#### Exit criteria
+- SAB compatibility DTOs exist and are stable enough for handler implementation.
+
+### Chunk 2: SAB-compatible controller + routing
+#### Goal
+- Expose a downloader-owned SAB-compatible API surface.
+
+#### Tasks
+1. Add a dedicated SAB compatibility controller.
+2. Add route registration under downloader + API module ownership.
+3. Support the required downloader subset for drop-in operation:
+- enqueue/add
+- queue
+- history
+- cancel/delete
+- pause/resume (global and/or mapped equivalents where supported)
+4. Keep app-native queue endpoints and Web UI behavior unchanged.
+
+#### Exit criteria
+- SAB-compatible routes are reachable and mapped onto downloader runtime operations.
+
+### Chunk 3: Queue/history/status mapping
+#### Goal
+- Map downloader queue item state into SAB-compatible queue/history/status responses.
+
+#### Tasks
+1. Map active queue items into SAB-compatible queue slots.
+2. Map terminal queue items into SAB-compatible history entries.
+3. Preserve:
+- queue item id
+- release snapshot-derived title/size/category/source where relevant
+- downloader metrics (bytes, duration, avg rate) where fields can be represented
+4. Keep `GET /api/v1/queue/:id/files` as the authoritative detailed file view for native API/UI usage.
+
+#### Exit criteria
+- SAB queue/history responses are generated from downloader-owned queue state without introducing a second queue model.
+
+### Chunk 4: Arr notifier settings and outbound integration
+#### Goal
+- Add runtime settings needed for Radarr/Sonarr notification/reporting.
+
+#### Tasks
+1. Add downloader-owned runtime settings for Arr integrations, including at minimum:
+- target kind (`radarr` / `sonarr`)
+- base URL
+- API key / auth material
+- enabled flag
+- optional category/client-name mapping if needed for downloader registration parity
+2. Persist these settings in SQLite settings state as downloader/integration runtime settings.
+3. Extend the admin settings API to read/update these fields.
+4. Redact secrets on read in the same way as NNTP/indexer runtime settings.
+
+#### Exit criteria
+- Arr notifier settings are part of the runtime settings control plane and can be configured without editing bootstrap config for normal operation.
+
+### Chunk 5: Download completion/failure notifications
+#### Goal
+- Inform Radarr/Sonarr when downloader jobs succeed or fail.
+
+#### Tasks
+1. Add a notifier/integration client package for Arr callbacks or equivalent completion/failure reporting.
+2. Trigger outbound notifications from downloader terminal-state transitions:
+- completed
+- failed
+- cancelled where relevant
+3. Include enough queue/release metadata for Radarr/Sonarr to correlate the job outcome.
+4. Ensure notifier failures do not corrupt downloader queue state; they should be logged and surfaced separately.
+
+#### Exit criteria
+- Downloader terminal-state transitions can be reported to configured Arr integrations.
+
+### Chunk 6: Compatibility validation
+#### Goal
+- Verify GoNZB can function as a practical SAB-compatible downloader target.
+
+#### Tasks
+1. Add compatibility smoke tests for the SAB-compatible endpoints.
+2. Validate end-to-end downloader workflows with:
+- Radarr
+- Sonarr
+- optionally Prowlarr where relevant to the downloader integration path
+3. Verify:
+- add/enqueue works
+- queue polling works
+- history polling works
+- completion/failure reporting works
+- existing native queue APIs still work
+
+#### Exit criteria
+- Radarr/Sonarr downloader integration works end-to-end against the supported subset.
+
+### Milestone 9 Tasks (Consolidated)
+1. Implement a dedicated SAB-compatible downloader API surface rather than overloading the native queue API.
+2. Keep downloader queue items, queue events, and queue item files as the sole source of truth.
+3. Add Arr notifier runtime settings and outbound reporting for completed/failed downloads.
+4. Validate real downloader integration workflows with Radarr/Sonarr before closing the milestone.
 
 ### Exit criteria
-- automation workflow validated end-to-end.
+- SAB-compatible downloader API subset is implemented and mapped from downloader-owned queue state.
+- Arr notifier settings are configurable through runtime settings.
+- Downloader completion/failure events can be reported to configured Arr integrations.
+- Radarr/Sonarr downloader workflow is validated end-to-end.
 
 ---
 
@@ -849,6 +969,7 @@ This section is the canonical policy for where config/settings live and how they
 | `servers[*]` (NNTP providers) | Downloader runtime | SQLite | Yes | Yes (credentials encrypted) | Live reload |
 | `indexers[*]` (aggregator sources) | Aggregator runtime | SQLite | Yes | Yes (`api_key` encrypted) | Live reload |
 | `download.*` (`out_dir`, `completed_dir`, `cleanup_extensions`) | Downloader runtime | SQLite | Yes | No | Live reload |
+| `arr_integrations[*]` (Radarr/Sonarr notifier targets) | Downloader runtime | SQLite | Yes | Yes (`api_key` or auth secret) | Live reload |
 | `aggregator.*` future tuning | Aggregator runtime | SQLite | Yes | Maybe | Live reload |
 | `usenet_indexer.*` admin/scheduler knobs | Usenet/NZB Indexer runtime | SQLite settings state (control plane) | Yes | Maybe | Live reload |
 
