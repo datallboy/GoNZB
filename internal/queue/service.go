@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
@@ -21,6 +22,18 @@ func NewService(appCtx *app.Context) *Service {
 
 func (s *Service) ListActive() []*domain.QueueItem {
 	return s.app.Queue.GetAllItems()
+}
+
+func (s *Service) IsPaused() bool {
+	return s.app.Queue.IsPaused()
+}
+
+func (s *Service) Pause() bool {
+	return s.app.Queue.Pause()
+}
+
+func (s *Service) Resume() bool {
+	return s.app.Queue.Resume()
 }
 
 func (s *Service) ListHistory(ctx context.Context, status string, limit, offset int) ([]*domain.QueueItem, int, error) {
@@ -122,7 +135,6 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 		return nil, fmt.Errorf("release %s not found", releaseID)
 	}
 
-	// snapshot title override happens before queue persistence.
 	releaseCopy := *rel
 	if title != "" {
 		releaseCopy.Title = title
@@ -145,7 +157,13 @@ func (s *Service) EnqueueByReleaseID(ctx context.Context, releaseID, title strin
 	return item, nil
 }
 
+// CHANGED: keep existing native API call shape as a wrapper.
 func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error) {
+	return s.EnqueueNZBWithCategory(ctx, filename, "", file)
+}
+
+// CHANGED: SAB-compatible enqueue path can preserve client category.
+func (s *Service) EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error) {
 	if filename == "" {
 		filename = "manual.nzb"
 	}
@@ -167,13 +185,12 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 		return nil, fmt.Errorf("failed to persist nzb in blob store: %w", err)
 	}
 
-	// manual uploads enqueue with explicit source provenance and snapshot.
 	manualRelease := &domain.Release{
 		ID:       releaseID,
 		GUID:     releaseID,
 		Title:    filename,
 		Source:   "manual",
-		Category: "Uncategorized",
+		Category: normalizeQueueCategory(category),
 	}
 
 	item, err := s.app.Queue.Add(ctx, app.QueueAddRequest{
@@ -191,6 +208,14 @@ func (s *Service) EnqueueNZB(ctx context.Context, filename string, file io.Reade
 	}
 
 	return item, nil
+}
+
+func normalizeQueueCategory(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return "*"
+	}
+	return category
 }
 
 func bytesReader(b []byte) io.Reader {

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +29,13 @@ type QueueManager struct {
 	queueFiles     app.QueueFileStore
 	resolver       app.ReleaseResolver
 	payloadFetcher app.PayloadFetcher
+	arrNotifier    app.ArrNotifier
 	logger         *logger.Logger
 	config         *config.Config
+
+	// global runtime pause state for SAB-compatible downloader API.
+	paused           bool
+	pauseRequestedID string
 
 	stopFunc   context.CancelFunc
 	newJobChan chan struct{}
@@ -46,6 +54,7 @@ func NewQueueManager(app *app.Context, loadExisting bool) *QueueManager {
 		queueFiles:     app.QueueFileStore,
 		resolver:       app.Resolver,
 		payloadFetcher: app.PayloadFetcher,
+		arrNotifier:    app.ArrNotifier,
 		logger:         app.Logger,
 		config:         app.Config,
 		newJobChan:     make(chan struct{}, 1),
@@ -74,6 +83,7 @@ func (m *QueueManager) ReloadRuntime(appCtx *app.Context) {
 	m.parser = appCtx.NZBParser
 	m.resolver = appCtx.Resolver
 	m.payloadFetcher = appCtx.PayloadFetcher
+	m.arrNotifier = appCtx.ArrNotifier
 	m.config = appCtx.Config
 }
 
@@ -181,11 +191,20 @@ func (m *QueueManager) Add(ctx context.Context, req app.QueueAddRequest) (*domai
 		resumable = false
 	}
 
+	now := time.Now().UTC()
+	itemID := ksuid.New().String()
+
+	outDir := ""
+	if m.config != nil && m.config.Download.OutDir != "" {
+		outDir = buildQueueItemOutDir(m.config.Download.OutDir, release.Title, itemID)
+	}
+
 	item := &domain.QueueItem{
-		ID:                  ksuid.New().String(),
+		ID:                  itemID,
 		ReleaseID:           sourceReleaseID,
 		Release:             release,
 		Status:              domain.StatusPending,
+		OutDir:              outDir, //  each job gets its own working dir
 		SourceKind:          sourceKind,
 		SourceReleaseID:     sourceReleaseID,
 		ReleaseTitle:        release.Title,
@@ -193,8 +212,8 @@ func (m *QueueManager) Add(ctx context.Context, req app.QueueAddRequest) (*domai
 		ReleaseSnapshotJSON: buildReleaseSnapshotJSON(release),
 		PayloadMode:         payloadMode,
 		Resumable:           resumable,
-		CreatedAt:           time.Now().UTC(),
-		UpdatedAt:           time.Now().UTC(),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	if err := m.jobStore.SaveQueueItem(ctx, item); err != nil {
@@ -225,17 +244,21 @@ func (m *QueueManager) Start(ctx context.Context) {
 
 	for {
 		var next *domain.QueueItem
+		var paused bool
 
 		m.mu.RLock()
-		for _, itm := range m.queue {
-			if itm.Status == domain.StatusPending || itm.Status == domain.StatusDownloading || itm.Status == domain.StatusProcessing {
-				next = itm
-				break
+		paused = m.paused
+		if !paused {
+			for _, itm := range m.queue {
+				if itm.Status == domain.StatusPending || itm.Status == domain.StatusDownloading || itm.Status == domain.StatusProcessing {
+					next = itm
+					break
+				}
 			}
 		}
 		m.mu.RUnlock()
 
-		if next == nil {
+		if paused || next == nil {
 			select {
 			case <-m.newJobChan:
 				continue
@@ -290,7 +313,16 @@ func (m *QueueManager) Start(ctx context.Context) {
 
 		// POST-PROCESSING STEP
 		if jobErr == nil && !isCancelled(jobCtx) && next.Status == domain.StatusProcessing {
-			jobErr = m.processor.PostProcess(jobCtx, next.Tasks)
+			jobErr = m.processor.PostProcess(jobCtx, next, next.Tasks)
+
+			// PostProcess may update next.OutDir to the final completed/import path.
+			// Persist that before finalization so SAB history points Arr at the right folder.
+			if jobErr == nil {
+				next.UpdatedAt = time.Now().UTC()
+				if persistErr := m.jobStore.SaveQueueItem(jobCtx, next); persistErr != nil {
+					m.logger.Warn("Failed to persist queue item completed path for %s: %v", next.ID, persistErr)
+				}
+			}
 		}
 
 		// FINALIZE
@@ -343,6 +375,50 @@ func (m *QueueManager) GetAllItems() []*domain.QueueItem {
 	items := make([]*domain.QueueItem, len(m.queue))
 	copy(items, m.queue)
 	return items
+}
+
+// global pause stops new jobs from starting.
+// If a job is active, we cooperatively cancel it and requeue it as pending.
+func (m *QueueManager) Pause() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.paused {
+		return true
+	}
+
+	m.paused = true
+
+	if m.activeItem != nil && m.activeItem.CancelFunc != nil {
+		m.pauseRequestedID = m.activeItem.ID
+		m.activeItem.CancelFunc()
+		m.recordEvent(context.Background(), m.activeItem.ID, "queue", "pause_requested", "Pause requested")
+	}
+
+	return true
+}
+
+// resume allows the queue loop to continue processing pending jobs.
+func (m *QueueManager) Resume() bool {
+	m.mu.Lock()
+	wasPaused := m.paused
+	m.paused = false
+	m.mu.Unlock()
+
+	if wasPaused {
+		select {
+		case m.newJobChan <- struct{}{}:
+		default:
+		}
+	}
+
+	return true
+}
+
+func (m *QueueManager) IsPaused() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.paused
 }
 
 func (m *QueueManager) Cancel(id string) bool {
@@ -464,9 +540,34 @@ func (m *QueueManager) UpdateStatus(ctx context.Context, item *domain.QueueItem,
 
 func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, err error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	now := time.Now().UTC()
+
+	// a paused active job is cooperatively requeued instead of failed.
+	if errors.Is(err, context.Canceled) && m.pauseRequestedID == item.ID {
+		item.Status = domain.StatusPending
+		item.Error = nil
+		item.UpdatedAt = now
+		item.CompletedAt = time.Time{}
+		item.CancelFunc = nil
+
+		// Reset transient runtime timing markers; this item is returning to queue state.
+		item.DownloadStartedAt = time.Time{}
+		item.ProcessingStartedAt = time.Time{}
+		item.DownloadSeconds = 0
+		item.PostProcessSeconds = 0
+		item.AvgBps = 0
+
+		if persistErr := m.jobStore.SaveQueueItem(ctx, item); persistErr != nil {
+			m.logger.Error("Failed to persist paused queue item %s: %v", item.ID, persistErr)
+		}
+
+		m.recordEvent(ctx, item.ID, "queue", "paused", "Queue item paused")
+		m.pauseRequestedID = ""
+		m.activeItem = nil
+		m.mu.Unlock()
+		return
+	}
 
 	if item.StartedAt.IsZero() {
 		item.StartedAt = now
@@ -485,6 +586,7 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 		item.AvgBps = item.DownloadedBytes / item.DownloadSeconds
 	}
 	item.UpdatedAt = now
+	item.CancelFunc = nil
 
 	if err != nil {
 		item.Status = domain.StatusFailed
@@ -497,6 +599,7 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 		item.Error = &errorMsg
 	} else {
 		item.Status = domain.StatusCompleted
+		item.Error = nil
 	}
 
 	// Persist the final outcome
@@ -512,6 +615,21 @@ func (m *QueueManager) finalizeJob(ctx context.Context, item *domain.QueueItem, 
 
 	m.activeItem = nil
 	m.removeFromLiveQueue(item.ID)
+
+	notifier := m.arrNotifier
+	m.mu.Unlock()
+
+	// Arr refresh is best-effort and must not block terminal queue state.
+	if notifier != nil {
+		go func(item *domain.QueueItem) {
+			notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if notifyErr := notifier.NotifyQueueTerminal(notifyCtx, item); notifyErr != nil {
+				m.logger.Warn("Arr notifier failed for queue item %s: %v", item.ID, notifyErr)
+			}
+		}(item)
+	}
 }
 
 func (m *QueueManager) recordEvent(ctx context.Context, queueID, stage, status, message string) {
@@ -610,7 +728,7 @@ func (m *QueueManager) HydrateItem(ctx context.Context, item *domain.QueueItem) 
 		return fmt.Errorf("failed to parse nzb payload: %w", err)
 	}
 
-	prepRes, err := m.processor.Prepare(ctx, nzbModel, item.Release.Title)
+	prepRes, err := m.processor.Prepare(ctx, item, nzbModel, item.Release.Title)
 	if err != nil {
 		return fmt.Errorf("failed to prepare download: %w", err)
 	}
@@ -764,4 +882,34 @@ func buildReleaseSnapshotJSON(rel *domain.Release) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+var queueDirUnsafeRE = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func buildQueueItemOutDir(baseDir, title, id string) string {
+	name := sanitizeQueueDirComponent(title)
+	if name == "" {
+		name = "job"
+	}
+	if id != "" {
+		name = name + "_" + id
+	}
+	return filepath.Join(baseDir, name)
+}
+
+func sanitizeQueueDirComponent(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	value = queueDirUnsafeRE.ReplaceAllString(value, "_")
+	value = strings.Trim(value, "._- ")
+	for strings.Contains(value, "__") {
+		value = strings.ReplaceAll(value, "__", "_")
+	}
+	if len(value) > 80 {
+		value = value[:80]
+	}
+	return value
 }
