@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: gonzb-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gonzb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: America/New_York
+    ports:
+      - "5432:5432"
+    volumes:
+      - gonzb_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gonzb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gonzb_postgres_data:
