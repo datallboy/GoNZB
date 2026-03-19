@@ -39,8 +39,16 @@ func (m *Manager) AddSource(src catalogSource) {
 	m.sources[src.Name()] = src
 }
 
-// SearchAll queries all sources loaded by the manager
+// CHANGED: backward-compatible wrapper for older callers.
 func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Release, error) {
+	return m.SearchAllWithRequest(ctx, SearchRequest{
+		Type:  SearchTypeGeneric,
+		Query: query,
+	})
+}
+
+// CHANGED: structured search request path for real Newznab movie/tvsearch support.
+func (m *Manager) SearchAllWithRequest(ctx context.Context, req SearchRequest) ([]*domain.Release, error) {
 	merged := make(map[string]*domain.Release, 256)
 	order := make([]string, 0, 256)
 
@@ -65,9 +73,9 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 		order = append(order, in.ID)
 	}
 
-	// optional fast local cache read (SQLite aggregator_release_cache).
-	if m.searchPersistenceEnabled {
-		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, query, 100)
+	// Only generic text search uses the local cache search path for now.
+	if m.searchPersistenceEnabled && req.Type == SearchTypeGeneric && req.Query != "" {
+		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, req.Query, 100)
 		if err != nil {
 			m.logger.Warn("Failed to search aggregator_release_cache: %v", err)
 		} else {
@@ -86,11 +94,10 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 		go func(s catalogSource) {
 			defer wg.Done()
 
-			// Create a per-indexer timeout context
 			searchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
-			res, err := s.Search(searchCtx, query)
+			res, err := s.Search(searchCtx, req)
 			if err != nil {
 				m.logger.Error("Indexer %s error: %v", s.Name(), err)
 				return
@@ -115,7 +122,6 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 	for res := range resultsChan {
 		allRemote = append(allRemote, res...)
 		for _, rel := range res {
-			// remote results override cached fields on collision.
 			addOrMerge(rel, true)
 		}
 	}
@@ -127,7 +133,6 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 		}
 	}
 
-	// always refresh in-memory index (supports stateless lookup path).
 	m.mu.Lock()
 	m.recentResults = make(map[string]*domain.Release, len(allResults))
 	for _, rel := range allResults {
@@ -138,7 +143,6 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 	}
 	m.mu.Unlock()
 
-	// persistence is gated by config
 	if m.searchPersistenceEnabled && len(allResults) > 0 {
 		if err := m.store.UpsertAggregatorReleaseCache(ctx, allResults); err != nil {
 			m.logger.Warn("Failed to persist aggregator_release_cache: %v", err)

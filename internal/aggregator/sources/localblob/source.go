@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
@@ -24,8 +25,17 @@ func (s *Source) Name() string {
 	return "Local Store"
 }
 
-func (s *Source) Search(ctx context.Context, query string) ([]*domain.Release, error) {
-	return s.store.SearchAggregatorReleaseCache(ctx, query, 100)
+func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*domain.Release, error) {
+	query := req.Query
+	if query == "" {
+		return []*domain.Release{}, nil
+	}
+
+	items, err := s.store.SearchAggregatorReleaseCache(ctx, query, 100)
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func (s *Source) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error) {

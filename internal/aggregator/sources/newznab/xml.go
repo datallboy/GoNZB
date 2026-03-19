@@ -39,17 +39,32 @@ type Item struct {
 }
 
 func (i Item) getSize() int64 {
-	size := i.getAttribute("size")
-	if size != "" {
-		val, _ := strconv.ParseInt(size, 10, 64)
-		return val
+	// CHANGED: prefer the explicit Newznab attr when present.
+	if size := i.getAttribute("size"); size != "" {
+		if val, err := strconv.ParseInt(size, 10, 64); err == nil && val > 0 {
+			return val
+		}
 	}
+
+	// CHANGED: some indexers rely on enclosure length instead.
+	if i.Enclosure.Length > 0 {
+		return i.Enclosure.Length
+	}
+
+	// CHANGED: tolerate alternate attr names seen in the wild.
+	for _, attrName := range []string{"filesize", "length"} {
+		if size := i.getAttribute(attrName); size != "" {
+			if val, err := strconv.ParseInt(size, 10, 64); err == nil && val > 0 {
+				return val
+			}
+		}
+	}
+
 	return 0
 }
 
 func (i Item) getCategory() string {
-	cat := i.getAttribute("category")
-	if cat != "" {
+	if cat := i.getAttribute("category"); cat != "" {
 		return cat
 	}
 	return ""

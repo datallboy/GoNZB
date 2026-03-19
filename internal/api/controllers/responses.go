@@ -4,24 +4,45 @@ import "encoding/xml"
 
 // -- CAPABILITIES (t=caps) ---
 type NewznabCaps struct {
-	XMLName    xml.Name      `xml:"caps"`
-	Server     ServerInfo    `xml:"server"`
-	Limits     Limits        `xml:"limits"`
-	Retention  Retention     `xml:"retention"`
-	Categories []CapCategory `xml:"categories>category"`
+	XMLName      xml.Name      `xml:"caps"`
+	Server       ServerInfo    `xml:"server"`
+	Limits       Limits        `xml:"limits"`
+	Registration Registration  `xml:"registration"`
+	Searching    Searching     `xml:"searching"`
+	Categories   []CapCategory `xml:"categories>category"`
+	Groups       []CapGroup    `xml:"groups>group"`
+	Genres       []CapGenre    `xml:"genres>genre"`
 }
 
 type ServerInfo struct {
-	Version string `xml:"version,attr"`
-	Title   string `xml:"title,attr"`
+	AppVersion string `xml:"appversion,attr,omitempty"`
+	Version    string `xml:"version,attr"`
+	Title      string `xml:"title,attr"`
+	Strapline  string `xml:"strapline,attr,omitempty"`
+	Email      string `xml:"email,attr,omitempty"`
+	URL        string `xml:"url,attr,omitempty"`
+	Image      string `xml:"image,attr,omitempty"`
 }
 
 type Limits struct {
-	Max int `xml:"max,attr"`
+	Max     int `xml:"max,attr"`
+	Default int `xml:"default,attr,omitempty"`
 }
 
-type Retention struct {
-	Days int `xml:"days,attr"`
+type Registration struct {
+	Available string `xml:"available,attr"`
+	Open      string `xml:"open,attr"`
+}
+
+type Searching struct {
+	Search   SearchCapability `xml:"search"`
+	TVSearch SearchCapability `xml:"tv-search"`
+	Movie    SearchCapability `xml:"movie-search"`
+}
+
+type SearchCapability struct {
+	Available       string `xml:"available,attr"`
+	SupportedParams string `xml:"supportedParams,attr"`
 }
 
 type CapCategory struct {
@@ -31,7 +52,17 @@ type CapCategory struct {
 }
 
 type CapSubCat struct {
-	ID   int    `xml:"id,attr"`
+	ID          int    `xml:"id,attr"`
+	Name        string `xml:"name,attr"`
+	Description string `xml:"description,attr,omitempty"`
+}
+
+type CapGroup struct {
+	Name string `xml:"name,attr"`
+}
+
+type CapGenre struct {
+	ID   int    `xml:"id,attr,omitempty"`
 	Name string `xml:"name,attr"`
 }
 

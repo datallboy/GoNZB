@@ -7,9 +7,31 @@ import (
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
+type SearchType string
+
+const (
+	SearchTypeGeneric SearchType = "search"
+	SearchTypeMovie   SearchType = "movie"
+	SearchTypeTV      SearchType = "tvsearch"
+)
+
+type SearchRequest struct {
+	Type SearchType
+
+	Query string
+
+	IMDbID   string
+	TVDBID   string
+	TVMazeID string
+	RageID   string
+	Season   string
+	Episode  string
+	Genre    string
+}
+
 type catalogSource interface {
 	Name() string
-	Search(ctx context.Context, query string) ([]*domain.Release, error)
+	Search(ctx context.Context, req SearchRequest) ([]*domain.Release, error)
 	GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error)
 }
 

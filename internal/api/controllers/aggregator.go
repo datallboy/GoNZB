@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/labstack/echo/v5"
 )
@@ -31,7 +32,10 @@ func (ctrl *AggregatorController) SearchReleases(c *echo.Context) error {
 		})
 	}
 
-	results, err := ctrl.App.Aggregator.SearchAll(c.Request().Context(), query)
+	results, err := ctrl.App.Aggregator.SearchAllWithRequest(c.Request().Context(), aggregatorpkg.SearchRequest{
+		Type:  aggregatorpkg.SearchTypeGeneric,
+		Query: query,
+	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
