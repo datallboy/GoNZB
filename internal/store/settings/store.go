@@ -148,6 +148,9 @@ func (s *Store) UpdateSettings(ctx context.Context, patch any) error {
 	if err := s.writeUsenetIndexerOptions(ctx, tx, next.Indexing); err != nil {
 		return fmt.Errorf("write settings_module_options: %w", err)
 	}
+	if err := s.writeArrIntegrations(ctx, tx, next.ArrIntegrations); err != nil {
+		return fmt.Errorf("write settings_arr_integrations: %w", err)
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO settings_revision (payload_json)
@@ -245,8 +248,9 @@ func (s *Store) readLatestRevisionSnapshot(ctx context.Context) (*RuntimeSetting
 
 func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, bool, error) {
 	out := &RuntimeSettings{
-		Servers:  make([]ServerRuntimeSettings, 0),
-		Indexers: make([]IndexerRuntimeSettings, 0),
+		Servers:         make([]ServerRuntimeSettings, 0),
+		Indexers:        make([]IndexerRuntimeSettings, 0),
+		ArrIntegrations: make([]ArrIntegrationRuntimeSettings, 0),
 	}
 
 	hasState := false
@@ -307,6 +311,27 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		out.Indexers = append(out.Indexers, item)
 	}
 	if err := indexerRows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	arrRows, err := s.db.QueryContext(ctx, `
+		SELECT id, kind, enabled, base_url, api_key_ciphertext, client_name, category
+		FROM settings_arr_integrations
+		ORDER BY kind, id`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer arrRows.Close()
+
+	for arrRows.Next() {
+		hasState = true
+		var item ArrIntegrationRuntimeSettings
+		if err := arrRows.Scan(&item.ID, &item.Kind, &item.Enabled, &item.BaseURL, &item.APIKey, &item.ClientName, &item.Category); err != nil {
+			return nil, false, err
+		}
+		out.ArrIntegrations = append(out.ArrIntegrations, item)
+	}
+	if err := arrRows.Err(); err != nil {
 		return nil, false, err
 	}
 
@@ -412,6 +437,24 @@ func (s *Store) writeIndexers(ctx context.Context, tx *sql.Tx, indexers []Indexe
 		}
 	}
 
+	return nil
+}
+
+func (s *Store) writeArrIntegrations(ctx context.Context, tx *sql.Tx, integrations []ArrIntegrationRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_arr_integrations`); err != nil {
+		return err
+	}
+
+	for _, item := range integrations {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO settings_arr_integrations (
+				id, kind, enabled, base_url, api_key_ciphertext, client_name, category, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+			item.ID, item.Kind, item.Enabled, item.BaseURL, item.APIKey, item.ClientName, item.Category,
+		); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
