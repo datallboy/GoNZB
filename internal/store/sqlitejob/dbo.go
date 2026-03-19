@@ -2,6 +2,7 @@ package sqlitejob
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
@@ -54,9 +55,7 @@ func (q *queueItemDBO) ToDomain() *domain.QueueItem {
 	if item.PayloadMode == "" {
 		item.PayloadMode = domain.PayloadModeCached
 	}
-	// If payload_mode wasn't set historically, treat as resumable.
 	if item.PayloadMode == domain.PayloadModeCached && !q.Resumable {
-		// keep DB truth when explicitly false
 		item.Resumable = false
 	} else if item.PayloadMode == domain.PayloadModeCached && q.Resumable {
 		item.Resumable = true
@@ -80,14 +79,51 @@ func (q *queueItemDBO) ToDomain() *domain.QueueItem {
 		item.Error = &errStr
 	}
 
-	if item.SourceReleaseID != "" || item.ReleaseTitle != "" || item.ReleaseSize > 0 {
-		item.Release = &domain.Release{
-			ID:     item.SourceReleaseID,
-			Title:  item.ReleaseTitle,
-			Size:   item.ReleaseSize,
-			Source: item.SourceKind,
+	// restore as much release metadata as possible from the persisted snapshot.
+	item.Release = releaseFromSnapshot(
+		item.SourceReleaseID,
+		item.SourceKind,
+		item.ReleaseTitle,
+		item.ReleaseSize,
+		item.ReleaseSnapshotJSON,
+	)
+
+	return item
+}
+
+func releaseFromSnapshot(id, sourceKind, title string, size int64, snapshotJSON string) *domain.Release {
+	var rel domain.Release
+
+	if snapshotJSON != "" && snapshotJSON != "{}" {
+		if err := json.Unmarshal([]byte(snapshotJSON), &rel); err == nil {
+			if rel.ID == "" {
+				rel.ID = id
+			}
+			if rel.GUID == "" {
+				rel.GUID = id
+			}
+			if rel.Source == "" {
+				rel.Source = sourceKind
+			}
+			if rel.Title == "" {
+				rel.Title = title
+			}
+			if rel.Size == 0 {
+				rel.Size = size
+			}
+			return &rel
 		}
 	}
 
-	return item
+	if id != "" || title != "" || size > 0 {
+		return &domain.Release{
+			ID:     id,
+			GUID:   id,
+			Title:  title,
+			Size:   size,
+			Source: sourceKind,
+		}
+	}
+
+	return nil
 }
