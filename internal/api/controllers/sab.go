@@ -75,11 +75,8 @@ func (ctrl *SABController) Handle(c *echo.Context) error {
 func bindSABRequest(c *echo.Context) (sabAPIRequest, error) {
 	var req sabAPIRequest
 
-	if err := echo.BindQueryParams(c, &req); err != nil {
-		return req, fmt.Errorf("invalid query parameters")
-	}
-	if err := echo.BindBody(c, &req); err != nil {
-		return req, fmt.Errorf("invalid request body")
+	if err := bindQueryAndBody(c, &req); err != nil {
+		return req, err
 	}
 
 	req.normalize()
@@ -161,12 +158,12 @@ func (ctrl *SABController) handleHistory(c *echo.Context, req sabAPIRequest) err
 func (ctrl *SABController) handleHistoryDelete(c *echo.Context, req sabAPIRequest) error {
 	ctx := c.Request().Context()
 
-	target := strings.TrimSpace(req.Value)
+	target := normalizeTrimmed(req.Value)
 	if target == "" {
-		target = strings.TrimSpace(req.NZOID)
+		target = normalizeTrimmed(req.NZOID)
 	}
 	if target == "" {
-		target = strings.TrimSpace(req.Name)
+		target = normalizeTrimmed(req.Name)
 	}
 
 	// SAB-style "history delete" can target a specific item or clear archived history.
@@ -843,26 +840,24 @@ func queueItemSize(item *domain.QueueItem) int64 {
 }
 
 func matchesSABSearch(item *domain.QueueItem, search string) bool {
-	search = strings.TrimSpace(strings.ToLower(search))
 	if search == "" {
 		return true
 	}
-	return strings.Contains(strings.ToLower(queueItemDisplayName(item)), search)
+	return strings.Contains(normalizeLowerTrimmed(queueItemDisplayName(item)), search)
 }
 
 func matchesSABCategory(itemCategory, filter string) bool {
-	filter = strings.TrimSpace(filter)
 	if filter == "" {
 		return true
 	}
 
-	itemCategory = strings.TrimSpace(itemCategory)
+	itemCategory = normalizeTrimmed(itemCategory)
 	if itemCategory == "" {
 		itemCategory = "*"
 	}
 
 	for _, part := range strings.Split(filter, ",") {
-		part = strings.TrimSpace(part)
+		part = normalizeTrimmed(part)
 		if part == "" {
 			continue
 		}

@@ -875,20 +875,533 @@ Exit gates (required to mark milestone complete):
 
 ---
 
-## Milestone 10: Hardening + architecture guardrails
-### Files
+## Milestone 10: Refactor, hardening, compatibility cleanup, and architecture guardrails
+### Why this milestone exists
+- Milestones 1-9 established the intended module boundaries, runtime composition model, downloader compatibility surface, and Arr integration behavior.
+- The next milestone should not reopen those architecture decisions.
+- Instead, it should make the current system easier to maintain, safer to operate, stricter at its boundaries, and more predictable for API clients.
+
+### Milestone 10 goals
+1. Reduce accumulated code debt in API/controller/runtime wiring without changing module ownership.
+2. Harden controller behavior, input validation, error mapping, and transport safety.
+3. Clean up compatibility surfaces so native API, SAB-compatible API, and Newznab-compatible API are explicit and stable.
+4. Add health/readiness/schema guardrails that reflect enabled module combinations.
+5. Make architectural boundaries enforceable in CI rather than relying on convention.
+6. Bring docs, terminology, and tests in line with the current post-Milestone-9 codebase.
+
+### Non-goals
+1. Do not re-couple Downloader module to PostgreSQL or Usenet/NZB Indexer internals.
+2. Do not make Aggregator require PostgreSQL.
+3. Do not remove downloader-owned queue APIs or compatibility endpoints that were added in Milestone 9.
+4. Do not introduce hidden hard dependencies between:
+- downloader-only
+- aggregator-only
+- usenet-indexer-only
+- all-in-one
+
+### Chunk 10.0: Documentation and contract alignment
+#### Goal
+- Make architecture and user-facing docs reflect the current module split and current API ownership.
+
+#### Files
+- `INDEXER_PLAN.md`
 - `ARCHITECTURE.md`
 - `README.md`
-- lint/arch tests
+- module README/docs files as needed
+
+#### Tasks
+1. Rewrite architecture docs to match current module terminology:
+- Downloader module
+- Indexer Manager / Aggregator
+- Usenet/NZB Indexer
+- Web UI module
+- API module
+2. Remove stale references to the pre-modular single-store/single-indexer design.
+3. Document current API ownership and transport surfaces clearly:
+- native downloader queue API
+- native aggregator search API
+- SAB-compatible downloader API
+- Newznab-compatible aggregator API
+4. Document current module combinations and startup requirements.
+5. Document any intentional compatibility approximations for SAB/Newznab responses.
+
+#### Exit criteria
+- Docs describe the current architecture rather than the pre-refactor architecture.
+- Terminology in docs matches the canonical terminology section in this plan.
+
+### Chunk 10.1: API controller hardening
+#### Goal
+- Make API controllers strict, predictable, and safe under malformed input and edge cases.
+
+#### Files
+- `internal/api/controllers/queue.go`
+- `internal/api/controllers/sab.go`
+- `internal/api/controllers/newznab.go`
+- `internal/api/controllers/compat_api.go`
+- `internal/api/controllers/settings.go`
+- shared DTO/helper files as needed
+
+#### Tasks
+1. Standardize request binding and validation rules across controllers.
+2. Replace permissive bind behavior with explicit request validation where needed.
+3. Normalize HTTP status mapping:
+- `400` for invalid client input
+- `404` for missing queue item/release/resource
+- `409` for state conflicts where appropriate
+- `500` only for real server failures
+4. Ensure nil dependencies and disabled-module conditions fail safely and consistently.
+5. Add pagination and bounds validation for queue/history endpoints.
+6. Harden multipart/manual upload handling:
+- explicit missing-file behavior
+- explicit empty-upload behavior
+- safe filename handling
+7. Harden settings update validation and redaction behavior.
+8. Extract shared response/error helpers to reduce duplicated controller logic.
+
+#### Exit criteria
+- Controller behavior is consistent across native and compatibility endpoints.
+- Invalid inputs produce deterministic, documented responses.
+
+### Chunk 10.2: Compatibility transport cleanup
+#### Goal
+- Make compatibility API surfaces deliberate and maintainable rather than transitional.
+
+#### Files
+- `internal/api/router.go`
+- `internal/api/controllers/compat_api.go`
+- `internal/api/controllers/sab.go`
+- `internal/api/controllers/newznab.go`
+- compatibility DTO mapping files as needed
+
+#### Tasks
+1. Remove or resolve any remaining “staging” route assumptions from Milestone 9.
+2. Define the supported contract for:
+- `/api`
+- `/api/sab`
+- `/nzb/:id`
+- native `/api/v1/*`
+3. Centralize compatibility request dispatch and shared validation logic.
+4. Freeze current supported SAB-compatible subset with explicit mapping rules from downloader-owned queue state.
+5. Freeze current Newznab-compatible search/get behavior under aggregator ownership.
+6. Ensure compatibility controllers do not bypass module ownership boundaries.
+
+#### Exit criteria
+- Compatibility routing is explicit, documented, and stable.
+- Native API and compatibility API responsibilities are cleanly separated.
+
+### Chunk 10.3: Transport and runtime hardening
+#### Goal
+- Add operational protections and safer server behavior for long-running API mode.
+
+#### Files
+- `internal/api/router.go`
+- `internal/runtime/commands/server.go`
+- `internal/runtime/wiring/runtime.go`
+- middleware/helper files as needed
+
+#### Tasks
+1. Add panic recovery middleware for API routes.
+2. Add request ID and structured request logging improvements.
+3. Add body size limits for JSON and multipart upload surfaces.
+4. Add server read/write/idle timeout configuration or fixed sane defaults.
+5. Ensure streamed NZB responses and remote compatibility fetches use bounded, timeout-aware behavior.
+6. Ensure startup/shutdown logs and failure paths are clear and non-ambiguous.
+7. Ensure disabled modules do not register routes or background loops accidentally.
+
+#### Exit criteria
+- Server mode has baseline production-safe middleware and timeout behavior.
+- Common malformed or abusive request patterns fail safely.
+
+### Chunk 10.4: Health, readiness, and module schema handshakes
+#### Goal
+- Expose module-aware runtime health and verify storage schema expectations before serving traffic.
+
+#### Files
 - `internal/telemetry/*`
+- `internal/api/router.go`
+- `internal/app/context.go`
+- `internal/store/sqlitejob/*`
+- `internal/store/settings/*`
+- `internal/store/pgindex/*`
 
-### Tasks
-1. Add forbidden import checks for module boundaries.
-2. Add readiness/health per module.
-3. Enforce schema version handshakes for enabled modules.
+#### Tasks
+1. Add health/readiness endpoints for API mode.
+2. Define per-module readiness rules:
+- Downloader module readiness checks SQLite queue/job store and downloader runtime dependencies
+- Aggregator readiness checks source configuration and optional cache dependencies
+- Usenet/NZB Indexer readiness checks PostgreSQL connectivity and required indexer runtime dependencies
+3. Add schema version handshake checks for enabled stores/modules before serving traffic.
+4. Fail startup clearly when an enabled module finds an incompatible or incomplete schema version.
+5. Surface module status in a machine-readable response shape.
+6. Keep health/readiness checks module-aware so optional modules can remain disabled without causing false failures.
 
-### Exit criteria
-- module boundaries enforceable via CI checks.
+#### Exit criteria
+- Health/readiness endpoints exist and reflect enabled module state accurately.
+- Enabled module schemas are verified before normal operation.
+
+### Chunk 10.5: Architecture guardrails and forbidden import checks
+#### Goal
+- Enforce module boundaries mechanically so future work cannot silently re-couple modules.
+
+#### Files
+- lint/arch test config
+- CI workflow files as needed
+- architecture test files/scripts
+
+#### Tasks
+1. Add forbidden import checks for boundary violations, including at minimum:
+- Downloader module must not depend on Usenet/NZB Indexer internals
+- Aggregator must not depend on PostgreSQL indexer internals for basic operation
+- Web UI must not depend on DB internals
+- API controllers must use feature/module interfaces rather than cross-module store shortcuts
+2. Add a documented allowed-dependency matrix for major packages.
+3. Add CI enforcement for architecture checks.
+4. Add a lightweight developer-facing workflow for running the same checks locally.
+
+#### Exit criteria
+- Module boundaries are enforceable via CI checks.
+- Cross-module dependency violations fail fast.
+
+### Chunk 10.6: Refactor and debt cleanup
+#### Goal
+- Reduce maintenance cost and ambiguity in large files and mixed-responsibility code paths.
+
+#### Files
+- `internal/api/controllers/*`
+- `internal/api/router.go`
+- `internal/runtime/wiring/*`
+- `internal/app/*`
+- related helper packages as needed
+
+#### Tasks
+1. Extract shared controller helpers for:
+- response envelopes
+- request parsing/validation
+- compatibility mapping
+- common error shaping
+2. Split large files where responsibilities are currently mixed.
+3. Normalize naming and comments to match canonical terminology.
+4. Remove stale comments and temporary compatibility notes that are no longer true.
+5. Reduce direct controller/runtime coupling where helper abstractions make sense.
+6. Keep behavior parity while improving readability and change safety.
+
+#### Exit criteria
+- Major controller/runtime files have clearer responsibilities.
+- Temporary refactor residue from prior milestones is removed or formalized.
+
+### Chunk 10.7: Tests, validation matrix, and CI hardening
+#### Goal
+- Backstop Milestone 10 with automated proof that the modular architecture still holds.
+
+#### Files
+- `*_test.go` across affected packages
+- CI workflow files as needed
+- fixture/config test assets as needed
+
+#### Tasks
+1. Add unit tests for:
+- config validation by enabled module combinations
+- controller request validation/error mapping
+- compatibility request dispatch
+- schema version handshake logic
+- queue/history DTO mapping
+- settings redaction/update validation
+2. Add integration/smoke tests for:
+- downloader-only
+- aggregator-only
+- usenet-indexer-only
+- all-in-one
+3. Add failure-mode tests for:
+- disabled module routes not being registered
+- PG not required for aggregator-only startup
+- SQLite queue store not required for usenet-indexer-only startup except settings state rules defined in this plan
+- readiness reflects broken dependencies correctly
+4. Add regression tests for:
+- manual NZB enqueue
+- queue/history/events/files API behavior
+- SAB-compatible downloader subset
+- Newznab-compatible search/get behavior
+5. Make CI run architecture checks plus the critical validation matrix.
+
+#### Exit criteria
+- Milestone 10 hardening is covered by automated tests rather than manual confidence alone.
+- CI verifies architecture boundaries, critical contracts, and module-combination startup behavior.
+
+### Milestone 10 consolidated exit criteria
+1. Docs match current architecture and ownership rules.
+2. Controller and compatibility surfaces are validated and behaviorally consistent.
+3. Health/readiness endpoints exist and are module-aware.
+4. Enabled module schema versions are checked before normal operation.
+5. Forbidden import checks enforce module boundaries in CI.
+6. Validation covers the supported module combinations:
+- downloader-only
+- aggregator-only
+- usenet-indexer-only
+- all-in-one
+7. Milestone 9 compatibility and Arr behavior remain intact after cleanup.
+
+### Recommended implementation order (commit-sized phases)
+This section is the recommended delivery sequence for Milestone 10.
+
+Rules for these phases:
+1. Each phase should be small enough to review and revert independently.
+2. Each phase should leave the repository compiling before the next phase begins.
+3. Do not mix docs-only cleanup with runtime behavior changes unless explicitly noted.
+4. Do not mix architecture guardrails with broad refactors in the same commit.
+5. Prefer one Codex session per phase unless the phase is split further below.
+
+### Phase 1: Doc baseline and milestone framing
+#### Scope
+- Update Milestone 10 docs and architecture references before code changes begin.
+
+#### Files
+- `INDEXER_PLAN.md`
+- `ARCHITECTURE.md`
+- `README.md`
+
+#### Tasks
+1. Align docs with current module ownership and terminology.
+2. Document current native API vs compatibility API responsibilities.
+3. Remove obviously stale architecture statements from pre-modular design.
+
+#### Why first
+- It creates a clean source of truth before implementation sessions start making hardening changes.
+
+#### Suggested commit shape
+- `docs(m10): align architecture and milestone 10 hardening plan`
+
+#### Codex handoff note
+- This phase should be docs-only. No runtime behavior changes.
+
+### Phase 2: Shared controller helpers and error/response cleanup
+#### Scope
+- Extract reusable controller helpers without changing endpoint behavior materially.
+
+#### Files
+- `internal/api/controllers/*`
+- shared DTO/helper files as needed
+
+#### Tasks
+1. Introduce shared error response helpers.
+2. Introduce shared request parsing/validation helpers where duplication is obvious.
+3. Normalize common controller patterns without changing contracts yet.
+
+#### Why second
+- It reduces duplication before hardening behavior, making later controller changes smaller and safer.
+
+#### Suggested commit shape
+- `refactor(api): extract shared controller helpers for milestone 10`
+
+#### Codex handoff note
+- Keep this refactor-only. Avoid changing status codes unless strictly required by the extraction.
+
+### Phase 3: Native API controller hardening
+#### Scope
+- Harden downloader-native and admin-native controllers first.
+
+#### Files
+- `internal/api/controllers/queue.go`
+- `internal/api/controllers/settings.go`
+- related tests
+
+#### Tasks
+1. Tighten request validation and input bounds.
+2. Normalize native API status code behavior.
+3. Harden multipart/manual NZB upload handling.
+4. Harden settings patch validation and redaction flows.
+
+#### Why third
+- Native API is the cleanest place to establish hardened patterns before applying the same discipline to compatibility layers.
+
+#### Suggested commit shape
+- `fix(api): harden native queue and settings controllers`
+
+#### Codex handoff note
+- Focus only on native `/api/v1/*` behavior in this phase.
+
+### Phase 4: Compatibility API hardening and contract cleanup
+#### Scope
+- Harden SAB-compatible and Newznab-compatible paths after native controller patterns are stable.
+
+#### Files
+- `internal/api/controllers/sab.go`
+- `internal/api/controllers/newznab.go`
+- `internal/api/controllers/compat_api.go`
+- `internal/api/router.go`
+- compatibility tests
+
+#### Tasks
+1. Tighten compatibility request validation and dispatch behavior.
+2. Resolve any remaining transitional route assumptions.
+3. Make supported compatibility subset explicit and testable.
+4. Preserve Milestone 9 behavior while cleaning up the routing surface.
+
+#### Why fourth
+- Compatibility code is easier to stabilize once native controller patterns and shared helpers are already in place.
+
+#### Suggested commit shape
+- `fix(compat): harden SAB and Newznab compatibility controllers`
+
+#### Codex handoff note
+- Do not broaden compatibility scope in this phase. Harden only the supported subset.
+
+### Phase 5: Server transport hardening
+#### Scope
+- Add middleware and server-level protections after controller behavior is stable.
+
+#### Files
+- `internal/api/router.go`
+- `internal/runtime/commands/server.go`
+- `internal/runtime/wiring/runtime.go`
+- middleware/helper files as needed
+
+#### Tasks
+1. Add panic recovery.
+2. Add request IDs and improve request logging.
+3. Add body size limits and safer upload defaults.
+4. Add or normalize read/write/idle timeout behavior.
+5. Ensure disabled modules do not register routes or background loops unexpectedly.
+
+#### Why fifth
+- This phase is operational hardening, and is easier to verify once endpoint behavior is already settled.
+
+#### Suggested commit shape
+- `fix(server): add transport hardening and safer middleware defaults`
+
+#### Codex handoff note
+- Avoid mixing health/readiness into this phase. Keep it transport-focused.
+
+### Phase 6: Health, readiness, and schema handshake framework
+#### Scope
+- Add module-aware observability and schema verification primitives.
+
+#### Files
+- `internal/telemetry/*`
+- `internal/app/context.go`
+- `internal/api/router.go`
+- `internal/store/sqlitejob/*`
+- `internal/store/settings/*`
+- `internal/store/pgindex/*`
+
+#### Tasks
+1. Implement health/readiness model and response DTOs.
+2. Add module-aware readiness checks.
+3. Add schema version handshake checks for enabled stores/modules.
+4. Fail startup clearly on incompatible enabled-module schema state.
+
+#### Why sixth
+- Health/readiness should reflect the hardened runtime, not be built against an unstable transport layer.
+
+#### Suggested commit shape
+- `feat(telemetry): add module-aware health and schema handshake checks`
+
+#### Codex handoff note
+- Keep this phase focused on telemetry/readiness/schema checks only. Do not mix in architecture linting yet.
+
+### Phase 7: Architecture guardrails and CI enforcement
+#### Scope
+- Add enforceable dependency checks after runtime and docs reflect the intended boundaries.
+
+#### Files
+- lint/arch test config
+- CI workflow files as needed
+- architecture test files/scripts
+
+#### Tasks
+1. Add forbidden import checks.
+2. Add allowed dependency matrix docs/comments if needed.
+3. Add CI enforcement for module boundary checks.
+
+#### Why seventh
+- It is safer to lock boundaries after the cleanup phases have finished moving code around.
+
+#### Suggested commit shape
+- `ci(arch): enforce milestone 10 module boundary guardrails`
+
+#### Codex handoff note
+- Keep this phase small and enforcement-focused. Avoid unrelated code refactors.
+
+### Phase 8: Test matrix expansion and close-out cleanup
+#### Scope
+- Add coverage and final cleanup after behavior and boundaries are stable.
+
+#### Files
+- `*_test.go` across affected packages
+- fixture/config test assets as needed
+- minor docs touchups as needed
+
+#### Tasks
+1. Add unit coverage for controller validation, settings behavior, schema handshake logic, and config validation.
+2. Add module-combination integration/smoke tests.
+3. Add compatibility regression tests.
+4. Close remaining stale comments and low-risk cleanup that surfaced during prior phases.
+
+#### Why eighth
+- This phase validates the final Milestone 10 shape rather than chasing moving targets.
+
+#### Suggested commit shape
+- `test(m10): add hardening coverage and module combination regression checks`
+
+#### Codex handoff note
+- This phase can include small cleanup follow-ups discovered during test writing, but should not reopen architecture decisions.
+
+### Optional phase splits for smaller Codex sessions
+If a phase is still too large for one implementation session, split only along these boundaries:
+
+1. Phase 3A:
+- `queue.go`
+- native queue validation and upload handling
+
+2. Phase 3B:
+- `settings.go`
+- runtime settings validation/redaction hardening
+
+3. Phase 4A:
+- `compat_api.go`
+- routing and dispatcher cleanup
+
+4. Phase 4B:
+- `sab.go`
+- SAB-compatible request validation and response normalization
+
+5. Phase 4C:
+- `newznab.go`
+- Newznab-compatible search/get hardening
+
+6. Phase 5A:
+- router middleware and request logging
+
+7. Phase 5B:
+- server startup/shutdown and timeout behavior
+
+8. Phase 6A:
+- health/readiness DTOs and endpoint wiring
+
+9. Phase 6B:
+- schema handshake implementation for SQLite/settings/PG stores
+
+### Recommended Codex session handoff format
+Use this format when handing a phase to a new Codex session:
+
+1. Target phase:
+- example: `Milestone 10 Phase 4B`
+
+2. Allowed scope:
+- list only the files and tests that belong to the phase
+
+3. Constraints:
+- preserve module independence matrix
+- do not widen compatibility scope
+- do not change docs unless the phase says so
+- leave the repo compiling at the end of the phase
+
+4. Required output:
+- implementation
+- tests for that phase
+- short summary of contract/behavior changes
+
+5. Validation:
+- specify exact tests or smoke checks expected for that phase
 
 ---
 

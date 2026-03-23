@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"net/http"
-	"strings"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
@@ -24,7 +23,7 @@ type aggregatorReleaseSearchResponse struct {
 }
 
 func (ctrl *AggregatorController) SearchReleases(c *echo.Context) error {
-	query := strings.TrimSpace(c.QueryParam("q"))
+	query := queryParamTrimmed(c, "q")
 	if len(query) < 2 {
 		return c.JSON(http.StatusOK, map[string]any{
 			"items": []aggregatorReleaseSearchResponse{},

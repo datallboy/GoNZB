@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -80,27 +79,57 @@ type queueEventResponse struct {
 }
 
 func (ctrl *QueueController) ListActive(c *echo.Context) error {
-	items := ctrl.Service.ListActive()
-	resp := mapQueueItems(items)
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+
+	items := mapQueueItems(ctrl.Service.ListActive())
+	total := len(items)
+
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	page := items[offset:end]
 	return c.JSON(http.StatusOK, map[string]any{
-		"items": resp,
-		"count": len(resp),
+		"items":    page,
+		"count":    len(page),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": end < total,
 	})
 }
 
 func (ctrl *QueueController) ListHistory(c *echo.Context) error {
-	limit := parseIntDefault(c.QueryParam("limit"), 50)
-	offset := parseIntDefault(c.QueryParam("offset"), 0)
-	status := c.QueryParam("status")
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
 
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+
+	status := queryParamTrimmed(c, "status")
 	items, total, err := ctrl.Service.ListHistory(c.Request().Context(), status, limit, offset)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	resp := mapQueueItems(items)
 	return c.JSON(http.StatusOK, map[string]any{
 		"items":    resp,
+		"count":    len(resp),
 		"total":    total,
 		"limit":    limit,
 		"offset":   offset,
@@ -110,68 +139,85 @@ func (ctrl *QueueController) ListHistory(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) GetItem(c *echo.Context) error {
-	id := c.Param("id")
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	id := pathParamTrimmed(c, "id")
 	if id == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing queue item id"})
+		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
 	item, err := ctrl.Service.GetItem(c.Request().Context(), id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	if item == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "queue item not found"})
+		return jsonError(c, http.StatusNotFound, "queue item not found")
 	}
 
 	return c.JSON(http.StatusOK, mapQueueItem(item))
 }
 
 func (ctrl *QueueController) Add(c *echo.Context) error {
-	contentType := c.Request().Header.Get(echo.HeaderContentType)
-	if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	contentType := normalizeLowerTrimmed(c.Request().Header.Get(echo.HeaderContentType))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
 		fileHeader, err := c.FormFile("nzb")
 		if err != nil || fileHeader == nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing nzb file in multipart form"})
+			return jsonError(c, http.StatusBadRequest, "missing nzb file in multipart form")
 		}
+
 		file, openErr := fileHeader.Open()
 		if openErr != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to open uploaded nzb"})
+			return jsonError(c, http.StatusBadRequest, "failed to open uploaded nzb")
 		}
 		defer file.Close()
 
-		item, queueErr := ctrl.Service.EnqueueNZB(c.Request().Context(), fileHeader.Filename, file)
+		filename := sanitizeUploadFilename(fileHeader.Filename, "manual.nzb")
+		item, queueErr := ctrl.Service.EnqueueNZB(c.Request().Context(), filename, file)
 		if queueErr != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": queueErr.Error()})
+			return jsonError(c, http.StatusBadRequest, queueErr.Error())
 		}
 
 		return c.JSON(http.StatusCreated, mapQueueItem(item))
 	}
 
-	req := enqueueRequest{}
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	var req enqueueRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
+
+	req.ReleaseID = normalizeTrimmed(req.ReleaseID)
+	req.Title = normalizeTrimmed(req.Title)
 
 	item, err := ctrl.Service.EnqueueByReleaseID(c.Request().Context(), req.ReleaseID, req.Title)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, mapQueueItem(item))
 }
 
 func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
-	id := c.Param("id")
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	id := pathParamTrimmed(c, "id")
 	if id == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing queue item id"})
+		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
 	files, err := ctrl.Service.GetItemFiles(c.Request().Context(), id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	if files == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "queue item not found"})
+		return jsonError(c, http.StatusNotFound, "queue item not found")
 	}
 
 	resp := make([]queueFileResponse, 0, len(files))
@@ -195,17 +241,21 @@ func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
-	id := c.Param("id")
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	id := pathParamTrimmed(c, "id")
 	if id == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing queue item id"})
+		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
 	events, err := ctrl.Service.GetItemEvents(c.Request().Context(), id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	if events == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "queue item not found"})
+		return jsonError(c, http.StatusNotFound, "queue item not found")
 	}
 
 	resp := make([]queueEventResponse, 0, len(events))
@@ -227,14 +277,18 @@ func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) Cancel(c *echo.Context) error {
-	id := c.Param("id")
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	id := pathParamTrimmed(c, "id")
 	if id == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing queue item id"})
+		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
 	ok := ctrl.Service.Cancel(id)
 	if !ok {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "unable to cancel queue item"})
+		return jsonError(c, http.StatusNotFound, "unable to cancel queue item")
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -244,9 +298,18 @@ func (ctrl *QueueController) Cancel(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) CancelMany(c *echo.Context) error {
-	req := bulkIDsRequest{}
-	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid ids payload"})
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	var req bulkIDsRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+
+	req.IDs = normalizeIDs(req.IDs)
+	if len(req.IDs) == 0 {
+		return jsonError(c, http.StatusBadRequest, "ids must contain at least one queue item id")
 	}
 
 	cancelled := ctrl.Service.CancelMany(req.IDs)
@@ -258,14 +321,23 @@ func (ctrl *QueueController) CancelMany(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) DeleteMany(c *echo.Context) error {
-	req := bulkIDsRequest{}
-	if err := c.Bind(&req); err != nil || len(req.IDs) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid ids payload"})
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
+	var req bulkIDsRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+
+	req.IDs = normalizeIDs(req.IDs)
+	if len(req.IDs) == 0 {
+		return jsonError(c, http.StatusBadRequest, "ids must contain at least one queue item id")
 	}
 
 	deleted, err := ctrl.Service.DeleteMany(c.Request().Context(), req.IDs)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -276,26 +348,19 @@ func (ctrl *QueueController) DeleteMany(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) ClearHistory(c *echo.Context) error {
+	if ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
+	}
+
 	deleted, err := ctrl.Service.ClearHistory(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
 		"ok":      true,
 		"deleted": deleted,
 	})
-}
-
-func parseIntDefault(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return fallback
-	}
-	return n
 }
 
 func mapQueueItems(items []*domain.QueueItem) []queueItemResponse {
@@ -352,4 +417,23 @@ func mapQueueItem(item *domain.QueueItem) queueItemResponse {
 	}
 
 	return resp
+}
+
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+
+	for _, id := range ids {
+		id = normalizeTrimmed(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+
+	return out
 }

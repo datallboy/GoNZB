@@ -1,7 +1,5 @@
 package controllers
 
-import "strings"
-
 type sabAPIRequest struct {
 	Mode        string `query:"mode" form:"mode"`
 	Output      string `query:"output" form:"output"`
@@ -30,31 +28,31 @@ type sabAPIRequest struct {
 }
 
 func (r *sabAPIRequest) normalize() {
-	r.Mode = strings.TrimSpace(strings.ToLower(r.Mode))
-	r.Output = strings.TrimSpace(strings.ToLower(r.Output))
-	r.Name = strings.TrimSpace(r.Name)
-	r.Value = strings.TrimSpace(r.Value)
-	r.NZOID = strings.TrimSpace(r.NZOID)
-	r.Limit = strings.TrimSpace(r.Limit)
-	r.Start = strings.TrimSpace(r.Start)
-	r.Search = strings.TrimSpace(r.Search)
-	r.Category = strings.TrimSpace(r.Category)
-	r.CategoryAlt = strings.TrimSpace(r.CategoryAlt)
-	r.Archive = strings.TrimSpace(r.Archive)
-	r.DelFiles = strings.TrimSpace(r.DelFiles)
+	r.Mode = normalizeLowerTrimmed(r.Mode)
+	r.Output = normalizeLowerTrimmed(r.Output)
+	r.Name = normalizeTrimmed(r.Name)
+	r.Value = normalizeTrimmed(r.Value)
+	r.NZOID = normalizeTrimmed(r.NZOID)
+	r.Limit = normalizeTrimmed(r.Limit)
+	r.Start = normalizeTrimmed(r.Start)
+	r.Search = normalizeTrimmed(r.Search)
+	r.Category = normalizeTrimmed(r.Category)
+	r.CategoryAlt = normalizeTrimmed(r.CategoryAlt)
+	r.Archive = normalizeTrimmed(r.Archive)
+	r.DelFiles = normalizeTrimmed(r.DelFiles)
 
 	if r.Category == "" {
 		r.Category = r.CategoryAlt
 	}
 
-	r.Section = strings.TrimSpace(strings.ToLower(r.Section))
-	r.Keyword = strings.TrimSpace(strings.ToLower(r.Keyword))
-	r.SkipDashboard = strings.TrimSpace(r.SkipDashboard)
-	r.CalculatePerformance = strings.TrimSpace(r.CalculatePerformance)
-	r.NZBName = strings.TrimSpace(r.NZBName)
-	r.Priority = strings.TrimSpace(r.Priority)
-	r.PP = strings.TrimSpace(r.PP)
-	r.Script = strings.TrimSpace(r.Script)
+	r.Section = normalizeLowerTrimmed(r.Section)
+	r.Keyword = normalizeLowerTrimmed(r.Keyword)
+	r.SkipDashboard = normalizeTrimmed(r.SkipDashboard)
+	r.CalculatePerformance = normalizeTrimmed(r.CalculatePerformance)
+	r.NZBName = normalizeTrimmed(r.NZBName)
+	r.Priority = normalizeTrimmed(r.Priority)
+	r.PP = normalizeTrimmed(r.PP)
+	r.Script = normalizeTrimmed(r.Script)
 
 	if r.Output == "" {
 		r.Output = "json"
