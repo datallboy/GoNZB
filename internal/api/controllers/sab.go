@@ -18,6 +18,10 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
+var compatFetchClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 type SABController struct {
 	App     *app.Context
 	Service *queuesvc.Service
@@ -230,7 +234,7 @@ func (ctrl *SABController) handleAddURL(c *echo.Context, req sabAPIRequest) erro
 		})
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := compatFetchClient.Do(httpReq)
 	if err != nil {
 		return c.JSON(http.StatusBadGateway, sabAddResponse{
 			Status: false,

@@ -32,14 +32,19 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		},
 	}))
 
+	e.Use(middleware.RequestID())
+	e.Use(middleware.Recover())
+
 	// Middleware: Request Logger
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogStatus:  true,
-		LogURI:     true,
-		LogMethod:  true,
-		LogLatency: true,
+		LogStatus:    true,
+		LogURI:       true,
+		LogMethod:    true,
+		LogLatency:   true,
+		LogRequestID: true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
-			app.Logger.Info("%s %s | %d | %s", v.Method, redactSensitiveURI(v.URI), v.Status, v.Latency)
+			app.Logger.Info("request_id=%s method=%s uri=%s status=%d latency=%s",
+				v.RequestID, v.Method, redactSensitiveURI(v.URI), v.Status, v.Latency)
 			return nil
 		},
 	}))
@@ -52,7 +57,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && app.SettingsStore != nil {
-		v1Admin := e.Group("/api/v1/admin", apiKeyMW)
+		v1Admin := e.Group("/api/v1/admin", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.GET("/settings", settingsCtrl.GetSettings)
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
 	}
@@ -67,7 +72,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		nzbCtrl = &controllers.NewznabController{App: app}
 		aggCtrl := &controllers.AggregatorController{App: app}
 
-		v1Agg := e.Group("/api/v1", apiKeyMW)
+		v1Agg := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
 
 		// Keep direct NZB download endpoint under aggregator ownership.
@@ -84,7 +89,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 			Service: queueService,
 		}
 
-		v1Queue := e.Group("/api/v1", apiKeyMW)
+		v1Queue := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Queue.GET("/queue", queueCtrl.ListActive)
 		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
 		v1Queue.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
@@ -99,8 +104,8 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 
 		// Explicit SAB-compatible downloader surface.
 		// Supported alongside the shared `/api` multiplexer.
-		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW)
-		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW)
+		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 	}
 
 	// Shared compatibility multiplexer.
@@ -114,8 +119,8 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 			SAB:            sabCtrl,
 			Newznab:        nzbCtrl,
 		}
-		e.GET("/api", compatCtrl.Handle, apiKeyMW)
-		e.POST("/api", compatCtrl.Handle, apiKeyMW)
+		e.GET("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.POST("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 	}
 
 	// Web UI is served only when explicitly enabled.
