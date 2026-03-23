@@ -113,6 +113,12 @@ type JobStore interface {
 	SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error
 	GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error)
 	ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error
+
+	// store liveness + schema handshake.
+	Ping(ctx context.Context) error
+	SchemaVersion(ctx context.Context) (int, error)
+	ExpectedSchemaVersion() int
+	ValidateSchema(ctx context.Context) error
 }
 
 // downloader-owned queue item file metadata
@@ -147,6 +153,12 @@ type SettingsStore interface {
 	GetRuntimeSettings(ctx context.Context, base ...*config.Config) (*settingsstore.RuntimeSettings, error)
 	UpdateSettings(ctx context.Context, patch any) error
 	WatchSettingsChanges(ctx context.Context) (<-chan struct{}, error)
+
+	// store liveness + schema handshake.
+	Ping(ctx context.Context) error
+	SchemaVersion(ctx context.Context) (int, error)
+	ExpectedSchemaVersion() int
+	ValidateSchema(ctx context.Context) error
 }
 
 type ArrNotifier interface {
