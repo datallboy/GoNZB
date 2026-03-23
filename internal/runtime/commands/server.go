@@ -29,29 +29,55 @@ func (r *Runner) ExecuteServer() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if appCtx.SettingsStore != nil {
-		go wiring.WatchSettings(ctx, appCtx)
-	}
-
-	if appCtx.Queue != nil {
-		go appCtx.Queue.Start(ctx)
+	if err := wiring.StartServerBackgroundLoops(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("%v", err)
 	}
 
 	api.RegisterRoutes(e, appCtx)
 
-	sc := echo.StartConfig{
-		Address:         ":" + appCtx.Config.Port,
-		GracefulTimeout: 10 * time.Second,
-		HidePort:        true,
-		HideBanner:      true,
-	}
-	appCtx.Logger.Info("GoNZB listening on port %s...", appCtx.Config.Port)
-
-	if err := sc.Start(ctx, e); err != nil && err != http.ErrServerClosed {
-		appCtx.Logger.Error("failed to start server %v", err)
+	srv := &http.Server{
+		Addr:              ":" + appCtx.Config.Port,
+		Handler:           e,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
-	appCtx.Logger.Info("Server stopped. Finalizing store...")
+	appCtx.Logger.Info(
+		"starting server addr=%s downloader=%t aggregator=%t usenet_indexer=%t api=%t web_ui=%t",
+		srv.Addr,
+		appCtx.Config.Modules.Downloader.Enabled,
+		appCtx.Config.Modules.Aggregator.Enabled,
+		appCtx.Config.Modules.UsenetIndexer.Enabled,
+		appCtx.Config.Modules.API.Enabled,
+		appCtx.Config.Modules.WebUI.Enabled,
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		appCtx.Logger.Info("shutdown signal received, stopping HTTP server")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			appCtx.Logger.Error("graceful shutdown failed: %v", err)
+		}
+
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			appCtx.Logger.Error("server exited with error: %v", err)
+		}
+	}
+
+	appCtx.Logger.Info("finalizing application resources")
 	appCtx.Close()
-	appCtx.Logger.Info("GoNZB shutdown gracefully")
+	appCtx.Logger.Info("server shutdown complete")
 }
