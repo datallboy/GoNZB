@@ -14,12 +14,12 @@ type SettingsController struct {
 
 func (ctrl *SettingsController) GetSettings(c *echo.Context) error {
 	if ctrl.App == nil || ctrl.App.SettingsStore == nil {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime settings are not configured"})
+		return jsonError(c, http.StatusServiceUnavailable, "runtime settings are not configured")
 	}
 
 	runtime, err := ctrl.App.SettingsStore.GetRuntimeSettings(c.Request().Context(), ctrl.App.BootstrapConfig)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	return c.JSON(http.StatusOK, settingsstore.RedactedCopy(runtime))
@@ -27,35 +27,46 @@ func (ctrl *SettingsController) GetSettings(c *echo.Context) error {
 
 func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 	if ctrl.App == nil || ctrl.App.SettingsStore == nil {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime settings are not configured"})
+		return jsonError(c, http.StatusServiceUnavailable, "runtime settings are not configured")
 	}
 
 	var patch settingsstore.RuntimeSettingsPatch
-	if err := c.Bind(&patch); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid settings patch"})
+	if err := decodeJSONBody(c, &patch); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if !hasAnySettingsPatchField(&patch) {
+		return jsonError(c, http.StatusBadRequest, "settings patch must include at least one field")
 	}
 
 	current, err := ctrl.App.SettingsStore.GetRuntimeSettings(c.Request().Context(), ctrl.App.BootstrapConfig)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	next := settingsstore.ApplyPatch(current, &patch)
 	if err := settingsstore.ValidateArrIntegrations(next.ArrIntegrations); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
 	effective := settingsstore.ApplyToConfig(ctrl.App.BootstrapConfig, next)
 	if effective == nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to build effective config"})
+		return jsonError(c, http.StatusBadRequest, "failed to build effective config")
 	}
 	if err := effective.ValidateEffective(); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
 	if err := ctrl.App.SettingsStore.UpdateSettings(c.Request().Context(), next); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 
 	return c.JSON(http.StatusOK, settingsstore.RedactedCopy(next))
+}
+
+func hasAnySettingsPatchField(patch *settingsstore.RuntimeSettingsPatch) bool {
+	return patch != nil && (patch.Servers != nil ||
+		patch.Indexers != nil ||
+		patch.Download != nil ||
+		patch.Indexing != nil ||
+		patch.ArrIntegrations != nil)
 }

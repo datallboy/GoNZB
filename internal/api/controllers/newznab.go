@@ -19,7 +19,7 @@ type NewznabController struct {
 
 // Handle is the main Newznab entry point
 func (ctrl *NewznabController) Handle(c *echo.Context) error {
-	t := c.QueryParam("t")
+	t := queryParamLower(c, "t")
 
 	switch t {
 	case "caps":
@@ -177,18 +177,18 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 
 // handleSearch triggers a search across all configured indexers
 func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
-	searchType := c.QueryParam("t")
+	searchType := queryParamLower(c, "t")
 
 	req := aggregatorpkg.SearchRequest{
 		Type:     aggregatorpkg.SearchType(searchType),
-		Query:    c.QueryParam("q"),
-		IMDbID:   c.QueryParam("imdbid"),
-		TVDBID:   c.QueryParam("tvdbid"),
-		TVMazeID: c.QueryParam("tvmazeid"),
-		RageID:   c.QueryParam("rid"),
-		Season:   c.QueryParam("season"),
-		Episode:  c.QueryParam("ep"),
-		Genre:    c.QueryParam("genre"),
+		Query:    queryParamTrimmed(c, "q"),
+		IMDbID:   queryParamTrimmed(c, "imdbid"),
+		TVDBID:   queryParamTrimmed(c, "tvdbid"),
+		TVMazeID: queryParamTrimmed(c, "tvmazeid"),
+		RageID:   queryParamTrimmed(c, "rid"),
+		Season:   queryParamTrimmed(c, "season"),
+		Episode:  queryParamTrimmed(c, "ep"),
+		Genre:    queryParamTrimmed(c, "genre"),
 	}
 
 	if req.Type == "" {
@@ -202,7 +202,8 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 
 	baseAddr := fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host)
 
-	apiKey := c.QueryParam("apikey")
+	apiKey := queryParamTrimmed(c, "apikey")
+
 	if apiKey == "" {
 		apiKey = c.Request().Header.Get("X-API-Key")
 	}
@@ -213,9 +214,9 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 
 // handleDownload serves the actual NZB file from cache or source
 func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
-	id := c.Param("id")
+	id := pathParamTrimmed(c, "id")
 	if id == "" {
-		id = c.QueryParam("id")
+		id = queryParamTrimmed(c, "id")
 	}
 
 	if id == "" {

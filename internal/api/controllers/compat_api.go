@@ -1,9 +1,7 @@
 package controllers
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/labstack/echo/v5"
 )
@@ -18,15 +16,12 @@ type compatAPIRequest struct {
 func bindCompatAPIRequest(c *echo.Context) (compatAPIRequest, error) {
 	var req compatAPIRequest
 
-	if err := echo.BindQueryParams(c, &req); err != nil {
-		return req, fmt.Errorf("invalid query parameters")
-	}
-	if err := echo.BindBody(c, &req); err != nil {
-		return req, fmt.Errorf("invalid request body")
+	if err := bindQueryAndBody(c, &req); err != nil {
+		return req, err
 	}
 
-	req.Mode = strings.TrimSpace(req.Mode)
-	req.Type = strings.TrimSpace(req.Type)
+	req.Mode = normalizeTrimmed(req.Mode)
+	req.Type = normalizeTrimmed(req.Type)
 
 	return req, nil
 }
@@ -47,9 +42,7 @@ type CompatAPIController struct {
 func (ctrl *CompatAPIController) Handle(c *echo.Context) error {
 	req, err := bindCompatAPIRequest(c)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": err.Error(),
-		})
+		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
 	if req.Mode != "" {
@@ -64,12 +57,10 @@ func (ctrl *CompatAPIController) Handle(c *echo.Context) error {
 
 	if req.Type != "" {
 		if !ctrl.NewznabEnabled || ctrl.Newznab == nil {
-			return c.String(http.StatusNotFound, "Newznab-compatible API is not enabled")
+			return jsonError(c, http.StatusNotFound, "Newznab-compatible API is not enabled")
 		}
 		return ctrl.Newznab.Handle(c)
 	}
 
-	return c.JSON(http.StatusBadRequest, map[string]string{
-		"error": "missing compatibility selector: use `mode` for SAB or `t` for Newznab",
-	})
+	return jsonError(c, http.StatusBadRequest, "missing compatibility selector: use `mode` for SAB or `t` for Newznab")
 }
