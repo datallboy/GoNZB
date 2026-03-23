@@ -20,8 +20,8 @@ func bindCompatAPIRequest(c *echo.Context) (compatAPIRequest, error) {
 		return req, err
 	}
 
-	req.Mode = normalizeTrimmed(req.Mode)
-	req.Type = normalizeTrimmed(req.Type)
+	req.Mode = normalizeLowerTrimmed(req.Mode)
+	req.Type = normalizeLowerTrimmed(req.Type)
 
 	return req, nil
 }
@@ -45,6 +45,10 @@ func (ctrl *CompatAPIController) Handle(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
+	if req.Mode != "" && req.Type != "" {
+		return jsonError(c, http.StatusBadRequest, "compatibility request cannot include both `mode` and `t`")
+	}
+
 	if req.Mode != "" {
 		if !ctrl.SABEnabled || ctrl.SAB == nil {
 			return c.JSON(http.StatusNotFound, sabStatusResponse{
@@ -57,7 +61,7 @@ func (ctrl *CompatAPIController) Handle(c *echo.Context) error {
 
 	if req.Type != "" {
 		if !ctrl.NewznabEnabled || ctrl.Newznab == nil {
-			return jsonError(c, http.StatusNotFound, "Newznab-compatible API is not enabled")
+			return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
 		}
 		return ctrl.Newznab.Handle(c)
 	}

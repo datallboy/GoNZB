@@ -97,15 +97,16 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		v1Queue.POST("/queue/:id/cancel", queueCtrl.Cancel)
 		v1Queue.GET("/events/queue", eventCtrl.HandleEvents)
 
-		// staging SAB compatibility route for Milestone 9 Chunk 1.
-		// We keep this off `/api` for now to avoid colliding with the existing
-		// Newznab compatibility route. A unified `/api` dispatcher comes next.
+		// Explicit SAB-compatible downloader surface.
+		// Supported alongside the shared `/api` multiplexer.
 		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW)
 		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW)
 	}
 
-	//  unified compatibility `/api` endpoint.
-	// Dispatches to SAB or Newznab depending on query selector.
+	// Shared compatibility multiplexer.
+	// Supported contract:
+	// - `/api?mode=...` => SAB-compatible downloader API
+	// - `/api?t=...` => Newznab-compatible aggregator API
 	if modules.API.Enabled && (modules.Aggregator.Enabled || modules.Downloader.Enabled) {
 		compatCtrl := &controllers.CompatAPIController{
 			SABEnabled:     modules.Downloader.Enabled,

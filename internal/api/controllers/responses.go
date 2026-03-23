@@ -112,3 +112,9 @@ type Response struct {
 	Offset int `xml:"offset,attr"`
 	Total  int `xml:"total,attr"`
 }
+
+type NewznabErrorResponse struct {
+	XMLName     xml.Name `xml:"error"`
+	Code        int      `xml:"code,attr"`
+	Description string   `xml:"description,attr"`
+}

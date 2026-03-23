@@ -190,3 +190,23 @@ func sanitizeUploadFilename(name, fallback string) string {
 
 	return name
 }
+
+func writeNewznabError(c *echo.Context, status, code int, description string) error {
+	return c.XML(status, NewznabErrorResponse{
+		Code:        code,
+		Description: description,
+	})
+}
+
+func buildDownloadFilename(name, fallback string) string {
+	filename := sanitizeUploadFilename(name, fallback)
+	if !strings.HasSuffix(strings.ToLower(filename), ".nzb") {
+		filename += ".nzb"
+	}
+	return filename
+}
+
+func contentDispositionFilename(filename string) string {
+	safe := strings.NewReplacer(`\`, "_", `"`, "_", "\r", "_", "\n", "_").Replace(filename)
+	return fmt.Sprintf(`attachment; filename="%s"`, safe)
+}

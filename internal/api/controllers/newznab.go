@@ -19,6 +19,10 @@ type NewznabController struct {
 
 // Handle is the main Newznab entry point
 func (ctrl *NewznabController) Handle(c *echo.Context) error {
+	if ctrl == nil || ctrl.App == nil || ctrl.App.Aggregator == nil {
+		return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
+	}
+
 	t := queryParamLower(c, "t")
 
 	switch t {
@@ -29,7 +33,7 @@ func (ctrl *NewznabController) Handle(c *echo.Context) error {
 	case "get":
 		return ctrl.HandleDownload(c)
 	default:
-		return c.String(http.StatusBadRequest, "Unknown type")
+		return writeNewznabError(c, http.StatusBadRequest, 100, "unknown or missing t parameter")
 	}
 }
 
@@ -197,7 +201,7 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 
 	results, err := ctrl.App.Aggregator.SearchAllWithRequest(c.Request().Context(), req)
 	if err != nil {
-		return c.XML(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeNewznabError(c, http.StatusInternalServerError, 300, err.Error())
 	}
 
 	baseAddr := fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host)
@@ -214,22 +218,26 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 
 // handleDownload serves the actual NZB file from cache or source
 func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
+	if ctrl == nil || ctrl.App == nil || ctrl.App.Aggregator == nil {
+		return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
+	}
+
 	id := pathParamTrimmed(c, "id")
 	if id == "" {
 		id = queryParamTrimmed(c, "id")
 	}
 
 	if id == "" {
-		return c.String(http.StatusBadRequest, "Missing ID")
+		return writeNewznabError(c, http.StatusBadRequest, 100, "missing id parameter")
 	}
 
 	res, err := ctrl.App.Aggregator.GetResultByID(c.Request().Context(), id)
 	if err != nil {
 		ctrl.App.Logger.Error("Failed release lookup for id %s: %v", id, err)
-		return c.String(http.StatusInternalServerError, "Failed to lookup NZB")
+		return writeNewznabError(c, http.StatusInternalServerError, 300, "failed to lookup nzb")
 	}
 	if res == nil {
-		return c.String(http.StatusNotFound, "NZB not found in database")
+		return writeNewznabError(c, http.StatusNotFound, 200, "nzb not found")
 	}
 
 	if res.RedirectAllowed && !ctrl.App.BlobStore.Exists(res.ID) {
@@ -238,11 +246,12 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 
 	reader, err := ctrl.App.Aggregator.GetNZB(c.Request().Context(), res)
 	if err != nil {
-		return c.String(http.StatusInternalServerError, "Failed to fetch NZB")
+		return writeNewznabError(c, http.StatusInternalServerError, 300, "failed to fetch nzb")
 	}
 	defer reader.Close()
 
-	c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s.nzb", id))
+	filename := buildDownloadFilename(res.Title, id)
+	c.Response().Header().Set(echo.HeaderContentDisposition, contentDispositionFilename(filename))
 	return c.Stream(http.StatusOK, "application/x-nzb", reader)
 }
 
