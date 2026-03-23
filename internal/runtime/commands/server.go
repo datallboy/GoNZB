@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/api"
 	"github.com/datallboy/gonzb/internal/engine"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
+	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/labstack/echo/v5"
 )
 
@@ -24,6 +25,15 @@ func (r *Runner) ExecuteServer() {
 
 	if appCtx.Config.Modules.Downloader.Enabled {
 		appCtx.Queue = engine.NewQueueManager(appCtx, true)
+	}
+
+	// fail startup before serving traffic if enabled modules
+	// are already not ready or have schema/dependency issues.
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStartup()
+
+	if err := telemetry.ValidateStartupReadiness(startupCtx, appCtx); err != nil {
+		appCtx.Logger.Fatal("%v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -10,6 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
 	queuesvc "github.com/datallboy/gonzb/internal/queue"
+	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
@@ -60,6 +61,18 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		v1Admin := e.Group("/api/v1/admin", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.GET("/settings", settingsCtrl.GetSettings)
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
+	}
+
+	// Liveness/readiness endpoints stay unauthenticated for infrastructure probes.
+	if modules.API.Enabled {
+		e.GET("/healthz", func(c *echo.Context) error {
+			return c.JSON(http.StatusOK, telemetry.Health(app))
+		})
+
+		e.GET("/readyz", func(c *echo.Context) error {
+			code, report := telemetry.Readiness(c.Request().Context(), app)
+			return c.JSON(code, report)
+		})
 	}
 
 	var (

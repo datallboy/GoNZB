@@ -14,6 +14,7 @@ import (
 )
 
 const usenetIndexerModuleName = "usenet_indexer"
+const expectedSchemaVersion = 2
 
 type Store struct {
 	db *sql.DB
@@ -38,6 +39,12 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("could not migrate settings db: %w", err)
 	}
+
+	if err := s.ValidateSchema(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("validate settings schema: %w", err)
+	}
+
 	return s, nil
 }
 
@@ -46,6 +53,58 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("settings store is not initialized")
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	return s.db.PingContext(pingCtx)
+}
+
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("settings store is not initialized")
+	}
+
+	var version int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT version
+		FROM module_schema_version
+		WHERE module_name = ?`, "settings").Scan(&version)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("settings schema version row is missing")
+		}
+		return 0, fmt.Errorf("read settings schema version: %w", err)
+	}
+
+	return version, nil
+}
+
+func (s *Store) ExpectedSchemaVersion() int {
+	return expectedSchemaVersion
+}
+
+func (s *Store) ValidateSchema(ctx context.Context) error {
+	version, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+
+	expected := s.ExpectedSchemaVersion()
+	switch {
+	case version < expected:
+		return fmt.Errorf("settings schema is incomplete: expected version %d, got %d", expected, version)
+	case version > expected:
+		return fmt.Errorf("settings schema is newer than supported: expected version %d, got %d", expected, version)
+	default:
+		return nil
+	}
 }
 
 // load latest runtime settings revision and overlay it onto bootstrap config.
