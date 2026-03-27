@@ -3,13 +3,18 @@ package controllers
 import (
 	"net/http"
 
-	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/labstack/echo/v5"
 )
 
 type AggregatorController struct {
-	App *app.Context
+	Service aggregatorService
+}
+
+func NewAggregatorController(appCtx *app.Context) *AggregatorController {
+	return &AggregatorController{
+		Service: newAggregatorService(appCtx),
+	}
 }
 
 type aggregatorReleaseSearchResponse struct {
@@ -23,6 +28,10 @@ type aggregatorReleaseSearchResponse struct {
 }
 
 func (ctrl *AggregatorController) SearchReleases(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "aggregator runtime is unavailable")
+	}
+
 	query := queryParamTrimmed(c, "q")
 	if len(query) < 2 {
 		return c.JSON(http.StatusOK, map[string]any{
@@ -31,12 +40,12 @@ func (ctrl *AggregatorController) SearchReleases(c *echo.Context) error {
 		})
 	}
 
-	results, err := ctrl.App.Aggregator.SearchAllWithRequest(c.Request().Context(), aggregatorpkg.SearchRequest{
-		Type:  aggregatorpkg.SearchTypeGeneric,
+	results, err := ctrl.Service.Search(c.Request().Context(), aggregatorSearchRequest{
+		Type:  "search",
 		Query: query,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonError(c, aggregatorErrorStatus(err), err.Error())
 	}
 
 	items := make([]aggregatorReleaseSearchResponse, 0, len(results))

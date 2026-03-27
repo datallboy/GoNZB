@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"time"
 
-	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/nzb"
@@ -14,12 +13,18 @@ import (
 )
 
 type NewznabController struct {
-	App *app.Context
+	Service aggregatorService
+}
+
+func NewNewznabController(appCtx *app.Context) *NewznabController {
+	return &NewznabController{
+		Service: newAggregatorService(appCtx),
+	}
 }
 
 // Handle is the main Newznab entry point
 func (ctrl *NewznabController) Handle(c *echo.Context) error {
-	if ctrl == nil || ctrl.App == nil || ctrl.App.Aggregator == nil {
+	if ctrl == nil || ctrl.Service == nil {
 		return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
 	}
 
@@ -183,8 +188,8 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 	searchType := queryParamLower(c, "t")
 
-	req := aggregatorpkg.SearchRequest{
-		Type:     aggregatorpkg.SearchType(searchType),
+	results, err := ctrl.Service.Search(c.Request().Context(), aggregatorSearchRequest{
+		Type:     searchType,
 		Query:    queryParamTrimmed(c, "q"),
 		IMDbID:   queryParamTrimmed(c, "imdbid"),
 		TVDBID:   queryParamTrimmed(c, "tvdbid"),
@@ -193,21 +198,17 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 		Season:   queryParamTrimmed(c, "season"),
 		Episode:  queryParamTrimmed(c, "ep"),
 		Genre:    queryParamTrimmed(c, "genre"),
-	}
-
-	if req.Type == "" {
-		req.Type = aggregatorpkg.SearchTypeGeneric
-	}
-
-	results, err := ctrl.App.Aggregator.SearchAllWithRequest(c.Request().Context(), req)
+	})
 	if err != nil {
-		return writeNewznabError(c, http.StatusInternalServerError, 300, err.Error())
+		if aggregatorErrorStatus(err) == http.StatusServiceUnavailable {
+			return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
+		}
+		return writeNewznabError(c, http.StatusInternalServerError, 300, "search failed")
 	}
 
 	baseAddr := fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host)
 
 	apiKey := queryParamTrimmed(c, "apikey")
-
 	if apiKey == "" {
 		apiKey = c.Request().Header.Get("X-API-Key")
 	}
@@ -218,7 +219,7 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 
 // handleDownload serves the actual NZB file from cache or source
 func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
-	if ctrl == nil || ctrl.App == nil || ctrl.App.Aggregator == nil {
+	if ctrl == nil || ctrl.Service == nil {
 		return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
 	}
 
@@ -226,33 +227,31 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 	if id == "" {
 		id = queryParamTrimmed(c, "id")
 	}
-
 	if id == "" {
 		return writeNewznabError(c, http.StatusBadRequest, 100, "missing id parameter")
 	}
 
-	res, err := ctrl.App.Aggregator.GetResultByID(c.Request().Context(), id)
+	result, err := ctrl.Service.PrepareDownload(c.Request().Context(), id)
 	if err != nil {
-		ctrl.App.Logger.Error("Failed release lookup for id %s: %v", id, err)
-		return writeNewznabError(c, http.StatusInternalServerError, 300, "failed to lookup nzb")
-	}
-	if res == nil {
-		return writeNewznabError(c, http.StatusNotFound, 200, "nzb not found")
+		switch aggregatorErrorStatus(err) {
+		case http.StatusServiceUnavailable:
+			return writeNewznabError(c, http.StatusNotFound, 100, "Newznab-compatible API is not enabled")
+		case http.StatusNotFound:
+			return writeNewznabError(c, http.StatusNotFound, 200, "nzb not found")
+		default:
+			return writeNewznabError(c, http.StatusInternalServerError, 300, "failed to fetch nzb")
+		}
 	}
 
-	if res.RedirectAllowed && !ctrl.App.BlobStore.Exists(res.ID) {
-		return c.Redirect(http.StatusFound, res.DownloadURL)
+	if result.RedirectURL != "" {
+		return c.Redirect(http.StatusFound, result.RedirectURL)
 	}
 
-	reader, err := ctrl.App.Aggregator.GetNZB(c.Request().Context(), res)
-	if err != nil {
-		return writeNewznabError(c, http.StatusInternalServerError, 300, "failed to fetch nzb")
-	}
-	defer reader.Close()
+	defer result.Reader.Close()
 
-	filename := buildDownloadFilename(res.Title, id)
+	filename := buildDownloadFilename(result.Release.Title, id)
 	c.Response().Header().Set(echo.HeaderContentDisposition, contentDispositionFilename(filename))
-	return c.Stream(http.StatusOK, "application/x-nzb", reader)
+	return c.Stream(http.StatusOK, "application/x-nzb", result.Reader)
 }
 
 // buildRSSResponse maps internal Releases to the outgoing Newznab XML format

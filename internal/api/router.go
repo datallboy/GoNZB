@@ -54,7 +54,7 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	modules := app.Config.Modules
 	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
 
-	settingsCtrl := &controllers.SettingsController{App: app}
+	settingsCtrl := controllers.NewSettingsController(app)
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && app.SettingsStore != nil {
@@ -82,8 +82,8 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 
 	// Aggregator-owned API surface.
 	if modules.API.Enabled && modules.Aggregator.Enabled {
-		nzbCtrl = &controllers.NewznabController{App: app}
-		aggCtrl := &controllers.AggregatorController{App: app}
+		nzbCtrl = controllers.NewNewznabController(app)
+		aggCtrl := controllers.NewAggregatorController(app)
 
 		v1Agg := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
