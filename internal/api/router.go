@@ -96,7 +96,8 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	if modules.API.Enabled && modules.Downloader.Enabled {
 		queueService := queuesvc.NewService(app)
 		queueCtrl := &controllers.QueueController{Service: queueService}
-		eventCtrl := &controllers.DownloadEvent{App: app}
+		eventCtrl := controllers.NewDownloadEvent(app)
+
 		sabCtrl = &controllers.SABController{
 			App:     app,
 			Service: queueService,
