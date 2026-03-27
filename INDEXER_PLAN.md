@@ -1084,10 +1084,20 @@ Exit gates (required to mark milestone complete):
 4. Remove stale comments and temporary compatibility notes that are no longer true.
 5. Reduce direct controller/runtime coupling where helper abstractions make sense.
 6. Keep behavior parity while improving readability and change safety.
+7. Standardize controller structure:
+- handlers own Echo/HTTP transport concerns only
+- controller-facing services own orchestration and module interaction
+- `router.go` remains the API composition root using `app.Context`
+- avoid passing `*app.Context` directly into controllers except for trivial transitional cases
+- avoid thin pass-through adapters unless they hide transport-to-module translation or combine multiple runtime dependencies intentionally
+
 
 #### Exit criteria
 - Major controller/runtime files have clearer responsibilities.
 - Temporary refactor residue from prior milestones is removed or formalized.
+- Controllers are transport-focused and no longer mix substantial orchestration/business logic with request handling.
+- `router.go` composes controller-facing services from `app.Context` rather than controllers reaching into runtime state ad hoc.
+
 
 ### Chunk 10.7: Tests, validation matrix, and CI hardening
 #### Goal
