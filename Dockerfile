@@ -18,24 +18,40 @@ ARG VERSION=dev
 ARG BUILD_TIME=unknown
 RUN go build -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o gonzb cmd/gonzb/main.go
 
-# Stage 3: Run
-FROM alpine:latest
+# Stage 3: Build real unrar for Alpine
+FROM alpine:3.23 AS unrar-builder
+RUN apk add --no-cache build-base make wget tar
+
+WORKDIR /tmp/unrar
+
+ARG UNRAR_URL=https://www.rarlab.com/rar/unrarsrc-7.2.4.tar.gz
+
+RUN wget -O unrar.tar.gz "${UNRAR_URL}" \
+    && tar -xzf unrar.tar.gz --strip-components=1 \
+    && make -f makefile
+
+# Stage 4: Run
+FROM alpine:3.23
 WORKDIR /app
 # Install certs for secure Usenet connections (TLS/SSL)
 RUN apk --no-cache add \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing/ \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
     ca-certificates \
+    libstdc++ \
     par2cmdline-turbo \
     unzip \
-    7zip
+    7zip \
+    su-exec
 
-# Symlink unrar to 7z since Alpine doesn't package unrar
-# 7z 'x' command is compatible with unrar extract
-RUN ln -s /usr/bin/7z /usr/bin/unrar
+COPY --from=unrar-builder /tmp/unrar/unrar /usr/bin/unrar
+RUN chmod +x /usr/bin/unrar
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Create directories for config and download
-RUN mkdir /config /downloads
+RUN mkdir /config /downloads /completed
 RUN mkdir -p /store/metadata /store/nzbs
 
 COPY --from=builder /app/gonzb .
@@ -44,5 +60,5 @@ COPY --from=builder /app/gonzb .
 COPY config.yaml.example /app/config.yaml.example
 
 # Default command
-ENTRYPOINT ["./gonzb"]
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--config", "/config/config.yaml"]

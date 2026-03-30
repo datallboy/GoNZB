@@ -9,6 +9,7 @@ config.yaml
 downloads/
 *.part
 *.NZBs
+./testdata
 
 # Git and IDE stuff
 .git

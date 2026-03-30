@@ -10,6 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
 	queuesvc "github.com/datallboy/gonzb/internal/queue"
+	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
@@ -32,44 +33,114 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		},
 	}))
 
+	e.Use(middleware.RequestID())
+	e.Use(middleware.Recover())
+
 	// Middleware: Request Logger
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogStatus:  true,
-		LogURI:     true,
-		LogMethod:  true,
-		LogLatency: true,
+		LogStatus:    true,
+		LogURI:       true,
+		LogMethod:    true,
+		LogLatency:   true,
+		LogRequestID: true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
-			app.Logger.Info("%s %s | %d | %s", v.Method, redactSensitiveURI(v.URI), v.Status, v.Latency)
+			app.Logger.Info("request_id=%s method=%s uri=%s status=%d latency=%s",
+				v.RequestID, v.Method, redactSensitiveURI(v.URI), v.Status, v.Latency)
 			return nil
 		},
 	}))
 
-	nzbCtrl := &controllers.NewznabController{App: app}
-	queueCtrl := &controllers.QueueController{Service: queuesvc.NewService(app)}
-	eventCtrl := &controllers.DownloadEvent{App: app}
+	// route registration is now module-aware per Milestone 8.
+	modules := app.Config.Modules
 	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
 
-	// Newznab API Endpoint (for Prowlarr/Sonarr)
-	e.GET("/api", nzbCtrl.Handle, apiKeyMW)
+	settingsCtrl := controllers.NewSettingsController(app)
 
-	// Direct NZB Download Endpoint
-	e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
+	// runtime settings admin API for modules with SQLite settings state.
+	if modules.API.Enabled && app.SettingsStore != nil {
+		v1Admin := e.Group("/api/v1/admin", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Admin.GET("/settings", settingsCtrl.GetSettings)
+		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
+	}
 
-	v1 := e.Group("/api/v1", apiKeyMW)
-	v1.GET("/queue", queueCtrl.ListActive)
-	v1.GET("/queue/history", queueCtrl.ListHistory)
-	v1.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
-	v1.POST("/queue/bulk/delete", queueCtrl.DeleteMany)
-	v1.POST("/queue/history/clear", queueCtrl.ClearHistory)
-	v1.GET("/queue/:id", queueCtrl.GetItem)
-	v1.GET("/queue/:id/files", queueCtrl.GetItemFiles)
-	v1.GET("/queue/:id/events", queueCtrl.GetItemEvents)
-	v1.GET("/releases/search", queueCtrl.SearchReleases)
-	v1.POST("/queue", queueCtrl.Add)
-	v1.POST("/queue/:id/cancel", queueCtrl.Cancel)
-	v1.GET("/events/queue", eventCtrl.HandleEvents)
+	// Liveness/readiness endpoints stay unauthenticated for infrastructure probes.
+	if modules.API.Enabled {
+		e.GET("/healthz", func(c *echo.Context) error {
+			return c.JSON(http.StatusOK, telemetry.Health(app))
+		})
 
-	registerWebUIRoutes(e)
+		e.GET("/readyz", func(c *echo.Context) error {
+			code, report := telemetry.Readiness(c.Request().Context(), app)
+			return c.JSON(code, report)
+		})
+	}
+
+	var (
+		nzbCtrl *controllers.NewznabController
+		sabCtrl *controllers.SABController
+	)
+
+	// Aggregator-owned API surface.
+	if modules.API.Enabled && modules.Aggregator.Enabled {
+		nzbCtrl = controllers.NewNewznabController(app)
+		aggCtrl := controllers.NewAggregatorController(app)
+
+		v1Agg := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
+
+		// Keep direct NZB download endpoint under aggregator ownership.
+		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
+	}
+
+	// Downloader-owned API surface.
+	if modules.API.Enabled && modules.Downloader.Enabled {
+		queueService := queuesvc.NewService(app)
+		queueCtrl := &controllers.QueueController{Service: queueService}
+		eventCtrl := controllers.NewDownloadEvent(app)
+
+		sabCtrl = &controllers.SABController{
+			App:     app,
+			Service: queueService,
+		}
+
+		v1Queue := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Queue.GET("/queue", queueCtrl.ListActive)
+		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
+		v1Queue.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
+		v1Queue.POST("/queue/bulk/delete", queueCtrl.DeleteMany)
+		v1Queue.POST("/queue/history/clear", queueCtrl.ClearHistory)
+		v1Queue.GET("/queue/:id", queueCtrl.GetItem)
+		v1Queue.GET("/queue/:id/files", queueCtrl.GetItemFiles)
+		v1Queue.GET("/queue/:id/events", queueCtrl.GetItemEvents)
+		v1Queue.POST("/queue", queueCtrl.Add)
+		v1Queue.POST("/queue/:id/cancel", queueCtrl.Cancel)
+		v1Queue.GET("/events/queue", eventCtrl.HandleEvents)
+
+		// Explicit SAB-compatible downloader surface.
+		// Supported alongside the shared `/api` multiplexer.
+		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+	}
+
+	// Shared compatibility multiplexer.
+	// Supported contract:
+	// - `/api?mode=...` => SAB-compatible downloader API
+	// - `/api?t=...` => Newznab-compatible aggregator API
+	if modules.API.Enabled && (modules.Aggregator.Enabled || modules.Downloader.Enabled) {
+		compatCtrl := &controllers.CompatAPIController{
+			SABEnabled:     modules.Downloader.Enabled,
+			NewznabEnabled: modules.Aggregator.Enabled,
+			SAB:            sabCtrl,
+			Newznab:        nzbCtrl,
+		}
+		e.GET("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.POST("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+	}
+
+	// Web UI is served only when explicitly enabled.
+	if modules.WebUI.Enabled {
+		registerWebUIRoutes(e)
+	}
 }
 
 func apiKeyMiddleware(requiredKey string) echo.MiddlewareFunc {

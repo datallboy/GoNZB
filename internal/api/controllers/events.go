@@ -13,7 +13,13 @@ import (
 
 // Event message structure for UI
 type DownloadEvent struct {
-	App *app.Context
+	Service downloadEventService
+}
+
+func NewDownloadEvent(appCtx *app.Context) *DownloadEvent {
+	return &DownloadEvent{
+		Service: newDownloadEventService(appCtx),
+	}
 }
 
 type EventStats struct {
@@ -33,6 +39,10 @@ type ActiveItemStats struct {
 }
 
 func (ctrl *DownloadEvent) HandleEvents(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+
 	rw := c.Response()
 	rc := http.NewResponseController(rw)
 
@@ -56,60 +66,35 @@ func (ctrl *DownloadEvent) HandleEvents(c *echo.Context) error {
 		select {
 		case <-c.Request().Context().Done():
 			return nil
+
 		case <-ticker.C:
-			activeItem := ctrl.App.Queue.GetActiveItem()
-			activeJobs := 0
-			for _, item := range ctrl.App.Queue.GetAllItems() {
-				if item.Status == domain.StatusDownloading || item.Status == domain.StatusProcessing {
-					activeJobs++
-				}
+			snapshot, err := ctrl.Service.Snapshot()
+			if err != nil {
+				return err
 			}
 
-			var currentBytes int64
-			var progress float64
-			var activePayload *ActiveItemStats
-			if activeItem != nil {
-				currentBytes = activeItem.BytesWritten.Load()
-				if activeItem.Release != nil && activeItem.Release.Size > 0 {
-					progress = float64(currentBytes) / float64(activeItem.Release.Size) * 100
-				}
-
-				activePayload = &ActiveItemStats{
-					ID:        activeItem.ID,
-					ReleaseID: activeItem.ReleaseID,
-					Status:    activeItem.Status,
-					Bytes:     currentBytes,
-				}
-				if activeItem.Release != nil {
-					activePayload.Title = activeItem.Release.Title
-					activePayload.Size = activeItem.Release.Size
-				}
-			}
-
-			bps := currentBytes - lastBytes
+			bps := snapshot.CurrentBytes - lastBytes
 			if bps < 0 {
 				bps = 0
 			}
-			lastBytes = currentBytes
+			lastBytes = snapshot.CurrentBytes
 
 			stats := EventStats{
 				Bps:        bps,
-				Progress:   progress,
-				ActiveJobs: activeJobs,
-				ActiveItem: activePayload,
+				Progress:   snapshot.Progress,
+				ActiveJobs: snapshot.ActiveJobs,
+				ActiveItem: snapshot.ActiveItem,
 			}
 
 			data, err := json.Marshal(stats)
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(rw, "data: %s\n\n", string(data))
-			if err != nil {
+			if _, err := fmt.Fprintf(rw, "data: %s\n\n", string(data)); err != nil {
 				return err
 			}
 
-			err = rc.Flush()
-			if err != nil {
+			if err := rc.Flush(); err != nil {
 				return nil
 			}
 		}
