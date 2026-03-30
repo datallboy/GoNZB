@@ -38,4 +38,3 @@ Example future shape:
 internal/api/queueapi
 internal/api/adminapi
 internal/api/compatapi
-

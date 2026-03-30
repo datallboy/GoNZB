@@ -121,7 +121,7 @@ GoNZB uses a `config.yaml` file:
 cp config.yaml.example config.yaml
 ```
 
-See ARCHITECTURE.md for the architectural split and runtime ownership model.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural split and runtime ownership model.
 
 ## Usage
 **Start API/server mode**

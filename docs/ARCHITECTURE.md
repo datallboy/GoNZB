@@ -1,7 +1,3 @@
-
-[ARCHITECTURE.md](/mnt/home-datallboy/Projects/github.com/datallboy/gonzb/ARCHITECTURE.md)
-
-```md
 # GoNZB Architecture
 
 GoNZB is a modular monolith for Usenet downloading, aggregated indexer search, and provider-header indexing.
@@ -249,4 +245,4 @@ Milestone 10 focuses on:
 - controller/runtime cleanup
 - docs and terminology alignment
 
-See [INDEXER_PLAN.md](INDEXER_PLAN.md) for the detailed milestone breakdown.
+See [INDEXER_PLAN.md](archive/INDEXER_PLAN.md) for the detailed milestone breakdown.
