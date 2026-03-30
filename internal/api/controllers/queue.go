@@ -3,7 +3,6 @@ package controllers
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/domain"
 	queuesvc "github.com/datallboy/gonzb/internal/queue"
@@ -220,20 +219,7 @@ func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
 		return jsonError(c, http.StatusNotFound, "queue item not found")
 	}
 
-	resp := make([]queueFileResponse, 0, len(files))
-	for _, f := range files {
-		resp = append(resp, queueFileResponse{
-			ID:       f.ID,
-			FileName: f.FileName,
-			Size:     f.Size,
-			Index:    f.Index,
-			IsPars:   f.IsPars,
-			Subject:  f.Subject,
-			Date:     f.Date,
-			Groups:   f.Groups,
-		})
-	}
-
+	resp := mapQueueFileResponses(files)
 	return c.JSON(http.StatusOK, map[string]any{
 		"items": resp,
 		"count": len(resp),
@@ -258,18 +244,7 @@ func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
 		return jsonError(c, http.StatusNotFound, "queue item not found")
 	}
 
-	resp := make([]queueEventResponse, 0, len(events))
-	for _, ev := range events {
-		resp = append(resp, queueEventResponse{
-			ID:        ev.ID,
-			Stage:     ev.Stage,
-			Status:    ev.Status,
-			Message:   ev.Message,
-			MetaJSON:  ev.MetaJSON,
-			CreatedAt: ev.CreatedAt.UTC().Format(time.RFC3339),
-		})
-	}
-
+	resp := mapQueueEventResponses(events)
 	return c.JSON(http.StatusOK, map[string]any{
 		"items": resp,
 		"count": len(resp),
@@ -361,62 +336,6 @@ func (ctrl *QueueController) ClearHistory(c *echo.Context) error {
 		"ok":      true,
 		"deleted": deleted,
 	})
-}
-
-func mapQueueItems(items []*domain.QueueItem) []queueItemResponse {
-	resp := make([]queueItemResponse, 0, len(items))
-	for _, item := range items {
-		resp = append(resp, mapQueueItem(item))
-	}
-	return resp
-}
-
-func mapQueueItem(item *domain.QueueItem) queueItemResponse {
-	resp := queueItemResponse{
-		ID:        item.ID,
-		ReleaseID: item.ReleaseID,
-		Status:    item.Status,
-		OutDir:    item.OutDir,
-		Error:     item.Error,
-		Progress: queueProgressResponse{
-			BytesWritten: item.GetBytes(),
-		},
-		Metrics: queueMetricsResponse{
-			DownloadedBytes:    item.DownloadedBytes,
-			AvgBps:             item.AvgBps,
-			DownloadSeconds:    item.DownloadSeconds,
-			PostProcessSeconds: item.PostProcessSeconds,
-		},
-	}
-
-	if !item.CreatedAt.IsZero() {
-		resp.CreatedAt = item.CreatedAt.UTC().Format(time.RFC3339)
-	}
-	if !item.UpdatedAt.IsZero() {
-		resp.UpdatedAt = item.UpdatedAt.UTC().Format(time.RFC3339)
-	}
-	if !item.StartedAt.IsZero() {
-		resp.StartedAt = item.StartedAt.UTC().Format(time.RFC3339)
-	}
-	if !item.CompletedAt.IsZero() {
-		resp.CompletedAt = item.CompletedAt.UTC().Format(time.RFC3339)
-	}
-
-	if item.Release != nil {
-		rel := &queueReleaseResponse{
-			ID:       item.Release.ID,
-			Title:    item.Release.Title,
-			Size:     item.Release.Size,
-			Category: item.Release.Category,
-			Source:   item.Release.Source,
-		}
-		if !item.Release.PublishDate.IsZero() {
-			rel.PublishDate = item.Release.PublishDate.UTC().Format(time.RFC3339)
-		}
-		resp.Release = rel
-	}
-
-	return resp
 }
 
 func normalizeIDs(ids []string) []string {
