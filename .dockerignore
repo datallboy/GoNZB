@@ -9,7 +9,7 @@ config.yaml
 downloads/
 *.part
 *.NZBs
-./testdata
+testdata/
 
 # Git and IDE stuff
 .git
@@ -22,3 +22,9 @@ downloads/
 
 # Database
 *.db*
+
+# UI dependencies/build cache
+ui/node_modules
+ui/.vite
+ui/*.tsbuildinfo
+ui/dist
