@@ -1,0 +1,119 @@
+package pgindex
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+const expectedSchemaVersion = 4
+
+type Store struct {
+	db *sql.DB
+}
+
+// NewStore now opens PostgreSQL by DSN and runs migrations.
+func NewStore(dsn string) (*Store, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("pg dsn is required")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open pg connection: %w", err)
+	}
+
+	// Reasonable pool defaults for initial indexing workloads.
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping pg connection: %w", err)
+	}
+
+	s := &Store{db: db}
+
+	// run module migrations on startup.
+	if err := s.RunMigrations(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("run pgindex migrations: %w", err)
+	}
+
+	if err := s.ValidateSchema(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("validate pgindex schema: %w", err)
+	}
+
+	return s, nil
+}
+
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
+func (s *Store) Close() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	return s.db.PingContext(pingCtx)
+}
+
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("pgindex store is not initialized")
+	}
+
+	var version int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT version
+		FROM module_schema_version
+		WHERE module_name = $1`, "pgindex").Scan(&version)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("pgindex schema version row is missing")
+		}
+		return 0, fmt.Errorf("read pgindex schema version: %w", err)
+	}
+
+	return version, nil
+}
+
+func (s *Store) ExpectedSchemaVersion() int {
+	return expectedSchemaVersion
+}
+
+func (s *Store) ValidateSchema(ctx context.Context) error {
+	version, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+
+	expected := s.ExpectedSchemaVersion()
+	switch {
+	case version < expected:
+		return fmt.Errorf("pgindex schema is incomplete: expected version %d, got %d", expected, version)
+	case version > expected:
+		return fmt.Errorf("pgindex schema is newer than supported: expected version %d, got %d", expected, version)
+	default:
+		return nil
+	}
+}

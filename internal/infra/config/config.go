@@ -17,6 +17,9 @@ type Config struct {
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
+	Indexing IndexingConfig `mapstructure:"indexing" yaml:"indexing"`
+	Modules  ModulesConfig  `mapstructure:"modules" yaml:"modules"`
+
 	Port string `mapstructure:"port" yaml:"port"`
 }
 
@@ -52,13 +55,37 @@ type LogConfig struct {
 }
 
 type StoreConfig struct {
-	SQLitePath string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
-	BlobDir    string `mapstructure:"blob_dir" yaml:"blob_dir"`
+	SQLitePath               string `mapstructure:"sqlite_path" yaml:"sqlite_path"`
+	BlobDir                  string `mapstructure:"blob_dir" yaml:"blob_dir"`
+	PayloadCacheEnabled      bool   `mapstructure:"payload_cache_enabled" yaml:"payload_cache_enabled"`
+	SearchPersistenceEnabled bool   `mapstructure:"search_persistence_enabled" yaml:"search_persistence_enabled"`
+
+	// PostgreSQL DSN for Usenet/NZB Indexer module.
+	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
 }
 
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
+}
+
+type IndexingConfig struct {
+	Newsgroups              []string `mapstructure:"newsgroups" yaml:"newsgroups"`
+	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
+	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
+}
+
+// ModuleConfig is used to enable or disable certain modules within the application
+type ModulesConfig struct {
+	Downloader    ModuleToggle `mapstructure:"downloader" yaml:"downloader"`
+	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
+	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+	WebUI         ModuleToggle `mapstructure:"web_ui" yaml:"web_ui"`
+	API           ModuleToggle `mapstructure:"api" yaml:"api"`
+}
+
+type ModuleToggle struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 }
 
 func Load(path string) (*Config, error) {
@@ -96,6 +123,20 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
+	v.SetDefault("store.payload_cache_enabled", true)
+	v.SetDefault("store.search_persistence_enabled", true)
+
+	v.SetDefault("store.pg_dsn", "")
+	v.SetDefault("indexing.newsgroups", []string{})
+	v.SetDefault("indexing.scrape_batch_size", 5000)
+	v.SetDefault("indexing.schedule_interval_minutes", 10)
+
+	v.SetDefault("modules.downloader.enabled", true)
+	v.SetDefault("modules.aggregator.enabled", true)
+	v.SetDefault("modules.usenet_indexer.enabled", true)
+	v.SetDefault("modules.web_ui.enabled", true)
+	v.SetDefault("modules.api.enabled", true)
+
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
@@ -126,41 +167,84 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// exported validation entrypoint for effective bootstrap+runtime settings.
+func (c *Config) ValidateEffective() error {
+	return c.validate()
+}
+
 func (c *Config) validate() error {
-	if len(c.Servers) == 0 {
-		return errors.New("at least one server must be configured")
-	}
-
-	for i, s := range c.Servers {
-		if s.ID == "" {
-			return fmt.Errorf("server[%d] requires a unique ID", i)
-		}
-
-		if s.Host == "" {
-			return fmt.Errorf("server %s: host is required", s.ID)
-		}
-
-		if s.Port == 0 {
-			return fmt.Errorf("server %s: port is required", s.ID)
-		}
-
-		if s.TLS && s.Port == 119 {
-			fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
-		}
-
-		if s.MaxConnection <= 0 {
-			// Default to a sane value
-			c.Servers[i].MaxConnection = 10
-		}
-
-		if s.Priority == 0 {
-			// Default to same priority
-			c.Servers[i].Priority = 1
-		}
-	}
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
+	}
+
+	if c.Indexing.ScrapeBatchSize <= 0 {
+		c.Indexing.ScrapeBatchSize = 5000
+	}
+
+	if c.Indexing.ScheduleIntervalMinutes <= 0 {
+		c.Indexing.ScheduleIntervalMinutes = 10
+	}
+
+	// startup must have at least one meaningful runtime surface.
+	if !c.Modules.Downloader.Enabled &&
+		!c.Modules.Aggregator.Enabled &&
+		!c.Modules.UsenetIndexer.Enabled &&
+		!c.Modules.API.Enabled &&
+		!c.Modules.WebUI.Enabled {
+		return errors.New("at least one module must be enabled")
+	}
+
+	// web_ui is transport-only and requires API.
+	if c.Modules.WebUI.Enabled && !c.Modules.API.Enabled {
+		return errors.New("modules.web_ui.enabled requires modules.api.enabled")
+	}
+
+	// Usenet/NZB Indexer requires PostgreSQL.
+	if c.Modules.UsenetIndexer.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
+		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
+	}
+
+	// validate configured newsgroups only when Usenet/NZB Indexer is enabled.
+	if c.Modules.UsenetIndexer.Enabled {
+		hasGroups := false
+		for _, g := range c.Indexing.Newsgroups {
+			if strings.TrimSpace(g) != "" {
+				hasGroups = true
+				break
+			}
+		}
+		if !hasGroups {
+			return errors.New("indexing.newsgroups is required when modules.usenet_indexer.enabled is true")
+		}
+	}
+
+	// NNTP servers are required only when downloader or usenet indexer is enabled.
+	if c.Modules.Downloader.Enabled || c.Modules.UsenetIndexer.Enabled {
+		if len(c.Servers) == 0 {
+			return errors.New("at least one server must be configured when downloader or usenet_indexer is enabled")
+		}
+
+		for i, s := range c.Servers {
+			if s.ID == "" {
+				return fmt.Errorf("server[%d] requires a unique ID", i)
+			}
+			if s.Host == "" {
+				return fmt.Errorf("server %s: host is required", s.ID)
+			}
+			if s.Port == 0 {
+				return fmt.Errorf("server %s: port is required", s.ID)
+			}
+			if s.TLS && s.Port == 119 {
+				fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
+			}
+			if s.MaxConnection <= 0 {
+				c.Servers[i].MaxConnection = 10
+			}
+			if s.Priority == 0 {
+				c.Servers[i].Priority = 1
+			}
+		}
 	}
 
 	return nil

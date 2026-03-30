@@ -3,6 +3,19 @@
 # The port the HTTP server will listen on
 port: "8080"
 
+# Default example remains all-in-one.
+modules:
+  downloader:
+    enabled: true
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: true
+  web_ui:
+    enabled: true
+  api:
+    enabled: true
+
 # API authentication (optional)
 api:
   key: "" # Set to a non-empty value to require apikey on /api and /nzb routes
@@ -57,3 +70,15 @@ log:
 store:
   sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
   blob_dir: "/store/nzbs"                # Directory to store cached NZB files
+  payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
+  search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
+  
+  # PostgreSQL DSN for Usenet/NZB Indexer milestone work.
+  pg_dsn: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
+
+# Milestone 5 scrape/indexing settings.
+indexing:
+  newsgroups:
+    - "alt.binaries.test"
+  scrape_batch_size: 5000
+  schedule_interval_minutes: 10

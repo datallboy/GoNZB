@@ -19,7 +19,6 @@ type CLI7z struct {
 
 // NewCLI7z creates a new 7z extractor using the system's 7z binary
 func NewCLI7z() (*CLI7z, error) {
-	// Try both '7z' and '7za' (7za is often the standalone version)
 	path, err := exec.LookPath("7z")
 	if err != nil {
 		path, err = exec.LookPath("7za")
@@ -30,21 +29,17 @@ func NewCLI7z() (*CLI7z, error) {
 	return &CLI7z{BinaryPath: path}, nil
 }
 
-// Name returns the extractor name
 func (z *CLI7z) Name() string {
 	return "7-Zip"
 }
 
-// CanExtract checks if the file is a 7z archive
 func (z *CLI7z) CanExtract(filePath string) (bool, error) {
 	lower := strings.ToLower(filepath.Base(filePath))
 
-	// Extension check
 	if !strings.HasSuffix(lower, ".7z") {
 		return false, nil
 	}
 
-	// Verify 7z signature
 	is7z, err := has7zSignature(filePath)
 	if err != nil {
 		return false, fmt.Errorf("failed to verify 7z signature: %w", err)
@@ -53,26 +48,21 @@ func (z *CLI7z) CanExtract(filePath string) (bool, error) {
 	return is7z, nil
 }
 
-// Extract extracts the 7z archive to the destination directory
+// Extract extracts the archive to the destination directory.
 func (z *CLI7z) Extract(ctx context.Context, archivePath string, destDir string, password string) ([]string, error) {
 	return baseExtract(ctx, archivePath, destDir, func(workDir string) *exec.Cmd {
 		// 7z x -o<destination> -y <archive>
-		// x = extract with full paths
-		// -o = output directory (no space between -o and path)
-		// -y = assume yes on all queries
-
-		args := []string{"x", fmt.Sprintf("-o%s", workDir), "-y"}
+		args := []string{"x", fmt.Sprintf("-o%s", workDir), "-y", "-aoa"}
 
 		if password != "" {
 			args = append(args, "-p"+password)
 		} else {
-			args = append(args, "-p-")
+			// 7z treats -p without a password awkwardly; omit it entirely when not needed.
 		}
 
 		args = append(args, archivePath)
 
-		cmd := exec.CommandContext(ctx, z.BinaryPath, args...)
-		return cmd
+		return exec.CommandContext(ctx, z.BinaryPath, args...)
 	})
 }
 
