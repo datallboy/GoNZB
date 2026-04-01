@@ -6,7 +6,6 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	arrintegration "github.com/datallboy/gonzb/internal/integrations/arr"
-	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 )
 
 func BuildArrNotifier(ctx context.Context, appCtx *app.Context) error {
@@ -19,7 +18,7 @@ func BuildArrNotifier(ctx context.Context, appCtx *app.Context) error {
 		return err
 	}
 
-	integrations := make([]settingsstore.ArrIntegrationRuntimeSettings, 0, len(runtime.ArrIntegrations))
+	integrations := make([]app.ArrIntegrationRuntimeSettings, 0, len(runtime.ArrIntegrations))
 	for _, integration := range runtime.ArrIntegrations {
 		if !integration.Enabled {
 			continue
@@ -35,7 +34,7 @@ func BuildArrNotifier(ctx context.Context, appCtx *app.Context) error {
 	return nil
 }
 
-func isValidArrIntegration(integration settingsstore.ArrIntegrationRuntimeSettings) bool {
+func isValidArrIntegration(integration app.ArrIntegrationRuntimeSettings) bool {
 	kind := strings.ToLower(strings.TrimSpace(integration.Kind))
 	if kind != "radarr" && kind != "sonarr" {
 		return false

@@ -13,7 +13,11 @@ func BuildInitialRuntime(appCtx *app.Context) error {
 		return fmt.Errorf("app context is required")
 	}
 
-	if err := app.LoadAndApplyEffectiveConfig(context.Background(), appCtx); err != nil {
+	if err := BootstrapStores(appCtx); err != nil {
+		return err
+	}
+
+	if err := LoadAndApplyEffectiveConfig(context.Background(), appCtx); err != nil {
 		return err
 	}
 

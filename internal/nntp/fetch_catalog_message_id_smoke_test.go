@@ -1,4 +1,4 @@
-package nntp
+package nntp_test
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
+	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
 func TestFetchCatalogMessageIDSmoke(t *testing.T) {
@@ -42,11 +44,15 @@ func TestFetchCatalogMessageIDSmoke(t *testing.T) {
 	}
 	defer appCtx.Close()
 
+	if err := wiring.BuildInitialRuntime(appCtx); err != nil {
+		t.Fatalf("build initial runtime: %v", err)
+	}
+
 	if appCtx.PGIndexStore == nil {
 		t.Fatalf("PGIndexStore is nil")
 	}
 
-	manager, err := NewManager(appCtx)
+	manager, err := nntp.NewManager(appCtx)
 	if err != nil {
 		t.Fatalf("new nntp manager: %v", err)
 	}

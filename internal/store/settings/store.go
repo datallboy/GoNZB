@@ -161,21 +161,8 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 }
 
 // patch and persist the latest runtime settings state as a new atomic revision.
-func (s *Store) UpdateSettings(ctx context.Context, patch any) error {
-	var next *RuntimeSettings
-
-	switch v := patch.(type) {
-	case *RuntimeSettings:
-		next = CloneRuntimeSettings(v)
-	case *RuntimeSettingsPatch:
-		current, err := s.GetRuntimeSettings(ctx)
-		if err != nil {
-			return fmt.Errorf("load current runtime settings: %w", err)
-		}
-		next = ApplyPatch(current, v)
-	default:
-		return fmt.Errorf("settings update must be *settings.RuntimeSettings or *settings.RuntimeSettingsPatch")
-	}
+func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error {
+	next = CloneRuntimeSettings(next)
 
 	if next == nil {
 		next = &RuntimeSettings{}
