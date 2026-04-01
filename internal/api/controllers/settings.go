@@ -11,9 +11,9 @@ type SettingsController struct {
 	Service settingsService
 }
 
-func NewSettingsController(appCtx *app.Context) *SettingsController {
+func NewSettingsController(admin app.SettingsAdmin) *SettingsController {
 	return &SettingsController{
-		Service: newSettingsService(appCtx),
+		Service: newSettingsService(admin),
 	}
 }
 

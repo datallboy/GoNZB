@@ -9,17 +9,16 @@ import (
 
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
-	queuesvc "github.com/datallboy/gonzb/internal/queue"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 )
 
-func RegisterRoutes(e *echo.Echo, app *app.Context) {
+func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	// CORS for browser-based UI (Vite/dev and optional external UI hosts).
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: app.Config.API.CORSAllowedOrigins,
+		AllowOrigins: appCtx.Config.API.CORSAllowedOrigins,
 		AllowMethods: []string{
 			http.MethodGet,
 			http.MethodPost,
@@ -44,20 +43,20 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 		LogLatency:   true,
 		LogRequestID: true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
-			app.Logger.Info("request_id=%s method=%s uri=%s status=%d latency=%s",
+			appCtx.Logger.Info("request_id=%s method=%s uri=%s status=%d latency=%s",
 				v.RequestID, v.Method, redactSensitiveURI(v.URI), v.Status, v.Latency)
 			return nil
 		},
 	}))
 
 	// route registration is now module-aware per Milestone 8.
-	modules := app.Config.Modules
-	apiKeyMW := apiKeyMiddleware(app.Config.API.Key)
+	modules := appCtx.Config.Modules
+	apiKeyMW := apiKeyMiddleware(appCtx.Config.API.Key)
 
-	settingsCtrl := controllers.NewSettingsController(app)
+	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 
 	// runtime settings admin API for modules with SQLite settings state.
-	if modules.API.Enabled && app.SettingsStore != nil {
+	if modules.API.Enabled && appCtx.SettingsStore != nil {
 		v1Admin := e.Group("/api/v1/admin", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.GET("/settings", settingsCtrl.GetSettings)
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
@@ -66,11 +65,11 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 	// Liveness/readiness endpoints stay unauthenticated for infrastructure probes.
 	if modules.API.Enabled {
 		e.GET("/healthz", func(c *echo.Context) error {
-			return c.JSON(http.StatusOK, telemetry.Health(app))
+			return c.JSON(http.StatusOK, telemetry.Health(appCtx))
 		})
 
 		e.GET("/readyz", func(c *echo.Context) error {
-			code, report := telemetry.Readiness(c.Request().Context(), app)
+			code, report := telemetry.Readiness(c.Request().Context(), appCtx)
 			return c.JSON(code, report)
 		})
 	}
@@ -82,8 +81,8 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 
 	// Aggregator-owned API surface.
 	if modules.API.Enabled && modules.Aggregator.Enabled {
-		nzbCtrl = controllers.NewNewznabController(app)
-		aggCtrl := controllers.NewAggregatorController(app)
+		nzbCtrl = controllers.NewNewznabController(appCtx.AggregatorModule)
+		aggCtrl := controllers.NewAggregatorController(appCtx.AggregatorModule)
 
 		v1Agg := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
@@ -94,14 +93,13 @@ func RegisterRoutes(e *echo.Echo, app *app.Context) {
 
 	// Downloader-owned API surface.
 	if modules.API.Enabled && modules.Downloader.Enabled {
-		queueService := queuesvc.NewService(app)
-		queueCtrl := &controllers.QueueController{Service: queueService}
-		eventCtrl := controllers.NewDownloadEvent(app)
-
-		sabCtrl = &controllers.SABController{
-			App:     app,
-			Service: queueService,
+		queueCtrl := controllers.NewQueueController(appCtx.DownloaderModule)
+		var downloaderQueries app.DownloaderQueries
+		if appCtx.DownloaderModule != nil {
+			downloaderQueries = appCtx.DownloaderModule.Queries()
 		}
+		eventCtrl := controllers.NewDownloadEvent(downloaderQueries)
+		sabCtrl = controllers.NewSABController(appCtx.DownloaderModule, appCtx.CurrentConfig)
 
 		v1Queue := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Queue.GET("/queue", queueCtrl.ListActive)

@@ -26,6 +26,7 @@ func (r *Runner) ExecuteServer() {
 	if appCtx.Config.Modules.Downloader.Enabled {
 		appCtx.Queue = engine.NewQueueManager(appCtx, true)
 	}
+	wiring.BindApplicationModules(appCtx)
 
 	// fail startup before serving traffic if enabled modules
 	// are already not ready or have schema/dependency issues.

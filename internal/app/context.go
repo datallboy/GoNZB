@@ -31,8 +31,13 @@ type Context struct {
 	PGIndexStore      UsenetIndexStore
 	ArrNotifier       ArrNotifier
 
+	DownloaderModule DownloaderModule
+	AggregatorModule AggregatorModule
+	SettingsAdmin    SettingsAdmin
+
 	ExtractionEnabled bool
 	closers           []io.Closer
+	runtimeModules    map[string]RuntimeModule
 }
 
 // NewContext returns the shared application container. Concrete runtime
@@ -44,6 +49,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		Logger:            log,
 		ExtractionEnabled: true,
 		closers:           make([]io.Closer, 0, 3),
+		runtimeModules:    make(map[string]RuntimeModule),
 	}, nil
 }
 
@@ -56,6 +62,15 @@ func (ctx *Context) AddCloser(c io.Closer) {
 }
 
 func (ctx *Context) Close() {
+	for _, module := range ctx.RuntimeModules() {
+		if module == nil {
+			continue
+		}
+		if err := module.Close(); err != nil {
+			ctx.Logger.Warn("Error closing runtime module %s: %v", module.Name(), err)
+		}
+	}
+
 	for _, c := range ctx.closers {
 		if c == nil {
 			continue
@@ -65,4 +80,46 @@ func (ctx *Context) Close() {
 			ctx.Logger.Error("Error closing resource: %v", err)
 		}
 	}
+}
+
+func (ctx *Context) CurrentConfig() *config.Config {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Config
+}
+
+func (ctx *Context) RegisterRuntimeModules(modules ...RuntimeModule) {
+	if ctx == nil {
+		return
+	}
+	if ctx.runtimeModules == nil {
+		ctx.runtimeModules = make(map[string]RuntimeModule)
+	}
+
+	for _, module := range modules {
+		if module == nil {
+			continue
+		}
+		ctx.runtimeModules[module.Name()] = module
+	}
+}
+
+func (ctx *Context) RuntimeModule(name string) RuntimeModule {
+	if ctx == nil || ctx.runtimeModules == nil {
+		return nil
+	}
+	return ctx.runtimeModules[name]
+}
+
+func (ctx *Context) RuntimeModules() []RuntimeModule {
+	if ctx == nil || len(ctx.runtimeModules) == 0 {
+		return nil
+	}
+
+	modules := make([]RuntimeModule, 0, len(ctx.runtimeModules))
+	for _, module := range ctx.runtimeModules {
+		modules = append(modules, module)
+	}
+	return modules
 }

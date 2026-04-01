@@ -16,9 +16,9 @@ type NewznabController struct {
 	Service aggregatorService
 }
 
-func NewNewznabController(appCtx *app.Context) *NewznabController {
+func NewNewznabController(module app.AggregatorModule) *NewznabController {
 	return &NewznabController{
-		Service: newAggregatorService(appCtx),
+		Service: newAggregatorService(module),
 	}
 }
 

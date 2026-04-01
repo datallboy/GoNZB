@@ -19,7 +19,7 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 	retryTicker := time.NewTicker(2 * time.Second)
 	defer retryTicker.Stop()
 
-	pendingDownloaderReload := false
+	pendingReloads := make(map[string]app.RuntimeModule)
 
 	for {
 		select {
@@ -36,43 +36,40 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 				continue
 			}
 
-			if err := BuildArrNotifier(ctx, appCtx); err != nil {
-				appCtx.Logger.Warn("Failed to rebuild Arr notifier runtime: %v", err)
-			}
-
-			// notifier/settings-only runtime changes should apply immediately,
-			// even if downloader rebuild still needs to wait for an idle queue.
-			if appCtx.Queue != nil {
-				appCtx.Queue.ReloadRuntime(appCtx)
-			}
-
-			if err := ReloadDownloaderIfIdle(appCtx); err != nil {
-				if IsDownloaderReloadDeferred(err) {
-					pendingDownloaderReload = true
-					appCtx.Logger.Warn("Runtime settings applied; downloader runtime reload deferred until queue is idle")
-				} else {
-					appCtx.Logger.Warn("Runtime settings applied, but downloader runtime reload failed: %v", err)
+			for _, module := range appCtx.RuntimeModules() {
+				if err := module.Reload(ctx); err != nil {
+					if module.Name() == "downloader" && IsDownloaderReloadDeferred(err) {
+						pendingReloads[module.Name()] = module
+						appCtx.Logger.Warn("Runtime settings applied; downloader runtime reload deferred until queue is idle")
+						continue
+					}
+					appCtx.Logger.Warn("Runtime settings applied, but %s reload failed: %v", module.Name(), err)
+					continue
 				}
-			} else {
-				pendingDownloaderReload = false
+				delete(pendingReloads, module.Name())
 			}
 
+			BindApplicationModules(appCtx)
 			appCtx.Logger.Info("Applied runtime settings update")
 
 		case <-retryTicker.C:
-			if !pendingDownloaderReload {
+			if len(pendingReloads) == 0 {
 				continue
 			}
 
-			if err := ReloadDownloaderIfIdle(appCtx); err != nil {
-				if !IsDownloaderReloadDeferred(err) {
-					appCtx.Logger.Warn("Deferred downloader runtime reload failed: %v", err)
+			for name, module := range pendingReloads {
+				if err := module.Reload(ctx); err != nil {
+					if name == "downloader" && IsDownloaderReloadDeferred(err) {
+						continue
+					}
+					appCtx.Logger.Warn("Deferred %s runtime reload failed: %v", name, err)
+					delete(pendingReloads, name)
+					continue
 				}
-				continue
-			}
 
-			pendingDownloaderReload = false
-			appCtx.Logger.Info("Applied deferred downloader runtime reload")
+				delete(pendingReloads, name)
+				appCtx.Logger.Info("Applied deferred %s runtime reload", name)
+			}
 		}
 	}
 }

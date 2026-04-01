@@ -12,7 +12,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
-	queuesvc "github.com/datallboy/gonzb/internal/queue"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/labstack/echo/v5"
 )
 
@@ -21,11 +21,31 @@ var compatFetchClient = &http.Client{
 }
 
 type SABController struct {
-	App     *app.Context
-	Service *queuesvc.Service
+	Commands      app.DownloaderCommands
+	Queries       app.DownloaderQueries
+	CurrentConfig func() *config.Config
+}
+
+func NewSABController(module app.DownloaderModule, currentConfig func() *config.Config) *SABController {
+	if module == nil {
+		return &SABController{CurrentConfig: currentConfig}
+	}
+
+	return &SABController{
+		Commands:      module.Commands(),
+		Queries:       module.Queries(),
+		CurrentConfig: currentConfig,
+	}
 }
 
 func (ctrl *SABController) Handle(c *echo.Context) error {
+	if ctrl == nil || ctrl.Commands == nil || ctrl.Queries == nil {
+		return c.JSON(http.StatusServiceUnavailable, sabStatusResponse{
+			Status: false,
+			Error:  "downloader queue service is unavailable",
+		})
+	}
+
 	req, err := bindSABRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, sabStatusResponse{
@@ -101,7 +121,7 @@ func (ctrl *SABController) handleHistory(c *echo.Context, req sabAPIRequest) err
 	limit := parseIntDefault(req.Limit, 50)
 	start := parseIntDefault(req.Start, 0)
 
-	items, _, err := ctrl.Service.ListHistory(c.Request().Context(), "", limit, start)
+	items, _, err := ctrl.Queries.ListHistory(c.Request().Context(), "", limit, start)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, sabHistoryResponse{
 			Status: false,
@@ -170,7 +190,7 @@ func (ctrl *SABController) handleHistoryDelete(c *echo.Context, req sabAPIReques
 
 	// SAB-style "history delete" can target a specific item or clear archived history.
 	if target == "" || strings.EqualFold(target, "all") {
-		_, err := ctrl.Service.ClearHistory(ctx)
+		_, err := ctrl.Commands.ClearHistory(ctx)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, sabStatusResponse{
 				Status: false,
@@ -183,7 +203,7 @@ func (ctrl *SABController) handleHistoryDelete(c *echo.Context, req sabAPIReques
 		})
 	}
 
-	deleted, err := ctrl.Service.DeleteMany(ctx, []string{target})
+	deleted, err := ctrl.Commands.DeleteMany(ctx, []string{target})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, sabStatusResponse{
 			Status: false,
@@ -248,7 +268,7 @@ func (ctrl *SABController) handleAddURL(c *echo.Context, req sabAPIRequest) erro
 		})
 	}
 
-	item, err := ctrl.Service.EnqueueNZBWithCategory(
+	item, err := ctrl.Commands.EnqueueNZBWithCategory(
 		c.Request().Context(),
 		filename,
 		req.Category,
@@ -293,7 +313,7 @@ func (ctrl *SABController) handleAddFile(c *echo.Context, req sabAPIRequest) err
 		filename = "upload.nzb"
 	}
 
-	item, err := ctrl.Service.EnqueueNZBWithCategory(
+	item, err := ctrl.Commands.EnqueueNZBWithCategory(
 		c.Request().Context(),
 		filename,
 		req.Category,
@@ -323,11 +343,11 @@ func (ctrl *SABController) handleDelete(c *echo.Context, req sabAPIRequest) erro
 
 	ctx := c.Request().Context()
 
-	if ctrl.Service.Cancel(id) {
+	if ctrl.Commands.Cancel(id) {
 		return c.JSON(http.StatusOK, sabStatusResponse{Status: true})
 	}
 
-	deleted, err := ctrl.App.JobStore.DeleteQueueItems(ctx, []string{id})
+	deleted, err := ctrl.Commands.DeleteMany(ctx, []string{id})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, sabStatusResponse{
 			Status: false,
@@ -352,7 +372,7 @@ func (ctrl *SABController) handlePause(c *echo.Context, req sabAPIRequest) error
 		})
 	}
 
-	if !ctrl.Service.Pause() {
+	if !ctrl.Commands.Pause() {
 		return c.JSON(http.StatusInternalServerError, sabStatusResponse{
 			Status: false,
 			Error:  "failed to pause downloader queue",
@@ -372,7 +392,7 @@ func (ctrl *SABController) handleResume(c *echo.Context, req sabAPIRequest) erro
 		})
 	}
 
-	if !ctrl.Service.Resume() {
+	if !ctrl.Commands.Resume() {
 		return c.JSON(http.StatusInternalServerError, sabStatusResponse{
 			Status: false,
 			Error:  "failed to resume downloader queue",
@@ -469,7 +489,7 @@ func (ctrl *SABController) handleGetConfig(c *echo.Context, req sabAPIRequest) e
 func (ctrl *SABController) handleFullStatus(c *echo.Context, req sabAPIRequest) error {
 	queueData := ctrl.buildQueueData(req)
 
-	cfg := ctrl.App.Config
+	cfg := ctrl.currentConfig()
 	downloadDir := ""
 	completeDir := ""
 	if cfg != nil {
@@ -549,20 +569,14 @@ func (ctrl *SABController) handleFullStatus(c *echo.Context, req sabAPIRequest) 
 }
 
 func (ctrl *SABController) lookupQueueFiles(ctx context.Context, id string) ([]*domain.DownloadFile, error) {
-	item, err := ctrl.Service.GetItem(ctx, id)
+	item, err := ctrl.Queries.GetItem(ctx, id)
 	if err == nil && item != nil {
-		return ctrl.Service.GetItemFiles(ctx, id)
+		return ctrl.Queries.GetItemFiles(ctx, id)
 	}
-
-	queueItem, err := ctrl.App.JobStore.GetQueueItem(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if queueItem == nil {
-		return nil, nil
-	}
-
-	return ctrl.App.QueueFileStore.GetQueueItemFiles(ctx, queueItem.ID)
+	return nil, nil
 }
 
 func firstUploadedFile(c *echo.Context, fieldNames ...string) (*multipart.FileHeader, error) {
@@ -573,4 +587,11 @@ func firstUploadedFile(c *echo.Context, fieldNames ...string) (*multipart.FileHe
 		}
 	}
 	return nil, fmt.Errorf("missing nzb file upload")
+}
+
+func (ctrl *SABController) currentConfig() *config.Config {
+	if ctrl == nil || ctrl.CurrentConfig == nil {
+		return nil
+	}
+	return ctrl.CurrentConfig()
 }

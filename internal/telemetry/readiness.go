@@ -65,19 +65,19 @@ func Readiness(ctx context.Context, appCtx *app.Context) (int, ProbeResponse) {
 	modules["api"] = simpleReadyModule(cfg.API.Enabled)
 	modules["web_ui"] = simpleReadyModule(cfg.WebUI.Enabled)
 
-	downloader := evaluateDownloader(ctx, appCtx)
+	downloader := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("downloader"))
 	modules["downloader"] = downloader
 	if downloader.Enabled && !downloader.Ready {
 		overallReady = false
 	}
 
-	aggregator := evaluateAggregator(ctx, appCtx)
+	aggregator := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("aggregator"))
 	modules["aggregator"] = aggregator
 	if aggregator.Enabled && !aggregator.Ready {
 		overallReady = false
 	}
 
-	usenetIndexer := evaluateUsenetIndexer(ctx, appCtx)
+	usenetIndexer := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("usenet_indexer"))
 	modules["usenet_indexer"] = usenetIndexer
 	if usenetIndexer.Enabled && !usenetIndexer.Ready {
 		overallReady = false
@@ -154,94 +154,26 @@ func simpleReadyModule(enabled bool) ModuleStatus {
 	}
 }
 
-func evaluateDownloader(ctx context.Context, appCtx *app.Context) ModuleStatus {
-	if !appCtx.Config.Modules.Downloader.Enabled {
+func evaluateRuntimeModule(ctx context.Context, module app.RuntimeModule) ModuleStatus {
+	if module == nil || !module.Enabled() {
 		return simpleReadyModule(false)
 	}
 
-	checks := []Check{
-		boolCheck("job_store", appCtx.JobStore != nil, "downloader job store is required"),
-		boolCheck("queue_file_store", appCtx.QueueFileStore != nil, "queue file store is required"),
-		boolCheck("queue_manager", appCtx.Queue != nil, "queue manager is required"),
-		boolCheck("downloader_runtime", appCtx.Downloader != nil, "downloader runtime is required"),
-		boolCheck("nntp_manager", appCtx.NNTP != nil, "NNTP manager is required"),
-		boolCheck("nzb_parser", appCtx.NZBParser != nil, "NZB parser is required"),
-	}
+	runtimeChecks := module.ReadinessChecks(ctx)
+	checks := make([]Check, 0, len(runtimeChecks))
+	ready := true
 
-	ready := allChecksOK(checks)
-
-	if appCtx.JobStore != nil {
-		checks = append(checks, errorCheck("job_store_ping", appCtx.JobStore.Ping(ctx)))
-		checks = append(checks, errorCheck("job_store_schema", appCtx.JobStore.ValidateSchema(ctx)))
-		ready = ready && checks[len(checks)-1].Status == "ok" && checks[len(checks)-2].Status == "ok"
-	}
-
-	return ModuleStatus{
-		Enabled: true,
-		Ready:   ready,
-		Status:  readyStatus(ready),
-		Checks:  checks,
-	}
-}
-
-func evaluateAggregator(ctx context.Context, appCtx *app.Context) ModuleStatus {
-	if !appCtx.Config.Modules.Aggregator.Enabled {
-		return simpleReadyModule(false)
-	}
-
-	checks := []Check{
-		boolCheck("aggregator_runtime", appCtx.Aggregator != nil, "aggregator runtime is required"),
-		boolCheck("indexer_sources", len(appCtx.Config.Indexers) > 0, "at least one indexer source must be configured"),
-		boolCheck("payload_store", appCtx.BlobStore != nil, "payload store is required"),
-	}
-
-	ready := allChecksOK(checks)
-
-	if appCtx.Config.Store.SearchPersistenceEnabled {
-		if appCtx.JobStore == nil {
-			checks = append(checks, Check{
-				Name:   "aggregator_cache_store",
-				Status: "fail",
-				Detail: "job store is required when search persistence is enabled",
-			})
+	for _, runtimeCheck := range runtimeChecks {
+		status := "ok"
+		if !runtimeCheck.OK {
+			status = "fail"
 			ready = false
-		} else {
-			checks = append(checks, errorCheck("aggregator_cache_ping", appCtx.JobStore.Ping(ctx)))
-			checks = append(checks, errorCheck("aggregator_cache_schema", appCtx.JobStore.ValidateSchema(ctx)))
-			ready = ready && checks[len(checks)-1].Status == "ok" && checks[len(checks)-2].Status == "ok"
 		}
-	}
-
-	return ModuleStatus{
-		Enabled: true,
-		Ready:   ready,
-		Status:  readyStatus(ready),
-		Checks:  checks,
-	}
-}
-
-func evaluateUsenetIndexer(ctx context.Context, appCtx *app.Context) ModuleStatus {
-	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
-		return simpleReadyModule(false)
-	}
-
-	checks := []Check{
-		boolCheck("usenet_indexer_runtime", appCtx.UsenetIndexer != nil, "usenet indexer runtime is required"),
-		boolCheck("pgindex_store", appCtx.PGIndexStore != nil, "pgindex store is required"),
-	}
-
-	ready := allChecksOK(checks)
-
-	if appCtx.PGIndexStore != nil {
-		checks = append(checks, errorCheck("pgindex_ping", appCtx.PGIndexStore.Ping(ctx)))
-		checks = append(checks, errorCheck("pgindex_schema", appCtx.PGIndexStore.ValidateSchema(ctx)))
-		ready = ready && checks[len(checks)-1].Status == "ok" && checks[len(checks)-2].Status == "ok"
-	}
-
-	if appCtx.SettingsStore != nil {
-		checks = append(checks, errorCheck("settings_ping", appCtx.SettingsStore.Ping(ctx)))
-		checks = append(checks, errorCheck("settings_schema", appCtx.SettingsStore.ValidateSchema(ctx)))
-		ready = ready && checks[len(checks)-1].Status == "ok" && checks[len(checks)-2].Status == "ok"
+		checks = append(checks, Check{
+			Name:   runtimeCheck.Name,
+			Status: status,
+			Detail: runtimeCheck.Detail,
+		})
 	}
 
 	return ModuleStatus{

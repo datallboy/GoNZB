@@ -11,6 +11,65 @@ import (
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
+type DownloaderCommands interface {
+	EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error)
+	EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error)
+	EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error)
+	Cancel(id string) bool
+	CancelMany(ids []string) int
+	DeleteMany(ctx context.Context, ids []string) (int64, error)
+	ClearHistory(ctx context.Context) (int64, error)
+	Pause() bool
+	Resume() bool
+}
+
+type DownloaderQueries interface {
+	ListActive() []*domain.QueueItem
+	ListHistory(ctx context.Context, status string, limit, offset int) ([]*domain.QueueItem, int, error)
+	GetActiveItem() *domain.QueueItem
+	GetItem(ctx context.Context, id string) (*domain.QueueItem, error)
+	GetItemFiles(ctx context.Context, id string) ([]*domain.DownloadFile, error)
+	GetItemEvents(ctx context.Context, id string) ([]*domain.QueueItemEvent, error)
+	IsPaused() bool
+}
+
+type DownloaderModule interface {
+	Commands() DownloaderCommands
+	Queries() DownloaderQueries
+}
+
+type AggregatorDownloadResult struct {
+	Release     *domain.Release
+	Reader      io.ReadCloser
+	RedirectURL string
+}
+
+type AggregatorModule interface {
+	Search(ctx context.Context, req SearchRequest) ([]*domain.Release, error)
+	PrepareDownload(ctx context.Context, id string) (*AggregatorDownloadResult, error)
+}
+
+type SettingsAdmin interface {
+	Get(ctx context.Context) (*RuntimeSettings, error)
+	Update(ctx context.Context, patch *RuntimeSettingsPatch) (*RuntimeSettings, error)
+}
+
+type RuntimeCheck struct {
+	Name   string
+	OK     bool
+	Detail string
+}
+
+type RuntimeModule interface {
+	Name() string
+	Enabled() bool
+	Build(ctx context.Context) error
+	Start(ctx context.Context) error
+	Reload(ctx context.Context) error
+	Close() error
+	ReadinessChecks(ctx context.Context) []RuntimeCheck
+}
+
 type NNTPManager interface {
 	// This allows the engine to call the manager without importing the nntp package
 	Fetch(ctx context.Context, seg *domain.Segment, groups []string) (io.Reader, error)
@@ -116,6 +175,7 @@ type QueueManager interface {
 	GetAllItems() []*domain.QueueItem
 	Cancel(id string) bool
 	Delete(id string) bool
+	Stop()
 
 	Pause() bool
 	Resume() bool

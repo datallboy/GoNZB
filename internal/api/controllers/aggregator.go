@@ -11,9 +11,9 @@ type AggregatorController struct {
 	Service aggregatorService
 }
 
-func NewAggregatorController(appCtx *app.Context) *AggregatorController {
+func NewAggregatorController(module app.AggregatorModule) *AggregatorController {
 	return &AggregatorController{
-		Service: newAggregatorService(appCtx),
+		Service: newAggregatorService(module),
 	}
 }
 
