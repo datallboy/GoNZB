@@ -55,5 +55,7 @@ func (r *Runner) setupApp(ctx context.Context) *app.Context {
 		appLogger.Fatal("Failed to build runtime: %v", err)
 	}
 
+	wiring.BindApplicationModules(appCtx)
+
 	return appCtx
 }

@@ -35,7 +35,7 @@ func (ctrl *SABController) buildQueueData(req sabAPIRequest) sabQueueData {
 	visibleSlots := slots[start:end]
 
 	queueStatus := "Paused"
-	if !ctrl.Service.IsPaused() {
+	if !ctrl.Queries.IsPaused() {
 		queueStatus = "Idle"
 	}
 	for _, slot := range slots {
@@ -55,8 +55,8 @@ func (ctrl *SABController) buildQueueData(req sabAPIRequest) sabQueueData {
 		Status:          queueStatus,
 		Speedlimit:      "0",
 		SpeedlimitAbs:   "0",
-		Paused:          ctrl.Service.IsPaused(),
-		PausedAll:       ctrl.Service.IsPaused(),
+		Paused:          ctrl.Queries.IsPaused(),
+		PausedAll:       ctrl.Queries.IsPaused(),
 		NoOfSlotsTotal:  len(slots),
 		NoOfSlots:       len(visibleSlots),
 		Limit:           limit,
@@ -92,9 +92,9 @@ func (ctrl *SABController) buildSABConfig() sabConfigData {
 	downloadDir := ""
 	completeDir := ""
 
-	if ctrl.App != nil && ctrl.App.Config != nil {
-		downloadDir = strings.TrimSpace(ctrl.App.Config.Download.OutDir)
-		completeDir = strings.TrimSpace(ctrl.App.Config.Download.CompletedDir)
+	if cfg := ctrl.currentConfig(); cfg != nil {
+		downloadDir = strings.TrimSpace(cfg.Download.OutDir)
+		completeDir = strings.TrimSpace(cfg.Download.CompletedDir)
 	}
 
 	categories := []sabConfigCategory{
@@ -143,7 +143,7 @@ func categoryDir(baseDir, category string) string {
 }
 
 func (ctrl *SABController) buildQueueSlots(req sabAPIRequest) []sabQueueSlot {
-	items := ctrl.Service.ListActive()
+	items := ctrl.Queries.ListActive()
 
 	slots := make([]sabQueueSlot, 0, len(items))
 	for idx, item := range items {
@@ -168,7 +168,7 @@ func (ctrl *SABController) buildQueueSlots(req sabAPIRequest) []sabQueueSlot {
 		}
 
 		slotStatus := mapSABQueueStatus(item.Status)
-		if ctrl.Service.IsPaused() && slotStatus == "Queued" {
+		if ctrl.Queries.IsPaused() && slotStatus == "Queued" {
 			slotStatus = "Paused"
 		}
 

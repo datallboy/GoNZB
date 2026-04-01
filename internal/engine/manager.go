@@ -235,6 +235,7 @@ func (m *QueueManager) Add(ctx context.Context, req app.QueueAddRequest) (*domai
 }
 
 func (m *QueueManager) Start(ctx context.Context) {
+	workflow := newQueueWorkflow(m)
 
 	loopCtx, loopCancel := context.WithCancel(ctx)
 
@@ -277,56 +278,7 @@ func (m *QueueManager) Start(ctx context.Context) {
 		next.CancelFunc = jobCancel
 		m.mu.Unlock()
 
-		var jobErr error
-
-		// HYDRATION STEP
-		if next.Status == domain.StatusPending {
-			if len(next.Tasks) == 0 {
-				m.recordEvent(jobCtx, next.ID, "hydrate", "start", "Hydrating queue item")
-				m.logger.Debug("Hydrating job - id: %s name: %s", next.ID, releaseTitle(next))
-				jobErr = m.HydrateItem(jobCtx, next)
-			}
-
-			if jobErr != nil {
-				m.finalizeJob(jobCtx, next, jobErr)
-				jobCancel()
-				continue
-			}
-			m.recordEvent(jobCtx, next.ID, "hydrate", "ok", "Hydration complete")
-
-			m.UpdateStatus(jobCtx, next, domain.StatusDownloading)
-		}
-
-		// DOWNLOAD STEP
-		if jobErr == nil && !isCancelled(jobCtx) && next.Status == domain.StatusDownloading {
-
-			if m.isDownloadAlreadyFinished(next) {
-				m.logger.Info("All files present on disk for: %s. Skipping download.", releaseTitle(next))
-			} else {
-				jobErr = m.downloader.Download(jobCtx, next)
-			}
-
-			if jobErr == nil && !isCancelled(jobCtx) {
-				m.UpdateStatus(jobCtx, next, domain.StatusProcessing)
-			}
-		}
-
-		// POST-PROCESSING STEP
-		if jobErr == nil && !isCancelled(jobCtx) && next.Status == domain.StatusProcessing {
-			jobErr = m.processor.PostProcess(jobCtx, next, next.Tasks)
-
-			// PostProcess may update next.OutDir to the final completed/import path.
-			// Persist that before finalization so SAB history points Arr at the right folder.
-			if jobErr == nil {
-				next.UpdatedAt = time.Now().UTC()
-				if persistErr := m.jobStore.SaveQueueItem(jobCtx, next); persistErr != nil {
-					m.logger.Warn("Failed to persist queue item completed path for %s: %v", next.ID, persistErr)
-				}
-			}
-		}
-
-		// FINALIZE
-		m.finalizeJob(jobCtx, next, jobErr)
+		workflow.Execute(jobCtx, next)
 		jobCancel()
 
 		m.mu.Lock()

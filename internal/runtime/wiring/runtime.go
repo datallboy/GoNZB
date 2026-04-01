@@ -21,17 +21,14 @@ func BuildInitialRuntime(appCtx *app.Context) error {
 		return err
 	}
 
-	if err := BuildArrNotifier(context.Background(), appCtx); err != nil {
-		return fmt.Errorf("build arr notifier: %w", err)
+	registerRuntimeModules(appCtx)
+	for _, module := range appCtx.RuntimeModules() {
+		if err := module.Build(context.Background()); err != nil {
+			return fmt.Errorf("build %s module: %w", module.Name(), err)
+		}
 	}
 
-	if err := BuildDownloader(appCtx); err != nil {
-		return err
-	}
-
-	if err := BuildUsenetIndexer(appCtx); err != nil {
-		return err
-	}
+	BindApplicationModules(appCtx)
 
 	return nil
 }
@@ -48,13 +45,10 @@ func StartServerBackgroundLoops(ctx context.Context, appCtx *app.Context) error 
 		go WatchSettings(ctx, appCtx)
 	}
 
-	if appCtx.Config.Modules.Downloader.Enabled {
-		if appCtx.Queue == nil {
-			return fmt.Errorf("downloader module is enabled but queue manager is not initialized")
+	for _, module := range appCtx.RuntimeModules() {
+		if err := module.Start(ctx); err != nil {
+			return fmt.Errorf("start %s module: %w", module.Name(), err)
 		}
-
-		appCtx.Logger.Info("starting downloader queue manager")
-		go appCtx.Queue.Start(ctx)
 	}
 
 	return nil

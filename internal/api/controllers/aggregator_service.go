@@ -4,21 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
+	aggregatormodule "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 )
-
-var (
-	errAggregatorUnavailable = errors.New("aggregator runtime is unavailable")
-	errReleaseNotFound       = errors.New("release not found")
-)
-
-type aggregatorLogger interface {
-	Error(format string, args ...any)
-}
 
 type aggregatorSearchRequest struct {
 	Type     string
@@ -32,41 +23,31 @@ type aggregatorSearchRequest struct {
 	Genre    string
 }
 
-type aggregatorDownloadResult struct {
-	Release     *domain.Release
-	Reader      io.ReadCloser
-	RedirectURL string
-}
-
 type aggregatorService interface {
 	Search(ctx context.Context, req aggregatorSearchRequest) ([]*domain.Release, error)
-	PrepareDownload(ctx context.Context, id string) (*aggregatorDownloadResult, error)
+	PrepareDownload(ctx context.Context, id string) (*app.AggregatorDownloadResult, error)
 }
 
 type runtimeAggregatorService struct {
-	aggregator app.IndexerAggregator
-	blobStore  app.BlobStore
-	logger     aggregatorLogger
+	module app.AggregatorModule
 }
 
-func newAggregatorService(appCtx *app.Context) aggregatorService {
-	if appCtx == nil {
+func newAggregatorService(module app.AggregatorModule) aggregatorService {
+	if module == nil {
 		return &runtimeAggregatorService{}
 	}
 
 	return &runtimeAggregatorService{
-		aggregator: appCtx.Aggregator,
-		blobStore:  appCtx.BlobStore,
-		logger:     appCtx.Logger,
+		module: module,
 	}
 }
 
 func (s *runtimeAggregatorService) Search(ctx context.Context, req aggregatorSearchRequest) ([]*domain.Release, error) {
-	if s == nil || s.aggregator == nil {
-		return nil, errAggregatorUnavailable
+	if s == nil || s.module == nil {
+		return nil, aggregatormodule.ErrUnavailable
 	}
 
-	results, err := s.aggregator.SearchAllWithRequest(ctx, app.SearchRequest{
+	results, err := s.module.Search(ctx, app.SearchRequest{
 		Type:     req.Type,
 		Query:    req.Query,
 		IMDbID:   req.IMDbID,
@@ -84,45 +65,18 @@ func (s *runtimeAggregatorService) Search(ctx context.Context, req aggregatorSea
 	return results, nil
 }
 
-func (s *runtimeAggregatorService) PrepareDownload(ctx context.Context, id string) (*aggregatorDownloadResult, error) {
-	if s == nil || s.aggregator == nil {
-		return nil, errAggregatorUnavailable
+func (s *runtimeAggregatorService) PrepareDownload(ctx context.Context, id string) (*app.AggregatorDownloadResult, error) {
+	if s == nil || s.module == nil {
+		return nil, aggregatormodule.ErrUnavailable
 	}
-
-	res, err := s.aggregator.GetResultByID(ctx, id)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed release lookup for id %s: %v", id, err)
-		}
-		return nil, fmt.Errorf("lookup release: %w", err)
-	}
-	if res == nil {
-		return nil, errReleaseNotFound
-	}
-
-	if res.RedirectAllowed && (s.blobStore == nil || !s.blobStore.Exists(res.ID)) {
-		return &aggregatorDownloadResult{
-			Release:     res,
-			RedirectURL: res.DownloadURL,
-		}, nil
-	}
-
-	reader, err := s.aggregator.GetNZB(ctx, res)
-	if err != nil {
-		return nil, fmt.Errorf("fetch nzb: %w", err)
-	}
-
-	return &aggregatorDownloadResult{
-		Release: res,
-		Reader:  reader,
-	}, nil
+	return s.module.PrepareDownload(ctx, id)
 }
 
 func aggregatorErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, errAggregatorUnavailable):
+	case errors.Is(err, aggregatormodule.ErrUnavailable):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, errReleaseNotFound):
+	case errors.Is(err, aggregatormodule.ErrReleaseMissing):
 		return http.StatusNotFound
 	default:
 		return http.StatusInternalServerError

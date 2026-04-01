@@ -4,13 +4,25 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
-	queuesvc "github.com/datallboy/gonzb/internal/queue"
 	"github.com/labstack/echo/v5"
 )
 
 type QueueController struct {
-	Service *queuesvc.Service
+	Commands app.DownloaderCommands
+	Queries  app.DownloaderQueries
+}
+
+func NewQueueController(module app.DownloaderModule) *QueueController {
+	if module == nil {
+		return &QueueController{}
+	}
+
+	return &QueueController{
+		Commands: module.Commands(),
+		Queries:  module.Queries(),
+	}
 }
 
 type enqueueRequest struct {
@@ -78,7 +90,7 @@ type queueEventResponse struct {
 }
 
 func (ctrl *QueueController) ListActive(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Queries == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -87,7 +99,7 @@ func (ctrl *QueueController) ListActive(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 
-	items := mapQueueItems(ctrl.Service.ListActive())
+	items := mapQueueItems(ctrl.Queries.ListActive())
 	total := len(items)
 
 	if offset > total {
@@ -110,7 +122,7 @@ func (ctrl *QueueController) ListActive(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) ListHistory(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Queries == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -120,7 +132,7 @@ func (ctrl *QueueController) ListHistory(c *echo.Context) error {
 	}
 
 	status := queryParamTrimmed(c, "status")
-	items, total, err := ctrl.Service.ListHistory(c.Request().Context(), status, limit, offset)
+	items, total, err := ctrl.Queries.ListHistory(c.Request().Context(), status, limit, offset)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -138,7 +150,7 @@ func (ctrl *QueueController) ListHistory(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) GetItem(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Queries == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -147,7 +159,7 @@ func (ctrl *QueueController) GetItem(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
-	item, err := ctrl.Service.GetItem(c.Request().Context(), id)
+	item, err := ctrl.Queries.GetItem(c.Request().Context(), id)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -159,7 +171,7 @@ func (ctrl *QueueController) GetItem(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) Add(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Commands == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -177,7 +189,7 @@ func (ctrl *QueueController) Add(c *echo.Context) error {
 		defer file.Close()
 
 		filename := sanitizeUploadFilename(fileHeader.Filename, "manual.nzb")
-		item, queueErr := ctrl.Service.EnqueueNZB(c.Request().Context(), filename, file)
+		item, queueErr := ctrl.Commands.EnqueueNZB(c.Request().Context(), filename, file)
 		if queueErr != nil {
 			return jsonError(c, http.StatusBadRequest, queueErr.Error())
 		}
@@ -193,7 +205,7 @@ func (ctrl *QueueController) Add(c *echo.Context) error {
 	req.ReleaseID = normalizeTrimmed(req.ReleaseID)
 	req.Title = normalizeTrimmed(req.Title)
 
-	item, err := ctrl.Service.EnqueueByReleaseID(c.Request().Context(), req.ReleaseID, req.Title)
+	item, err := ctrl.Commands.EnqueueByReleaseID(c.Request().Context(), req.ReleaseID, req.Title)
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
@@ -202,7 +214,7 @@ func (ctrl *QueueController) Add(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Queries == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -211,7 +223,7 @@ func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
-	files, err := ctrl.Service.GetItemFiles(c.Request().Context(), id)
+	files, err := ctrl.Queries.GetItemFiles(c.Request().Context(), id)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -227,7 +239,7 @@ func (ctrl *QueueController) GetItemFiles(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Queries == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -236,7 +248,7 @@ func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
-	events, err := ctrl.Service.GetItemEvents(c.Request().Context(), id)
+	events, err := ctrl.Queries.GetItemEvents(c.Request().Context(), id)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -252,7 +264,7 @@ func (ctrl *QueueController) GetItemEvents(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) Cancel(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Commands == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -261,7 +273,7 @@ func (ctrl *QueueController) Cancel(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "missing queue item id")
 	}
 
-	ok := ctrl.Service.Cancel(id)
+	ok := ctrl.Commands.Cancel(id)
 	if !ok {
 		return jsonError(c, http.StatusNotFound, "unable to cancel queue item")
 	}
@@ -273,7 +285,7 @@ func (ctrl *QueueController) Cancel(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) CancelMany(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Commands == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -287,7 +299,7 @@ func (ctrl *QueueController) CancelMany(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "ids must contain at least one queue item id")
 	}
 
-	cancelled := ctrl.Service.CancelMany(req.IDs)
+	cancelled := ctrl.Commands.CancelMany(req.IDs)
 	return c.JSON(http.StatusOK, map[string]any{
 		"ok":        true,
 		"requested": len(req.IDs),
@@ -296,7 +308,7 @@ func (ctrl *QueueController) CancelMany(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) DeleteMany(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Commands == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
@@ -310,7 +322,7 @@ func (ctrl *QueueController) DeleteMany(c *echo.Context) error {
 		return jsonError(c, http.StatusBadRequest, "ids must contain at least one queue item id")
 	}
 
-	deleted, err := ctrl.Service.DeleteMany(c.Request().Context(), req.IDs)
+	deleted, err := ctrl.Commands.DeleteMany(c.Request().Context(), req.IDs)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -323,11 +335,11 @@ func (ctrl *QueueController) DeleteMany(c *echo.Context) error {
 }
 
 func (ctrl *QueueController) ClearHistory(c *echo.Context) error {
-	if ctrl.Service == nil {
+	if ctrl.Commands == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "downloader queue service is unavailable")
 	}
 
-	deleted, err := ctrl.Service.ClearHistory(c.Request().Context())
+	deleted, err := ctrl.Commands.ClearHistory(c.Request().Context())
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}

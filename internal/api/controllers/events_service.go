@@ -21,28 +21,28 @@ type downloadEventService interface {
 }
 
 type runtimeDownloadEventService struct {
-	queue app.QueueManager
+	queries app.DownloaderQueries
 }
 
-func newDownloadEventService(appCtx *app.Context) downloadEventService {
-	if appCtx == nil {
+func newDownloadEventService(queries app.DownloaderQueries) downloadEventService {
+	if queries == nil {
 		return &runtimeDownloadEventService{}
 	}
 
 	return &runtimeDownloadEventService{
-		queue: appCtx.Queue,
+		queries: queries,
 	}
 }
 
 func (s *runtimeDownloadEventService) Snapshot() (*downloadEventSnapshot, error) {
-	if s == nil || s.queue == nil {
+	if s == nil || s.queries == nil {
 		return nil, errDownloadEventUnavailable
 	}
 
-	activeItem := s.queue.GetActiveItem()
+	activeItem := s.queries.GetActiveItem()
 	activeJobs := 0
 
-	for _, item := range s.queue.GetAllItems() {
+	for _, item := range s.queries.ListActive() {
 		if item.Status == domain.StatusDownloading || item.Status == domain.StatusProcessing {
 			activeJobs++
 		}

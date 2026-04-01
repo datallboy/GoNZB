@@ -16,9 +16,9 @@ type DownloadEvent struct {
 	Service downloadEventService
 }
 
-func NewDownloadEvent(appCtx *app.Context) *DownloadEvent {
+func NewDownloadEvent(queries app.DownloaderQueries) *DownloadEvent {
 	return &DownloadEvent{
-		Service: newDownloadEventService(appCtx),
+		Service: newDownloadEventService(queries),
 	}
 }
 

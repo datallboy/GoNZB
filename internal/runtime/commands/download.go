@@ -11,7 +11,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/engine"
-	queuesvc "github.com/datallboy/gonzb/internal/queue"
+	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
 func (r *Runner) ExecuteDownload(nzbPath string) {
@@ -26,7 +26,15 @@ func (r *Runner) ExecuteDownload(nzbPath string) {
 	}
 
 	appCtx.Queue = engine.NewQueueManager(appCtx, false)
-	queueService := queuesvc.NewService(appCtx)
+	wiring.BindApplicationModules(appCtx)
+	if appCtx.DownloaderModule == nil {
+		appCtx.Logger.Fatal("downloader module facade is not initialized")
+	}
+
+	commands := appCtx.DownloaderModule.Commands()
+	if commands == nil {
+		appCtx.Logger.Fatal("downloader commands are not initialized")
+	}
 
 	filename := filepath.Base(nzbPath)
 	setupCtx := context.Background()
@@ -37,7 +45,7 @@ func (r *Runner) ExecuteDownload(nzbPath string) {
 	}
 	defer nzbFile.Close()
 
-	item, err := queueService.EnqueueNZB(setupCtx, filename, nzbFile)
+	item, err := commands.EnqueueNZB(setupCtx, filename, nzbFile)
 	if err != nil {
 		appCtx.Logger.Fatal("Failed to queue NZB: %v", err)
 	}

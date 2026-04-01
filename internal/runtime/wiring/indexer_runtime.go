@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/release"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
 )
 
@@ -19,6 +20,13 @@ type usenetIndexerRuntime struct {
 	service        app.UsenetIndexerService
 	scrapeProvider io.Closer
 	interval       time.Duration
+}
+
+type usenetIndexerConfig struct {
+	Newsgroups       []string
+	ScrapeBatchSize  int64
+	ScheduleInterval time.Duration
+	ScrapeServer     *config.ServerConfig
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, error) {
@@ -32,13 +40,18 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 		return nil, fmt.Errorf("usenet indexer is enabled but PGIndexStore is not initialized")
 	}
 
+	runtimeCfg, err := deriveUsenetIndexerConfig(appCtx.Config)
+	if err != nil {
+		return nil, err
+	}
+
 	matcherSvc := match.NewService()
 	assembleSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize: int(appCtx.Config.Indexing.ScrapeBatchSize),
+			BatchSize: int(runtimeCfg.ScrapeBatchSize),
 		},
 	)
 
@@ -56,12 +69,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 		scrapeProvider io.Closer
 	)
 
-	if len(appCtx.Config.Indexing.Newsgroups) > 0 {
-		if len(appCtx.Config.Servers) == 0 {
+	if len(runtimeCfg.Newsgroups) > 0 {
+		if runtimeCfg.ScrapeServer == nil {
 			return nil, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
 		}
 
-		provider := nntp.NewNNTPProvider(appCtx.Config.Servers[0])
+		// Current default: the first configured NNTP server is used as the
+		// scrape transport until per-module transport selection is introduced.
+		provider := nntp.NewNNTPProvider(*runtimeCfg.ScrapeServer)
 		if err := provider.TestConnection(); err != nil {
 			return nil, fmt.Errorf("scrape provider initialization failed: %w", err)
 		}
@@ -72,13 +87,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 			scrapeAdapter,
 			appCtx.Logger,
 			scrape.Options{
-				Newsgroups: appCtx.Config.Indexing.Newsgroups,
-				BatchSize:  appCtx.Config.Indexing.ScrapeBatchSize,
+				Newsgroups: runtimeCfg.Newsgroups,
+				BatchSize:  runtimeCfg.ScrapeBatchSize,
 			},
 		)
 
-		interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute
-		schedulerSvc = scheduler.NewService(scrapeSvc, appCtx.Logger, interval)
+		schedulerSvc = scheduler.NewService(scrapeSvc, appCtx.Logger, runtimeCfg.ScheduleInterval)
 		scrapeProvider = provider
 	}
 
@@ -87,6 +101,25 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 	return &usenetIndexerRuntime{
 		service:        service,
 		scrapeProvider: scrapeProvider,
-		interval:       time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes) * time.Minute,
+		interval:       runtimeCfg.ScheduleInterval,
 	}, nil
+}
+
+func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) {
+	if cfg == nil {
+		return usenetIndexerConfig{}, fmt.Errorf("app config is required")
+	}
+
+	out := usenetIndexerConfig{
+		Newsgroups:       append([]string(nil), cfg.Indexing.Newsgroups...),
+		ScrapeBatchSize:  cfg.Indexing.ScrapeBatchSize,
+		ScheduleInterval: time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
+	}
+
+	if len(cfg.Servers) > 0 {
+		server := cfg.Servers[0]
+		out.ScrapeServer = &server
+	}
+
+	return out, nil
 }
