@@ -4,28 +4,29 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/logger"
-	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 )
 
 type Notifier struct {
 	client       *http.Client
 	logger       *logger.Logger
-	integrations []settingsstore.ArrIntegrationRuntimeSettings
+	integrations []app.ArrIntegrationRuntimeSettings
 }
 
 type refreshCommandRequest struct {
 	Name string `json:"name"`
 }
 
-func New(log *logger.Logger, integrations []settingsstore.ArrIntegrationRuntimeSettings) *Notifier {
-	filtered := make([]settingsstore.ArrIntegrationRuntimeSettings, 0, len(integrations))
+func New(log *logger.Logger, integrations []app.ArrIntegrationRuntimeSettings) *Notifier {
+	filtered := make([]app.ArrIntegrationRuntimeSettings, 0, len(integrations))
 	for _, integration := range integrations {
 		if !integration.Enabled {
 			continue
@@ -77,13 +78,13 @@ func (n *Notifier) NotifyQueueTerminal(ctx context.Context, item *domain.QueueIt
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf(strings.Join(errs, "; "))
+		return errors.New(strings.Join(errs, "; "))
 	}
 
 	return nil
 }
 
-func (n *Notifier) refreshMonitoredDownloads(ctx context.Context, integration settingsstore.ArrIntegrationRuntimeSettings) error {
+func (n *Notifier) refreshMonitoredDownloads(ctx context.Context, integration app.ArrIntegrationRuntimeSettings) error {
 	endpoint := strings.TrimRight(integration.BaseURL, "/") + "/api/v3/command"
 
 	payload, err := json.Marshal(refreshCommandRequest{
@@ -115,7 +116,7 @@ func (n *Notifier) refreshMonitoredDownloads(ctx context.Context, integration se
 	return nil
 }
 
-func normalizeIntegration(integration settingsstore.ArrIntegrationRuntimeSettings) settingsstore.ArrIntegrationRuntimeSettings {
+func normalizeIntegration(integration app.ArrIntegrationRuntimeSettings) app.ArrIntegrationRuntimeSettings {
 	integration.ID = strings.TrimSpace(integration.ID)
 	integration.Kind = strings.ToLower(strings.TrimSpace(integration.Kind))
 	integration.BaseURL = strings.TrimSpace(integration.BaseURL)
@@ -125,7 +126,7 @@ func normalizeIntegration(integration settingsstore.ArrIntegrationRuntimeSetting
 	return integration
 }
 
-func shouldNotifyIntegration(integration settingsstore.ArrIntegrationRuntimeSettings, item *domain.QueueItem) bool {
+func shouldNotifyIntegration(integration app.ArrIntegrationRuntimeSettings, item *domain.QueueItem) bool {
 	if integration.Category == "" {
 		return true
 	}
@@ -138,7 +139,7 @@ func shouldNotifyIntegration(integration settingsstore.ArrIntegrationRuntimeSett
 	return strings.EqualFold(integration.Category, itemCategory)
 }
 
-func buildUserAgent(integration settingsstore.ArrIntegrationRuntimeSettings) string {
+func buildUserAgent(integration app.ArrIntegrationRuntimeSettings) string {
 	clientName := "GoNZB"
 	if integration.ClientName != "" {
 		clientName = integration.ClientName

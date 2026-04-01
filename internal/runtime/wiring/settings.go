@@ -31,7 +31,7 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 				return
 			}
 
-			if err := app.LoadAndApplyEffectiveConfig(ctx, appCtx); err != nil {
+			if err := LoadAndApplyEffectiveConfig(ctx, appCtx); err != nil {
 				appCtx.Logger.Error("Failed to apply runtime settings update: %v", err)
 				continue
 			}

@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/datallboy/gonzb/internal/app"
-	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 )
 
 var errSettingsUnavailable = errors.New("runtime settings are not configured")
@@ -20,8 +19,8 @@ func (e settingsValidationError) Error() string {
 	return e.message
 }
 
-type settingsView = settingsstore.RuntimeSettings
-type settingsPatch = settingsstore.RuntimeSettingsPatch
+type settingsView = app.RuntimeSettings
+type settingsPatch = app.RuntimeSettingsPatch
 
 type settingsService interface {
 	Get(ctx context.Context) (*settingsView, error)
@@ -62,12 +61,12 @@ func (s *runtimeSettingsService) Update(ctx context.Context, patch *settingsPatc
 		return nil, fmt.Errorf("load runtime settings: %w", err)
 	}
 
-	next := settingsstore.ApplyPatch(current, patch)
-	if err := settingsstore.ValidateArrIntegrations(next.ArrIntegrations); err != nil {
+	next := app.ApplyPatch(current, patch)
+	if err := app.ValidateArrIntegrations(next.ArrIntegrations); err != nil {
 		return nil, settingsValidationError{message: err.Error()}
 	}
 
-	effective := settingsstore.ApplyToConfig(s.app.BootstrapConfig, next)
+	effective := app.ApplyToConfig(s.app.BootstrapConfig, next)
 	if effective == nil {
 		return nil, settingsValidationError{message: "failed to build effective config"}
 	}
@@ -83,7 +82,7 @@ func (s *runtimeSettingsService) Update(ctx context.Context, patch *settingsPatc
 }
 
 func redactedSettingsCopy(runtime *settingsView) *settingsView {
-	return settingsstore.RedactedCopy(runtime)
+	return app.RedactedCopy(runtime)
 }
 
 func settingsErrorStatus(err error) int {

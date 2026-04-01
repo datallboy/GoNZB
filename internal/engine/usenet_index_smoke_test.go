@@ -1,4 +1,4 @@
-package engine
+package engine_test
 
 import (
 	"context"
@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/engine"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/processor"
+	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
 type nopWriter struct{}
@@ -43,6 +45,10 @@ func TestUsenetIndexHydrateSmoke(t *testing.T) {
 	}
 	defer appCtx.Close()
 
+	if err := wiring.BuildInitialRuntime(appCtx); err != nil {
+		t.Fatalf("build initial runtime: %v", err)
+	}
+
 	appCtx.NZBParser = nzb.NewParser()
 	appCtx.Processor = processor.New(appCtx, nopWriter{})
 
@@ -70,7 +76,7 @@ func TestUsenetIndexHydrateSmoke(t *testing.T) {
 		t.Fatalf("generated nzb has no files")
 	}
 
-	qm := NewQueueManager(appCtx, false)
+	qm := engine.NewQueueManager(appCtx, false)
 
 	item, err := qm.Add(ctx, app.QueueAddRequest{
 		SourceKind:      "usenet_index",

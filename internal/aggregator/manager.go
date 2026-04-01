@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
@@ -41,14 +43,15 @@ func (m *Manager) AddSource(src catalogSource) {
 
 // CHANGED: backward-compatible wrapper for older callers.
 func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Release, error) {
-	return m.SearchAllWithRequest(ctx, SearchRequest{
-		Type:  SearchTypeGeneric,
+	return m.SearchAllWithRequest(ctx, app.SearchRequest{
+		Type:  string(SearchTypeGeneric),
 		Query: query,
 	})
 }
 
 // CHANGED: structured search request path for real Newznab movie/tvsearch support.
-func (m *Manager) SearchAllWithRequest(ctx context.Context, req SearchRequest) ([]*domain.Release, error) {
+func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchRequest) ([]*domain.Release, error) {
+	internalReq := toSearchRequest(req)
 	merged := make(map[string]*domain.Release, 256)
 	order := make([]string, 0, 256)
 
@@ -74,8 +77,8 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req SearchRequest) (
 	}
 
 	// Only generic text search uses the local cache search path for now.
-	if m.searchPersistenceEnabled && req.Type == SearchTypeGeneric && req.Query != "" {
-		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, req.Query, 100)
+	if m.searchPersistenceEnabled && internalReq.Type == SearchTypeGeneric && internalReq.Query != "" {
+		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, internalReq.Query, 100)
 		if err != nil {
 			m.logger.Warn("Failed to search aggregator_release_cache: %v", err)
 		} else {
@@ -97,7 +100,7 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req SearchRequest) (
 			searchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
-			res, err := s.Search(searchCtx, req)
+			res, err := s.Search(searchCtx, internalReq)
 			if err != nil {
 				m.logger.Error("Indexer %s error: %v", s.Name(), err)
 				return
@@ -289,4 +292,23 @@ func mergeRelease(existing, incoming *domain.Release, preferIncoming bool) *doma
 	}
 	out.CachePresent = existing.CachePresent || incoming.CachePresent
 	return out
+}
+
+func toSearchRequest(req app.SearchRequest) SearchRequest {
+	searchType := SearchType(strings.TrimSpace(strings.ToLower(req.Type)))
+	if searchType == "" {
+		searchType = SearchTypeGeneric
+	}
+
+	return SearchRequest{
+		Type:     searchType,
+		Query:    req.Query,
+		IMDbID:   req.IMDbID,
+		TVDBID:   req.TVDBID,
+		TVMazeID: req.TVMazeID,
+		RageID:   req.RageID,
+		Season:   req.Season,
+		Episode:  req.Episode,
+		Genre:    req.Genre,
+	}
 }

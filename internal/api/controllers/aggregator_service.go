@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 
-	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 )
@@ -67,13 +66,8 @@ func (s *runtimeAggregatorService) Search(ctx context.Context, req aggregatorSea
 		return nil, errAggregatorUnavailable
 	}
 
-	searchType := aggregatorpkg.SearchType(req.Type)
-	if searchType == "" {
-		searchType = aggregatorpkg.SearchTypeGeneric
-	}
-
-	results, err := s.aggregator.SearchAllWithRequest(ctx, aggregatorpkg.SearchRequest{
-		Type:     searchType,
+	results, err := s.aggregator.SearchAllWithRequest(ctx, app.SearchRequest{
+		Type:     req.Type,
 		Query:    req.Query,
 		IMDbID:   req.IMDbID,
 		TVDBID:   req.TVDBID,
