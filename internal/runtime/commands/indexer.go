@@ -7,7 +7,6 @@ import (
 	"syscall"
 
 	"github.com/datallboy/gonzb/internal/app"
-	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
@@ -75,32 +74,109 @@ func (r *Runner) ExecuteIndexerRelease(once bool) {
 	appCtx.Logger.Info("indexer release --once completed")
 }
 
+func (r *Runner) ExecuteIndexerInspect(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect currently supports --once only")
+	}
+
+	if err := appCtx.UsenetIndexer.InspectOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect --once completed")
+}
+
 func (r *Runner) ExecuteIndexerInspectPAR2(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageInspectPAR2, "indexer inspect par2")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect par2 currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.InspectPAR2Once(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect par2 --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect par2 --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspectNFO(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageInspectNFO, "indexer inspect nfo")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect nfo currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.InspectNFOOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect nfo --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect nfo --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspectArchive(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageInspectArchive, "indexer inspect archive")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect archive currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.InspectArchiveOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect archive --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect archive --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspectPassword(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageInspectPassword, "indexer inspect password")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect password currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.InspectPasswordOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect password --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect password --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspectMedia(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageInspectMedia, "indexer inspect media")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer inspect media currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.InspectMediaOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect media --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect media --once completed")
 }
 
 func (r *Runner) ExecuteIndexerEnrichPreDB(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageEnrichPreDB, "indexer enrich predb")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer enrich predb currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.EnrichPredbOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich predb --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich predb --once completed")
 }
 
 func (r *Runner) ExecuteIndexerEnrichTMDB(once bool) {
-	r.executeIndexerStageOnceOnly(once, supervisor.StageEnrichTMDB, "indexer enrich tmdb")
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		appCtx.Logger.Fatal("indexer enrich tmdb currently supports --once only")
+	}
+	if err := appCtx.UsenetIndexer.EnrichTMDBOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich tmdb --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich tmdb --once completed")
 }
 
 func (r *Runner) ExecuteIndexerPipeline(once bool) {
@@ -115,20 +191,6 @@ func (r *Runner) ExecuteIndexerPipeline(once bool) {
 		appCtx.Logger.Fatal("indexer pipeline --once failed: %v", err)
 	}
 	appCtx.Logger.Info("indexer pipeline --once completed")
-}
-
-func (r *Runner) executeIndexerStageOnceOnly(once bool, stageName supervisor.StageName, commandLabel string) {
-	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
-	defer cleanup()
-
-	if !once {
-		appCtx.Logger.Fatal("%s currently supports --once only", commandLabel)
-	}
-
-	if err := appCtx.UsenetIndexer.RunStageOnce(ctx, string(stageName)); err != nil {
-		appCtx.Logger.Fatal("%s --once failed: %v", commandLabel, err)
-	}
-	appCtx.Logger.Info("%s --once completed", commandLabel)
 }
 
 func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {

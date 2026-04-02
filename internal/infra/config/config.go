@@ -74,6 +74,21 @@ type IndexingConfig struct {
 	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
 	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
 	ReleaseMinConfidence    float64  `mapstructure:"release_min_confidence" yaml:"release_min_confidence"`
+	InspectWorkDir          string   `mapstructure:"inspect_work_dir" yaml:"inspect_work_dir"`
+	InspectMaxBytes         int64    `mapstructure:"inspect_max_bytes" yaml:"inspect_max_bytes"`
+	InspectMaxArchiveDepth  int      `mapstructure:"inspect_max_archive_depth" yaml:"inspect_max_archive_depth"`
+	InspectToolTimeoutSecs  int      `mapstructure:"inspect_tool_timeout_seconds" yaml:"inspect_tool_timeout_seconds"`
+	EnableInspectPAR2       bool     `mapstructure:"enable_inspect_par2" yaml:"enable_inspect_par2"`
+	EnableInspectNFO        bool     `mapstructure:"enable_inspect_nfo" yaml:"enable_inspect_nfo"`
+	EnableInspectArchive    bool     `mapstructure:"enable_inspect_archive" yaml:"enable_inspect_archive"`
+	EnableInspectPassword   bool     `mapstructure:"enable_inspect_password" yaml:"enable_inspect_password"`
+	EnableInspectMedia      bool     `mapstructure:"enable_inspect_media" yaml:"enable_inspect_media"`
+	EnableEnrichPreDB       bool     `mapstructure:"enable_enrich_predb" yaml:"enable_enrich_predb"`
+	EnableEnrichTMDB        bool     `mapstructure:"enable_enrich_tmdb" yaml:"enable_enrich_tmdb"`
+	FFProbePath             string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath            string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath               string   `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path                string   `mapstructure:"par2_path" yaml:"par2_path"`
 }
 
 // ModuleConfig is used to enable or disable certain modules within the application
@@ -132,6 +147,21 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_batch_size", 5000)
 	v.SetDefault("indexing.schedule_interval_minutes", 10)
 	v.SetDefault("indexing.release_min_confidence", 0.55)
+	v.SetDefault("indexing.inspect_work_dir", "/store/indexer/inspect")
+	v.SetDefault("indexing.inspect_max_bytes", int64(2*1024*1024*1024))
+	v.SetDefault("indexing.inspect_max_archive_depth", 3)
+	v.SetDefault("indexing.inspect_tool_timeout_seconds", 30)
+	v.SetDefault("indexing.enable_inspect_par2", true)
+	v.SetDefault("indexing.enable_inspect_nfo", true)
+	v.SetDefault("indexing.enable_inspect_archive", true)
+	v.SetDefault("indexing.enable_inspect_password", true)
+	v.SetDefault("indexing.enable_inspect_media", true)
+	v.SetDefault("indexing.enable_enrich_predb", true)
+	v.SetDefault("indexing.enable_enrich_tmdb", true)
+	v.SetDefault("indexing.ffprobe_path", "ffprobe")
+	v.SetDefault("indexing.seven_zip_path", "7z")
+	v.SetDefault("indexing.unrar_path", "unrar")
+	v.SetDefault("indexing.par2_path", "par2")
 
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
@@ -192,6 +222,30 @@ func (c *Config) validate() error {
 	}
 	if c.Indexing.ReleaseMinConfidence > 1 {
 		return errors.New("indexing.release_min_confidence must be between 0 and 1")
+	}
+	if strings.TrimSpace(c.Indexing.InspectWorkDir) == "" {
+		c.Indexing.InspectWorkDir = "/store/indexer/inspect"
+	}
+	if c.Indexing.InspectMaxBytes <= 0 {
+		c.Indexing.InspectMaxBytes = 2 * 1024 * 1024 * 1024
+	}
+	if c.Indexing.InspectMaxArchiveDepth <= 0 {
+		c.Indexing.InspectMaxArchiveDepth = 3
+	}
+	if c.Indexing.InspectToolTimeoutSecs <= 0 {
+		c.Indexing.InspectToolTimeoutSecs = 30
+	}
+	if strings.TrimSpace(c.Indexing.FFProbePath) == "" {
+		c.Indexing.FFProbePath = "ffprobe"
+	}
+	if strings.TrimSpace(c.Indexing.SevenZipPath) == "" {
+		c.Indexing.SevenZipPath = "7z"
+	}
+	if strings.TrimSpace(c.Indexing.UnrarPath) == "" {
+		c.Indexing.UnrarPath = "unrar"
+	}
+	if strings.TrimSpace(c.Indexing.PAR2Path) == "" {
+		c.Indexing.PAR2Path = "par2"
 	}
 
 	// startup must have at least one meaningful runtime surface.

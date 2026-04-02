@@ -113,6 +113,9 @@ var indexerPipelineCmd = &cobra.Command{
 var indexerInspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Run indexer inspect submodules",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspect(inspectOnce)
+	},
 }
 
 var indexerInspectPAR2Cmd = &cobra.Command{
@@ -191,6 +194,7 @@ func init() {
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
+	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectPAR2Cmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one PAR2 inspection pass and exit")
 	indexerInspectNFOCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one NFO inspection pass and exit")
 	indexerInspectArchiveCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one archive inspection pass and exit")

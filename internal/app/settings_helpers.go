@@ -27,6 +27,21 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			ScrapeBatchSize:         cfg.Indexing.ScrapeBatchSize,
 			ScheduleIntervalMinutes: cfg.Indexing.ScheduleIntervalMinutes,
 			ReleaseMinConfidence:    cfg.Indexing.ReleaseMinConfidence,
+			InspectWorkDir:          cfg.Indexing.InspectWorkDir,
+			InspectMaxBytes:         cfg.Indexing.InspectMaxBytes,
+			InspectMaxArchiveDepth:  cfg.Indexing.InspectMaxArchiveDepth,
+			InspectToolTimeoutSecs:  cfg.Indexing.InspectToolTimeoutSecs,
+			EnableInspectPAR2:       cfg.Indexing.EnableInspectPAR2,
+			EnableInspectNFO:        cfg.Indexing.EnableInspectNFO,
+			EnableInspectArchive:    cfg.Indexing.EnableInspectArchive,
+			EnableInspectPassword:   cfg.Indexing.EnableInspectPassword,
+			EnableInspectMedia:      cfg.Indexing.EnableInspectMedia,
+			EnableEnrichPreDB:       cfg.Indexing.EnableEnrichPreDB,
+			EnableEnrichTMDB:        cfg.Indexing.EnableEnrichTMDB,
+			FFProbePath:             cfg.Indexing.FFProbePath,
+			SevenZipPath:            cfg.Indexing.SevenZipPath,
+			UnrarPath:               cfg.Indexing.UnrarPath,
+			PAR2Path:                cfg.Indexing.PAR2Path,
 		},
 	}
 
@@ -126,6 +141,37 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		}
 		if runtime.Indexing.ReleaseMinConfidence > 0 {
 			effective.Indexing.ReleaseMinConfidence = runtime.Indexing.ReleaseMinConfidence
+		}
+		if strings.TrimSpace(runtime.Indexing.InspectWorkDir) != "" {
+			effective.Indexing.InspectWorkDir = runtime.Indexing.InspectWorkDir
+		}
+		if runtime.Indexing.InspectMaxBytes > 0 {
+			effective.Indexing.InspectMaxBytes = runtime.Indexing.InspectMaxBytes
+		}
+		if runtime.Indexing.InspectMaxArchiveDepth > 0 {
+			effective.Indexing.InspectMaxArchiveDepth = runtime.Indexing.InspectMaxArchiveDepth
+		}
+		if runtime.Indexing.InspectToolTimeoutSecs > 0 {
+			effective.Indexing.InspectToolTimeoutSecs = runtime.Indexing.InspectToolTimeoutSecs
+		}
+		effective.Indexing.EnableInspectPAR2 = runtime.Indexing.EnableInspectPAR2
+		effective.Indexing.EnableInspectNFO = runtime.Indexing.EnableInspectNFO
+		effective.Indexing.EnableInspectArchive = runtime.Indexing.EnableInspectArchive
+		effective.Indexing.EnableInspectPassword = runtime.Indexing.EnableInspectPassword
+		effective.Indexing.EnableInspectMedia = runtime.Indexing.EnableInspectMedia
+		effective.Indexing.EnableEnrichPreDB = runtime.Indexing.EnableEnrichPreDB
+		effective.Indexing.EnableEnrichTMDB = runtime.Indexing.EnableEnrichTMDB
+		if strings.TrimSpace(runtime.Indexing.FFProbePath) != "" {
+			effective.Indexing.FFProbePath = runtime.Indexing.FFProbePath
+		}
+		if strings.TrimSpace(runtime.Indexing.SevenZipPath) != "" {
+			effective.Indexing.SevenZipPath = runtime.Indexing.SevenZipPath
+		}
+		if strings.TrimSpace(runtime.Indexing.UnrarPath) != "" {
+			effective.Indexing.UnrarPath = runtime.Indexing.UnrarPath
+		}
+		if strings.TrimSpace(runtime.Indexing.PAR2Path) != "" {
+			effective.Indexing.PAR2Path = runtime.Indexing.PAR2Path
 		}
 	}
 
@@ -251,5 +297,20 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBatchSize:         in.ScrapeBatchSize,
 		ScheduleIntervalMinutes: in.ScheduleIntervalMinutes,
 		ReleaseMinConfidence:    in.ReleaseMinConfidence,
+		InspectWorkDir:          in.InspectWorkDir,
+		InspectMaxBytes:         in.InspectMaxBytes,
+		InspectMaxArchiveDepth:  in.InspectMaxArchiveDepth,
+		InspectToolTimeoutSecs:  in.InspectToolTimeoutSecs,
+		EnableInspectPAR2:       in.EnableInspectPAR2,
+		EnableInspectNFO:        in.EnableInspectNFO,
+		EnableInspectArchive:    in.EnableInspectArchive,
+		EnableInspectPassword:   in.EnableInspectPassword,
+		EnableInspectMedia:      in.EnableInspectMedia,
+		EnableEnrichPreDB:       in.EnableEnrichPreDB,
+		EnableEnrichTMDB:        in.EnableEnrichTMDB,
+		FFProbePath:             in.FFProbePath,
+		SevenZipPath:            in.SevenZipPath,
+		UnrarPath:               in.UnrarPath,
+		PAR2Path:                in.PAR2Path,
 	}
 }

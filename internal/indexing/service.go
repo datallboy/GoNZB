@@ -58,6 +58,45 @@ func (s *Service) AssembleOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageAssemble)
 }
 
+func (s *Service) InspectOnce(ctx context.Context) error {
+	return s.runStagesOnce(
+		ctx,
+		supervisor.StageInspectPAR2,
+		supervisor.StageInspectNFO,
+		supervisor.StageInspectArchive,
+		supervisor.StageInspectPassword,
+		supervisor.StageInspectMedia,
+	)
+}
+
+func (s *Service) InspectPAR2Once(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectPAR2)
+}
+
+func (s *Service) InspectNFOOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectNFO)
+}
+
+func (s *Service) InspectArchiveOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectArchive)
+}
+
+func (s *Service) InspectPasswordOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectPassword)
+}
+
+func (s *Service) InspectMediaOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectMedia)
+}
+
+func (s *Service) EnrichPredbOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageEnrichPreDB)
+}
+
+func (s *Service) EnrichTMDBOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageEnrichTMDB)
+}
+
 func (s *Service) RunStageOnce(ctx context.Context, stageName string) error {
 	return s.runStageOnce(ctx, supervisor.StageName(stageName))
 }
