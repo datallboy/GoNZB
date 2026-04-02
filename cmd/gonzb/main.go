@@ -19,6 +19,8 @@ var (
 	assembleOnce bool
 	releaseOnce  bool
 	pipelineOnce bool
+	inspectOnce  bool
+	enrichOnce   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -108,6 +110,72 @@ var indexerPipelineCmd = &cobra.Command{
 	},
 }
 
+var indexerInspectCmd = &cobra.Command{
+	Use:   "inspect",
+	Short: "Run indexer inspect submodules",
+}
+
+var indexerInspectPAR2Cmd = &cobra.Command{
+	Use:   "par2",
+	Short: "Run the PAR2 inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectPAR2(inspectOnce)
+	},
+}
+
+var indexerInspectNFOCmd = &cobra.Command{
+	Use:   "nfo",
+	Short: "Run the NFO inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectNFO(inspectOnce)
+	},
+}
+
+var indexerInspectArchiveCmd = &cobra.Command{
+	Use:   "archive",
+	Short: "Run the archive inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectArchive(inspectOnce)
+	},
+}
+
+var indexerInspectPasswordCmd = &cobra.Command{
+	Use:   "password",
+	Short: "Run the password inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectPassword(inspectOnce)
+	},
+}
+
+var indexerInspectMediaCmd = &cobra.Command{
+	Use:   "media",
+	Short: "Run the media inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectMedia(inspectOnce)
+	},
+}
+
+var indexerEnrichCmd = &cobra.Command{
+	Use:   "enrich",
+	Short: "Run indexer enrichment submodules",
+}
+
+var indexerEnrichPreDBCmd = &cobra.Command{
+	Use:   "predb",
+	Short: "Run the PreDB enrichment submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichPreDB(enrichOnce)
+	},
+}
+
+var indexerEnrichTMDBCmd = &cobra.Command{
+	Use:   "tmdb",
+	Short: "Run the TMDB enrichment submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichTMDB(enrichOnce)
+	},
+}
+
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
@@ -123,6 +191,13 @@ func init() {
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
+	indexerInspectPAR2Cmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one PAR2 inspection pass and exit")
+	indexerInspectNFOCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one NFO inspection pass and exit")
+	indexerInspectArchiveCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one archive inspection pass and exit")
+	indexerInspectPasswordCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one password inspection pass and exit")
+	indexerInspectMediaCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one media inspection pass and exit")
+	indexerEnrichPreDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB enrichment pass and exit")
+	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -131,6 +206,15 @@ func init() {
 	indexerCmd.AddCommand(indexerAssembleCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
+	indexerCmd.AddCommand(indexerInspectCmd)
+	indexerInspectCmd.AddCommand(indexerInspectPAR2Cmd)
+	indexerInspectCmd.AddCommand(indexerInspectNFOCmd)
+	indexerInspectCmd.AddCommand(indexerInspectArchiveCmd)
+	indexerInspectCmd.AddCommand(indexerInspectPasswordCmd)
+	indexerInspectCmd.AddCommand(indexerInspectMediaCmd)
+	indexerCmd.AddCommand(indexerEnrichCmd)
+	indexerEnrichCmd.AddCommand(indexerEnrichPreDBCmd)
+	indexerEnrichCmd.AddCommand(indexerEnrichTMDBCmd)
 }
 
 func main() {

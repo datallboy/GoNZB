@@ -141,6 +141,7 @@ type UsenetIndexerService interface {
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	RunStageOnce(ctx context.Context, stageName string) error
 	RunPipelineOnce(ctx context.Context) error
 	Start(ctx context.Context, interval time.Duration) error
 }

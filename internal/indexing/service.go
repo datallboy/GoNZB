@@ -5,96 +5,73 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/datallboy/gonzb/internal/indexing/assemble"
-	"github.com/datallboy/gonzb/internal/indexing/release"
-	"github.com/datallboy/gonzb/internal/indexing/scheduler"
-	"github.com/datallboy/gonzb/internal/indexing/scrape"
+	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 )
 
 type Service struct {
-	scrape    *scrape.Service
-	assemble  *assemble.Service
-	release   *release.Service
-	scheduler *scheduler.Service
+	supervisor *supervisor.Supervisor
 }
 
-func NewService(
-	scrapeSvc *scrape.Service,
-	assembleSvc *assemble.Service,
-	releaseSvc *release.Service,
-	schedulerSvc *scheduler.Service,
-) *Service {
+func NewService(supervisorSvc *supervisor.Supervisor) *Service {
 	return &Service{
-		scrape:    scrapeSvc,
-		assemble:  assembleSvc,
-		release:   releaseSvc,
-		scheduler: schedulerSvc,
+		supervisor: supervisorSvc,
 	}
 }
 
 // backward-compatible alias to latest mode.
 func (s *Service) ScrapeOnce(ctx context.Context) error {
-	if s.scrape == nil {
-		return fmt.Errorf("scrape service is not configured")
-	}
-	return s.scrape.RunLatestOnce(ctx)
+	return s.runStageOnce(ctx, supervisor.StageScrapeLatest)
 }
 
 // explicit latest scrape mode
 func (s *Service) ScrapeLatestOnce(ctx context.Context) error {
-	if s.scrape == nil {
-		return fmt.Errorf("scrape service is not configured")
-	}
-	return s.scrape.RunLatestOnce(ctx)
+	return s.runStageOnce(ctx, supervisor.StageScrapeLatest)
 }
 
 // explicit backfill scrape mode
 func (s *Service) ScrapeBackfillOnce(ctx context.Context) error {
-	if s.scrape == nil {
-		return fmt.Errorf("scrape service is not configured")
-	}
-	return s.scrape.RunBackfillOnce(ctx)
+	return s.runStageOnce(ctx, supervisor.StageScrapeBackfill)
 }
 
 func (s *Service) Start(ctx context.Context, interval time.Duration) error {
 	_ = interval
-	if s.scheduler == nil {
-		return fmt.Errorf("scheduler service is not configured")
+	if s.supervisor == nil {
+		return fmt.Errorf("supervisor service is not configured")
 	}
-	return s.scheduler.Run(ctx)
+	return s.supervisor.Run(ctx)
 }
 
 func (s *Service) RunPipelineOnce(ctx context.Context) error {
-	if s.scrape != nil {
-		if err := s.scrape.RunOnce(ctx); err != nil {
-			return fmt.Errorf("scrape pass failed: %w", err)
-		}
-	}
-	if s.assemble == nil {
-		return fmt.Errorf("assemble service is not configured")
-	}
-	if err := s.assemble.RunOnce(ctx); err != nil {
-		return fmt.Errorf("assemble pass failed: %w", err)
-	}
-	if s.release == nil {
-		return fmt.Errorf("release service is not configured")
-	}
-	if err := s.release.RunOnce(ctx); err != nil {
-		return fmt.Errorf("release pass failed: %w", err)
-	}
-	return nil
+	return s.runStagesOnce(
+		ctx,
+		supervisor.StageScrapeLatest,
+		supervisor.StageAssemble,
+		supervisor.StageRelease,
+	)
 }
 
 func (s *Service) ReleaseOnce(ctx context.Context) error {
-	if s.release == nil {
-		return fmt.Errorf("release service is not configured")
-	}
-	return s.release.RunOnce(ctx)
+	return s.runStageOnce(ctx, supervisor.StageRelease)
 }
 
 func (s *Service) AssembleOnce(ctx context.Context) error {
-	if s.assemble == nil {
-		return fmt.Errorf("assemble service is not configured")
+	return s.runStageOnce(ctx, supervisor.StageAssemble)
+}
+
+func (s *Service) RunStageOnce(ctx context.Context, stageName string) error {
+	return s.runStageOnce(ctx, supervisor.StageName(stageName))
+}
+
+func (s *Service) runStageOnce(ctx context.Context, stageName supervisor.StageName) error {
+	if s.supervisor == nil {
+		return fmt.Errorf("supervisor service is not configured")
 	}
-	return s.assemble.RunOnce(ctx)
+	return s.supervisor.RunStageOnce(ctx, stageName)
+}
+
+func (s *Service) runStagesOnce(ctx context.Context, stageNames ...supervisor.StageName) error {
+	if s.supervisor == nil {
+		return fmt.Errorf("supervisor service is not configured")
+	}
+	return s.supervisor.RunStagesOnce(ctx, stageNames...)
 }

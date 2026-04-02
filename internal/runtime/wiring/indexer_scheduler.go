@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 )
 
 type indexerRuntimeState struct {
@@ -15,6 +16,10 @@ type indexerRuntimeState struct {
 
 // Long-running scrape mode restart loop lives outside cmd/main.
 func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeLatest)
+}
+
+func runIndexerStages(ctx context.Context, appCtx *app.Context, stages ...supervisor.StageName) error {
 	if appCtx == nil {
 		return fmt.Errorf("app context is required")
 	}
@@ -27,10 +32,10 @@ func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
 
 	var state indexerRuntimeState
 
-	if err := startIndexerSchedulerRuntime(runCtx, appCtx, &state); err != nil {
+	if err := startIndexerStageRuntime(runCtx, appCtx, &state, stages...); err != nil {
 		return err
 	}
-	defer stopIndexerSchedulerRuntime(appCtx, &state)
+	defer stopIndexerStageRuntime(appCtx, &state)
 
 	if appCtx.SettingsStore == nil {
 		<-ctx.Done()
@@ -57,23 +62,23 @@ func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
 				continue
 			}
 
-			stopIndexerSchedulerRuntime(appCtx, &state)
-			if err := startIndexerSchedulerRuntime(runCtx, appCtx, &state); err != nil {
-				appCtx.Logger.Error("failed to rebuild indexer scheduler runtime: %v", err)
+			stopIndexerStageRuntime(appCtx, &state)
+			if err := startIndexerStageRuntime(runCtx, appCtx, &state, stages...); err != nil {
+				appCtx.Logger.Error("failed to rebuild indexer stage runtime: %v", err)
 				continue
 			}
 
-			appCtx.Logger.Info("Applied runtime settings update to indexer scheduler runtime")
+			appCtx.Logger.Info("Applied runtime settings update to indexer stage runtime")
 		}
 	}
 }
 
-func startIndexerSchedulerRuntime(parent context.Context, appCtx *app.Context, state *indexerRuntimeState) error {
+func startIndexerStageRuntime(parent context.Context, appCtx *app.Context, state *indexerRuntimeState, stages ...supervisor.StageName) error {
 	rt, err := buildUsenetIndexerRuntime(appCtx)
 	if err != nil {
 		return err
 	}
-	if rt.service == nil {
+	if rt.service == nil || rt.supervisor == nil {
 		return fmt.Errorf("usenet indexer runtime is not configured")
 	}
 
@@ -84,15 +89,15 @@ func startIndexerSchedulerRuntime(parent context.Context, appCtx *app.Context, s
 	state.closer = rt.scrapeProvider
 
 	go func() {
-		if err := appCtx.UsenetIndexer.Start(childCtx, rt.interval); err != nil && childCtx.Err() == nil {
-			appCtx.Logger.Error("indexer scheduler failed: %v", err)
+		if err := rt.supervisor.RunSelected(childCtx, stages...); err != nil && childCtx.Err() == nil {
+			appCtx.Logger.Error("indexer stage runtime failed: %v", err)
 		}
 	}()
 
 	return nil
 }
 
-func stopIndexerSchedulerRuntime(appCtx *app.Context, state *indexerRuntimeState) {
+func stopIndexerStageRuntime(appCtx *app.Context, state *indexerRuntimeState) {
 	if state == nil {
 		return
 	}
