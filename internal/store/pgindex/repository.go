@@ -89,6 +89,8 @@ type BinarySummary struct {
 	TotalBytes         int64
 	FirstArticleNumber int64
 	LastArticleNumber  int64
+	MatchConfidence    float64
+	MatchStatus        string
 }
 
 // grouped release candidate used by release formation.
@@ -104,19 +106,49 @@ type ReleaseCandidate struct {
 
 // release catalog upsert input.
 type ReleaseRecord struct {
-	ReleaseID     string
-	GUID          string
-	ProviderID    int64
-	ReleaseKey    string
-	Title         string
-	SearchTitle   string
-	Category      string
-	Poster        string
-	SizeBytes     int64
-	PostedAt      *time.Time
-	FileCount     int
-	ParFileCount  int
-	CompletionPct float64
+	ReleaseID               string
+	GUID                    string
+	ProviderID              int64
+	ReleaseKey              string
+	GroupName               string
+	Title                   string
+	SourceTitle             string
+	DeobfuscatedTitle       string
+	SearchTitle             string
+	Category                string
+	Classification          string
+	Poster                  string
+	SizeBytes               int64
+	PostedAt                *time.Time
+	FileCount               int
+	ParFileCount            int
+	CompletionPct           float64
+	MatchConfidence         float64
+	IdentityStatus          string
+	Passworded              bool
+	PasswordedKnown         bool
+	PasswordedUnknown       bool
+	PasswordState           string
+	PreferredPasswordID     int64
+	Encrypted               bool
+	HasPAR2                 bool
+	HasNFO                  bool
+	ArchiveCount            int
+	VideoCount              int
+	AudioCount              int
+	SamplePresent           bool
+	AvailabilityScore       float64
+	AvailabilityTier        string
+	MediaQualityScore       float64
+	MediaQualityTier        string
+	IdentityConfidenceScore float64
+	RuntimeSeconds          int
+	PrimaryResolution       string
+	PrimaryVideoCodec       string
+	PrimaryAudioCodec       string
+	SubtitleLanguages       []string
+	MediaTags               []string
+	MetadataUpdatedAt       *time.Time
 }
 
 // article mapping row per release file.
@@ -826,7 +858,11 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			COUNT(*)::INTEGER AS binary_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
 		FROM binaries b
-		LEFT JOIN releases r
+		LEFT JOIN (
+			SELECT provider_id, release_key, MAX(updated_at) AS updated_at
+			FROM releases
+			GROUP BY provider_id, release_key
+		) r
 			ON r.provider_id = b.provider_id
 			AND r.release_key = b.release_key
 		GROUP BY b.provider_id, b.newsgroup_id, b.release_key, r.updated_at
@@ -896,7 +932,9 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.observed_parts,
 			b.total_bytes,
 			b.first_article_number,
-			b.last_article_number
+			b.last_article_number,
+			b.match_confidence,
+			b.match_status
 		FROM binaries b
 		LEFT JOIN posters p ON p.id = b.poster_id
 		WHERE b.provider_id = $1
@@ -931,6 +969,8 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			&item.TotalBytes,
 			&item.FirstArticleNumber,
 			&item.LastArticleNumber,
+			&item.MatchConfidence,
+			&item.MatchStatus,
 		); err != nil {
 			return nil, fmt.Errorf("scan binary summary: %w", err)
 		}
@@ -991,70 +1031,227 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	if in.ReleaseKey == "" {
 		return "", fmt.Errorf("release key is required")
 	}
+	in.GroupName = strings.TrimSpace(in.GroupName)
+	if in.GroupName == "" {
+		return "", fmt.Errorf("group name is required")
+	}
 	if strings.TrimSpace(in.ReleaseID) == "" {
 		in.ReleaseID = ksuid.New().String()
 	}
 	if strings.TrimSpace(in.GUID) == "" {
-		in.GUID = StableReleaseGUID(in.ProviderID, in.ReleaseKey)
+		in.GUID = StableReleaseGUID(in.ProviderID, in.GroupName)
 	}
 
 	var postedAt any
 	if in.PostedAt != nil {
 		postedAt = in.PostedAt.UTC()
 	}
+	var metadataUpdatedAt any
+	if in.MetadataUpdatedAt != nil {
+		metadataUpdatedAt = in.MetadataUpdatedAt.UTC()
+	}
+	var preferredPasswordID any
+	if in.PreferredPasswordID > 0 {
+		preferredPasswordID = in.PreferredPasswordID
+	}
+	subtitleJSON, err := json.Marshal(sanitizeStringSlice(in.SubtitleLanguages))
+	if err != nil {
+		return "", fmt.Errorf("marshal subtitle languages for %q: %w", in.GroupName, err)
+	}
+	mediaTagsJSON, err := json.Marshal(sanitizeStringSlice(in.MediaTags))
+	if err != nil {
+		return "", fmt.Errorf("marshal media tags for %q: %w", in.GroupName, err)
+	}
 
 	var releaseID string
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO releases (
 			release_id,
 			guid,
 			provider_id,
 			release_key,
+			group_name,
 			title,
+			source_title,
+			deobfuscated_title,
 			search_title,
 			category,
+			classification,
 			poster,
 			size_bytes,
 			posted_at,
 			file_count,
 			par_file_count,
 			completion_pct,
+			match_confidence,
+			identity_status,
+			passworded,
+			passworded_known,
+			passworded_unknown,
+			password_state,
+			preferred_password_id,
+			encrypted,
+			has_par2,
+			has_nfo,
+			archive_count,
+			video_count,
+			audio_count,
+			sample_present,
+			availability_score,
+			availability_tier,
+			media_quality_score,
+			media_quality_tier,
+			identity_confidence_score,
+			runtime_seconds,
+			primary_resolution,
+			primary_video_codec,
+			primary_audio_codec,
+			subtitle_languages_json,
+			media_tags_json,
+			metadata_updated_at,
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'usenet_index',NOW())
-		ON CONFLICT (provider_id, release_key) DO UPDATE
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,'usenet_index',NOW())
+		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
+		    release_key = EXCLUDED.release_key,
 		    title = EXCLUDED.title,
+		    source_title = EXCLUDED.source_title,
+		    deobfuscated_title = EXCLUDED.deobfuscated_title,
 		    search_title = EXCLUDED.search_title,
 		    category = EXCLUDED.category,
+		    classification = EXCLUDED.classification,
 		    poster = EXCLUDED.poster,
 		    size_bytes = EXCLUDED.size_bytes,
 		    posted_at = EXCLUDED.posted_at,
 		    file_count = EXCLUDED.file_count,
 		    par_file_count = EXCLUDED.par_file_count,
 		    completion_pct = EXCLUDED.completion_pct,
+		    match_confidence = EXCLUDED.match_confidence,
+		    identity_status = EXCLUDED.identity_status,
+		    passworded = EXCLUDED.passworded,
+		    passworded_known = EXCLUDED.passworded_known,
+		    passworded_unknown = EXCLUDED.passworded_unknown,
+		    password_state = EXCLUDED.password_state,
+		    preferred_password_id = EXCLUDED.preferred_password_id,
+		    encrypted = EXCLUDED.encrypted,
+		    has_par2 = EXCLUDED.has_par2,
+		    has_nfo = EXCLUDED.has_nfo,
+		    archive_count = EXCLUDED.archive_count,
+		    video_count = EXCLUDED.video_count,
+		    audio_count = EXCLUDED.audio_count,
+		    sample_present = EXCLUDED.sample_present,
+		    availability_score = EXCLUDED.availability_score,
+		    availability_tier = EXCLUDED.availability_tier,
+		    media_quality_score = EXCLUDED.media_quality_score,
+		    media_quality_tier = EXCLUDED.media_quality_tier,
+		    identity_confidence_score = EXCLUDED.identity_confidence_score,
+		    runtime_seconds = EXCLUDED.runtime_seconds,
+		    primary_resolution = EXCLUDED.primary_resolution,
+		    primary_video_codec = EXCLUDED.primary_video_codec,
+		    primary_audio_codec = EXCLUDED.primary_audio_codec,
+		    subtitle_languages_json = EXCLUDED.subtitle_languages_json,
+		    media_tags_json = EXCLUDED.media_tags_json,
+		    metadata_updated_at = EXCLUDED.metadata_updated_at,
 		    updated_at = NOW()
 		RETURNING release_id`,
 		in.ReleaseID,
 		in.GUID,
 		in.ProviderID,
 		in.ReleaseKey,
+		in.GroupName,
 		strings.TrimSpace(in.Title),
+		strings.TrimSpace(in.SourceTitle),
+		strings.TrimSpace(in.DeobfuscatedTitle),
 		strings.TrimSpace(in.SearchTitle),
 		strings.TrimSpace(in.Category),
+		strings.TrimSpace(in.Classification),
 		strings.TrimSpace(in.Poster),
 		in.SizeBytes,
 		postedAt,
 		in.FileCount,
 		in.ParFileCount,
 		in.CompletionPct,
+		in.MatchConfidence,
+		strings.TrimSpace(in.IdentityStatus),
+		in.Passworded,
+		in.PasswordedKnown,
+		in.PasswordedUnknown,
+		strings.TrimSpace(in.PasswordState),
+		preferredPasswordID,
+		in.Encrypted,
+		in.HasPAR2,
+		in.HasNFO,
+		in.ArchiveCount,
+		in.VideoCount,
+		in.AudioCount,
+		in.SamplePresent,
+		in.AvailabilityScore,
+		strings.TrimSpace(in.AvailabilityTier),
+		in.MediaQualityScore,
+		strings.TrimSpace(in.MediaQualityTier),
+		in.IdentityConfidenceScore,
+		in.RuntimeSeconds,
+		strings.TrimSpace(in.PrimaryResolution),
+		strings.TrimSpace(in.PrimaryVideoCodec),
+		strings.TrimSpace(in.PrimaryAudioCodec),
+		subtitleJSON,
+		mediaTagsJSON,
+		metadataUpdatedAt,
 	).Scan(&releaseID)
 	if err != nil {
-		return "", fmt.Errorf("upsert release %q: %w", in.ReleaseKey, err)
+		return "", fmt.Errorf("upsert release %q: %w", in.GroupName, err)
 	}
 
 	return releaseID, nil
+}
+
+func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error {
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	releaseKey = strings.TrimSpace(releaseKey)
+	if releaseKey == "" {
+		return fmt.Errorf("release key is required")
+	}
+
+	keep := sanitizeStringSlice(keepGroupNames)
+	if len(keep) == 0 {
+		_, err := s.db.ExecContext(ctx, `
+			DELETE FROM releases
+			WHERE provider_id = $1
+			  AND release_key = $2`,
+			providerID,
+			releaseKey,
+		)
+		if err != nil {
+			return fmt.Errorf("delete stale releases for provider=%d release_key=%q: %w", providerID, releaseKey, err)
+		}
+		return nil
+	}
+
+	args := make([]any, 0, len(keep)+2)
+	args = append(args, providerID, releaseKey)
+
+	placeholders := make([]string, 0, len(keep))
+	for i, groupName := range keep {
+		args = append(args, groupName)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+3))
+	}
+
+	query := `
+		DELETE FROM releases
+		WHERE provider_id = $1
+		  AND release_key = $2
+		  AND group_name NOT IN (` + strings.Join(placeholders, ",") + `)`
+
+	_, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete stale releases for provider=%d release_key=%q keep=%v: %w", providerID, releaseKey, keep, err)
+	}
+
+	return nil
 }
 
 // CHANGED: replace release_files and release_file_articles atomically for one release.
@@ -2120,6 +2317,28 @@ func sanitizeAnySlice(in []any) []any {
 		default:
 			out = append(out, v)
 		}
+	}
+
+	return out
+}
+
+func sanitizeStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return []string{}
+	}
+
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, item := range in {
+		clean := sanitizeUTF8(item)
+		if clean == "" {
+			continue
+		}
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
 	}
 
 	return out

@@ -46,6 +46,7 @@ type IndexingRuntimeSettings struct {
 	Newsgroups              []string `json:"newsgroups,omitempty"`
 	ScrapeBatchSize         int64    `json:"scrape_batch_size,omitempty"`
 	ScheduleIntervalMinutes int      `json:"schedule_interval_minutes,omitempty"`
+	ReleaseMinConfidence    float64  `json:"release_min_confidence,omitempty"`
 }
 
 type ArrIntegrationRuntimeSettings struct {
