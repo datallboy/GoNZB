@@ -136,6 +136,15 @@ type UsenetIndexStore interface {
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
+	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
+	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
+	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
+	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
+	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.ReleaseEnrichmentCandidate, error)
 }
 
 // resolver routes by source kind instead of assuming aggregator-only resolution.
@@ -150,6 +159,14 @@ type UsenetIndexerService interface {
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	InspectOnce(ctx context.Context) error
+	InspectPAR2Once(ctx context.Context) error
+	InspectNFOOnce(ctx context.Context) error
+	InspectArchiveOnce(ctx context.Context) error
+	InspectPasswordOnce(ctx context.Context) error
+	InspectMediaOnce(ctx context.Context) error
+	EnrichPredbOnce(ctx context.Context) error
+	EnrichTMDBOnce(ctx context.Context) error
 	RunStageOnce(ctx context.Context, stageName string) error
 	RunPipelineOnce(ctx context.Context) error
 	Start(ctx context.Context, interval time.Duration) error

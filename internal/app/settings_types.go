@@ -47,6 +47,21 @@ type IndexingRuntimeSettings struct {
 	ScrapeBatchSize         int64    `json:"scrape_batch_size,omitempty"`
 	ScheduleIntervalMinutes int      `json:"schedule_interval_minutes,omitempty"`
 	ReleaseMinConfidence    float64  `json:"release_min_confidence,omitempty"`
+	InspectWorkDir          string   `json:"inspect_work_dir,omitempty"`
+	InspectMaxBytes         int64    `json:"inspect_max_bytes,omitempty"`
+	InspectMaxArchiveDepth  int      `json:"inspect_max_archive_depth,omitempty"`
+	InspectToolTimeoutSecs  int      `json:"inspect_tool_timeout_seconds,omitempty"`
+	EnableInspectPAR2       bool     `json:"enable_inspect_par2,omitempty"`
+	EnableInspectNFO        bool     `json:"enable_inspect_nfo,omitempty"`
+	EnableInspectArchive    bool     `json:"enable_inspect_archive,omitempty"`
+	EnableInspectPassword   bool     `json:"enable_inspect_password,omitempty"`
+	EnableInspectMedia      bool     `json:"enable_inspect_media,omitempty"`
+	EnableEnrichPreDB       bool     `json:"enable_enrich_predb,omitempty"`
+	EnableEnrichTMDB        bool     `json:"enable_enrich_tmdb,omitempty"`
+	FFProbePath             string   `json:"ffprobe_path,omitempty"`
+	SevenZipPath            string   `json:"seven_zip_path,omitempty"`
+	UnrarPath               string   `json:"unrar_path,omitempty"`
+	PAR2Path                string   `json:"par2_path,omitempty"`
 }
 
 type ArrIntegrationRuntimeSettings struct {

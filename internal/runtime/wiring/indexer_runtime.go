@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/assemble"
 	"github.com/datallboy/gonzb/internal/indexing/enrich/predb"
 	"github.com/datallboy/gonzb/internal/indexing/enrich/tmdb"
+	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/archive"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/media"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/nfo"
@@ -32,11 +33,19 @@ type usenetIndexerRuntime struct {
 }
 
 type usenetIndexerConfig struct {
-	Newsgroups           []string
-	ScrapeBatchSize      int64
-	StageInterval        time.Duration
-	ReleaseMinConfidence float64
-	ScrapeServer         *config.ServerConfig
+	Newsgroups            []string
+	ScrapeBatchSize       int64
+	StageInterval         time.Duration
+	ReleaseMinConfidence  float64
+	ScrapeServer          *config.ServerConfig
+	Inspect               inspectpkg.Options
+	EnableInspectPAR2     bool
+	EnableInspectNFO      bool
+	EnableInspectArchive  bool
+	EnableInspectPassword bool
+	EnableInspectMedia    bool
+	EnableEnrichPreDB     bool
+	EnableEnrichTMDB      bool
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -73,13 +82,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
 		},
 	)
-	inspectPAR2Svc := par2.NewService(appCtx.Logger)
-	inspectNFOSvc := nfo.NewService(appCtx.Logger)
-	inspectArchiveSvc := archive.NewService(appCtx.Logger)
-	inspectPasswordSvc := password.NewService(appCtx.Logger)
-	inspectMediaSvc := media.NewService(appCtx.Logger)
-	enrichPreDBSvc := predb.NewService(appCtx.Logger)
-	enrichTMDBSvc := tmdb.NewService(appCtx.Logger)
+	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.Inspect)
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
+	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
 
 	var (
 		scrapeSvc      *scrape.Service
@@ -151,7 +161,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageInspectPAR2,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableInspectPAR2,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectPAR2Svc.RunOnce(ctx)
 			}),
@@ -159,7 +169,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageInspectNFO,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableInspectNFO,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectNFOSvc.RunOnce(ctx)
 			}),
@@ -167,7 +177,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageInspectArchive,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableInspectArchive,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectArchiveSvc.RunOnce(ctx)
 			}),
@@ -175,7 +185,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageInspectPassword,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableInspectPassword,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectPasswordSvc.RunOnce(ctx)
 			}),
@@ -183,7 +193,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageInspectMedia,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableInspectMedia,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectMediaSvc.RunOnce(ctx)
 			}),
@@ -191,7 +201,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageEnrichPreDB,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableEnrichPreDB,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return enrichPreDBSvc.RunOnce(ctx)
 			}),
@@ -199,7 +209,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:     supervisor.StageEnrichTMDB,
 			Interval: runtimeCfg.StageInterval,
-			Enabled:  true,
+			Enabled:  runtimeCfg.EnableEnrichTMDB,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return enrichTMDBSvc.RunOnce(ctx)
 			}),
@@ -232,6 +242,24 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ScrapeBatchSize:      cfg.Indexing.ScrapeBatchSize,
 		StageInterval:        time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
 		ReleaseMinConfidence: cfg.Indexing.ReleaseMinConfidence,
+		Inspect: inspectpkg.DefaultOptions(inspectpkg.Options{
+			WorkDir:            cfg.Indexing.InspectWorkDir,
+			MaxBytes:           cfg.Indexing.InspectMaxBytes,
+			MaxArchiveDepth:    cfg.Indexing.InspectMaxArchiveDepth,
+			ToolTimeout:        time.Duration(cfg.Indexing.InspectToolTimeoutSecs) * time.Second,
+			FFProbePath:        cfg.Indexing.FFProbePath,
+			SevenZipPath:       cfg.Indexing.SevenZipPath,
+			UnrarPath:          cfg.Indexing.UnrarPath,
+			PAR2Path:           cfg.Indexing.PAR2Path,
+			CandidateBatchSize: 100,
+		}),
+		EnableInspectPAR2:     cfg.Indexing.EnableInspectPAR2,
+		EnableInspectNFO:      cfg.Indexing.EnableInspectNFO,
+		EnableInspectArchive:  cfg.Indexing.EnableInspectArchive,
+		EnableInspectPassword: cfg.Indexing.EnableInspectPassword,
+		EnableInspectMedia:    cfg.Indexing.EnableInspectMedia,
+		EnableEnrichPreDB:     cfg.Indexing.EnableEnrichPreDB,
+		EnableEnrichTMDB:      cfg.Indexing.EnableEnrichTMDB,
 	}
 
 	if len(cfg.Servers) > 0 {

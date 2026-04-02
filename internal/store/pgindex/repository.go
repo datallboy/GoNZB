@@ -170,6 +170,103 @@ type ReleaseFileRecord struct {
 	Articles  []ReleaseFileArticleRecord
 }
 
+type BinaryInspectionCandidate struct {
+	StageName          string
+	BinaryID           int64
+	ReleaseID          string
+	ReleaseTitle       string
+	SourceTitle        string
+	DeobfuscatedTitle  string
+	GroupName          string
+	FileName           string
+	BinaryName         string
+	ReleaseName        string
+	Poster             string
+	PostedAt           *time.Time
+	TotalBytes         int64
+	TotalParts         int
+	MatchConfidence    float64
+	SourceUpdatedAt    *time.Time
+	CurrentStatus      string
+	CurrentUpdatedAt   *time.Time
+	CurrentSummaryJSON json.RawMessage
+}
+
+type BinaryInspectionRecord struct {
+	StageName         string
+	BinaryID          int64
+	ReleaseID         string
+	Status            string
+	ErrorText         string
+	MaterializedBytes int64
+	ToolProvenance    map[string]any
+	Summary           map[string]any
+	SourceUpdatedAt   *time.Time
+}
+
+type PasswordVerificationCandidate struct {
+	ID                 int64
+	ReleaseID          string
+	BinaryID           int64
+	ArtifactID         int64
+	Title              string
+	SourceTitle        string
+	DeobfuscatedTitle  string
+	PasswordValue      string
+	SourceKind         string
+	SourceRef          string
+	Confidence         float64
+	VerificationStatus string
+	LastError          string
+}
+
+type ReleasePasswordCandidateRecord struct {
+	ReleaseID          string
+	BinaryID           int64
+	ArtifactID         int64
+	PasswordValue      string
+	SourceKind         string
+	SourceRef          string
+	Confidence         float64
+	VerificationStatus string
+	LastVerifiedAt     *time.Time
+	LastError          string
+}
+
+type ReleaseInspectionUpdate struct {
+	ReleaseID         string
+	Encrypted         *bool
+	HasPAR2           *bool
+	HasNFO            *bool
+	Passworded        *bool
+	PasswordedKnown   *bool
+	PasswordedUnknown *bool
+	PasswordState     string
+	ArchiveCount      *int
+	VideoCount        *int
+	AudioCount        *int
+	SamplePresent     *bool
+	PrimaryResolution string
+	PrimaryVideoCodec string
+	PrimaryAudioCodec string
+	SubtitleLanguages []string
+	MediaTags         []string
+	MediaQualityScore *float64
+	MediaQualityTier  string
+	MetadataUpdatedAt *time.Time
+}
+
+type ReleaseEnrichmentCandidate struct {
+	ReleaseID               string
+	Title                   string
+	SourceTitle             string
+	DeobfuscatedTitle       string
+	Classification          string
+	IdentityStatus          string
+	MatchConfidence         float64
+	IdentityConfidenceScore float64
+}
+
 // read DTOs for PG-backed NZB materialization in Milestone 7.
 type CatalogReleaseFile struct {
 	ID        int64
@@ -1130,30 +1227,57 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    completion_pct = EXCLUDED.completion_pct,
 		    match_confidence = EXCLUDED.match_confidence,
 		    identity_status = EXCLUDED.identity_status,
-		    passworded = EXCLUDED.passworded,
-		    passworded_known = EXCLUDED.passworded_known,
-		    passworded_unknown = EXCLUDED.passworded_unknown,
-		    password_state = EXCLUDED.password_state,
+		    passworded = releases.passworded OR EXCLUDED.passworded,
+		    passworded_known = releases.passworded_known OR EXCLUDED.passworded_known,
+		    passworded_unknown = CASE
+		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN FALSE
+		    	ELSE releases.passworded_unknown OR EXCLUDED.passworded_unknown
+		    END,
+		    password_state = CASE
+		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'passworded_known'
+		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'passworded_unknown'
+		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'passworded'
+		    	WHEN EXCLUDED.password_state <> '' THEN EXCLUDED.password_state
+		    	ELSE releases.password_state
+		    END,
 		    preferred_password_id = EXCLUDED.preferred_password_id,
-		    encrypted = EXCLUDED.encrypted,
-		    has_par2 = EXCLUDED.has_par2,
-		    has_nfo = EXCLUDED.has_nfo,
-		    archive_count = EXCLUDED.archive_count,
-		    video_count = EXCLUDED.video_count,
-		    audio_count = EXCLUDED.audio_count,
-		    sample_present = EXCLUDED.sample_present,
-		    availability_score = EXCLUDED.availability_score,
+		    encrypted = releases.encrypted OR EXCLUDED.encrypted,
+		    has_par2 = releases.has_par2 OR EXCLUDED.has_par2,
+		    has_nfo = releases.has_nfo OR EXCLUDED.has_nfo,
+		    archive_count = GREATEST(releases.archive_count, EXCLUDED.archive_count),
+		    video_count = GREATEST(releases.video_count, EXCLUDED.video_count),
+		    audio_count = GREATEST(releases.audio_count, EXCLUDED.audio_count),
+		    sample_present = releases.sample_present OR EXCLUDED.sample_present,
+		    availability_score = GREATEST(releases.availability_score, EXCLUDED.availability_score),
 		    availability_tier = EXCLUDED.availability_tier,
-		    media_quality_score = EXCLUDED.media_quality_score,
-		    media_quality_tier = EXCLUDED.media_quality_tier,
-		    identity_confidence_score = EXCLUDED.identity_confidence_score,
+		    media_quality_score = GREATEST(releases.media_quality_score, EXCLUDED.media_quality_score),
+		    media_quality_tier = CASE
+		    	WHEN EXCLUDED.media_quality_tier <> '' AND EXCLUDED.media_quality_tier <> 'unknown' THEN EXCLUDED.media_quality_tier
+		    	ELSE releases.media_quality_tier
+		    END,
+		    identity_confidence_score = GREATEST(releases.identity_confidence_score, EXCLUDED.identity_confidence_score),
 		    runtime_seconds = EXCLUDED.runtime_seconds,
-		    primary_resolution = EXCLUDED.primary_resolution,
-		    primary_video_codec = EXCLUDED.primary_video_codec,
-		    primary_audio_codec = EXCLUDED.primary_audio_codec,
-		    subtitle_languages_json = EXCLUDED.subtitle_languages_json,
-		    media_tags_json = EXCLUDED.media_tags_json,
-		    metadata_updated_at = EXCLUDED.metadata_updated_at,
+		    primary_resolution = CASE
+		    	WHEN EXCLUDED.primary_resolution <> '' THEN EXCLUDED.primary_resolution
+		    	ELSE releases.primary_resolution
+		    END,
+		    primary_video_codec = CASE
+		    	WHEN EXCLUDED.primary_video_codec <> '' THEN EXCLUDED.primary_video_codec
+		    	ELSE releases.primary_video_codec
+		    END,
+		    primary_audio_codec = CASE
+		    	WHEN EXCLUDED.primary_audio_codec <> '' THEN EXCLUDED.primary_audio_codec
+		    	ELSE releases.primary_audio_codec
+		    END,
+		    subtitle_languages_json = CASE
+		    	WHEN jsonb_array_length(EXCLUDED.subtitle_languages_json) > 0 THEN EXCLUDED.subtitle_languages_json
+		    	ELSE releases.subtitle_languages_json
+		    END,
+		    media_tags_json = CASE
+		    	WHEN jsonb_array_length(EXCLUDED.media_tags_json) > 0 THEN EXCLUDED.media_tags_json
+		    	ELSE releases.media_tags_json
+		    END,
+		    metadata_updated_at = GREATEST(releases.metadata_updated_at, EXCLUDED.metadata_updated_at),
 		    updated_at = NOW()
 		RETURNING release_id`,
 		in.ReleaseID,
@@ -1666,6 +1790,484 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 	rel.CachePresent = strings.EqualFold(generationStatus, "ready")
 
 	return &rel, nil
+}
+
+func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return nil, fmt.Errorf("stage name is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	filter, err := inspectCandidateFilter(stageName)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT
+			$1,
+			b.id,
+			r.release_id,
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			r.group_name,
+			COALESCE(rf.file_name, b.file_name, ''),
+			b.binary_name,
+			b.release_name,
+			COALESCE(r.poster, ''),
+			b.posted_at,
+			b.total_bytes,
+			b.total_parts,
+			b.match_confidence,
+			b.updated_at,
+			COALESCE(bi.status, ''),
+			bi.updated_at,
+			COALESCE(bi.summary_json, '{}'::jsonb)
+		FROM binaries b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = $1
+			AND bi.binary_id = b.id
+		WHERE ` + filter + `
+		  AND (bi.id IS NULL OR bi.status = 'failed' OR b.updated_at > bi.updated_at)
+		ORDER BY r.updated_at DESC, b.updated_at DESC, b.id
+		LIMIT $2`
+
+	rows, err := s.db.QueryContext(ctx, query, stageName, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list binary inspection candidates %s: %w", stageName, err)
+	}
+	defer rows.Close()
+
+	out := make([]BinaryInspectionCandidate, 0, limit)
+	for rows.Next() {
+		var item BinaryInspectionCandidate
+		var postedAt sql.NullTime
+		var sourceUpdatedAt time.Time
+		var currentUpdatedAt sql.NullTime
+
+		if err := rows.Scan(
+			&item.StageName,
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.SourceTitle,
+			&item.DeobfuscatedTitle,
+			&item.GroupName,
+			&item.FileName,
+			&item.BinaryName,
+			&item.ReleaseName,
+			&item.Poster,
+			&postedAt,
+			&item.TotalBytes,
+			&item.TotalParts,
+			&item.MatchConfidence,
+			&sourceUpdatedAt,
+			&item.CurrentStatus,
+			&currentUpdatedAt,
+			&item.CurrentSummaryJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan binary inspection candidate: %w", err)
+		}
+
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		t := sourceUpdatedAt.UTC()
+		item.SourceUpdatedAt = &t
+		if currentUpdatedAt.Valid {
+			ct := currentUpdatedAt.Time.UTC()
+			item.CurrentUpdatedAt = &ct
+		}
+
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary inspection candidates %s: %w", stageName, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	var sourceUpdated any
+	if sourceUpdatedAt != nil {
+		sourceUpdated = sourceUpdatedAt.UTC()
+	}
+	var release any
+	if strings.TrimSpace(releaseID) != "" {
+		release = strings.TrimSpace(releaseID)
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO binary_inspections (
+			stage_name,
+			binary_id,
+			release_id,
+			status,
+			started_at,
+			finished_at,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			source_updated_at,
+			updated_at
+		)
+		VALUES ($1,$2,$3,'running',NOW(),NULL,'',0,'{}'::jsonb,'{}'::jsonb,$4,NOW())
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET release_id = EXCLUDED.release_id,
+		    status = 'running',
+		    started_at = NOW(),
+		    finished_at = NULL,
+		    error_text = '',
+		    materialized_bytes = 0,
+		    tool_provenance_json = '{}'::jsonb,
+		    summary_json = '{}'::jsonb,
+		    source_updated_at = EXCLUDED.source_updated_at,
+		    updated_at = NOW()`,
+		stageName,
+		binaryID,
+		release,
+		sourceUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("start binary inspection %s/%d: %w", stageName, binaryID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) CompleteBinaryInspection(ctx context.Context, in BinaryInspectionRecord) error {
+	return s.finishBinaryInspection(ctx, in, "completed")
+}
+
+func (s *Store) FailBinaryInspection(ctx context.Context, in BinaryInspectionRecord) error {
+	return s.finishBinaryInspection(ctx, in, "failed")
+}
+
+func (s *Store) UpsertReleasePasswordCandidate(ctx context.Context, in ReleasePasswordCandidateRecord) (int64, error) {
+	in.ReleaseID = strings.TrimSpace(in.ReleaseID)
+	if in.ReleaseID == "" {
+		return 0, fmt.Errorf("release id is required")
+	}
+	in.PasswordValue = strings.TrimSpace(in.PasswordValue)
+	if in.PasswordValue == "" {
+		return 0, fmt.Errorf("password value is required")
+	}
+	in.SourceKind = strings.TrimSpace(in.SourceKind)
+	if in.SourceKind == "" {
+		in.SourceKind = "inspect_hint"
+	}
+	in.SourceRef = strings.TrimSpace(in.SourceRef)
+	in.VerificationStatus = strings.TrimSpace(in.VerificationStatus)
+	if in.VerificationStatus == "" {
+		in.VerificationStatus = "pending"
+	}
+
+	var binaryID any
+	if in.BinaryID > 0 {
+		binaryID = in.BinaryID
+	}
+	var artifactID any
+	if in.ArtifactID > 0 {
+		artifactID = in.ArtifactID
+	}
+	var verifiedAt any
+	if in.LastVerifiedAt != nil {
+		verifiedAt = in.LastVerifiedAt.UTC()
+	}
+
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO release_password_candidates (
+			release_id,
+			binary_id,
+			artifact_id,
+			password_value,
+			source_kind,
+			source_ref,
+			confidence,
+			verification_status,
+			last_verified_at,
+			last_error,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+		ON CONFLICT (release_id, password_value, source_kind, source_ref) DO UPDATE
+		SET binary_id = COALESCE(EXCLUDED.binary_id, release_password_candidates.binary_id),
+		    artifact_id = COALESCE(EXCLUDED.artifact_id, release_password_candidates.artifact_id),
+		    confidence = GREATEST(release_password_candidates.confidence, EXCLUDED.confidence),
+		    verification_status = CASE
+		    	WHEN release_password_candidates.verification_status = 'verified' THEN release_password_candidates.verification_status
+		    	ELSE EXCLUDED.verification_status
+		    END,
+		    last_verified_at = COALESCE(EXCLUDED.last_verified_at, release_password_candidates.last_verified_at),
+		    last_error = EXCLUDED.last_error,
+		    updated_at = NOW()
+		RETURNING id`,
+		in.ReleaseID,
+		binaryID,
+		artifactID,
+		in.PasswordValue,
+		in.SourceKind,
+		in.SourceRef,
+		in.Confidence,
+		in.VerificationStatus,
+		verifiedAt,
+		strings.TrimSpace(in.LastError),
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("upsert release password candidate %s/%s: %w", in.ReleaseID, in.PasswordValue, err)
+	}
+
+	return id, nil
+}
+
+func (s *Store) ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]PasswordVerificationCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			rpc.id,
+			rpc.release_id,
+			COALESCE(rpc.binary_id, 0),
+			COALESCE(rpc.artifact_id, 0),
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			rpc.password_value,
+			rpc.source_kind,
+			rpc.source_ref,
+			rpc.confidence,
+			rpc.verification_status,
+			rpc.last_error
+		FROM release_password_candidates rpc
+		JOIN releases r ON r.release_id = rpc.release_id
+		WHERE r.encrypted = TRUE
+		  AND rpc.verification_status <> 'verified'
+		ORDER BY rpc.confidence DESC, rpc.updated_at DESC, rpc.id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list password verification candidates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PasswordVerificationCandidate, 0, limit)
+	for rows.Next() {
+		var item PasswordVerificationCandidate
+		if err := rows.Scan(
+			&item.ID,
+			&item.ReleaseID,
+			&item.BinaryID,
+			&item.ArtifactID,
+			&item.Title,
+			&item.SourceTitle,
+			&item.DeobfuscatedTitle,
+			&item.PasswordValue,
+			&item.SourceKind,
+			&item.SourceRef,
+			&item.Confidence,
+			&item.VerificationStatus,
+			&item.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("scan password verification candidate: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate password verification candidates: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error {
+	if candidateID <= 0 {
+		return fmt.Errorf("candidate id is required")
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return fmt.Errorf("status is required")
+	}
+
+	var verified any
+	if verifiedAt != nil {
+		verified = verifiedAt.UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE release_password_candidates
+		SET verification_status = $2,
+		    last_verified_at = COALESCE($3, last_verified_at),
+		    last_error = $4,
+		    updated_at = NOW()
+		WHERE id = $1`,
+		candidateID,
+		status,
+		verified,
+		strings.TrimSpace(lastError),
+	)
+	if err != nil {
+		return fmt.Errorf("update password candidate status %d: %w", candidateID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInspectionUpdate) error {
+	in.ReleaseID = strings.TrimSpace(in.ReleaseID)
+	if in.ReleaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	subtitlesJSON, err := json.Marshal(sanitizeStringSlice(in.SubtitleLanguages))
+	if err != nil {
+		return fmt.Errorf("marshal subtitle languages for %s: %w", in.ReleaseID, err)
+	}
+	mediaTagsJSON, err := json.Marshal(sanitizeStringSlice(in.MediaTags))
+	if err != nil {
+		return fmt.Errorf("marshal media tags for %s: %w", in.ReleaseID, err)
+	}
+
+	var metadataUpdated any
+	if in.MetadataUpdatedAt != nil {
+		metadataUpdated = in.MetadataUpdatedAt.UTC()
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE releases
+		SET encrypted = COALESCE($2, encrypted),
+		    has_par2 = COALESCE($3, has_par2),
+		    has_nfo = COALESCE($4, has_nfo),
+		    passworded = COALESCE($5, passworded),
+		    passworded_known = COALESCE($6, passworded_known),
+		    passworded_unknown = COALESCE($7, passworded_unknown),
+		    password_state = CASE WHEN $8 <> '' THEN $8 ELSE password_state END,
+		    archive_count = GREATEST(archive_count, COALESCE($9, archive_count)),
+		    video_count = GREATEST(video_count, COALESCE($10, video_count)),
+		    audio_count = GREATEST(audio_count, COALESCE($11, audio_count)),
+		    sample_present = COALESCE($12, sample_present),
+		    primary_resolution = CASE WHEN $13 <> '' THEN $13 ELSE primary_resolution END,
+		    primary_video_codec = CASE WHEN $14 <> '' THEN $14 ELSE primary_video_codec END,
+		    primary_audio_codec = CASE WHEN $15 <> '' THEN $15 ELSE primary_audio_codec END,
+		    subtitle_languages_json = CASE
+		    	WHEN jsonb_array_length($16::jsonb) > 0 THEN $16::jsonb
+		    	ELSE subtitle_languages_json
+		    END,
+		    media_tags_json = CASE
+		    	WHEN jsonb_array_length($17::jsonb) > 0 THEN $17::jsonb
+		    	ELSE media_tags_json
+		    END,
+		    media_quality_score = GREATEST(media_quality_score, COALESCE($18, media_quality_score)),
+		    media_quality_tier = CASE WHEN $19 <> '' THEN $19 ELSE media_quality_tier END,
+		    metadata_updated_at = COALESCE($20, metadata_updated_at),
+		    updated_at = NOW()
+		WHERE release_id = $1`,
+		in.ReleaseID,
+		nullableBool(in.Encrypted),
+		nullableBool(in.HasPAR2),
+		nullableBool(in.HasNFO),
+		nullableBool(in.Passworded),
+		nullableBool(in.PasswordedKnown),
+		nullableBool(in.PasswordedUnknown),
+		strings.TrimSpace(in.PasswordState),
+		nullableInt(in.ArchiveCount),
+		nullableInt(in.VideoCount),
+		nullableInt(in.AudioCount),
+		nullableBool(in.SamplePresent),
+		strings.TrimSpace(in.PrimaryResolution),
+		strings.TrimSpace(in.PrimaryVideoCodec),
+		strings.TrimSpace(in.PrimaryAudioCodec),
+		string(subtitlesJSON),
+		string(mediaTagsJSON),
+		nullableFloat64(in.MediaQualityScore),
+		strings.TrimSpace(in.MediaQualityTier),
+		metadataUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("apply release inspection update %s: %w", in.ReleaseID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]ReleaseEnrichmentCandidate, error) {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return nil, fmt.Errorf("stage name is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	where := "TRUE"
+	switch stageName {
+	case "enrich_predb":
+		where = "identity_status <> 'identified' OR deobfuscated_title = ''"
+	case "enrich_tmdb":
+		where = "(classification = 'video' OR classification = 'video_archive') AND identity_status <> 'identified'"
+	default:
+		return nil, fmt.Errorf("unsupported enrichment stage %q", stageName)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			release_id,
+			title,
+			source_title,
+			deobfuscated_title,
+			classification,
+			identity_status,
+			match_confidence,
+			identity_confidence_score
+		FROM releases
+		WHERE `+where+`
+		ORDER BY updated_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list release enrichment candidates %s: %w", stageName, err)
+	}
+	defer rows.Close()
+
+	out := make([]ReleaseEnrichmentCandidate, 0, limit)
+	for rows.Next() {
+		var item ReleaseEnrichmentCandidate
+		if err := rows.Scan(
+			&item.ReleaseID,
+			&item.Title,
+			&item.SourceTitle,
+			&item.DeobfuscatedTitle,
+			&item.Classification,
+			&item.IdentityStatus,
+			&item.MatchConfidence,
+			&item.IdentityConfidenceScore,
+		); err != nil {
+			return nil, fmt.Errorf("scan release enrichment candidate: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate release enrichment candidates %s: %w", stageName, err)
+	}
+
+	return out, nil
 }
 
 func (s *Store) ClaimIndexerStage(ctx context.Context, req IndexerStageClaimRequest) (*IndexerStageClaimResult, error) {
@@ -2342,4 +2944,128 @@ func sanitizeStringSlice(in []string) []string {
 	}
 
 	return out
+}
+
+func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	in.StageName = strings.TrimSpace(in.StageName)
+	if in.StageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+	if in.BinaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	status := strings.TrimSpace(in.Status)
+	if status == "" {
+		status = fallbackStatus
+	}
+
+	toolJSON, err := json.Marshal(sanitizeStringMap(in.ToolProvenance))
+	if err != nil {
+		return fmt.Errorf("marshal tool provenance for %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+	summaryJSON, err := json.Marshal(sanitizeStringMap(in.Summary))
+	if err != nil {
+		return fmt.Errorf("marshal inspection summary for %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+
+	var sourceUpdated any
+	if in.SourceUpdatedAt != nil {
+		sourceUpdated = in.SourceUpdatedAt.UTC()
+	}
+	var releaseID any
+	if strings.TrimSpace(in.ReleaseID) != "" {
+		releaseID = strings.TrimSpace(in.ReleaseID)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO binary_inspections (
+			stage_name,
+			binary_id,
+			release_id,
+			status,
+			started_at,
+			finished_at,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			source_updated_at,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,NOW(),NOW(),$5,$6,$7,$8,$9,NOW())
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+		    status = EXCLUDED.status,
+		    finished_at = NOW(),
+		    error_text = EXCLUDED.error_text,
+		    materialized_bytes = EXCLUDED.materialized_bytes,
+		    tool_provenance_json = EXCLUDED.tool_provenance_json,
+		    summary_json = EXCLUDED.summary_json,
+		    source_updated_at = COALESCE(EXCLUDED.source_updated_at, binary_inspections.source_updated_at),
+		    updated_at = NOW()`,
+		in.StageName,
+		in.BinaryID,
+		releaseID,
+		status,
+		strings.TrimSpace(in.ErrorText),
+		in.MaterializedBytes,
+		toolJSON,
+		summaryJSON,
+		sourceUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("finish binary inspection %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+
+	return nil
+}
+
+func inspectCandidateFilter(stageName string) (string, error) {
+	switch stageName {
+	case "inspect_par2":
+		return "rf.is_pars = TRUE", nil
+	case "inspect_nfo":
+		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
+	case "inspect_archive", "inspect_password":
+		return `(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r[0-9]{2,3}$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part%.rar'
+		)`, nil
+	case "inspect_media":
+		return `(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mkv' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp4' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.avi' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.ts' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.flac' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp3' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.m4a'
+		)`, nil
+	default:
+		return "", fmt.Errorf("unsupported inspection stage %q", stageName)
+	}
+}
+
+func nullableBool(v *bool) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableFloat64(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
