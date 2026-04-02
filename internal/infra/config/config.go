@@ -73,6 +73,7 @@ type IndexingConfig struct {
 	Newsgroups              []string `mapstructure:"newsgroups" yaml:"newsgroups"`
 	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
 	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
+	ReleaseMinConfidence    float64  `mapstructure:"release_min_confidence" yaml:"release_min_confidence"`
 }
 
 // ModuleConfig is used to enable or disable certain modules within the application
@@ -130,6 +131,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.scrape_batch_size", 5000)
 	v.SetDefault("indexing.schedule_interval_minutes", 10)
+	v.SetDefault("indexing.release_min_confidence", 0.55)
 
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
@@ -184,6 +186,12 @@ func (c *Config) validate() error {
 
 	if c.Indexing.ScheduleIntervalMinutes <= 0 {
 		c.Indexing.ScheduleIntervalMinutes = 10
+	}
+	if c.Indexing.ReleaseMinConfidence <= 0 {
+		c.Indexing.ReleaseMinConfidence = 0.55
+	}
+	if c.Indexing.ReleaseMinConfidence > 1 {
+		return errors.New("indexing.release_min_confidence must be between 0 and 1")
 	}
 
 	// startup must have at least one meaningful runtime surface.

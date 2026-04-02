@@ -26,6 +26,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			Newsgroups:              append([]string(nil), cfg.Indexing.Newsgroups...),
 			ScrapeBatchSize:         cfg.Indexing.ScrapeBatchSize,
 			ScheduleIntervalMinutes: cfg.Indexing.ScheduleIntervalMinutes,
+			ReleaseMinConfidence:    cfg.Indexing.ReleaseMinConfidence,
 		},
 	}
 
@@ -122,6 +123,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		}
 		if runtime.Indexing.ScheduleIntervalMinutes > 0 {
 			effective.Indexing.ScheduleIntervalMinutes = runtime.Indexing.ScheduleIntervalMinutes
+		}
+		if runtime.Indexing.ReleaseMinConfidence > 0 {
+			effective.Indexing.ReleaseMinConfidence = runtime.Indexing.ReleaseMinConfidence
 		}
 	}
 
@@ -246,5 +250,6 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		Newsgroups:              append([]string(nil), in.Newsgroups...),
 		ScrapeBatchSize:         in.ScrapeBatchSize,
 		ScheduleIntervalMinutes: in.ScheduleIntervalMinutes,
+		ReleaseMinConfidence:    in.ReleaseMinConfidence,
 	}
 }

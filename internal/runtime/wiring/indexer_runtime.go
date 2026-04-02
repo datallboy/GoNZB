@@ -32,10 +32,11 @@ type usenetIndexerRuntime struct {
 }
 
 type usenetIndexerConfig struct {
-	Newsgroups      []string
-	ScrapeBatchSize int64
-	StageInterval   time.Duration
-	ScrapeServer    *config.ServerConfig
+	Newsgroups           []string
+	ScrapeBatchSize      int64
+	StageInterval        time.Duration
+	ReleaseMinConfidence float64
+	ScrapeServer         *config.ServerConfig
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -68,7 +69,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		appCtx.Logger,
 		release.Options{
-			BatchSize: 1000,
+			BatchSize:            1000,
+			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
 		},
 	)
 	inspectPAR2Svc := par2.NewService(appCtx.Logger)
@@ -226,9 +228,10 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	}
 
 	out := usenetIndexerConfig{
-		Newsgroups:      append([]string(nil), cfg.Indexing.Newsgroups...),
-		ScrapeBatchSize: cfg.Indexing.ScrapeBatchSize,
-		StageInterval:   time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
+		Newsgroups:           append([]string(nil), cfg.Indexing.Newsgroups...),
+		ScrapeBatchSize:      cfg.Indexing.ScrapeBatchSize,
+		StageInterval:        time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
+		ReleaseMinConfidence: cfg.Indexing.ReleaseMinConfidence,
 	}
 
 	if len(cfg.Servers) > 0 {
