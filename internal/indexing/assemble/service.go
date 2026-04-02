@@ -27,7 +27,7 @@ type repository interface {
 
 // narrow matcher dependency.
 type subjectMatcher interface {
-	MatchSubject(subject, messageID string) match.Result
+	Match(candidate match.Candidate) match.Result
 }
 
 type Options struct {
@@ -80,7 +80,17 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			return err
 		}
 
-		matched := s.matcher.MatchSubject(header.Subject, header.MessageID)
+		matched := s.matcher.Match(match.Candidate{
+			ArticleNumber: header.ArticleNumber,
+			MessageID:     header.MessageID,
+			Subject:       header.Subject,
+			Poster:        header.Poster,
+			PostedAt:      header.DateUTC,
+			Bytes:         header.Bytes,
+			Lines:         header.Lines,
+			Xref:          header.Xref,
+			RawOverview:   header.RawOverview,
+		})
 
 		posterID, err := s.repo.EnsurePoster(ctx, header.Poster)
 		if err != nil {
@@ -92,16 +102,19 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		}
 
 		binaryID, err := s.repo.UpsertBinary(ctx, pgindex.BinaryRecord{
-			ProviderID:  header.ProviderID,
-			NewsgroupID: header.NewsgroupID,
-			PosterID:    posterID,
-			ReleaseKey:  matched.ReleaseKey,
-			ReleaseName: matched.ReleaseName,
-			BinaryKey:   matched.BinaryKey,
-			BinaryName:  matched.BinaryName,
-			FileName:    matched.FileName,
-			TotalParts:  matched.TotalParts,
-			PostedAt:    header.DateUTC,
+			ProviderID:       header.ProviderID,
+			NewsgroupID:      header.NewsgroupID,
+			PosterID:         posterID,
+			ReleaseKey:       matched.ReleaseKey,
+			ReleaseName:      matched.ReleaseName,
+			BinaryKey:        matched.BinaryKey,
+			BinaryName:       matched.BinaryName,
+			FileName:         matched.FileName,
+			TotalParts:       matched.TotalParts,
+			PostedAt:         header.DateUTC,
+			MatchConfidence:  matched.MatchConfidence,
+			MatchStatus:      matched.MatchStatus,
+			GroupingEvidence: matched.GroupingEvidence,
 		})
 		if err != nil {
 			return fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
