@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 func TestRunStageOnceRejectsDisabledStage(t *testing.T) {
@@ -104,4 +106,114 @@ func TestRunSelectedRunsStageOnStartupAndInterval(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for supervisor shutdown")
 	}
+}
+
+func TestRunStageOnceSkipsWhenTrackerDoesNotClaim(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: false,
+			Reason:  "paused",
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageInspectMedia,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when claim is skipped")
+				return nil
+			}),
+		},
+	}, Options{
+		Tracker: tracker,
+		Owner:   "test-owner",
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageInspectMedia); err != nil {
+		t.Fatalf("run stage once: %v", err)
+	}
+	if tracker.claims != 1 {
+		t.Fatalf("expected 1 claim, got %d", tracker.claims)
+	}
+}
+
+func TestRunStageOnceCompletesTrackedRun(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: true,
+			Run: &pgindex.IndexerStageRun{
+				ID:        42,
+				StageName: string(StageRelease),
+			},
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageRelease,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				time.Sleep(15 * time.Millisecond)
+				return nil
+			}),
+		},
+	}, Options{
+		Tracker:           tracker,
+		Owner:             "test-owner",
+		LeaseDuration:     20 * time.Millisecond,
+		HeartbeatInterval: 5 * time.Millisecond,
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageRelease); err != nil {
+		t.Fatalf("run stage once: %v", err)
+	}
+	if tracker.completes != 1 {
+		t.Fatalf("expected 1 completion, got %d", tracker.completes)
+	}
+	if tracker.heartbeats == 0 {
+		t.Fatalf("expected at least one heartbeat, got %d", tracker.heartbeats)
+	}
+	if tracker.fails != 0 {
+		t.Fatalf("expected no failures, got %d", tracker.fails)
+	}
+}
+
+type fakeTracker struct {
+	mu          sync.Mutex
+	claimResult *pgindex.IndexerStageClaimResult
+	claims      int
+	heartbeats  int
+	completes   int
+	fails       int
+}
+
+func (f *fakeTracker) ClaimIndexerStage(context.Context, pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claims++
+	return f.claimResult, nil
+}
+
+func (f *fakeTracker) HeartbeatIndexerStageRun(context.Context, int64, string, time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heartbeats++
+	return nil
+}
+
+func (f *fakeTracker) CompleteIndexerStageRun(context.Context, pgindex.IndexerStageFinishRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completes++
+	return nil
+}
+
+func (f *fakeTracker) FailIndexerStageRun(context.Context, pgindex.IndexerStageFinishRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fails++
+	return nil
 }

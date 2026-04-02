@@ -140,11 +140,12 @@ func (m *aggregatorRuntimeModule) ReadinessChecks(ctx context.Context) []app.Run
 }
 
 type usenetIndexerRuntimeModule struct {
-	appCtx    *app.Context
-	current   io.Closer
-	runParent context.Context
-	runCancel context.CancelFunc
-	running   bool
+	appCtx     *app.Context
+	current    io.Closer
+	runParent  context.Context
+	runCancel  context.CancelFunc
+	running    bool
+	stageOwner string
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -220,8 +221,11 @@ func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 		m.appCtx.UsenetIndexer = nil
 		return m.Close()
 	}
+	if m.stageOwner == "" {
+		m.stageOwner = newIndexerStageOwner()
+	}
 
-	rt, err := buildUsenetIndexerRuntime(m.appCtx)
+	rt, err := buildUsenetIndexerRuntime(m.appCtx, m.stageOwner)
 	if err != nil {
 		return err
 	}
