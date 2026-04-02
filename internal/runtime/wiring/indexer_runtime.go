@@ -22,6 +22,7 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/segmentio/ksuid"
 )
 
 type usenetIndexerRuntime struct {
@@ -37,7 +38,7 @@ type usenetIndexerConfig struct {
 	ScrapeServer    *config.ServerConfig
 }
 
-func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, error) {
+func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
 	if appCtx == nil {
 		return nil, fmt.Errorf("app context is required")
 	}
@@ -110,33 +111,37 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
-			Name:     supervisor.StageScrapeLatest,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  scrapeSvc != nil,
+			Name:      supervisor.StageScrapeLatest,
+			Interval:  runtimeCfg.StageInterval,
+			Enabled:   scrapeSvc != nil,
+			BatchSize: int(runtimeCfg.ScrapeBatchSize),
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return scrapeSvc.RunLatestOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageScrapeBackfill,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  scrapeSvc != nil,
+			Name:      supervisor.StageScrapeBackfill,
+			Interval:  runtimeCfg.StageInterval,
+			Enabled:   scrapeSvc != nil,
+			BatchSize: int(runtimeCfg.ScrapeBatchSize),
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return scrapeSvc.RunBackfillOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageAssemble,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  assembleSvc != nil,
+			Name:      supervisor.StageAssemble,
+			Interval:  runtimeCfg.StageInterval,
+			Enabled:   assembleSvc != nil,
+			BatchSize: int(runtimeCfg.ScrapeBatchSize),
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return assembleSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageRelease,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  releaseSvc != nil,
+			Name:      supervisor.StageRelease,
+			Interval:  runtimeCfg.StageInterval,
+			Enabled:   releaseSvc != nil,
+			BatchSize: 1000,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return releaseSvc.RunOnce(ctx)
 			}),
@@ -197,6 +202,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 				return enrichTMDBSvc.RunOnce(ctx)
 			}),
 		},
+	}, supervisor.Options{
+		Tracker: appCtx.PGIndexStore,
+		Owner:   stageOwner,
 	})
 
 	service := indexing.NewService(supervisorSvc)
@@ -206,6 +214,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 		supervisor:     supervisorSvc,
 		scrapeProvider: scrapeProvider,
 	}, nil
+}
+
+func newIndexerStageOwner() string {
+	return ksuid.New().String()
 }
 
 func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) {

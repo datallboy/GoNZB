@@ -103,6 +103,14 @@ type UsenetIndexStore interface {
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
+	HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error
+	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+	FailIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+	PauseIndexerStage(ctx context.Context, stageName string) error
+	ResumeIndexerStage(ctx context.Context, stageName string) error
+	ListIndexerStageStates(ctx context.Context) ([]pgindex.IndexerStageState, error)
+	ListIndexerStageRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
 
 	EnsureProvider(ctx context.Context, providerKey, displayName string) (int64, error)
 	EnsureNewsgroup(ctx context.Context, groupName string) (int64, error)

@@ -12,6 +12,7 @@ import (
 type indexerRuntimeState struct {
 	cancel func()
 	closer io.Closer
+	owner  string
 }
 
 // Long-running scrape mode restart loop lives outside cmd/main.
@@ -74,7 +75,11 @@ func runIndexerStages(ctx context.Context, appCtx *app.Context, stages ...superv
 }
 
 func startIndexerStageRuntime(parent context.Context, appCtx *app.Context, state *indexerRuntimeState, stages ...supervisor.StageName) error {
-	rt, err := buildUsenetIndexerRuntime(appCtx)
+	if state.owner == "" {
+		state.owner = newIndexerStageOwner()
+	}
+
+	rt, err := buildUsenetIndexerRuntime(appCtx, state.owner)
 	if err != nil {
 		return err
 	}
