@@ -1,0 +1,574 @@
+package match
+
+import (
+	"fmt"
+	"html"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type structuredData struct {
+	Name  string
+	Part  int
+	Total int
+	Size  int64
+}
+
+type matchState struct {
+	candidate           Candidate
+	cleanSubject        string
+	subjectWithoutYEnc  string
+	normalizedSubject   string
+	quotedFilename      string
+	structured          structuredData
+	partNumber          int
+	totalParts          int
+	releaseName         string
+	fileName            string
+	confidence          float64
+	evidence            map[string]any
+	shortCircuitedAfter string
+	fallbackUsed        bool
+}
+
+var (
+	quotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
+	partMarkerRE     = regexp.MustCompile(`(?i)(?:\(|\[)\s*(\d{1,5})\s*/\s*(\d{1,5})\s*(?:\)|\])`)
+	partLooseRE      = regexp.MustCompile(`(?i)\b(\d{1,5})\s*/\s*(\d{1,5})\b`)
+	yencTailRE       = regexp.MustCompile(`(?i)\s+yenc.*$`)
+	yencNameRE       = regexp.MustCompile(`(?i)\bname\s*[:=]\s*(?:"([^"]+)"|([^\s]+))`)
+	yencPartRE       = regexp.MustCompile(`(?i)\bpart\s*[:=]\s*(\d{1,5})\b`)
+	yencTotalRE      = regexp.MustCompile(`(?i)\btotal\s*[:=]\s*(\d{1,5})\b`)
+	yencSizeRE       = regexp.MustCompile(`(?i)\bsize\s*[:=]\s*(\d{1,18})\b`)
+	extensionHintRE  = regexp.MustCompile(`(?i)\.(par2|vol\d+\+\d+\.par2|nfo|sfv|srr|rar|r\d{2,3}|zip|7z|mkv|avi|mp4|mp3|flac)\b`)
+	multiSpaceRE     = regexp.MustCompile(`\s+`)
+	separatorRE      = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
+	unsafeFileRE     = regexp.MustCompile(`[\\/:*?"<>|]+`)
+	nonKeyCharsRE    = regexp.MustCompile(`[^\pL\pN]+`)
+	parFileRE        = regexp.MustCompile(`(?i)\.par2$|\.vol\d+\+\d+\.par2$`)
+)
+
+func newMatchState(candidate Candidate) *matchState {
+	clean := strings.TrimSpace(html.UnescapeString(candidate.Subject))
+	partNumber, totalParts := parsePartInfo(clean)
+	structured := parseStructuredData(clean, candidate.RawOverview)
+	if structured.Part > 0 {
+		partNumber = structured.Part
+	}
+	if structured.Total > totalParts {
+		totalParts = structured.Total
+	}
+
+	return &matchState{
+		candidate:          candidate,
+		cleanSubject:       clean,
+		subjectWithoutYEnc: stripYEnc(clean),
+		normalizedSubject:  normalizeKey(clean),
+		quotedFilename:     extractQuotedFilename(clean),
+		structured:         structured,
+		partNumber:         maxInt(partNumber, 1),
+		totalParts:         maxInt(totalParts, 1),
+		evidence:           make(map[string]any, 12),
+	}
+}
+
+func (s *matchState) addEvidence(name string, delta float64, payload map[string]any) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["score"] = clampConfidence(delta)
+	s.evidence[name] = payload
+	s.confidence = clampConfidence(s.confidence + delta)
+}
+
+func (s *matchState) hasStableIdentity() bool {
+	return strings.TrimSpace(s.releaseName) != "" && strings.TrimSpace(s.bestFileName()) != ""
+}
+
+func (s *matchState) bestFileName() string {
+	if v := sanitizeFileName(s.fileName); v != "" {
+		return v
+	}
+	if v := sanitizeFileName(s.quotedFilename); v != "" {
+		return v
+	}
+	if v := sanitizeFileName(s.structured.Name); v != "" {
+		return v
+	}
+	return ""
+}
+
+func (s *matchState) bestExtension() string {
+	for _, value := range []string{s.fileName, s.quotedFilename, s.structured.Name, s.cleanSubject} {
+		if ext := extractExtensionHint(value); ext != "" {
+			return ext
+		}
+	}
+	return ""
+}
+
+func (s *matchState) contextSeed() string {
+	parts := make([]string, 0, 6)
+
+	if v := normalizePoster(s.candidate.Poster); v != "" {
+		parts = append(parts, v)
+	}
+	if v := extractMessageHost(s.candidate.MessageID); v != "" {
+		parts = append(parts, v)
+	}
+	if groups := parseXrefGroups(s.candidate.Xref); len(groups) > 0 {
+		parts = append(parts, strings.Join(groups, "_"))
+	}
+	if v := derivePostingWindow(s.candidate.PostedAt); v != "" {
+		parts = append(parts, v)
+	}
+	if ext := strings.TrimPrefix(strings.ToLower(s.bestExtension()), "."); ext != "" {
+		parts = append(parts, ext)
+	}
+	if len(parts) == 0 {
+		if v := normalizeKey(strings.Trim(s.candidate.MessageID, "<>")); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	if len(parts) == 0 {
+		return "unknown-release"
+	}
+	return strings.Join(parts, "-")
+}
+
+func (s *matchState) contextualReleaseName() string {
+	if releaseName := deriveReleaseName(s.cleanSubject, s.bestFileName()); releaseName != "" {
+		return releaseName
+	}
+
+	seed := sanitizeFileName(s.contextSeed())
+	if seed == "" {
+		return fallbackReleaseName(s.cleanSubject, s.candidate.MessageID)
+	}
+
+	return seed
+}
+
+func (s *matchState) contextualFileName() string {
+	name := fallbackFileName(s.contextualReleaseName(), s.contextSeed())
+	if ext := s.bestExtension(); ext != "" {
+		if current := filepath.Ext(name); current == "" || strings.EqualFold(current, ".bin") {
+			name = strings.TrimSuffix(name, current) + ext
+		}
+	}
+	return sanitizeFileName(name)
+}
+
+func (s *matchState) finalize(opts Options) Result {
+	releaseName := strings.TrimSpace(s.releaseName)
+	if releaseName == "" {
+		releaseName = s.contextualReleaseName()
+		s.fallbackUsed = true
+	}
+
+	fileName := s.bestFileName()
+	if fileName == "" {
+		fileName = s.contextualFileName()
+		s.fallbackUsed = true
+	}
+
+	fileName = sanitizeFileName(fileName)
+	if fileName == "" {
+		fileName = fallbackFileName(releaseName, s.contextSeed())
+		s.fallbackUsed = true
+	}
+
+	if s.totalParts < s.partNumber {
+		s.totalParts = s.partNumber
+	}
+	if s.totalParts <= 0 {
+		s.totalParts = 1
+	}
+	if s.partNumber <= 0 {
+		s.partNumber = 1
+	}
+
+	releaseKey := normalizeKey(releaseName)
+	if releaseKey == "" {
+		releaseKey = normalizeKey(s.contextSeed())
+	}
+
+	fileKey := normalizeKey(fileName)
+	if fileKey == "" {
+		fileKey = normalizeKey(s.contextSeed())
+	}
+
+	status := "low_confidence"
+	if s.confidence >= opts.HighConfidenceThreshold {
+		status = "matched"
+	} else if s.confidence >= opts.ProbableConfidenceThreshold {
+		status = "probable"
+	}
+
+	s.evidence["summary"] = map[string]any{
+		"confidence":            clampConfidence(s.confidence),
+		"status":                status,
+		"fallback_used":         s.fallbackUsed,
+		"short_circuited_after": s.shortCircuitedAfter,
+	}
+	if s.fallbackUsed {
+		s.evidence["fallback"] = map[string]any{
+			"context_seed": s.contextSeed(),
+			"used":         true,
+		}
+	}
+
+	return Result{
+		ReleaseName:      releaseName,
+		ReleaseKey:       releaseKey,
+		BinaryName:       fileName,
+		BinaryKey:        releaseKey + "::" + fileKey,
+		FileName:         fileName,
+		PartNumber:       s.partNumber,
+		TotalParts:       s.totalParts,
+		IsPars:           parFileRE.MatchString(strings.ToLower(fileName)),
+		MatchConfidence:  clampConfidence(s.confidence),
+		MatchStatus:      status,
+		GroupingEvidence: s.evidence,
+	}
+}
+
+func parsePartInfo(subject string) (int, int) {
+	for _, re := range []*regexp.Regexp{partMarkerRE, partLooseRE} {
+		m := re.FindStringSubmatch(subject)
+		if len(m) != 3 {
+			continue
+		}
+
+		part, err1 := strconv.Atoi(m[1])
+		total, err2 := strconv.Atoi(m[2])
+		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+			continue
+		}
+		if part > total {
+			total = part
+		}
+		return part, total
+	}
+
+	return 1, 1
+}
+
+func parseStructuredData(subject string, raw map[string]any) structuredData {
+	out := structuredData{}
+
+	if m := yencNameRE.FindStringSubmatch(subject); len(m) > 0 {
+		out.Name = firstNonEmpty(m[1], m[2])
+	}
+	out.Part = firstPositiveInt(extractRegexpInt(yencPartRE, subject), lookupInt(raw, "part"))
+	out.Total = firstPositiveInt(extractRegexpInt(yencTotalRE, subject), lookupInt(raw, "total"))
+	out.Size = firstPositiveInt64(extractRegexpInt64(yencSizeRE, subject), lookupInt64(raw, "size"), lookupInt64(raw, "bytes"))
+
+	if out.Name == "" {
+		out.Name = lookupString(raw, "name")
+	}
+	if out.Name == "" {
+		out.Name = lookupString(raw, "filename")
+	}
+
+	out.Name = sanitizeFileName(out.Name)
+	return out
+}
+
+func extractQuotedFilename(subject string) string {
+	all := quotedFilenameRE.FindAllStringSubmatch(subject, -1)
+	if len(all) == 0 {
+		return ""
+	}
+
+	for i := len(all) - 1; i >= 0; i-- {
+		name := sanitizeFileName(all[i][1])
+		if name != "" {
+			return name
+		}
+	}
+
+	return ""
+}
+
+func deriveReleaseName(subject, fileName string) string {
+	base := stripYEnc(subject)
+	base = partMarkerRE.ReplaceAllString(base, " ")
+	base = partLooseRE.ReplaceAllString(base, " ")
+	base = yencNameRE.ReplaceAllString(base, " ")
+	base = yencPartRE.ReplaceAllString(base, " ")
+	base = yencTotalRE.ReplaceAllString(base, " ")
+	base = yencSizeRE.ReplaceAllString(base, " ")
+	if fileName != "" {
+		base = strings.ReplaceAll(base, `"`+fileName+`"`, " ")
+		base = strings.ReplaceAll(base, fileName, " ")
+	}
+	base = separatorRE.ReplaceAllString(base, " ")
+	base = multiSpaceRE.ReplaceAllString(base, " ")
+	base = strings.TrimSpace(base)
+
+	if base != "" {
+		return base
+	}
+
+	if fileName != "" {
+		stem := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+		stem = strings.TrimSpace(stem)
+		if stem != "" {
+			return stem
+		}
+	}
+
+	return ""
+}
+
+func fallbackReleaseName(subject, messageID string) string {
+	base := stripYEnc(subject)
+	base = partMarkerRE.ReplaceAllString(base, " ")
+	base = partLooseRE.ReplaceAllString(base, " ")
+	base = separatorRE.ReplaceAllString(base, " ")
+	base = multiSpaceRE.ReplaceAllString(base, " ")
+	base = strings.TrimSpace(base)
+	if base != "" {
+		return base
+	}
+
+	msg := strings.TrimSpace(messageID)
+	msg = strings.Trim(msg, "<>")
+	if msg == "" {
+		return "unknown-release"
+	}
+	return msg
+}
+
+func fallbackFileName(releaseName, messageID string) string {
+	name := sanitizeFileName(releaseName)
+	if name == "" {
+		name = sanitizeFileName(strings.Trim(messageID, "<>"))
+	}
+	if name == "" {
+		name = "unknown-release"
+	}
+	if filepath.Ext(name) == "" {
+		name += ".bin"
+	}
+	return name
+}
+
+func sanitizeFileName(name string) string {
+	name = strings.TrimSpace(html.UnescapeString(name))
+	if name == "" {
+		return ""
+	}
+
+	name = unsafeFileRE.ReplaceAllString(name, "_")
+	name = strings.Trim(name, ". ")
+	name = multiSpaceRE.ReplaceAllString(name, " ")
+	name = strings.TrimSpace(name)
+
+	if name == "" {
+		return ""
+	}
+
+	return name
+}
+
+func stripYEnc(subject string) string {
+	out := yencTailRE.ReplaceAllString(subject, "")
+	out = strings.TrimSpace(out)
+	return out
+}
+
+func normalizeKey(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	v = stripYEnc(v)
+	v = nonKeyCharsRE.ReplaceAllString(v, " ")
+	v = multiSpaceRE.ReplaceAllString(v, " ")
+	return strings.TrimSpace(v)
+}
+
+func normalizePoster(poster string) string {
+	poster = strings.ToLower(strings.TrimSpace(poster))
+	poster = strings.ReplaceAll(poster, "<", " ")
+	poster = strings.ReplaceAll(poster, ">", " ")
+	poster = multiSpaceRE.ReplaceAllString(poster, " ")
+	return normalizeKey(poster)
+}
+
+func extractMessageHost(messageID string) string {
+	value := strings.TrimSpace(strings.Trim(messageID, "<>"))
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "@")
+	if len(parts) < 2 {
+		return ""
+	}
+	return normalizeKey(parts[len(parts)-1])
+}
+
+func parseXrefGroups(xref string) []string {
+	fields := strings.Fields(strings.TrimSpace(xref))
+	if len(fields) < 2 {
+		return nil
+	}
+
+	out := make([]string, 0, len(fields)-1)
+	for _, field := range fields[1:] {
+		group := field
+		if idx := strings.IndexByte(group, ':'); idx >= 0 {
+			group = group[:idx]
+		}
+		group = normalizeKey(group)
+		if group != "" {
+			out = append(out, group)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func derivePostingWindow(postedAt *time.Time) string {
+	if postedAt == nil || postedAt.IsZero() {
+		return ""
+	}
+	utc := postedAt.UTC()
+	return fmt.Sprintf("%s-%d", utc.Format("20060102"), utc.Hour()/6)
+}
+
+func deriveArticleBucket(articleNumber int64) int64 {
+	if articleNumber <= 0 {
+		return 0
+	}
+	const window = int64(5000)
+	return (articleNumber / window) * window
+}
+
+func extractExtensionHint(value string) string {
+	if value == "" {
+		return ""
+	}
+	if ext := filepath.Ext(sanitizeFileName(value)); ext != "" {
+		return strings.ToLower(ext)
+	}
+	if m := extensionHintRE.FindString(strings.ToLower(value)); m != "" {
+		return strings.ToLower(m)
+	}
+	return ""
+}
+
+func lookupString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		for rawKey, rawValue := range raw {
+			if !strings.EqualFold(strings.TrimSpace(rawKey), key) {
+				continue
+			}
+			switch tv := rawValue.(type) {
+			case string:
+				if value := sanitizeFileName(tv); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func lookupInt(raw map[string]any, keys ...string) int {
+	return int(lookupInt64(raw, keys...))
+}
+
+func lookupInt64(raw map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		for rawKey, rawValue := range raw {
+			if !strings.EqualFold(strings.TrimSpace(rawKey), key) {
+				continue
+			}
+			switch tv := rawValue.(type) {
+			case int:
+				return int64(tv)
+			case int32:
+				return int64(tv)
+			case int64:
+				return tv
+			case float64:
+				return int64(tv)
+			case string:
+				parsed, err := strconv.ParseInt(strings.TrimSpace(tv), 10, 64)
+				if err == nil {
+					return parsed
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func extractRegexpInt(re *regexp.Regexp, value string) int {
+	return int(extractRegexpInt64(re, value))
+}
+
+func extractRegexpInt64(re *regexp.Regexp, value string) int64 {
+	if re == nil {
+		return 0
+	}
+	m := re.FindStringSubmatch(value)
+	if len(m) < 2 {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func clampConfidence(value float64) float64 {
+	switch {
+	case value < 0:
+		return 0
+	case value > 1:
+		return 1
+	default:
+		return value
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

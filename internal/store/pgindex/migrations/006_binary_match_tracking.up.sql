@@ -1,0 +1,8 @@
+ALTER TABLE binaries
+ADD COLUMN IF NOT EXISTS match_confidence DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+ALTER TABLE binaries
+ADD COLUMN IF NOT EXISTS match_status TEXT NOT NULL DEFAULT 'low_confidence';
+
+ALTER TABLE binaries
+ADD COLUMN IF NOT EXISTS grouping_evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb;

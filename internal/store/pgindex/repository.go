@@ -46,16 +46,19 @@ type AssemblyCandidate struct {
 
 // binary upsert input for assembly service.
 type BinaryRecord struct {
-	ProviderID  int64
-	NewsgroupID int64
-	PosterID    int64
-	ReleaseKey  string
-	ReleaseName string
-	BinaryKey   string
-	BinaryName  string
-	FileName    string
-	TotalParts  int
-	PostedAt    *time.Time
+	ProviderID       int64
+	NewsgroupID      int64
+	PosterID         int64
+	ReleaseKey       string
+	ReleaseName      string
+	BinaryKey        string
+	BinaryName       string
+	FileName         string
+	TotalParts       int
+	PostedAt         *time.Time
+	MatchConfidence  float64
+	MatchStatus      string
+	GroupingEvidence map[string]any
 }
 
 // binary part upsert input for assembly service.
@@ -648,6 +651,10 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	if in.ReleaseKey == "" || in.BinaryKey == "" {
 		return 0, fmt.Errorf("release key and binary key are required")
 	}
+	in.MatchStatus = strings.TrimSpace(in.MatchStatus)
+	if in.MatchStatus == "" {
+		in.MatchStatus = "low_confidence"
+	}
 
 	var postedAt any
 	if in.PostedAt != nil {
@@ -657,6 +664,15 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	var posterID any
 	if in.PosterID > 0 {
 		posterID = in.PosterID
+	}
+
+	evidenceJSON := []byte(`{}`)
+	if cleanEvidence := sanitizeStringMap(in.GroupingEvidence); len(cleanEvidence) > 0 {
+		b, err := json.Marshal(cleanEvidence)
+		if err != nil {
+			return 0, fmt.Errorf("marshal binary grouping evidence %q: %w", in.BinaryKey, err)
+		}
+		evidenceJSON = b
 	}
 
 	var id int64
@@ -672,9 +688,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			file_name,
 			total_parts,
 			posted_at,
+			match_confidence,
+			match_status,
+			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
 		    release_key = EXCLUDED.release_key,
@@ -683,6 +702,15 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		    file_name = EXCLUDED.file_name,
 		    total_parts = GREATEST(binaries.total_parts, EXCLUDED.total_parts),
 		    posted_at = COALESCE(binaries.posted_at, EXCLUDED.posted_at),
+		    match_confidence = GREATEST(binaries.match_confidence, EXCLUDED.match_confidence),
+		    match_status = CASE
+		    	WHEN EXCLUDED.match_confidence >= binaries.match_confidence THEN EXCLUDED.match_status
+		    	ELSE binaries.match_status
+		    END,
+		    grouping_evidence_json = CASE
+		    	WHEN EXCLUDED.match_confidence >= binaries.match_confidence THEN EXCLUDED.grouping_evidence_json
+		    	ELSE binaries.grouping_evidence_json
+		    END,
 		    updated_at = NOW()
 		RETURNING id`,
 		in.ProviderID,
@@ -695,6 +723,9 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		strings.TrimSpace(in.FileName),
 		in.TotalParts,
 		postedAt,
+		in.MatchConfidence,
+		in.MatchStatus,
+		evidenceJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert binary %q: %w", in.BinaryKey, err)
