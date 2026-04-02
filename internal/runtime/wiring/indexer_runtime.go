@@ -1,6 +1,7 @@
 package wiring
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
@@ -8,25 +9,32 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing"
 	"github.com/datallboy/gonzb/internal/indexing/assemble"
+	"github.com/datallboy/gonzb/internal/indexing/enrich/predb"
+	"github.com/datallboy/gonzb/internal/indexing/enrich/tmdb"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/archive"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/media"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/nfo"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/par2"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/password"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/indexing/release"
-	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
+	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
 )
 
 type usenetIndexerRuntime struct {
 	service        app.UsenetIndexerService
+	supervisor     *supervisor.Supervisor
 	scrapeProvider io.Closer
-	interval       time.Duration
 }
 
 type usenetIndexerConfig struct {
-	Newsgroups       []string
-	ScrapeBatchSize  int64
-	ScheduleInterval time.Duration
-	ScrapeServer     *config.ServerConfig
+	Newsgroups      []string
+	ScrapeBatchSize int64
+	StageInterval   time.Duration
+	ScrapeServer    *config.ServerConfig
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, error) {
@@ -62,10 +70,16 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 			BatchSize: 1000,
 		},
 	)
+	inspectPAR2Svc := par2.NewService(appCtx.Logger)
+	inspectNFOSvc := nfo.NewService(appCtx.Logger)
+	inspectArchiveSvc := archive.NewService(appCtx.Logger)
+	inspectPasswordSvc := password.NewService(appCtx.Logger)
+	inspectMediaSvc := media.NewService(appCtx.Logger)
+	enrichPreDBSvc := predb.NewService(appCtx.Logger)
+	enrichTMDBSvc := tmdb.NewService(appCtx.Logger)
 
 	var (
 		scrapeSvc      *scrape.Service
-		schedulerSvc   *scheduler.Service
 		scrapeProvider io.Closer
 	)
 
@@ -91,17 +105,106 @@ func buildUsenetIndexerRuntime(appCtx *app.Context) (*usenetIndexerRuntime, erro
 				BatchSize:  runtimeCfg.ScrapeBatchSize,
 			},
 		)
-
-		schedulerSvc = scheduler.NewService(scrapeSvc, appCtx.Logger, runtimeCfg.ScheduleInterval)
 		scrapeProvider = provider
 	}
 
-	service := indexing.NewService(scrapeSvc, assembleSvc, releaseSvc, schedulerSvc)
+	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
+		{
+			Name:     supervisor.StageScrapeLatest,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  scrapeSvc != nil,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return scrapeSvc.RunLatestOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageScrapeBackfill,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  scrapeSvc != nil,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return scrapeSvc.RunBackfillOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageAssemble,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  assembleSvc != nil,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return assembleSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageRelease,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  releaseSvc != nil,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return releaseSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageInspectPAR2,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectPAR2Svc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageInspectNFO,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectNFOSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageInspectArchive,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectArchiveSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageInspectPassword,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectPasswordSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageInspectMedia,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectMediaSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageEnrichPreDB,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return enrichPreDBSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:     supervisor.StageEnrichTMDB,
+			Interval: runtimeCfg.StageInterval,
+			Enabled:  true,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return enrichTMDBSvc.RunOnce(ctx)
+			}),
+		},
+	})
+
+	service := indexing.NewService(supervisorSvc)
 
 	return &usenetIndexerRuntime{
 		service:        service,
+		supervisor:     supervisorSvc,
 		scrapeProvider: scrapeProvider,
-		interval:       runtimeCfg.ScheduleInterval,
 	}, nil
 }
 
@@ -111,9 +214,9 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	}
 
 	out := usenetIndexerConfig{
-		Newsgroups:       append([]string(nil), cfg.Indexing.Newsgroups...),
-		ScrapeBatchSize:  cfg.Indexing.ScrapeBatchSize,
-		ScheduleInterval: time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
+		Newsgroups:      append([]string(nil), cfg.Indexing.Newsgroups...),
+		ScrapeBatchSize: cfg.Indexing.ScrapeBatchSize,
+		StageInterval:   time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
 	}
 
 	if len(cfg.Servers) > 0 {
