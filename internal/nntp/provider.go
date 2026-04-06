@@ -132,6 +132,7 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 		Reader: conn.tp.DotReader(),
 		conn:   conn,
 		p:      p,
+		ctx:    ctx,
 	}, nil
 }
 
@@ -454,10 +455,37 @@ type pooledReader struct {
 	io.Reader
 	conn *nntpConn
 	p    *nntpProvider
+	ctx  context.Context
 }
 
 func (pr *pooledReader) Read(b []byte) (n int, err error) {
-	return pr.Reader.Read(b)
+	for {
+		if pr.ctx != nil {
+			if err := pr.ctx.Err(); err != nil {
+				pr.conn.Close()
+				return 0, err
+			}
+			_ = pr.conn.raw.SetReadDeadline(time.Now().Add(1 * time.Second))
+		}
+
+		n, err = pr.Reader.Read(b)
+		if pr.ctx != nil {
+			_ = pr.conn.raw.SetReadDeadline(time.Time{})
+		}
+		if err == nil {
+			return n, nil
+		}
+
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if pr.ctx != nil && pr.ctx.Err() != nil {
+				pr.conn.Close()
+				return 0, pr.ctx.Err()
+			}
+			continue
+		}
+
+		return n, err
+	}
 }
 
 func (pr *pooledReader) Close() error {

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -36,42 +37,51 @@ func (r *Runner) ExecuteIndexerScrapeBackfill(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn and indexing.newsgroups.")
 	defer cleanup()
 
-	if !once {
-		appCtx.Logger.Fatal("indexer scrape backfill currently supports --once only")
+	if once {
+		if err := appCtx.UsenetIndexer.ScrapeBackfillOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer scrape backfill --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer scrape backfill --once completed")
+		return
 	}
 
-	if err := appCtx.UsenetIndexer.ScrapeBackfillOnce(ctx); err != nil {
-		appCtx.Logger.Fatal("indexer scrape backfill --once failed: %v", err)
+	if err := wiring.RunIndexerScrapeBackfillScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer backfill scheduler failed: %v", err)
 	}
-	appCtx.Logger.Info("indexer scrape backfill --once completed")
 }
 
 func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
-	if !once {
-		appCtx.Logger.Fatal("indexer assemble currently supports --once only")
+	if once {
+		if err := appCtx.UsenetIndexer.AssembleOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer assemble --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer assemble --once completed")
+		return
 	}
 
-	if err := appCtx.UsenetIndexer.AssembleOnce(ctx); err != nil {
-		appCtx.Logger.Fatal("indexer assemble --once failed: %v", err)
+	if err := wiring.RunIndexerAssembleScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer assemble scheduler failed: %v", err)
 	}
-	appCtx.Logger.Info("indexer assemble --once completed")
 }
 
 func (r *Runner) ExecuteIndexerRelease(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
-	if !once {
-		appCtx.Logger.Fatal("indexer release currently supports --once only")
+	if once {
+		if err := appCtx.UsenetIndexer.ReleaseOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer release --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer release --once completed")
+		return
 	}
 
-	if err := appCtx.UsenetIndexer.ReleaseOnce(ctx); err != nil {
-		appCtx.Logger.Fatal("indexer release --once failed: %v", err)
+	if err := wiring.RunIndexerReleaseScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer release scheduler failed: %v", err)
 	}
-	appCtx.Logger.Info("indexer release --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspect(once bool) {
@@ -122,6 +132,10 @@ func (r *Runner) ExecuteIndexerInspectArchive(once bool) {
 		appCtx.Logger.Fatal("indexer inspect archive currently supports --once only")
 	}
 	if err := appCtx.UsenetIndexer.InspectArchiveOnce(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			appCtx.Logger.Info("indexer inspect archive canceled")
+			return
+		}
 		appCtx.Logger.Fatal("indexer inspect archive --once failed: %v", err)
 	}
 	appCtx.Logger.Info("indexer inspect archive --once completed")

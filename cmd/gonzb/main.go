@@ -80,7 +80,7 @@ var indexerScrapeLatestCmd = &cobra.Command{
 
 var indexerScrapeBackfillCmd = &cobra.Command{
 	Use:   "backfill",
-	Short: "Scrape older article ranges by walking backward from the latest frontier",
+	Short: "Scrape older article ranges continuously; use --once for a single backfill pass",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerScrapeBackfill(scrapeOnce)
 	},
@@ -88,7 +88,7 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 
 var indexerAssembleCmd = &cobra.Command{
 	Use:   "assemble",
-	Short: "Assemble binaries and parts from article headers",
+	Short: "Assemble binaries and parts continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerAssemble(assembleOnce)
 	},
@@ -96,7 +96,7 @@ var indexerAssembleCmd = &cobra.Command{
 
 var indexerReleaseCmd = &cobra.Command{
 	Use:   "release",
-	Short: "Form release catalog rows from assembled binaries",
+	Short: "Form releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce)
 	},
@@ -189,10 +189,10 @@ func init() {
 
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
-	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit")
+	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
 
-	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit")
-	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit")
+	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
+	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectPAR2Cmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one PAR2 inspection pass and exit")

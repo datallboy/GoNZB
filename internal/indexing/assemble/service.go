@@ -102,19 +102,21 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		}
 
 		binaryID, err := s.repo.UpsertBinary(ctx, pgindex.BinaryRecord{
-			ProviderID:       header.ProviderID,
-			NewsgroupID:      header.NewsgroupID,
-			PosterID:         posterID,
-			ReleaseKey:       matched.ReleaseKey,
-			ReleaseName:      matched.ReleaseName,
-			BinaryKey:        matched.BinaryKey,
-			BinaryName:       matched.BinaryName,
-			FileName:         matched.FileName,
-			TotalParts:       matched.TotalParts,
-			PostedAt:         header.DateUTC,
-			MatchConfidence:  matched.MatchConfidence,
-			MatchStatus:      matched.MatchStatus,
-			GroupingEvidence: matched.GroupingEvidence,
+			ProviderID:        header.ProviderID,
+			NewsgroupID:       header.NewsgroupID,
+			PosterID:          posterID,
+			ReleaseKey:        matched.ReleaseKey,
+			ReleaseName:       matched.ReleaseName,
+			BinaryKey:         matched.BinaryKey,
+			BinaryName:        matched.BinaryName,
+			FileName:          matched.FileName,
+			FileIndex:         matched.FileIndex,
+			ExpectedFileCount: matched.ExpectedFileCount,
+			TotalParts:        matched.TotalParts,
+			PostedAt:          header.DateUTC,
+			MatchConfidence:   matched.MatchConfidence,
+			MatchStatus:       matched.MatchStatus,
+			GroupingEvidence:  matched.GroupingEvidence,
 		})
 		if err != nil {
 			return fmt.Errorf("upsert binary for article %d: %w", header.ID, err)

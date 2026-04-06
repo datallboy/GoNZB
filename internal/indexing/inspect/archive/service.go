@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -24,17 +25,27 @@ type repository interface {
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	inspectpkg.CatalogReader
 }
 
 type Service struct {
 	repo      repository
 	workspace *inspectpkg.WorkspaceManager
+	fetcher   inspectpkg.ArticleFetcher
+	runner    inspectpkg.CommandRunner
 	log       logger
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, log logger, opts inspectpkg.Options) *Service {
-	return &Service{repo: repo, workspace: workspace, log: log, opts: inspectpkg.DefaultOptions(opts)}
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, log logger, opts inspectpkg.Options) *Service {
+	return &Service{
+		repo:      repo,
+		workspace: workspace,
+		fetcher:   fetcher,
+		runner:    runner,
+		log:       log,
+		opts:      inspectpkg.DefaultOptions(opts),
+	}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -62,6 +73,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
 	stageName := string(supervisor.StageInspectArchive)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
 		return err
 	}
@@ -80,8 +94,39 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	defer workspace.Cleanup()
 
 	encrypted := inspectpkg.InferEncrypted(candidate)
+	if s != nil && s.log != nil {
+		s.log.Info(
+			"inspect_archive: starting binary_id=%d release_id=%s file=%s",
+			candidate.BinaryID,
+			candidate.ReleaseID,
+			candidate.FileName,
+		)
+	}
+	probe, err := inspectpkg.PrepareArchiveProbe(ctx, workspace, s.repo, s.fetcher, s.runner, s.log, s.opts, candidate)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if probe != nil {
+		encrypted = encrypted || probe.Encrypted
+		if s != nil && s.log != nil {
+			s.log.Info(
+				"inspect_archive: binary_id=%d release_id=%s strategy=%s files=%d materialized_bytes=%d",
+				candidate.BinaryID,
+				candidate.ReleaseID,
+				probe.Strategy,
+				len(probe.FamilyFileNames),
+				probe.MaterializedBytes,
+			)
+		}
+	}
 	passwords := inspectpkg.ExtractPasswordCandidates(candidate.ReleaseTitle, candidate.SourceTitle, candidate.DeobfuscatedTitle, candidate.FileName)
 	for _, password := range passwords {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := s.repo.UpsertReleasePasswordCandidate(ctx, pgindex.ReleasePasswordCandidateRecord{
 			ReleaseID:     candidate.ReleaseID,
 			BinaryID:      candidate.BinaryID,
@@ -100,17 +145,45 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"candidate_passwords": passwords,
 		"workspace_path":      workspace.ManifestPath,
 	}
+	materializedBytes := workspace.MaterializedBytes
+	if probe != nil {
+		summary["probe_strategy"] = probe.Strategy
+		summary["probe_path"] = probe.ProbePath
+		summary["archive_entries"] = probe.EntryNames
+		summary["family_files"] = probe.FamilyFileNames
+		if probe.ProbeError != "" {
+			if skipReason := archiveProbeSkipReason(probe.ProbeError); skipReason != "" {
+				summary["probe_skip_reason"] = skipReason
+				summary["probe_error_detail"] = probe.ProbeError
+			} else {
+				summary["probe_error"] = probe.ProbeError
+			}
+		}
+		materializedBytes += probe.MaterializedBytes
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
 		BinaryID:          candidate.BinaryID,
 		ReleaseID:         candidate.ReleaseID,
 		Status:            "completed",
-		MaterializedBytes: workspace.MaterializedBytes,
+		MaterializedBytes: materializedBytes,
 		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
 	}); err != nil {
 		return err
+	}
+	if s != nil && s.log != nil && ctx.Err() == nil {
+		s.log.Info(
+			"inspect_archive: completed binary_id=%d release_id=%s encrypted=%t entries=%d",
+			candidate.BinaryID,
+			candidate.ReleaseID,
+			encrypted,
+			len(probe.EntryNames),
+		)
 	}
 
 	archiveCount := 1
@@ -136,3 +209,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func archiveProbeSkipReason(probeError string) string {
+	probeError = strings.TrimSpace(strings.ToLower(probeError))
+	switch {
+	case strings.Contains(probeError, "7z header declares archive size"):
+		return "incomplete_archive_family"
+	case strings.Contains(probeError, "insufficient bytes for 7z next header"):
+		return "incomplete_archive_family"
+	default:
+		return ""
+	}
+}

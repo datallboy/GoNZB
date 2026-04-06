@@ -23,10 +23,32 @@ type YencDecoder struct {
 	FileSize    int64
 }
 
+type YencHeader struct {
+	PartOffset int64
+	FileSize   int64
+}
+
 func NewYencDecoder(r io.Reader) *YencDecoder {
 	return &YencDecoder{
 		scanner: bufio.NewReader(r),
 		hash:    crc32.NewIEEE(), // yEnc uses the standard IEEE polynomial
+	}
+}
+
+func ReadYencHeader(r io.Reader) (YencHeader, error) {
+	reader := bufio.NewReader(r)
+	var header YencHeader
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return header, fmt.Errorf("searching for yenc header: %w", err)
+		}
+
+		if strings.HasPrefix(line, "=ybegin") {
+			parseYbeginLine(line, &header)
+			return header, readPotentialPartHeader(reader, &header)
+		}
 	}
 }
 
@@ -135,22 +157,39 @@ func (d *YencDecoder) Verify() error {
 }
 
 func (d *YencDecoder) parseYbegin(line string) {
+	header := YencHeader{PartOffset: d.PartOffset, FileSize: d.FileSize}
+	parseYbeginLine(line, &header)
+	d.PartOffset = header.PartOffset
+	d.FileSize = header.FileSize
+}
+
+func parseYbeginLine(line string, header *YencHeader) {
 	parts := strings.Fields(line)
 	for _, part := range parts {
 		if strings.HasPrefix(part, "size=") {
 			val := strings.TrimPrefix(part, "size=")
 			size, err := strconv.ParseInt(val, 10, 64)
 			if err == nil {
-				d.FileSize = size
+				header.FileSize = size
 			}
 		}
 	}
 }
 
 func (d *YencDecoder) handlePotentialPartHeader() error {
+	header := YencHeader{PartOffset: d.PartOffset, FileSize: d.FileSize}
+	if err := readPotentialPartHeader(d.scanner, &header); err != nil {
+		return err
+	}
+	d.PartOffset = header.PartOffset
+	d.FileSize = header.FileSize
+	return nil
+}
+
+func readPotentialPartHeader(reader *bufio.Reader, header *YencHeader) error {
 	// Peek at the next few bytes to see if =ypart follows
 	// We use Peek so we don't consume the data if it's actually binary
-	peek, err := d.scanner.Peek(6)
+	peek, err := reader.Peek(6)
 	if err != nil {
 		return nil
 	}
@@ -158,7 +197,7 @@ func (d *YencDecoder) handlePotentialPartHeader() error {
 	peekStr := string(peek)
 
 	if strings.Contains(peekStr, "=ypart") {
-		line, err := d.scanner.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			return err
 		}
@@ -172,7 +211,7 @@ func (d *YencDecoder) handlePotentialPartHeader() error {
 				// yEnc offsets are 1-based, we convert to 0-based for disk I/O
 				offset, err := strconv.ParseInt(val, 10, 64)
 				if err == nil {
-					d.PartOffset = offset - 1
+					header.PartOffset = offset - 1
 				}
 			}
 		}

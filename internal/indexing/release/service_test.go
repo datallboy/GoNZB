@@ -214,8 +214,8 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	if got.Passworded || got.PasswordedKnown || got.PasswordedUnknown {
 		t.Fatalf("expected password flags to remain false, got %+v", got)
 	}
-	if got.PasswordState != "not_passworded" {
-		t.Fatalf("expected password_state not_passworded, got %q", got.PasswordState)
+	if got.PasswordState != "unknown" {
+		t.Fatalf("expected password_state unknown, got %q", got.PasswordState)
 	}
 	if got.PrimaryResolution != "1080p" {
 		t.Fatalf("expected primary resolution 1080p, got %q", got.PrimaryResolution)
@@ -225,6 +225,126 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	}
 	if got.AvailabilityScore == got.CompletionPct {
 		t.Fatalf("expected availability score to differ from completion pct, got %.2f", got.AvailabilityScore)
+	}
+}
+
+func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:  1,
+				NewsgroupID: 2,
+				ReleaseKey:  "expected file count source key",
+			},
+		},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"expected file count source key": {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseKey:        "expected file count source key",
+					FileName:          "example.7z.001",
+					FileIndex:         1,
+					ExpectedFileCount: 4,
+					TotalParts:        10,
+					ObservedParts:     10,
+					TotalBytes:        700_000_000,
+					MatchConfidence:   0.95,
+				},
+				{
+					BinaryID:          2,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseKey:        "expected file count source key",
+					FileName:          "example.par2",
+					FileIndex:         2,
+					ExpectedFileCount: 4,
+					TotalParts:        1,
+					ObservedParts:     1,
+					TotalBytes:        1024,
+					MatchConfidence:   0.90,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+	if repo.upsertedReleases[0].ExpectedFileCount != 4 {
+		t.Fatalf("expected expected_file_count 4, got %d", repo.upsertedReleases[0].ExpectedFileCount)
+	}
+	if repo.upsertedReleases[0].CompletionPct != 50 {
+		t.Fatalf("expected completion_pct 50 due to file-count gate, got %.2f", repo.upsertedReleases[0].CompletionPct)
+	}
+}
+
+func TestRunOnceSkipsReleaseBelowCompletionThreshold(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:  1,
+				NewsgroupID: 2,
+				ReleaseKey:  "sparse source key",
+			},
+		},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"sparse source key": {
+				{
+					BinaryID:        1,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "sparse source key",
+					FileName:        "sparse.release.7z.001",
+					Poster:          "poster-a",
+					TotalParts:      10,
+					ObservedParts:   2,
+					TotalBytes:      700_000_000,
+					MatchConfidence: 0.90,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		ReleaseMinCompletion: 25,
+	})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected no releases to be formed, got %d", len(repo.upsertedReleases))
+	}
+}
+
+func TestSummarizeFilesCountsSplitArchiveFamilyOnce(t *testing.T) {
+	hasPAR2, _, archiveCount, _, _, _ := summarizeFiles([]pgindex.BinarySummary{
+		{FileName: "example.7z.001"},
+		{FileName: "example.7z.002"},
+		{FileName: "example.par2"},
+	})
+
+	if !hasPAR2 {
+		t.Fatalf("expected PAR2 presence to be detected")
+	}
+	if archiveCount != 1 {
+		t.Fatalf("expected one archive family, got %d", archiveCount)
 	}
 }
 

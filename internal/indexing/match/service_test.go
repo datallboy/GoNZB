@@ -107,3 +107,116 @@ func TestMatchUsesStructuredOverviewEvidence(t *testing.T) {
 		t.Fatalf("expected structured markers evidence, got %#v", got.GroupingEvidence)
 	}
 }
+
+func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
+	svc := NewService()
+
+	archive := svc.Match(Candidate{
+		MessageID: "<archive@host.example>",
+		Subject:   `09YqM2ra1RwajAXakAXy57xfGGhOOe8y.7z.001 yEnc (1/4)`,
+		RawOverview: map[string]any{
+			"name":  "09YqM2ra1RwajAXakAXy57xfGGhOOe8y.7z.001",
+			"part":  1,
+			"total": 4,
+			"size":  7340032,
+		},
+	})
+	parity := svc.Match(Candidate{
+		MessageID: "<parity@host.example>",
+		Subject:   `09YqM2ra1RwajAXakAXy57xfGGhOOe8y.vol00+01.par2 yEnc (1/4)`,
+		RawOverview: map[string]any{
+			"name":  "09YqM2ra1RwajAXakAXy57xfGGhOOe8y.vol00+01.par2",
+			"part":  1,
+			"total": 4,
+			"size":  1024,
+		},
+	})
+
+	if archive.ReleaseKey != "09yqm2ra1rwajaxakaxy57xfgghooe8y" {
+		t.Fatalf("expected canonical archive release key, got %q", archive.ReleaseKey)
+	}
+	if parity.ReleaseKey != archive.ReleaseKey {
+		t.Fatalf("expected PAR2 release key %q to match archive key", archive.ReleaseKey)
+	}
+	if archive.BinaryKey == parity.BinaryKey {
+		t.Fatalf("expected distinct binary keys for archive and parity files, got %q", archive.BinaryKey)
+	}
+}
+
+func TestMatchPrefersLargestNestedPartMarker(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<nested@host.example>",
+		Subject:   `[13/15] - "3dAmzdk2T8i2KSfKzFMzCMiwrn3sfdTX.7z.013" yEnc (113/220) 157286400`,
+	})
+
+	if got.FileName != "3dAmzdk2T8i2KSfKzFMzCMiwrn3sfdTX.7z.013" {
+		t.Fatalf("expected file name from quoted filename, got %q", got.FileName)
+	}
+	if got.PartNumber != 113 || got.TotalParts != 220 {
+		t.Fatalf("expected inner segment marker 113/220, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	if got.FileIndex != 13 || got.ExpectedFileCount != 15 {
+		t.Fatalf("expected outer file marker 13/15, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+}
+
+func TestMatchSeparatesFilesWithinSameReleaseByOuterFileMarker(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		MessageID: "<same-release-file13@host.example>",
+		Subject:   `[13/15] - "same.release.7z.013" yEnc (3/220) 157286400`,
+	})
+	second := svc.Match(Candidate{
+		MessageID: "<same-release-file2@host.example>",
+		Subject:   `[2/15] - "same.release.7z.002" yEnc (92/220) 157286400`,
+	})
+
+	if first.ReleaseKey != second.ReleaseKey {
+		t.Fatalf("expected same release key, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+	if first.BinaryKey == second.BinaryKey {
+		t.Fatalf("expected different binary keys for different file indexes, got %q", first.BinaryKey)
+	}
+}
+
+func TestMatchKeepsSameExplicitFileNameInOneBinaryDespiteOuterFileMarker(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		MessageID: "<same-file-1@host.example>",
+		Subject:   `[2/85] - "XKKizlbwrCzK3UHM8LyA6r2U7BSCFeMx.7z.077" yEnc (1/86)`,
+	})
+	second := svc.Match(Candidate{
+		MessageID: "<same-file-2@host.example>",
+		Subject:   `[47/85] - "XKKizlbwrCzK3UHM8LyA6r2U7BSCFeMx.7z.077" yEnc (52/86)`,
+	})
+
+	if first.FileName != second.FileName {
+		t.Fatalf("expected same explicit file name, got %q vs %q", first.FileName, second.FileName)
+	}
+	if first.BinaryKey != second.BinaryKey {
+		t.Fatalf("expected same binary key for same explicit file name, got %q vs %q", first.BinaryKey, second.BinaryKey)
+	}
+	if first.FileIndex != 2 || second.FileIndex != 47 {
+		t.Fatalf("expected outer file markers to remain as metadata, got %d and %d", first.FileIndex, second.FileIndex)
+	}
+}
+
+func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<swapped-counters@host.example>",
+		Subject:   `[11/14] - "DWuzHaj5fRPH8xbHcX23hbLJdHaWDXfu.7z.011" yEnc (5/6) 3806935`,
+	})
+
+	if got.PartNumber != 5 || got.TotalParts != 6 {
+		t.Fatalf("expected inner yEnc counter 5/6, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	if got.FileIndex != 11 || got.ExpectedFileCount != 14 {
+		t.Fatalf("expected outer file counter 11/14, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+}
