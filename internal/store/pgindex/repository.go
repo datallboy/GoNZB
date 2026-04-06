@@ -210,6 +210,75 @@ type BinaryInspectionRecord struct {
 	SourceUpdatedAt   *time.Time
 }
 
+type BinaryInspectionArtifactRecord struct {
+	BinaryID     int64
+	ReleaseID    string
+	StageName    string
+	ArtifactRole string
+	ArtifactName string
+	ArtifactPath string
+	BytesTotal   int64
+	MIMEType     string
+	Signature    string
+	SourceKind   string
+	Metadata     map[string]any
+}
+
+type BinaryArchiveEntryRecord struct {
+	BinaryID          int64
+	ReleaseID         string
+	EntryName         string
+	IsDir             bool
+	UncompressedBytes int64
+	CompressedBytes   int64
+	Encrypted         bool
+	Comment           string
+	MediaType         string
+	Signature         string
+	Metadata          map[string]any
+}
+
+type BinaryMediaStreamRecord struct {
+	BinaryID           int64
+	ReleaseID          string
+	StreamIndex        int
+	StreamType         string
+	CodecName          string
+	CodecLongName      string
+	Profile            string
+	Width              int
+	Height             int
+	Channels           int
+	Language           string
+	DurationSeconds    float64
+	BitRate            int64
+	DefaultDisposition bool
+	ForcedDisposition  bool
+	Metadata           map[string]any
+}
+
+type BinaryTextEvidenceRecord struct {
+	BinaryID     int64
+	ReleaseID    string
+	StageName    string
+	EvidenceKind string
+	TextValue    string
+	Tokens       []string
+	Metadata     map[string]any
+}
+
+type BinaryPAR2SetRecord struct {
+	BinaryID       int64
+	ReleaseID      string
+	SetName        string
+	BaseName       string
+	IsVolume       bool
+	VolumeNumber   int
+	RecoveryBlocks int
+	SignatureOK    bool
+	Metadata       map[string]any
+}
+
 type PasswordVerificationCandidate struct {
 	ID                 int64
 	ReleaseID          string
@@ -240,26 +309,28 @@ type ReleasePasswordCandidateRecord struct {
 }
 
 type ReleaseInspectionUpdate struct {
-	ReleaseID         string
-	Encrypted         *bool
-	HasPAR2           *bool
-	HasNFO            *bool
-	Passworded        *bool
-	PasswordedKnown   *bool
-	PasswordedUnknown *bool
-	PasswordState     string
-	ArchiveCount      *int
-	VideoCount        *int
-	AudioCount        *int
-	SamplePresent     *bool
-	PrimaryResolution string
-	PrimaryVideoCodec string
-	PrimaryAudioCodec string
-	SubtitleLanguages []string
-	MediaTags         []string
-	MediaQualityScore *float64
-	MediaQualityTier  string
-	MetadataUpdatedAt *time.Time
+	ReleaseID           string
+	Encrypted           *bool
+	HasPAR2             *bool
+	HasNFO              *bool
+	Passworded          *bool
+	PasswordedKnown     *bool
+	PasswordedUnknown   *bool
+	PasswordState       string
+	PreferredPasswordID *int64
+	ArchiveCount        *int
+	VideoCount          *int
+	AudioCount          *int
+	RuntimeSeconds      *int
+	SamplePresent       *bool
+	PrimaryResolution   string
+	PrimaryVideoCodec   string
+	PrimaryAudioCodec   string
+	SubtitleLanguages   []string
+	MediaTags           []string
+	MediaQualityScore   *float64
+	MediaQualityTier    string
+	MetadataUpdatedAt   *time.Time
 }
 
 type ReleaseEnrichmentCandidate struct {
@@ -276,6 +347,7 @@ type ReleaseEnrichmentCandidate struct {
 // read DTOs for PG-backed NZB materialization in Milestone 7.
 type CatalogReleaseFile struct {
 	ID        int64
+	BinaryID  int64
 	FileName  string
 	Subject   string
 	Poster    string
@@ -1663,6 +1735,7 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id,
+			binary_id,
 			file_name,
 			subject,
 			poster,
@@ -1685,6 +1758,7 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 
 		if err := rows.Scan(
 			&item.ID,
+			&item.BinaryID,
 			&item.FileName,
 			&item.Subject,
 			&item.Poster,
@@ -2182,6 +2256,10 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 	if in.MetadataUpdatedAt != nil {
 		metadataUpdated = in.MetadataUpdatedAt.UTC()
 	}
+	var preferredPasswordID any
+	if in.PreferredPasswordID != nil && *in.PreferredPasswordID > 0 {
+		preferredPasswordID = *in.PreferredPasswordID
+	}
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE releases
@@ -2192,24 +2270,26 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		    passworded_known = COALESCE($6, passworded_known),
 		    passworded_unknown = COALESCE($7, passworded_unknown),
 		    password_state = CASE WHEN $8 <> '' THEN $8 ELSE password_state END,
-		    archive_count = GREATEST(archive_count, COALESCE($9, archive_count)),
-		    video_count = GREATEST(video_count, COALESCE($10, video_count)),
-		    audio_count = GREATEST(audio_count, COALESCE($11, audio_count)),
-		    sample_present = COALESCE($12, sample_present),
-		    primary_resolution = CASE WHEN $13 <> '' THEN $13 ELSE primary_resolution END,
-		    primary_video_codec = CASE WHEN $14 <> '' THEN $14 ELSE primary_video_codec END,
-		    primary_audio_codec = CASE WHEN $15 <> '' THEN $15 ELSE primary_audio_codec END,
+		    preferred_password_id = COALESCE($9, preferred_password_id),
+		    archive_count = GREATEST(archive_count, COALESCE($10, archive_count)),
+		    video_count = GREATEST(video_count, COALESCE($11, video_count)),
+		    audio_count = GREATEST(audio_count, COALESCE($12, audio_count)),
+		    runtime_seconds = COALESCE($13, runtime_seconds),
+		    sample_present = COALESCE($14, sample_present),
+		    primary_resolution = CASE WHEN $15 <> '' THEN $15 ELSE primary_resolution END,
+		    primary_video_codec = CASE WHEN $16 <> '' THEN $16 ELSE primary_video_codec END,
+		    primary_audio_codec = CASE WHEN $17 <> '' THEN $17 ELSE primary_audio_codec END,
 		    subtitle_languages_json = CASE
-		    	WHEN jsonb_array_length($16::jsonb) > 0 THEN $16::jsonb
+		    	WHEN jsonb_array_length($18::jsonb) > 0 THEN $18::jsonb
 		    	ELSE subtitle_languages_json
 		    END,
 		    media_tags_json = CASE
-		    	WHEN jsonb_array_length($17::jsonb) > 0 THEN $17::jsonb
+		    	WHEN jsonb_array_length($19::jsonb) > 0 THEN $19::jsonb
 		    	ELSE media_tags_json
 		    END,
-		    media_quality_score = GREATEST(media_quality_score, COALESCE($18, media_quality_score)),
-		    media_quality_tier = CASE WHEN $19 <> '' THEN $19 ELSE media_quality_tier END,
-		    metadata_updated_at = COALESCE($20, metadata_updated_at),
+		    media_quality_score = GREATEST(media_quality_score, COALESCE($20, media_quality_score)),
+		    media_quality_tier = CASE WHEN $21 <> '' THEN $21 ELSE media_quality_tier END,
+		    metadata_updated_at = COALESCE($22, metadata_updated_at),
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		in.ReleaseID,
@@ -2220,9 +2300,11 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		nullableBool(in.PasswordedKnown),
 		nullableBool(in.PasswordedUnknown),
 		strings.TrimSpace(in.PasswordState),
+		preferredPasswordID,
 		nullableInt(in.ArchiveCount),
 		nullableInt(in.VideoCount),
 		nullableInt(in.AudioCount),
+		nullableInt(in.RuntimeSeconds),
 		nullableBool(in.SamplePresent),
 		strings.TrimSpace(in.PrimaryResolution),
 		strings.TrimSpace(in.PrimaryVideoCodec),
@@ -2237,6 +2319,336 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		return fmt.Errorf("apply release inspection update %s: %w", in.ReleaseID, err)
 	}
 
+	return nil
+}
+
+func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin artifact replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND stage_name = $2`,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_inspection_artifacts (
+				binary_id,
+				release_id,
+				stage_name,
+				artifact_role,
+				artifact_name,
+				artifact_path,
+				bytes_total,
+				mime_type,
+				signature,
+				source_kind,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.ArtifactRole),
+			strings.TrimSpace(row.ArtifactName),
+			strings.TrimSpace(row.ArtifactPath),
+			row.BytesTotal,
+			strings.TrimSpace(row.MIMEType),
+			strings.TrimSpace(row.Signature),
+			strings.TrimSpace(row.SourceKind),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert inspection artifact %s/%d: %w", stageName, binaryID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit artifact replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []BinaryArchiveEntryRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin archive entry replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal archive entry metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_archive_entries (
+				binary_id,
+				release_id,
+				entry_name,
+				is_dir,
+				uncompressed_bytes,
+				compressed_bytes,
+				encrypted,
+				comment_text,
+				media_type,
+				signature,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.EntryName),
+			row.IsDir,
+			row.UncompressedBytes,
+			row.CompressedBytes,
+			row.Encrypted,
+			strings.TrimSpace(row.Comment),
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Signature),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert archive entry %d/%s: %w", binaryID, row.EntryName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit archive entry replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []BinaryMediaStreamRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin media stream replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal media stream metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_media_streams (
+				binary_id,
+				release_id,
+				stream_index,
+				stream_type,
+				codec_name,
+				codec_long_name,
+				profile,
+				width,
+				height,
+				channels,
+				language,
+				duration_seconds,
+				bit_rate,
+				default_disposition,
+				forced_disposition,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())`,
+			binaryID,
+			releaseID,
+			row.StreamIndex,
+			strings.TrimSpace(row.StreamType),
+			strings.TrimSpace(row.CodecName),
+			strings.TrimSpace(row.CodecLongName),
+			strings.TrimSpace(row.Profile),
+			row.Width,
+			row.Height,
+			row.Channels,
+			strings.TrimSpace(row.Language),
+			row.DurationSeconds,
+			row.BitRate,
+			row.DefaultDisposition,
+			row.ForcedDisposition,
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert media stream %d/%d: %w", binaryID, row.StreamIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit media stream replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []BinaryTextEvidenceRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin text evidence replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_text_evidence
+		WHERE binary_id = $1 AND stage_name = $2`,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete text evidence %s/%d: %w", stageName, binaryID, err)
+	}
+
+	for _, row := range rows {
+		tokensJSON, err := json.Marshal(sanitizeStringSlice(row.Tokens))
+		if err != nil {
+			return fmt.Errorf("marshal text evidence tokens %s/%d: %w", stageName, binaryID, err)
+		}
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal text evidence metadata %s/%d: %w", stageName, binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_text_evidence (
+				binary_id,
+				release_id,
+				stage_name,
+				evidence_kind,
+				text_value,
+				tokens_json,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.EvidenceKind),
+			row.TextValue,
+			string(tokensJSON),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert text evidence %s/%d: %w", stageName, binaryID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit text evidence replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []BinaryPAR2SetRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin par2 set replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal par2 set metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_par2_sets (
+				binary_id,
+				release_id,
+				set_name,
+				base_name,
+				is_volume,
+				volume_number,
+				recovery_blocks,
+				signature_ok,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.SetName),
+			strings.TrimSpace(row.BaseName),
+			row.IsVolume,
+			row.VolumeNumber,
+			row.RecoveryBlocks,
+			row.SignatureOK,
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert par2 set %d/%s: %w", binaryID, row.SetName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit par2 set replace tx: %w", err)
+	}
 	return nil
 }
 
@@ -2934,6 +3346,10 @@ func sanitizeStringMap(in map[string]any) map[string]any {
 	return out
 }
 
+func sanitizeJSONMap(in map[string]any) map[string]any {
+	return sanitizeStringMap(in)
+}
+
 func sanitizeAnySlice(in []any) []any {
 	if len(in) == 0 {
 		return []any{}
@@ -2954,6 +3370,12 @@ func sanitizeAnySlice(in []any) []any {
 	}
 
 	return out
+}
+
+func rollbackTx(tx *sql.Tx) {
+	if tx != nil {
+		_ = tx.Rollback()
+	}
 }
 
 func sanitizeStringSlice(in []string) []string {

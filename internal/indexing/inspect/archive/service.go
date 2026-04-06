@@ -23,6 +23,8 @@ type repository interface {
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
+	ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []pgindex.BinaryArchiveEntryRecord) error
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
 	inspectpkg.CatalogReader
@@ -122,6 +124,49 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			)
 		}
 	}
+	artifactRows := []pgindex.BinaryInspectionArtifactRecord{{
+		BinaryID:     candidate.BinaryID,
+		ReleaseID:    candidate.ReleaseID,
+		StageName:    stageName,
+		ArtifactRole: "archive_probe",
+		ArtifactName: candidate.FileName,
+		ArtifactPath: workspace.ManifestPath,
+		BytesTotal:   materializedBytesForProbe(workspace, probe),
+		MIMEType:     "application/x-archive-probe",
+		Signature:    "archive_probe",
+		SourceKind:   "inspect_archive",
+		Metadata: map[string]any{
+			"probe_strategy": probeStrategy(probe),
+			"probe_path":     probePath(probe),
+			"probe_error":    probeError(probe),
+		},
+	}}
+	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, artifactRows); err != nil {
+		return err
+	}
+
+	entryRows := make([]pgindex.BinaryArchiveEntryRecord, 0)
+	if probe != nil {
+		entryRows = make([]pgindex.BinaryArchiveEntryRecord, 0, len(probe.Entries))
+		for _, entry := range probe.Entries {
+			entryRows = append(entryRows, pgindex.BinaryArchiveEntryRecord{
+				BinaryID:          candidate.BinaryID,
+				ReleaseID:         candidate.ReleaseID,
+				EntryName:         entry.Name,
+				IsDir:             entry.IsDir,
+				UncompressedBytes: entry.UncompressedSize,
+				CompressedBytes:   entry.CompressedSize,
+				Encrypted:         entry.Encrypted,
+				Comment:           entry.Comment,
+				MediaType:         inspectpkg.DetectMIMEType(nil, entry.Name),
+				Signature:         inspectpkg.DetectSignature(nil, entry.Name),
+				Metadata:          map[string]any{},
+			})
+		}
+	}
+	if err := s.repo.ReplaceBinaryArchiveEntries(ctx, candidate.BinaryID, entryRows); err != nil {
+		return err
+	}
 	passwords := inspectpkg.ExtractPasswordCandidates(candidate.ReleaseTitle, candidate.SourceTitle, candidate.DeobfuscatedTitle, candidate.FileName)
 	for _, password := range passwords {
 		if err := ctx.Err(); err != nil {
@@ -209,6 +254,41 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func materializedBytesForProbe(workspace *inspectpkg.Workspace, probe *inspectpkg.ArchiveProbeResult) int64 {
+	if workspace == nil && probe == nil {
+		return 0
+	}
+	var total int64
+	if workspace != nil {
+		total += workspace.MaterializedBytes
+	}
+	if probe != nil {
+		total += probe.MaterializedBytes
+	}
+	return total
+}
+
+func probeStrategy(probe *inspectpkg.ArchiveProbeResult) string {
+	if probe == nil {
+		return ""
+	}
+	return probe.Strategy
+}
+
+func probePath(probe *inspectpkg.ArchiveProbeResult) string {
+	if probe == nil {
+		return ""
+	}
+	return probe.ProbePath
+}
+
+func probeError(probe *inspectpkg.ArchiveProbeResult) string {
+	if probe == nil {
+		return ""
+	}
+	return probe.ProbeError
+}
 
 func archiveProbeSkipReason(probeError string) string {
 	probeError = strings.TrimSpace(strings.ToLower(probeError))

@@ -3,6 +3,8 @@ package par2
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,20 +25,27 @@ type repository interface {
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
+	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	inspectpkg.CatalogReader
 }
 
 type Service struct {
 	repo      repository
 	workspace *inspectpkg.WorkspaceManager
+	fetcher   inspectpkg.ArticleFetcher
 	log       logger
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, log logger, opts inspectpkg.Options) *Service {
+var parVolumePartsRE = regexp.MustCompile(`(?i)\.vol(\d+)\+(\d+)\.par2$`)
+
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, log logger, opts inspectpkg.Options) *Service {
 	return &Service{
 		repo:      repo,
 		workspace: workspace,
+		fetcher:   fetcher,
 		log:       log,
 		opts:      inspectpkg.DefaultOptions(opts),
 	}
@@ -84,11 +93,71 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	defer workspace.Cleanup()
 
+	stagePath := filepath.Join(workspace.Dir, filepath.Base(candidate.FileName))
+	materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
+	if err != nil {
+		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			ErrorText:       err.Error(),
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+		})
+		return fmt.Errorf("materialize par2 binary: %w", err)
+	}
+
 	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(candidate.FileName)), ".par2")
+	setName := strings.TrimSpace(candidate.FileName)
+	volumeNumber := 0
+	recoveryBlocks := 0
+	isVolume := false
+	if match := parVolumePartsRE.FindStringSubmatch(strings.ToLower(strings.TrimSpace(candidate.FileName))); len(match) == 3 {
+		isVolume = true
+		base = parVolumePartsRE.ReplaceAllString(strings.ToLower(strings.TrimSpace(candidate.FileName)), ".par2")
+		volumeNumber = parseInt(match[1])
+		recoveryBlocks = parseInt(match[2])
+	}
+	signatureOK := materialized.Signature == "par2"
+
+	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
+		BinaryID:     candidate.BinaryID,
+		ReleaseID:    candidate.ReleaseID,
+		StageName:    stageName,
+		ArtifactRole: "decoded_file",
+		ArtifactName: candidate.FileName,
+		ArtifactPath: materialized.OutputPath,
+		BytesTotal:   materialized.ExactSize,
+		MIMEType:     materialized.MIMEType,
+		Signature:    materialized.Signature,
+		SourceKind:   "inspect_par2",
+		Metadata: map[string]any{
+			"yenc_file_size": materialized.ExactSize,
+		},
+	}}); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, []pgindex.BinaryPAR2SetRecord{{
+		BinaryID:       candidate.BinaryID,
+		ReleaseID:      candidate.ReleaseID,
+		SetName:        setName,
+		BaseName:       base,
+		IsVolume:       isVolume,
+		VolumeNumber:   volumeNumber,
+		RecoveryBlocks: recoveryBlocks,
+		SignatureOK:    signatureOK,
+		Metadata: map[string]any{
+			"file_name": candidate.FileName,
+		},
+	}}); err != nil {
+		return err
+	}
+
 	summary := map[string]any{
 		"has_par2":        true,
 		"file_name":       candidate.FileName,
 		"base_name":       base,
+		"set_name":        setName,
+		"signature_ok":    signatureOK,
 		"repairable_hint": true,
 		"workspace_path":  workspace.ManifestPath,
 	}
@@ -98,7 +167,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		BinaryID:          candidate.BinaryID,
 		ReleaseID:         candidate.ReleaseID,
 		Status:            "completed",
-		MaterializedBytes: workspace.MaterializedBytes,
+		MaterializedBytes: workspace.MaterializedBytes + materialized.BytesWritten,
 		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
@@ -115,3 +184,8 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func parseInt(v string) int {
+	n := inspectpkg.ParseInt64(v)
+	return int(n)
+}

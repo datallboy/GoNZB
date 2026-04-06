@@ -41,10 +41,20 @@ type ArchiveProbeResult struct {
 	Strategy          string
 	ProbePath         string
 	MaterializedBytes int64
+	Entries           []ArchiveEntryInfo
 	EntryNames        []string
 	Encrypted         bool
 	ProbeError        string
 	FamilyFileNames   []string
+}
+
+type ArchiveEntryInfo struct {
+	Name             string
+	IsDir            bool
+	UncompressedSize int64
+	CompressedSize   int64
+	Encrypted        bool
+	Comment          string
 }
 
 type archiveProbeFile struct {
@@ -98,13 +108,6 @@ func PrepareArchiveProbe(ctx context.Context, workspace *Workspace, repo Catalog
 			log.Info("inspect_archive: materializing sparse combined 7z binary_id=%d release_id=%s files=%d probe=%s", candidate.BinaryID, candidate.ReleaseID, len(family), result.ProbePath)
 		}
 		result.MaterializedBytes, err = materializeSparseSplitArchive(ctx, repo, fetcher, groups, family, result.ProbePath, log, candidate, opts)
-	case splitZipRE.MatchString(strings.ToLower(strings.TrimSpace(candidate.FileName))):
-		result.Strategy = "sparse_split_archive"
-		result.ProbePath = filepath.Join(workspace.Dir, filepath.Base(strings.TrimSpace(candidate.FileName)))
-		if log != nil {
-			log.Info("inspect_archive: materializing sparse family binary_id=%d release_id=%s files=%d probe=%s", candidate.BinaryID, candidate.ReleaseID, len(family), result.ProbePath)
-		}
-		result.MaterializedBytes, err = materializeSparseSplitArchiveVolumes(ctx, repo, fetcher, groups, family, workspace.Dir, log, candidate, opts)
 	default:
 		result.ProbePath = filepath.Join(workspace.Dir, filepath.Base(ArchiveProbePath(candidate.FileName)))
 		result.Strategy = "leading_archive_header"
@@ -128,7 +131,8 @@ func PrepareArchiveProbe(ctx context.Context, workspace *Workspace, repo Catalog
 		log.Info("inspect_archive: invoking 7z binary_id=%d release_id=%s timeout=%s probe=%s", candidate.BinaryID, candidate.ReleaseID, opts.ToolTimeout, result.ProbePath)
 	}
 	output, err := runner.Run(toolCtx, opts.SevenZipPath, "l", "-slt", result.ProbePath)
-	result.EntryNames, result.Encrypted = parseSevenZipListing(output, result.ProbePath)
+	result.Entries, result.Encrypted = parseSevenZipListingDetails(output, result.ProbePath)
+	result.EntryNames = archiveEntryNames(result.Entries)
 	if err != nil && result.ProbeError == "" {
 		result.ProbeError = strings.TrimSpace(string(output))
 		if result.ProbeError == "" {
@@ -966,6 +970,24 @@ func minInt64(a, b int64) int64 {
 }
 
 func parseSevenZipListing(output []byte, probePath string) ([]string, bool) {
+	entries, encrypted := parseSevenZipListingDetails(output, probePath)
+	return archiveEntryNames(entries), encrypted
+}
+
+func archiveEntryNames(entries []ArchiveEntryInfo) []string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		value := strings.TrimSpace(entry.Name)
+		if value == "" {
+			continue
+		}
+		names = append(names, value)
+	}
+	sort.Strings(names)
+	return uniqueStrings(names)
+}
+
+func parseSevenZipListingDetails(output []byte, probePath string) ([]ArchiveEntryInfo, bool) {
 	text := string(output)
 	lower := strings.ToLower(text)
 	encrypted := strings.Contains(lower, "encrypted = +") ||
@@ -973,23 +995,54 @@ func parseSevenZipListing(output []byte, probePath string) ([]string, bool) {
 		strings.Contains(lower, "can not open encrypted archive")
 
 	base := filepath.Base(probePath)
-	entries := make([]string, 0, 8)
+	entries := make([]ArchiveEntryInfo, 0, 8)
+	current := ArchiveEntryInfo{}
+	flush := func() {
+		if strings.TrimSpace(current.Name) == "" {
+			return
+		}
+		if filepath.Base(current.Name) == base {
+			current = ArchiveEntryInfo{}
+			return
+		}
+		entries = append(entries, current)
+		current = ArchiveEntryInfo{}
+	}
+
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "Path = ") {
+		if line == "" {
+			flush()
 			continue
 		}
-		value := strings.TrimSpace(strings.TrimPrefix(line, "Path = "))
-		if value == "" {
+		parts := strings.SplitN(line, " = ", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		if filepath.Base(value) == base {
-			continue
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		switch key {
+		case "Path":
+			flush()
+			current.Name = value
+		case "Folder":
+			current.IsDir = value == "+"
+		case "Size":
+			current.UncompressedSize = ParseInt64(value)
+		case "Packed Size":
+			current.CompressedSize = ParseInt64(value)
+		case "Encrypted":
+			current.Encrypted = value == "+"
+			encrypted = encrypted || current.Encrypted
+		case "Comment":
+			current.Comment = value
 		}
-		entries = append(entries, value)
 	}
-	sort.Strings(entries)
-	return uniqueStrings(entries), encrypted
+	flush()
+	sort.SliceStable(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	return entries, encrypted
 }
 
 func MarshalArchiveEntries(entries []string) json.RawMessage {

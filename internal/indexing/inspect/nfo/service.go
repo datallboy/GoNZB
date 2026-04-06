@@ -3,6 +3,8 @@ package nfo
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -22,19 +24,23 @@ type repository interface {
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
+	ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryTextEvidenceRecord) error
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	inspectpkg.CatalogReader
 }
 
 type Service struct {
 	repo      repository
 	workspace *inspectpkg.WorkspaceManager
+	fetcher   inspectpkg.ArticleFetcher
 	log       logger
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, log logger, opts inspectpkg.Options) *Service {
-	return &Service{repo: repo, workspace: workspace, log: log, opts: inspectpkg.DefaultOptions(opts)}
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, log logger, opts inspectpkg.Options) *Service {
+	return &Service{repo: repo, workspace: workspace, fetcher: fetcher, log: log, opts: inspectpkg.DefaultOptions(opts)}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -79,7 +85,31 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	defer workspace.Cleanup()
 
-	passwords := inspectpkg.ExtractPasswordCandidates(candidate.ReleaseTitle, candidate.SourceTitle, candidate.DeobfuscatedTitle, candidate.FileName)
+	stagePath := filepath.Join(workspace.Dir, filepath.Base(candidate.FileName))
+	materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
+	if err != nil {
+		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			ErrorText:       err.Error(),
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+		})
+		return fmt.Errorf("materialize nfo binary: %w", err)
+	}
+
+	textBytes, err := os.ReadFile(materialized.OutputPath)
+	if err != nil {
+		return fmt.Errorf("read materialized nfo %s: %w", materialized.OutputPath, err)
+	}
+	textValue := string(textBytes)
+	passwords := inspectpkg.ExtractPasswordCandidates(
+		candidate.ReleaseTitle,
+		candidate.SourceTitle,
+		candidate.DeobfuscatedTitle,
+		candidate.FileName,
+		textValue,
+	)
 	for _, password := range passwords {
 		if _, err := s.repo.UpsertReleasePasswordCandidate(ctx, pgindex.ReleasePasswordCandidateRecord{
 			ReleaseID:     candidate.ReleaseID,
@@ -93,10 +123,43 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 	}
 
+	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
+		BinaryID:     candidate.BinaryID,
+		ReleaseID:    candidate.ReleaseID,
+		StageName:    stageName,
+		ArtifactRole: "decoded_file",
+		ArtifactName: candidate.FileName,
+		ArtifactPath: materialized.OutputPath,
+		BytesTotal:   materialized.ExactSize,
+		MIMEType:     materialized.MIMEType,
+		Signature:    materialized.Signature,
+		SourceKind:   "inspect_nfo",
+		Metadata: map[string]any{
+			"yenc_file_size": materialized.ExactSize,
+		},
+	}}); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceBinaryTextEvidence(ctx, stageName, candidate.BinaryID, []pgindex.BinaryTextEvidenceRecord{{
+		BinaryID:     candidate.BinaryID,
+		ReleaseID:    candidate.ReleaseID,
+		StageName:    stageName,
+		EvidenceKind: "nfo_text",
+		TextValue:    textValue,
+		Tokens:       inspectpkg.ExtractTextTokens(textValue),
+		Metadata: map[string]any{
+			"file_name": candidate.FileName,
+		},
+	}}); err != nil {
+		return err
+	}
+
 	hasNFO := true
 	summary := map[string]any{
 		"has_nfo":             true,
 		"candidate_passwords": passwords,
+		"text_length":         len(textValue),
+		"signature":           materialized.Signature,
 		"workspace_path":      workspace.ManifestPath,
 	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -104,7 +167,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		BinaryID:          candidate.BinaryID,
 		ReleaseID:         candidate.ReleaseID,
 		Status:            "completed",
-		MaterializedBytes: workspace.MaterializedBytes,
+		MaterializedBytes: workspace.MaterializedBytes + materialized.BytesWritten,
 		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
