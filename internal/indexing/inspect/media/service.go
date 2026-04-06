@@ -94,12 +94,21 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		candidate.FileName,
 		candidate.BinaryName,
 	}, " "))
+	archiveEntries := inspectpkg.ArchiveEntryNamesFromSummary(candidate.ArchiveSummaryJSON)
+	mediaEntry := inspectpkg.BestMediaEntry(archiveEntries)
+	if mediaEntry != "" {
+		text = strings.ToLower(strings.Join([]string{text, mediaEntry, strings.Join(archiveEntries, " ")}, " "))
+	}
 
 	resolution := normalizeMatch(resolutionRE.FindString(text))
 	videoCodec := normalizeMatch(videoCodecRE.FindString(text))
 	audioCodec := normalizeMatch(audioCodecRE.FindString(text))
 	isVideo := inspectpkg.IsVideoFile(candidate.FileName)
 	isAudio := inspectpkg.IsAudioFile(candidate.FileName)
+	if mediaEntry != "" {
+		isVideo = isVideo || inspectpkg.IsVideoFile(mediaEntry)
+		isAudio = isAudio || inspectpkg.IsAudioFile(mediaEntry)
+	}
 	videoCount := 0
 	audioCount := 0
 	if isVideo {
@@ -123,6 +132,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"audio_codec":    audioCodec,
 		"file_extension": strings.ToLower(filepath.Ext(candidate.FileName)),
 		"workspace_path": workspace.ManifestPath,
+	}
+	if mediaEntry != "" {
+		summary["archive_entry"] = mediaEntry
+		summary["archive_entry_count"] = len(archiveEntries)
 	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,

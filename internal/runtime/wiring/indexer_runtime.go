@@ -37,6 +37,7 @@ type usenetIndexerConfig struct {
 	ScrapeBatchSize       int64
 	StageInterval         time.Duration
 	ReleaseMinConfidence  float64
+	ReleaseMinCompletion  float64
 	ScrapeServer          *config.ServerConfig
 	Inspect               inspectpkg.Options
 	EnableInspectPAR2     bool
@@ -64,36 +65,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		return nil, err
 	}
 
-	matcherSvc := match.NewService()
-	assembleSvc := assemble.NewService(
-		appCtx.PGIndexStore,
-		matcherSvc,
-		appCtx.Logger,
-		assemble.Options{
-			BatchSize: int(runtimeCfg.ScrapeBatchSize),
-		},
-	)
-
-	releaseSvc := release.NewService(
-		appCtx.PGIndexStore,
-		appCtx.Logger,
-		release.Options{
-			BatchSize:            1000,
-			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
-		},
-	)
-	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
-	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
-	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
-	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
-	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.Inspect)
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
-	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
-	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
-
 	var (
 		scrapeSvc      *scrape.Service
 		scrapeProvider io.Closer
+		inspectFetcher inspectpkg.ArticleFetcher
 	)
 
 	if len(runtimeCfg.Newsgroups) > 0 {
@@ -119,7 +94,37 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			},
 		)
 		scrapeProvider = provider
+		inspectFetcher = provider
 	}
+
+	matcherSvc := match.NewService()
+	assembleSvc := assemble.NewService(
+		appCtx.PGIndexStore,
+		matcherSvc,
+		appCtx.Logger,
+		assemble.Options{
+			BatchSize: int(runtimeCfg.ScrapeBatchSize),
+		},
+	)
+
+	releaseSvc := release.NewService(
+		appCtx.PGIndexStore,
+		appCtx.Logger,
+		release.Options{
+			BatchSize:            1000,
+			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
+			ReleaseMinCompletion: runtimeCfg.ReleaseMinCompletion,
+		},
+	)
+	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
+	commandRunner := inspectpkg.ExecCommandRunner{}
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
+	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.Inspect)
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
+	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
@@ -240,8 +245,9 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	out := usenetIndexerConfig{
 		Newsgroups:           append([]string(nil), cfg.Indexing.Newsgroups...),
 		ScrapeBatchSize:      cfg.Indexing.ScrapeBatchSize,
-		StageInterval:        time.Duration(cfg.Indexing.ScheduleIntervalMinutes) * time.Minute,
+		StageInterval:        time.Duration(cfg.Indexing.ScheduleIntervalMinutes * float64(time.Minute)),
 		ReleaseMinConfidence: cfg.Indexing.ReleaseMinConfidence,
+		ReleaseMinCompletion: cfg.Indexing.ReleaseMinCompletionPct,
 		Inspect: inspectpkg.DefaultOptions(inspectpkg.Options{
 			WorkDir:            cfg.Indexing.InspectWorkDir,
 			MaxBytes:           cfg.Indexing.InspectMaxBytes,

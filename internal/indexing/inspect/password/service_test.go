@@ -2,6 +2,7 @@ package password
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -18,6 +19,9 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 				ReleaseID:       "rel-1",
 				ReleaseTitle:    "Show.S01E01 password:open-sesame",
 				SourceUpdatedAt: &now,
+				ArchiveSummaryJSON: mustJSON(t, map[string]any{
+					"encrypted": true,
+				}),
 			},
 		},
 		passwordCandidates: []pgindex.PasswordVerificationCandidate{
@@ -51,6 +55,38 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 	}
 	if len(repo.completedInspections) != 1 {
 		t.Fatalf("expected completed inspection, got %d", len(repo.completedInspections))
+	}
+}
+
+func TestRunOnceSkipsNonEncryptedArchiveCandidates(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeRepository{
+		binaryCandidates: []pgindex.BinaryInspectionCandidate{
+			{
+				BinaryID:        8,
+				ReleaseID:       "rel-2",
+				ReleaseTitle:    "Show.S01E02",
+				SourceUpdatedAt: &now,
+				ArchiveSummaryJSON: mustJSON(t, map[string]any{
+					"encrypted": false,
+				}),
+			},
+		},
+	}
+
+	svc := NewService(repo, testLogger{}, inspectpkg.Options{})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.completedInspections) != 0 {
+		t.Fatalf("expected no completed inspections, got %d", len(repo.completedInspections))
+	}
+	if len(repo.releaseUpdates) != 0 {
+		t.Fatalf("expected no release updates, got %d", len(repo.releaseUpdates))
+	}
+	if len(repo.updatedCandidateStatuses) != 0 {
+		t.Fatalf("expected no password candidate status updates, got %d", len(repo.updatedCandidateStatuses))
 	}
 }
 
@@ -107,3 +143,12 @@ func (testLogger) Debug(string, ...interface{}) {}
 func (testLogger) Info(string, ...interface{})  {}
 func (testLogger) Warn(string, ...interface{})  {}
 func (testLogger) Error(string, ...interface{}) {}
+
+func mustJSON(t *testing.T, v map[string]any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return b
+}

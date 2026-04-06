@@ -154,15 +154,6 @@ func ExtractPasswordCandidates(values ...string) []string {
 	return out
 }
 
-func IsArchiveFile(fileName string) bool {
-	lower := strings.ToLower(strings.TrimSpace(fileName))
-	return strings.HasSuffix(lower, ".rar") ||
-		strings.HasSuffix(lower, ".zip") ||
-		strings.HasSuffix(lower, ".7z") ||
-		regexp.MustCompile(`(?i)\.r\d{2,3}$`).MatchString(lower) ||
-		regexp.MustCompile(`(?i)\.part\d+\.rar$`).MatchString(lower)
-}
-
 func IsVideoFile(fileName string) bool {
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
 	case ".mkv", ".mp4", ".avi", ".ts":

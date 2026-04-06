@@ -29,6 +29,7 @@ type repository interface {
 type Options struct {
 	BatchSize            int
 	ReleaseMinConfidence float64
+	ReleaseMinCompletion float64
 }
 
 type Service struct {
@@ -43,6 +44,9 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 	if opts.ReleaseMinConfidence <= 0 {
 		opts.ReleaseMinConfidence = 0.55
+	}
+	if opts.ReleaseMinCompletion < 0 {
+		opts.ReleaseMinCompletion = 0
 	}
 
 	return &Service{
@@ -78,7 +82,13 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		formed += count
 	}
 
-	s.log.Info("release: formed=%d batch_size=%d min_confidence=%.2f", formed, s.opts.BatchSize, s.opts.ReleaseMinConfidence)
+	s.log.Info(
+		"release: formed=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f",
+		formed,
+		s.opts.BatchSize,
+		s.opts.ReleaseMinConfidence,
+		s.opts.ReleaseMinCompletion,
+	)
 	return nil
 }
 
@@ -111,6 +121,17 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 				candidate.ReleaseKey,
 				record.MatchConfidence,
 				s.opts.ReleaseMinConfidence,
+				len(cluster.Binaries),
+			)
+			continue
+		}
+		if record.CompletionPct < s.opts.ReleaseMinCompletion {
+			s.log.Debug(
+				"release: skipped group=%s source_release_key=%s completion_pct=%.2f threshold=%.2f binaries=%d",
+				record.GroupName,
+				candidate.ReleaseKey,
+				record.CompletionPct,
+				s.opts.ReleaseMinCompletion,
 				len(cluster.Binaries),
 			)
 			continue

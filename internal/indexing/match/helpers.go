@@ -17,6 +17,11 @@ type structuredData struct {
 	Size  int64
 }
 
+type counterPair struct {
+	Part  int
+	Total int
+}
+
 type matchState struct {
 	candidate           Candidate
 	cleanSubject        string
@@ -24,6 +29,8 @@ type matchState struct {
 	normalizedSubject   string
 	quotedFilename      string
 	structured          structuredData
+	fileIndex           int
+	expectedFileCount   int
 	partNumber          int
 	totalParts          int
 	releaseName         string
@@ -49,11 +56,15 @@ var (
 	unsafeFileRE     = regexp.MustCompile(`[\\/:*?"<>|]+`)
 	nonKeyCharsRE    = regexp.MustCompile(`[^\pL\pN]+`)
 	parFileRE        = regexp.MustCompile(`(?i)\.par2$|\.vol\d+\+\d+\.par2$`)
+	volumeTokenRE    = regexp.MustCompile(`(?i)^vol\d+$`)
+	partTokenRE      = regexp.MustCompile(`(?i)^part\d+$`)
+	rarTokenRE       = regexp.MustCompile(`(?i)^r\d{2,3}$`)
 )
 
 func newMatchState(candidate Candidate) *matchState {
 	clean := strings.TrimSpace(html.UnescapeString(candidate.Subject))
 	partNumber, totalParts := parsePartInfo(clean)
+	fileIndex, expectedFileCount := parseFileInfo(clean, partNumber, totalParts)
 	structured := parseStructuredData(clean, candidate.RawOverview)
 	if structured.Part > 0 {
 		partNumber = structured.Part
@@ -69,6 +80,8 @@ func newMatchState(candidate Candidate) *matchState {
 		normalizedSubject:  normalizeKey(clean),
 		quotedFilename:     extractQuotedFilename(clean),
 		structured:         structured,
+		fileIndex:          fileIndex,
+		expectedFileCount:  expectedFileCount,
 		partNumber:         maxInt(partNumber, 1),
 		totalParts:         maxInt(totalParts, 1),
 		evidence:           make(map[string]any, 12),
@@ -169,7 +182,8 @@ func (s *matchState) finalize(opts Options) Result {
 		s.fallbackUsed = true
 	}
 
-	fileName := s.bestFileName()
+	explicitFileName := s.bestFileName()
+	fileName := explicitFileName
 	if fileName == "" {
 		fileName = s.contextualFileName()
 		s.fallbackUsed = true
@@ -191,14 +205,17 @@ func (s *matchState) finalize(opts Options) Result {
 		s.partNumber = 1
 	}
 
-	releaseKey := normalizeKey(releaseName)
+	releaseKey := canonicalReleaseKey(releaseName)
 	if releaseKey == "" {
-		releaseKey = normalizeKey(s.contextSeed())
+		releaseKey = canonicalReleaseKey(s.contextSeed())
 	}
 
 	fileKey := normalizeKey(fileName)
 	if fileKey == "" {
 		fileKey = normalizeKey(s.contextSeed())
+	}
+	if explicitFileName == "" && s.fileIndex > 0 && s.expectedFileCount > 0 {
+		fileKey = normalizeKey("file " + strconv.Itoa(s.fileIndex) + " of " + strconv.Itoa(s.expectedFileCount))
 	}
 
 	status := "low_confidence"
@@ -212,6 +229,8 @@ func (s *matchState) finalize(opts Options) Result {
 		"confidence":            clampConfidence(s.confidence),
 		"status":                status,
 		"fallback_used":         s.fallbackUsed,
+		"file_index":            s.fileIndex,
+		"expected_file_count":   s.expectedFileCount,
 		"short_circuited_after": s.shortCircuitedAfter,
 	}
 	if s.fallbackUsed {
@@ -222,39 +241,160 @@ func (s *matchState) finalize(opts Options) Result {
 	}
 
 	return Result{
-		ReleaseName:      releaseName,
-		ReleaseKey:       releaseKey,
-		BinaryName:       fileName,
-		BinaryKey:        releaseKey + "::" + fileKey,
-		FileName:         fileName,
-		PartNumber:       s.partNumber,
-		TotalParts:       s.totalParts,
-		IsPars:           parFileRE.MatchString(strings.ToLower(fileName)),
-		MatchConfidence:  clampConfidence(s.confidence),
-		MatchStatus:      status,
-		GroupingEvidence: s.evidence,
+		ReleaseName:       releaseName,
+		ReleaseKey:        releaseKey,
+		BinaryName:        fileName,
+		BinaryKey:         releaseKey + "::" + fileKey,
+		FileName:          fileName,
+		FileIndex:         s.fileIndex,
+		ExpectedFileCount: s.expectedFileCount,
+		PartNumber:        s.partNumber,
+		TotalParts:        s.totalParts,
+		IsPars:            parFileRE.MatchString(strings.ToLower(fileName)),
+		MatchConfidence:   clampConfidence(s.confidence),
+		MatchStatus:       status,
+		GroupingEvidence:  s.evidence,
 	}
 }
 
-func parsePartInfo(subject string) (int, int) {
-	for _, re := range []*regexp.Regexp{partMarkerRE, partLooseRE} {
-		m := re.FindStringSubmatch(subject)
-		if len(m) != 3 {
+func canonicalReleaseKey(value string) string {
+	key := normalizeKey(value)
+	if key == "" {
+		return ""
+	}
+
+	tokens := strings.Fields(key)
+	for len(tokens) > 0 {
+		if len(tokens) >= 2 && volumeTokenRE.MatchString(tokens[len(tokens)-2]) && isAllDigits(tokens[len(tokens)-1]) {
+			tokens = tokens[:len(tokens)-2]
 			continue
 		}
 
-		part, err1 := strconv.Atoi(m[1])
-		total, err2 := strconv.Atoi(m[2])
-		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+		last := tokens[len(tokens)-1]
+		switch {
+		case isCanonicalReleaseSuffix(last):
+			tokens = tokens[:len(tokens)-1]
+			continue
+		case partTokenRE.MatchString(last):
+			tokens = tokens[:len(tokens)-1]
 			continue
 		}
-		if part > total {
-			total = part
+		break
+	}
+
+	return strings.Join(tokens, " ")
+}
+
+func isCanonicalReleaseSuffix(token string) bool {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "7z", "zip", "rar", "par2", "nfo", "sfv", "srr", "mkv", "avi", "mp4", "mp3", "flac":
+		return true
+	default:
+		return rarTokenRE.MatchString(token)
+	}
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
 		}
+	}
+	return true
+}
+
+func parseCounterPairs(subject string) []counterPair {
+	if strings.TrimSpace(subject) == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]counterPair, 0, 4)
+	for _, re := range []*regexp.Regexp{partMarkerRE, partLooseRE} {
+		matches := re.FindAllStringSubmatch(subject, -1)
+		for _, m := range matches {
+			if len(m) != 3 {
+				continue
+			}
+			part, err1 := strconv.Atoi(m[1])
+			total, err2 := strconv.Atoi(m[2])
+			if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+				continue
+			}
+			if part > total {
+				total = part
+			}
+			key := fmt.Sprintf("%d/%d", part, total)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, counterPair{Part: part, Total: total})
+		}
+	}
+
+	return out
+}
+
+func parsePartInfo(subject string) (int, int) {
+	if part, total := bestCounterAfterYEnc(subject); total > 0 {
 		return part, total
 	}
 
-	return 1, 1
+	return bestCounterPair(subject)
+}
+
+func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {
+	if part, total := bestCounterBeforeYEnc(subject); total > 0 {
+		return part, total
+	}
+
+	best := counterPair{}
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Part == articlePart && pair.Total == articleTotal {
+			continue
+		}
+		if best.Total == 0 || pair.Total < best.Total || (pair.Total == best.Total && pair.Part < best.Part) {
+			best = pair
+		}
+	}
+	if best.Total <= 0 {
+		return 0, 0
+	}
+	return best.Part, best.Total
+}
+
+func bestCounterPair(subject string) (int, int) {
+	bestPart := 1
+	bestTotal := 1
+
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Total > bestTotal || (pair.Total == bestTotal && pair.Part > bestPart) {
+			bestPart = pair.Part
+			bestTotal = pair.Total
+		}
+	}
+
+	return bestPart, bestTotal
+}
+
+func bestCounterAfterYEnc(subject string) (int, int) {
+	idx := strings.LastIndex(strings.ToLower(subject), "yenc")
+	if idx < 0 || idx >= len(subject) {
+		return 0, 0
+	}
+	return bestCounterPair(subject[idx:])
+}
+
+func bestCounterBeforeYEnc(subject string) (int, int) {
+	idx := strings.LastIndex(strings.ToLower(subject), "yenc")
+	if idx <= 0 {
+		return 0, 0
+	}
+	return bestCounterPair(subject[:idx])
 }
 
 func parseStructuredData(subject string, raw map[string]any) structuredData {

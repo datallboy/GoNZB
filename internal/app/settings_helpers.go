@@ -27,6 +27,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			ScrapeBatchSize:         cfg.Indexing.ScrapeBatchSize,
 			ScheduleIntervalMinutes: cfg.Indexing.ScheduleIntervalMinutes,
 			ReleaseMinConfidence:    cfg.Indexing.ReleaseMinConfidence,
+			ReleaseMinCompletionPct: cfg.Indexing.ReleaseMinCompletionPct,
 			InspectWorkDir:          cfg.Indexing.InspectWorkDir,
 			InspectMaxBytes:         cfg.Indexing.InspectMaxBytes,
 			InspectMaxArchiveDepth:  cfg.Indexing.InspectMaxArchiveDepth,
@@ -141,6 +142,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		}
 		if runtime.Indexing.ReleaseMinConfidence > 0 {
 			effective.Indexing.ReleaseMinConfidence = runtime.Indexing.ReleaseMinConfidence
+		}
+		if runtime.Indexing.ReleaseMinCompletionPct >= 0 {
+			effective.Indexing.ReleaseMinCompletionPct = runtime.Indexing.ReleaseMinCompletionPct
 		}
 		if strings.TrimSpace(runtime.Indexing.InspectWorkDir) != "" {
 			effective.Indexing.InspectWorkDir = runtime.Indexing.InspectWorkDir
@@ -297,6 +301,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBatchSize:         in.ScrapeBatchSize,
 		ScheduleIntervalMinutes: in.ScheduleIntervalMinutes,
 		ReleaseMinConfidence:    in.ReleaseMinConfidence,
+		ReleaseMinCompletionPct: in.ReleaseMinCompletionPct,
 		InspectWorkDir:          in.InspectWorkDir,
 		InspectMaxBytes:         in.InspectMaxBytes,
 		InspectMaxArchiveDepth:  in.InspectMaxArchiveDepth,

@@ -20,6 +20,21 @@ func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeLatest)
 }
 
+// Long-running backfill mode restart loop lives outside cmd/main.
+func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
+}
+
+// Long-running assemble mode restart loop lives outside cmd/main.
+func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
+}
+
+// Long-running release mode restart loop lives outside cmd/main.
+func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)
+}
+
 func runIndexerStages(ctx context.Context, appCtx *app.Context, stages ...supervisor.StageName) error {
 	if appCtx == nil {
 		return fmt.Errorf("app context is required")

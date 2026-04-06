@@ -2,6 +2,8 @@ package inspect
 
 import (
 	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -89,6 +91,68 @@ func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 	want := []string{"open-sesame", "supersecret"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
+	tests := map[string]bool{
+		"example.7z.001":     true,
+		"example.zip.001":    true,
+		"example.part01.rar": true,
+		"example.r00":        true,
+		"example.par2":       false,
+	}
+
+	for fileName, want := range tests {
+		if got := IsArchiveFile(fileName); got != want {
+			t.Fatalf("expected IsArchiveFile(%q)=%v, got %v", fileName, want, got)
+		}
+	}
+}
+
+func TestIsArchiveRepresentativeUsesFirstSplitVolume(t *testing.T) {
+	tests := map[string]bool{
+		"example.7z.001":     true,
+		"example.7z.002":     false,
+		"example.part01.rar": true,
+		"example.part02.rar": false,
+		"example.rar":        true,
+		"example.r00":        false,
+	}
+
+	for fileName, want := range tests {
+		if got := IsArchiveRepresentative(fileName); got != want {
+			t.Fatalf("expected IsArchiveRepresentative(%q)=%v, got %v", fileName, want, got)
+		}
+	}
+}
+
+func TestArchiveEntryNamesFromSummaryReadsEntryList(t *testing.T) {
+	raw := []byte(`{"archive_entries":["video/sample.mkv","proof.nfo","video/sample.mkv"]}`)
+	got := ArchiveEntryNamesFromSummary(raw)
+	want := []string{"proof.nfo", "video/sample.mkv"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseSevenZipNextHeaderRange(t *testing.T) {
+	head := make([]byte, 32)
+	copy(head[:6], []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C})
+	binary.LittleEndian.PutUint64(head[12:20], 1024)
+	binary.LittleEndian.PutUint64(head[20:28], 256)
+	binary.LittleEndian.PutUint32(head[28:32], 0xA1B2C3D4)
+	binary.LittleEndian.PutUint32(head[8:12], crc32.ChecksumIEEE(head[12:32]))
+
+	start, end, total, crc, err := parseSevenZipNextHeaderRange(head)
+	if err != nil {
+		t.Fatalf("parse start header: %v", err)
+	}
+	if start != 1056 || end != 1312 || total != 1312 {
+		t.Fatalf("expected range 1056-1312 total 1312, got %d-%d total %d", start, end, total)
+	}
+	if crc != 0xA1B2C3D4 {
+		t.Fatalf("expected crc %08X, got %08X", uint32(0xA1B2C3D4), crc)
 	}
 }
 

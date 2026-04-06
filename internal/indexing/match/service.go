@@ -15,17 +15,19 @@ type Candidate struct {
 }
 
 type Result struct {
-	ReleaseName      string
-	ReleaseKey       string
-	BinaryName       string
-	BinaryKey        string
-	FileName         string
-	PartNumber       int
-	TotalParts       int
-	IsPars           bool
-	MatchConfidence  float64
-	MatchStatus      string
-	GroupingEvidence map[string]any
+	ReleaseName       string
+	ReleaseKey        string
+	BinaryName        string
+	BinaryKey         string
+	FileName          string
+	FileIndex         int
+	ExpectedFileCount int
+	PartNumber        int
+	TotalParts        int
+	IsPars            bool
+	MatchConfidence   float64
+	MatchStatus       string
+	GroupingEvidence  map[string]any
 }
 
 type Options struct {

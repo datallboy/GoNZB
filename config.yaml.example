@@ -82,3 +82,5 @@ indexing:
     - "alt.binaries.test"
   scrape_batch_size: 5000
   schedule_interval_minutes: 10
+  release_min_confidence: 0.55
+  release_min_completion_pct: 0

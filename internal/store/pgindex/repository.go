@@ -46,19 +46,21 @@ type AssemblyCandidate struct {
 
 // binary upsert input for assembly service.
 type BinaryRecord struct {
-	ProviderID       int64
-	NewsgroupID      int64
-	PosterID         int64
-	ReleaseKey       string
-	ReleaseName      string
-	BinaryKey        string
-	BinaryName       string
-	FileName         string
-	TotalParts       int
-	PostedAt         *time.Time
-	MatchConfidence  float64
-	MatchStatus      string
-	GroupingEvidence map[string]any
+	ProviderID        int64
+	NewsgroupID       int64
+	PosterID          int64
+	ReleaseKey        string
+	ReleaseName       string
+	BinaryKey         string
+	BinaryName        string
+	FileName          string
+	FileIndex         int
+	ExpectedFileCount int
+	TotalParts        int
+	PostedAt          *time.Time
+	MatchConfidence   float64
+	MatchStatus       string
+	GroupingEvidence  map[string]any
 }
 
 // binary part upsert input for assembly service.
@@ -82,6 +84,8 @@ type BinarySummary struct {
 	BinaryKey          string
 	BinaryName         string
 	FileName           string
+	FileIndex          int
+	ExpectedFileCount  int
 	Poster             string
 	PostedAt           *time.Time
 	TotalParts         int
@@ -121,6 +125,7 @@ type ReleaseRecord struct {
 	SizeBytes               int64
 	PostedAt                *time.Time
 	FileCount               int
+	ExpectedFileCount       int
 	ParFileCount            int
 	CompletionPct           float64
 	MatchConfidence         float64
@@ -190,6 +195,7 @@ type BinaryInspectionCandidate struct {
 	CurrentStatus      string
 	CurrentUpdatedAt   *time.Time
 	CurrentSummaryJSON json.RawMessage
+	ArchiveSummaryJSON json.RawMessage
 }
 
 type BinaryInspectionRecord struct {
@@ -815,6 +821,8 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			binary_key,
 			binary_name,
 			file_name,
+			file_index,
+			expected_file_count,
 			total_parts,
 			posted_at,
 			match_confidence,
@@ -822,13 +830,18 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
 		    binary_name = EXCLUDED.binary_name,
 		    file_name = EXCLUDED.file_name,
+		    file_index = CASE
+		    	WHEN EXCLUDED.file_index > 0 THEN EXCLUDED.file_index
+		    	ELSE binaries.file_index
+		    END,
+		    expected_file_count = GREATEST(binaries.expected_file_count, EXCLUDED.expected_file_count),
 		    total_parts = GREATEST(binaries.total_parts, EXCLUDED.total_parts),
 		    posted_at = COALESCE(binaries.posted_at, EXCLUDED.posted_at),
 		    match_confidence = GREATEST(binaries.match_confidence, EXCLUDED.match_confidence),
@@ -850,6 +863,8 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		in.BinaryKey,
 		strings.TrimSpace(in.BinaryName),
 		strings.TrimSpace(in.FileName),
+		in.FileIndex,
+		in.ExpectedFileCount,
 		in.TotalParts,
 		postedAt,
 		in.MatchConfidence,
@@ -1023,6 +1038,8 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.binary_key,
 			b.binary_name,
 			b.file_name,
+			b.file_index,
+			b.expected_file_count,
 			COALESCE(p.poster_name, ''),
 			b.posted_at,
 			b.total_parts,
@@ -1037,7 +1054,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 		WHERE b.provider_id = $1
 		  AND b.newsgroup_id = $2
 		  AND b.release_key = $3
-		ORDER BY b.file_name, b.first_article_number, b.id`,
+		ORDER BY b.file_index, b.file_name, b.first_article_number, b.id`,
 		providerID, newsgroupID, releaseKey,
 	)
 	if err != nil {
@@ -1059,6 +1076,8 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			&item.BinaryKey,
 			&item.BinaryName,
 			&item.FileName,
+			&item.FileIndex,
+			&item.ExpectedFileCount,
 			&item.Poster,
 			&postedAt,
 			&item.TotalParts,
@@ -1178,6 +1197,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			size_bytes,
 			posted_at,
 			file_count,
+			expected_file_count,
 			par_file_count,
 			completion_pct,
 			match_confidence,
@@ -1209,7 +1229,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,'usenet_index',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,'usenet_index',NOW())
 		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
 		    release_key = EXCLUDED.release_key,
@@ -1223,6 +1243,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    size_bytes = EXCLUDED.size_bytes,
 		    posted_at = EXCLUDED.posted_at,
 		    file_count = EXCLUDED.file_count,
+		    expected_file_count = GREATEST(releases.expected_file_count, EXCLUDED.expected_file_count),
 		    par_file_count = EXCLUDED.par_file_count,
 		    completion_pct = EXCLUDED.completion_pct,
 		    match_confidence = EXCLUDED.match_confidence,
@@ -1237,7 +1258,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'passworded_known'
 		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'passworded_unknown'
 		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'passworded'
-		    	WHEN EXCLUDED.password_state <> '' THEN EXCLUDED.password_state
+		    	WHEN EXCLUDED.password_state <> '' AND EXCLUDED.password_state <> 'unknown' THEN EXCLUDED.password_state
 		    	ELSE releases.password_state
 		    END,
 		    preferred_password_id = EXCLUDED.preferred_password_id,
@@ -1295,6 +1316,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		in.SizeBytes,
 		postedAt,
 		in.FileCount,
+		in.ExpectedFileCount,
 		in.ParFileCount,
 		in.CompletionPct,
 		in.MatchConfidence,
@@ -1826,15 +1848,24 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 			b.updated_at,
 			COALESCE(bi.status, ''),
 			bi.updated_at,
-			COALESCE(bi.summary_json, '{}'::jsonb)
+			COALESCE(bi.summary_json, '{}'::jsonb),
+			COALESCE(abi.summary_json, '{}'::jsonb)
 		FROM binaries b
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
 			ON bi.stage_name = $1
 			AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+			ON abi.stage_name = 'inspect_archive'
+			AND abi.binary_id = b.id
 		WHERE ` + filter + `
-		  AND (bi.id IS NULL OR bi.status = 'failed' OR b.updated_at > bi.updated_at)
+		  AND (
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			b.updated_at > bi.updated_at OR
+			COALESCE(bi.summary_json->>'probe_error', '') <> ''
+		  )
 		ORDER BY r.updated_at DESC, b.updated_at DESC, b.id
 		LIMIT $2`
 
@@ -1871,6 +1902,7 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 			&item.CurrentStatus,
 			&currentUpdatedAt,
 			&item.CurrentSummaryJSON,
+			&item.ArchiveSummaryJSON,
 		); err != nil {
 			return nil, fmt.Errorf("scan binary inspection candidate: %w", err)
 		}
@@ -3026,23 +3058,53 @@ func inspectCandidateFilter(stageName string) (string, error) {
 		return "rf.is_pars = TRUE", nil
 	case "inspect_nfo":
 		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
-	case "inspect_archive", "inspect_password":
-		return `(
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+	case "inspect_archive":
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r[0-9]{2,3}$' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part%.rar'
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+		)`, nil
+	case "inspect_password":
+		return `r.encrypted = TRUE AND
+		r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
 		)`, nil
 	case "inspect_media":
-		return `(
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mkv' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp4' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.avi' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.ts' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.flac' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp3' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.m4a'
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.m4a' OR
+			(
+				abi.status = 'completed' AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+				)
+			)
 		)`, nil
 	default:
 		return "", fmt.Errorf("unsupported inspection stage %q", stageName)

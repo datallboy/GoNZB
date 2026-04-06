@@ -45,8 +45,9 @@ type DownloadRuntimeSettings struct {
 type IndexingRuntimeSettings struct {
 	Newsgroups              []string `json:"newsgroups,omitempty"`
 	ScrapeBatchSize         int64    `json:"scrape_batch_size,omitempty"`
-	ScheduleIntervalMinutes int      `json:"schedule_interval_minutes,omitempty"`
+	ScheduleIntervalMinutes float64  `json:"schedule_interval_minutes,omitempty"`
 	ReleaseMinConfidence    float64  `json:"release_min_confidence,omitempty"`
+	ReleaseMinCompletionPct float64  `json:"release_min_completion_pct,omitempty"`
 	InspectWorkDir          string   `json:"inspect_work_dir,omitempty"`
 	InspectMaxBytes         int64    `json:"inspect_max_bytes,omitempty"`
 	InspectMaxArchiveDepth  int      `json:"inspect_max_archive_depth,omitempty"`

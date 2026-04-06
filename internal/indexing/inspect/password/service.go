@@ -2,6 +2,7 @@ package password
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,6 +64,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if !archiveSummaryEncrypted(candidate.ArchiveSummaryJSON) {
+			continue
+		}
 		if err := s.repo.StartBinaryInspection(ctx, string(supervisor.StageInspectPassword), candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
 			return err
 		}
@@ -98,6 +102,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 
 	for releaseID, candidate := range candidateByRelease {
+		if !archiveSummaryEncrypted(candidate.ArchiveSummaryJSON) {
+			continue
+		}
 		known := verifiedByRelease[releaseID]
 		unknown := !known
 		passworded := true
@@ -153,6 +160,31 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func archiveSummaryEncrypted(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+
+	var summary map[string]any
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		return false
+	}
+
+	encrypted, ok := summary["encrypted"]
+	if !ok {
+		return false
+	}
+
+	switch v := encrypted.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

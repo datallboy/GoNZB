@@ -154,8 +154,8 @@ func (m *usenetIndexerRuntimeModule) Enabled() bool {
 	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.UsenetIndexer.Enabled
 }
 
-func (m *usenetIndexerRuntimeModule) Build(context.Context) error {
-	return m.rebuild(nil)
+func (m *usenetIndexerRuntimeModule) Build(ctx context.Context) error {
+	return m.rebuild(ctx)
 }
 
 func (m *usenetIndexerRuntimeModule) Start(ctx context.Context) error {

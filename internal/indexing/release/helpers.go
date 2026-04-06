@@ -31,6 +31,8 @@ var (
 	sourceTagRE        = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
 	subtitleLanguageRE = regexp.MustCompile(`(?i)\b(eng|english|spa|spanish|fre|french|ger|german|ita|italian|jpn|japanese)\b`)
 	rarPartRE          = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	splitSevenZipRE    = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
+	splitZipRE         = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	parVolumeRE        = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
 	numericNoiseOnlyRE = regexp.MustCompile(`^[a-f0-9]{8,}$`)
 )
@@ -215,7 +217,8 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		Poster:                  dominantPoster(cluster.Binaries),
 		SizeBytes:               totalBytes(cluster.Binaries),
 		PostedAt:                postedAt,
-		FileCount:               len(cluster.Binaries),
+		FileCount:               clusterObservedFileCount(cluster.Binaries),
+		ExpectedFileCount:       clusterExpectedFileCount(cluster.Binaries),
 		ParFileCount:            countPARFiles(cluster.Binaries),
 		CompletionPct:           clusterCompletionPct(cluster.Binaries),
 		MatchConfidence:         clamp01(cluster.MatchConfidence),
@@ -574,14 +577,63 @@ func clusterCompletionPct(binaries []pgindex.BinarySummary) float64 {
 		totalObservedParts += binary.ObservedParts
 		totalExpectedParts += max(binary.TotalParts, binary.ObservedParts)
 	}
-	if totalExpectedParts <= 0 {
-		return 100
+
+	partPct := 100.0
+	if totalExpectedParts > 0 {
+		partPct = (float64(totalObservedParts) / float64(totalExpectedParts)) * 100
 	}
-	pct := (float64(totalObservedParts) / float64(totalExpectedParts)) * 100
-	if pct > 100 {
-		return 100
+	if partPct > 100 {
+		partPct = 100
 	}
-	return pct
+
+	expectedFiles := clusterExpectedFileCount(binaries)
+	if expectedFiles <= 0 {
+		return partPct
+	}
+
+	filePct := (float64(clusterObservedFileCount(binaries)) / float64(expectedFiles)) * 100
+	if filePct > 100 {
+		filePct = 100
+	}
+	if filePct < partPct {
+		return filePct
+	}
+	return partPct
+}
+
+func clusterExpectedFileCount(binaries []pgindex.BinarySummary) int {
+	best := 0
+	for _, binary := range binaries {
+		if binary.ExpectedFileCount > best {
+			best = binary.ExpectedFileCount
+		}
+	}
+	return best
+}
+
+func clusterObservedFileCount(binaries []pgindex.BinarySummary) int {
+	if len(binaries) == 0 {
+		return 0
+	}
+
+	seenIndexes := make(map[int]struct{}, len(binaries))
+	fallbackNames := make(map[string]struct{}, len(binaries))
+	for _, binary := range binaries {
+		if binary.FileIndex > 0 {
+			seenIndexes[binary.FileIndex] = struct{}{}
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if name == "" {
+			name = fmt.Sprintf("binary-%d", binary.BinaryID)
+		}
+		fallbackNames[name] = struct{}{}
+	}
+
+	if len(seenIndexes) > 0 {
+		return len(seenIndexes) + len(fallbackNames)
+	}
+	return len(fallbackNames)
 }
 
 func computeIdentityConfidenceScore(cluster releaseCluster) float64 {
@@ -681,6 +733,7 @@ func computeMediaQualityScore(primaryResolution, primaryVideoCodec string, binar
 }
 
 func summarizeFiles(binaries []pgindex.BinarySummary) (hasPAR2, hasNFO bool, archiveCount, videoCount, audioCount int, samplePresent bool) {
+	archiveFamilies := make(map[string]struct{})
 	for _, binary := range binaries {
 		name := strings.ToLower(pickFileName(binary))
 		switch {
@@ -689,7 +742,11 @@ func summarizeFiles(binaries []pgindex.BinarySummary) (hasPAR2, hasNFO bool, arc
 		case strings.HasSuffix(name, ".nfo"):
 			hasNFO = true
 		case isArchiveFile(name):
-			archiveCount++
+			key := archiveFamilyKey(name)
+			if key == "" {
+				key = name
+			}
+			archiveFamilies[key] = struct{}{}
 		case isVideoFile(name):
 			videoCount++
 		case isAudioFile(name):
@@ -699,7 +756,7 @@ func summarizeFiles(binaries []pgindex.BinarySummary) (hasPAR2, hasNFO bool, arc
 			samplePresent = true
 		}
 	}
-	return hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent
+	return hasPAR2, hasNFO, len(archiveFamilies), videoCount, audioCount, samplePresent
 }
 
 func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount, audioCount int) string {
@@ -796,7 +853,7 @@ func derivePasswordState(passworded, known, unknown bool) string {
 	case passworded:
 		return "passworded"
 	default:
-		return "not_passworded"
+		return "unknown"
 	}
 }
 
@@ -854,7 +911,27 @@ func isArchiveFile(fileName string) bool {
 	return strings.HasSuffix(lower, ".rar") ||
 		strings.HasSuffix(lower, ".zip") ||
 		strings.HasSuffix(lower, ".7z") ||
+		splitSevenZipRE.MatchString(lower) ||
+		splitZipRE.MatchString(lower) ||
 		rarPartRE.MatchString(lower)
+}
+
+func archiveFamilyKey(fileName string) string {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	switch {
+	case splitSevenZipRE.MatchString(lower):
+		return splitSevenZipRE.ReplaceAllString(lower, ".7z")
+	case splitZipRE.MatchString(lower):
+		return splitZipRE.ReplaceAllString(lower, ".zip")
+	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+		idx := strings.LastIndex(lower, ".part")
+		if idx > 0 {
+			return lower[:idx] + ".rar"
+		}
+	case rarPartRE.MatchString(lower):
+		return rarPartRE.ReplaceAllString(lower, ".rar")
+	}
+	return lower
 }
 
 func isVideoFile(fileName string) bool {

@@ -72,8 +72,9 @@ type APIConfig struct {
 type IndexingConfig struct {
 	Newsgroups              []string `mapstructure:"newsgroups" yaml:"newsgroups"`
 	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
-	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
+	ScheduleIntervalMinutes float64  `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
 	ReleaseMinConfidence    float64  `mapstructure:"release_min_confidence" yaml:"release_min_confidence"`
+	ReleaseMinCompletionPct float64  `mapstructure:"release_min_completion_pct" yaml:"release_min_completion_pct"`
 	InspectWorkDir          string   `mapstructure:"inspect_work_dir" yaml:"inspect_work_dir"`
 	InspectMaxBytes         int64    `mapstructure:"inspect_max_bytes" yaml:"inspect_max_bytes"`
 	InspectMaxArchiveDepth  int      `mapstructure:"inspect_max_archive_depth" yaml:"inspect_max_archive_depth"`
@@ -145,8 +146,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.scrape_batch_size", 5000)
-	v.SetDefault("indexing.schedule_interval_minutes", 10)
+	v.SetDefault("indexing.schedule_interval_minutes", 10.0)
 	v.SetDefault("indexing.release_min_confidence", 0.55)
+	v.SetDefault("indexing.release_min_completion_pct", 0.0)
 	v.SetDefault("indexing.inspect_work_dir", "/store/indexer/inspect")
 	v.SetDefault("indexing.inspect_max_bytes", int64(2*1024*1024*1024))
 	v.SetDefault("indexing.inspect_max_archive_depth", 3)
@@ -222,6 +224,9 @@ func (c *Config) validate() error {
 	}
 	if c.Indexing.ReleaseMinConfidence > 1 {
 		return errors.New("indexing.release_min_confidence must be between 0 and 1")
+	}
+	if c.Indexing.ReleaseMinCompletionPct < 0 || c.Indexing.ReleaseMinCompletionPct > 100 {
+		return errors.New("indexing.release_min_completion_pct must be between 0 and 100")
 	}
 	if strings.TrimSpace(c.Indexing.InspectWorkDir) == "" {
 		c.Indexing.InspectWorkDir = "/store/indexer/inspect"
