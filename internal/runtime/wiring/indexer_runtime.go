@@ -118,11 +118,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
-	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
-	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, runtimeCfg.Inspect)
+	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, runtimeCfg.Inspect)
 	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
-	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.Inspect)
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, appCtx.Logger, runtimeCfg.Inspect)
+	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
 

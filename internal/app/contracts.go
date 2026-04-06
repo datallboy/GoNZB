@@ -140,6 +140,11 @@ type UsenetIndexStore interface {
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
+	ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []pgindex.BinaryArchiveEntryRecord) error
+	ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []pgindex.BinaryMediaStreamRecord) error
+	ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryTextEvidenceRecord) error
+	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error

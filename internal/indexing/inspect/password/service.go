@@ -25,18 +25,30 @@ type repository interface {
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	inspectpkg.CatalogReader
 }
 
 type Service struct {
-	repo repository
-	log  logger
-	opts inspectpkg.Options
+	repo      repository
+	workspace *inspectpkg.WorkspaceManager
+	fetcher   inspectpkg.ArticleFetcher
+	runner    inspectpkg.CommandRunner
+	log       logger
+	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, log logger, opts inspectpkg.Options) *Service {
-	return &Service{repo: repo, log: log, opts: inspectpkg.DefaultOptions(opts)}
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, log logger, opts inspectpkg.Options) *Service {
+	return &Service{
+		repo:      repo,
+		workspace: workspace,
+		fetcher:   fetcher,
+		runner:    runner,
+		log:       log,
+		opts:      inspectpkg.DefaultOptions(opts),
+	}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -57,88 +69,22 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 	candidateByRelease := make(map[string]pgindex.BinaryInspectionCandidate, len(candidates))
 	for _, candidate := range candidates {
+		if !archiveSummaryEncrypted(candidate.ArchiveSummaryJSON) {
+			continue
+		}
 		candidateByRelease[candidate.ReleaseID] = candidate
 	}
 
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !archiveSummaryEncrypted(candidate.ArchiveSummaryJSON) {
-			continue
-		}
-		if err := s.repo.StartBinaryInspection(ctx, string(supervisor.StageInspectPassword), candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
-			return err
-		}
-	}
-
-	verifiedByRelease := make(map[string]bool)
+	passwordsByRelease := make(map[string][]pgindex.PasswordVerificationCandidate, len(passwords))
 	for _, candidate := range passwords {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		expected := firstNonEmpty(
-			firstPassword(inspectpkg.ExtractPasswordCandidates(candidate.Title)),
-			firstPassword(inspectpkg.ExtractPasswordCandidates(candidate.SourceTitle)),
-			firstPassword(inspectpkg.ExtractPasswordCandidates(candidate.DeobfuscatedTitle)),
-			firstPassword(inspectpkg.ExtractPasswordCandidates(candidate.SourceRef)),
-		)
-
-		status := "failed"
-		lastError := "password candidate not verified"
-		var verifiedAt *time.Time
-		if expected != "" && strings.EqualFold(strings.TrimSpace(candidate.PasswordValue), expected) {
-			status = "verified"
-			lastError = ""
-			now := time.Now().UTC()
-			verifiedAt = &now
-			verifiedByRelease[candidate.ReleaseID] = true
-		}
-
-		if err := s.repo.UpdateReleasePasswordCandidateStatus(ctx, candidate.ID, status, verifiedAt, lastError); err != nil {
-			return err
-		}
+		passwordsByRelease[candidate.ReleaseID] = append(passwordsByRelease[candidate.ReleaseID], candidate)
 	}
 
 	for releaseID, candidate := range candidateByRelease {
-		if !archiveSummaryEncrypted(candidate.ArchiveSummaryJSON) {
-			continue
-		}
-		known := verifiedByRelease[releaseID]
-		unknown := !known
-		passworded := true
-		passwordState := "passworded_unknown"
-		statusText := "completed"
-		summary := map[string]any{
-			"verified_password":  known,
-			"candidate_verified": known,
-		}
-		if known {
-			passwordState = "passworded_known"
-			unknown = false
-		}
-
-		if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
-			StageName:       string(supervisor.StageInspectPassword),
-			BinaryID:        candidate.BinaryID,
-			ReleaseID:       candidate.ReleaseID,
-			Status:          statusText,
-			ToolProvenance:  inspectpkg.ToolProvenance(s.opts, string(supervisor.StageInspectPassword)),
-			Summary:         summary,
-			SourceUpdatedAt: candidate.SourceUpdatedAt,
-		}); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-
-		if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
-			ReleaseID:         candidate.ReleaseID,
-			Passworded:        &passworded,
-			PasswordedKnown:   &known,
-			PasswordedUnknown: &unknown,
-			PasswordState:     passwordState,
-			MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-		}); err != nil {
+		if err := s.inspectCandidate(ctx, candidate, passwordsByRelease[releaseID]); err != nil {
 			return err
 		}
 	}
@@ -146,20 +92,141 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	return nil
 }
 
-func firstPassword(values []string) string {
-	if len(values) == 0 {
-		return ""
+func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, passwords []pgindex.PasswordVerificationCandidate) error {
+	stageName := string(supervisor.StageInspectPassword)
+	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
+		return err
 	}
-	return values[0]
-}
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
+	workspace, err := s.workspace.PrepareBinaryWorkspace(ctx, stageName, candidate)
+	if err != nil {
+		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			ErrorText:       err.Error(),
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+		})
+		return fmt.Errorf("prepare password workspace: %w", err)
+	}
+	defer workspace.Cleanup()
+
+	probe, err := inspectpkg.PrepareArchiveProbe(ctx, workspace, s.repo, s.fetcher, s.runner, s.log, s.opts, candidate)
+	if err != nil {
+		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			ErrorText:       err.Error(),
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+		})
+		return fmt.Errorf("prepare archive password probe: %w", err)
+	}
+	if probe == nil {
+		return nil
+	}
+
+	attempted := 0
+	var preferredPasswordID *int64
+	verified := false
+
+	for _, password := range passwords {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attempted++
+
+		output, runErr := s.runner.Run(ctx, s.opts.SevenZipPath, "l", "-slt", "-p"+strings.TrimSpace(password.PasswordValue), probe.ProbePath)
+		if passwordVerified(output, runErr) {
+			now := time.Now().UTC()
+			if err := s.repo.UpdateReleasePasswordCandidateStatus(ctx, password.ID, "verified", &now, ""); err != nil {
+				return err
+			}
+			preferredPasswordID = &password.ID
+			verified = true
+			break
+		}
+
+		lastError := strings.TrimSpace(string(output))
+		if lastError == "" && runErr != nil {
+			lastError = runErr.Error()
+		}
+		if lastError == "" {
+			lastError = "password candidate rejected"
+		}
+		if err := s.repo.UpdateReleasePasswordCandidateStatus(ctx, password.ID, "rejected", nil, lastError); err != nil {
+			return err
 		}
 	}
-	return ""
+
+	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
+		BinaryID:     candidate.BinaryID,
+		ReleaseID:    candidate.ReleaseID,
+		StageName:    stageName,
+		ArtifactRole: "password_probe",
+		ArtifactName: candidate.FileName,
+		ArtifactPath: probe.ProbePath,
+		BytesTotal:   workspace.MaterializedBytes + probe.MaterializedBytes,
+		MIMEType:     "application/x-archive-probe",
+		Signature:    "password_probe",
+		SourceKind:   "inspect_password",
+		Metadata: map[string]any{
+			"attempted_candidates": attempted,
+			"probe_strategy":       probe.Strategy,
+			"encrypted":            probe.Encrypted,
+		},
+	}}); err != nil {
+		return err
+	}
+
+	passworded := true
+	passwordedKnown := verified
+	passwordedUnknown := !verified
+	passwordState := "passworded_unknown"
+	if verified {
+		passwordState = "passworded_known"
+	}
+
+	summary := map[string]any{
+		"attempted_candidates": attempted,
+		"verified_password":    verified,
+		"candidate_verified":   verified,
+	}
+	if preferredPasswordID != nil {
+		summary["preferred_password_id"] = *preferredPasswordID
+	}
+
+	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+		StageName:         stageName,
+		BinaryID:          candidate.BinaryID,
+		ReleaseID:         candidate.ReleaseID,
+		Status:            "completed",
+		MaterializedBytes: workspace.MaterializedBytes + probe.MaterializedBytes,
+		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
+		Summary:           summary,
+		SourceUpdatedAt:   candidate.SourceUpdatedAt,
+	}); err != nil {
+		return err
+	}
+
+	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+		ReleaseID:           candidate.ReleaseID,
+		Passworded:          &passworded,
+		PasswordedKnown:     &passwordedKnown,
+		PasswordedUnknown:   &passwordedUnknown,
+		PasswordState:       passwordState,
+		PreferredPasswordID: preferredPasswordID,
+		MetadataUpdatedAt:   ptrTime(time.Now().UTC()),
+	})
+}
+
+func passwordVerified(output []byte, err error) bool {
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(output))
+	return !strings.Contains(lower, "wrong password") &&
+		!strings.Contains(lower, "can not open encrypted archive")
 }
 
 func archiveSummaryEncrypted(raw json.RawMessage) bool {

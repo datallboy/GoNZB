@@ -1,8 +1,11 @@
 package password
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 				BinaryID:        7,
 				ReleaseID:       "rel-1",
 				ReleaseTitle:    "Show.S01E01 password:open-sesame",
+				FileName:        "sample.rar",
 				SourceUpdatedAt: &now,
 				ArchiveSummaryJSON: mustJSON(t, map[string]any{
 					"encrypted": true,
@@ -36,7 +40,7 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 		},
 	}
 
-	svc := NewService(repo, testLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), fakeFetcher{}, fakeCommandRunner{verifyOK: true}, testLogger{}, inspectpkg.Options{})
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
@@ -46,6 +50,9 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 	}
 	if repo.updatedCandidateStatuses[0].status != "verified" {
 		t.Fatalf("expected verified status, got %q", repo.updatedCandidateStatuses[0].status)
+	}
+	if repo.releaseUpdates[0].PreferredPasswordID == nil || *repo.releaseUpdates[0].PreferredPasswordID != 10 {
+		t.Fatalf("expected preferred password id 10, got %#v", repo.releaseUpdates[0].PreferredPasswordID)
 	}
 	if len(repo.releaseUpdates) != 1 {
 		t.Fatalf("expected 1 release inspection update, got %d", len(repo.releaseUpdates))
@@ -66,6 +73,7 @@ func TestRunOnceSkipsNonEncryptedArchiveCandidates(t *testing.T) {
 				BinaryID:        8,
 				ReleaseID:       "rel-2",
 				ReleaseTitle:    "Show.S01E02",
+				FileName:        "sample.rar",
 				SourceUpdatedAt: &now,
 				ArchiveSummaryJSON: mustJSON(t, map[string]any{
 					"encrypted": false,
@@ -74,7 +82,7 @@ func TestRunOnceSkipsNonEncryptedArchiveCandidates(t *testing.T) {
 		},
 	}
 
-	svc := NewService(repo, testLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), fakeFetcher{}, fakeCommandRunner{}, testLogger{}, inspectpkg.Options{})
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
@@ -96,6 +104,7 @@ type fakeRepository struct {
 	startedInspections       []int64
 	completedInspections     []pgindex.BinaryInspectionRecord
 	failedInspections        []pgindex.BinaryInspectionRecord
+	artifactRows             []pgindex.BinaryInspectionArtifactRecord
 	updatedCandidateStatuses []candidateStatusUpdate
 	releaseUpdates           []pgindex.ReleaseInspectionUpdate
 }
@@ -127,6 +136,11 @@ func (f *fakeRepository) FailBinaryInspection(_ context.Context, in pgindex.Bina
 	return nil
 }
 
+func (f *fakeRepository) ReplaceBinaryInspectionArtifacts(_ context.Context, _ string, _ int64, rows []pgindex.BinaryInspectionArtifactRecord) error {
+	f.artifactRows = append(f.artifactRows, rows...)
+	return nil
+}
+
 func (f *fakeRepository) UpdateReleasePasswordCandidateStatus(_ context.Context, candidateID int64, status string, _ *time.Time, _ string) error {
 	f.updatedCandidateStatuses = append(f.updatedCandidateStatuses, candidateStatusUpdate{id: candidateID, status: status})
 	return nil
@@ -135,6 +149,27 @@ func (f *fakeRepository) UpdateReleasePasswordCandidateStatus(_ context.Context,
 func (f *fakeRepository) ApplyReleaseInspectionUpdate(_ context.Context, in pgindex.ReleaseInspectionUpdate) error {
 	f.releaseUpdates = append(f.releaseUpdates, in)
 	return nil
+}
+
+func (f *fakeRepository) ListCatalogReleaseFiles(context.Context, string) ([]pgindex.CatalogReleaseFile, error) {
+	return []pgindex.CatalogReleaseFile{{
+		ID:        70,
+		BinaryID:  7,
+		FileName:  "sample.rar",
+		SizeBytes: 4,
+	}}, nil
+}
+
+func (f *fakeRepository) ListCatalogReleaseFileArticles(context.Context, int64) ([]pgindex.CatalogArticleRef, error) {
+	return []pgindex.CatalogArticleRef{{
+		MessageID:  "<msg-1>",
+		Bytes:      4,
+		PartNumber: 1,
+	}}, nil
+}
+
+func (f *fakeRepository) ListCatalogReleaseNewsgroups(context.Context, string) ([]string, error) {
+	return []string{"alt.binaries.test"}, nil
 }
 
 type testLogger struct{}
@@ -151,4 +186,36 @@ func mustJSON(t *testing.T, v map[string]any) json.RawMessage {
 		t.Fatalf("marshal json: %v", err)
 	}
 	return b
+}
+
+type fakeFetcher struct{}
+
+func (fakeFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+	body := []byte("Rar!")
+	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=sample.rar\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(body), len(body), encodeYEnc(body), len(body))
+	return bytes.NewBufferString(payload), nil
+}
+
+type fakeCommandRunner struct {
+	verifyOK bool
+}
+
+func (f fakeCommandRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	if f.verifyOK {
+		return []byte("Path = sample.rar\n"), nil
+	}
+	return []byte("Wrong password"), fmt.Errorf("wrong password")
+}
+
+func encodeYEnc(data []byte) string {
+	out := make([]byte, 0, len(data))
+	for _, b := range data {
+		enc := b + 42
+		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
+			out = append(out, '=')
+			enc += 64
+		}
+		out = append(out, enc)
+	}
+	return string(out)
 }
