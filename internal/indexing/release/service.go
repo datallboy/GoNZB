@@ -16,6 +16,7 @@ type logger interface {
 
 type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 
@@ -57,16 +58,39 @@ func NewService(repo repository, log logger, opts Options) *Service {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	return s.runOnce(ctx, false)
+}
+
+func (s *Service) RunReformOnce(ctx context.Context) error {
+	return s.runOnce(ctx, true)
+}
+
+func (s *Service) runOnce(ctx context.Context, reform bool) error {
 	if s.repo == nil {
 		return fmt.Errorf("release repo is required")
 	}
 
-	candidates, err := s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
-	if err != nil {
-		return fmt.Errorf("list release candidates: %w", err)
+	var (
+		candidates []pgindex.ReleaseCandidate
+		err        error
+	)
+	if reform {
+		candidates, err = s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize)
+		if err != nil {
+			return fmt.Errorf("list existing release candidates: %w", err)
+		}
+	} else {
+		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
+		if err != nil {
+			return fmt.Errorf("list release candidates: %w", err)
+		}
 	}
 	if len(candidates) == 0 {
-		s.log.Debug("release: no release candidates found")
+		if reform {
+			s.log.Debug("release: no existing release candidates found for reform")
+		} else {
+			s.log.Debug("release: no release candidates found")
+		}
 		return nil
 	}
 
@@ -83,11 +107,12 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 
 	s.log.Info(
-		"release: formed=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f",
+		"release: formed=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
 		formed,
 		s.opts.BatchSize,
 		s.opts.ReleaseMinConfidence,
 		s.opts.ReleaseMinCompletion,
+		reform,
 	)
 	return nil
 }

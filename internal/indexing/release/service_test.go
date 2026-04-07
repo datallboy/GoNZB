@@ -289,6 +289,80 @@ func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	}
 }
 
+func TestBuildReleaseRecordLeavesDeobfuscatedTitleEmptyForObfuscatedSource(t *testing.T) {
+	cluster := releaseCluster{
+		MatchConfidence: 0.90,
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:          1,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseKey:        "obfuscated source key",
+				ReleaseName:       "Ko2GU4qPjsTdBQdZ3vzjvL0K5TghWJrW.7z",
+				FileName:          "Ko2GU4qPjsTdBQdZ3vzjvL0K5TghWJrW.7z.001",
+				ExpectedFileCount: 5,
+				ObservedParts:     10,
+				TotalParts:        10,
+				MatchConfidence:   0.90,
+			},
+		},
+	}
+
+	record := buildReleaseRecord(pgindex.ReleaseCandidate{
+		ProviderID:  1,
+		NewsgroupID: 2,
+		ReleaseKey:  "obfuscated source key",
+		ReleaseName: "Ko2GU4qPjsTdBQdZ3vzjvL0K5TghWJrW.7z",
+	}, cluster)
+
+	if record.DeobfuscatedTitle != "" {
+		t.Fatalf("expected empty deobfuscated title, got %q", record.DeobfuscatedTitle)
+	}
+	if record.Title != "Ko2GU4qPjsTdBQdZ3vzjvL0K5TghWJrW 7z" {
+		t.Fatalf("expected display title to humanize source title, got %q", record.Title)
+	}
+	if record.IdentityStatus == "identified" {
+		t.Fatalf("expected obfuscated source title to avoid identified status, got %q", record.IdentityStatus)
+	}
+}
+
+func TestBuildReleaseRecordKeepsReadableSourceWithoutDeobfuscation(t *testing.T) {
+	cluster := releaseCluster{
+		MatchConfidence: 0.92,
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:          1,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseKey:        "readable source key",
+				ReleaseName:       "Show.S01E01.1080p.WEB-DL.x265",
+				FileName:          "show.s01e01.1080p.web-dl.x265.mkv",
+				ExpectedFileCount: 1,
+				ObservedParts:     20,
+				TotalParts:        20,
+				MatchConfidence:   0.92,
+			},
+		},
+	}
+
+	record := buildReleaseRecord(pgindex.ReleaseCandidate{
+		ProviderID:  1,
+		NewsgroupID: 2,
+		ReleaseKey:  "readable source key",
+		ReleaseName: "Show.S01E01.1080p.WEB-DL.x265",
+	}, cluster)
+
+	if record.DeobfuscatedTitle != "" {
+		t.Fatalf("expected empty deobfuscated title for already-readable source, got %q", record.DeobfuscatedTitle)
+	}
+	if record.Title != "Show S01E01 1080p WEB DL x265" {
+		t.Fatalf("expected humanized display title, got %q", record.Title)
+	}
+	if record.IdentityStatus != "identified" {
+		t.Fatalf("expected readable source title to keep identified status, got %q", record.IdentityStatus)
+	}
+}
+
 func TestRunOnceSkipsReleaseBelowCompletionThreshold(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
@@ -333,6 +407,54 @@ func TestRunOnceSkipsReleaseBelowCompletionThreshold(t *testing.T) {
 	}
 }
 
+func TestRunReformOnceUsesExistingReleaseCandidates(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		existingCandidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:  1,
+				NewsgroupID: 2,
+				ReleaseKey:  "existing source key",
+				ReleaseName: "Show.S01E01.1080p.WEB-DL.x265",
+			},
+		},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"existing source key": {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseKey:        "existing source key",
+					ReleaseName:       "Show.S01E01.1080p.WEB-DL.x265",
+					FileName:          "show.s01e01.1080p.web-dl.x265.mkv",
+					ExpectedFileCount: 1,
+					ObservedParts:     20,
+					TotalParts:        20,
+					TotalBytes:        1_500_000_000,
+					MatchConfidence:   0.92,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunReformOnce(context.Background()); err != nil {
+		t.Fatalf("run reform once: %v", err)
+	}
+
+	if repo.listReleaseCandidatesCalls != 0 {
+		t.Fatalf("expected incremental candidate query to be skipped during reform, got %d calls", repo.listReleaseCandidatesCalls)
+	}
+	if repo.listExistingReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected reform candidate query to be used once, got %d calls", repo.listExistingReleaseCandidatesCalls)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one re-formed release, got %d", len(repo.upsertedReleases))
+	}
+}
+
 func TestSummarizeFilesCountsSplitArchiveFamilyOnce(t *testing.T) {
 	hasPAR2, _, archiveCount, _, _, _ := summarizeFiles([]pgindex.BinarySummary{
 		{FileName: "example.7z.001"},
@@ -349,14 +471,17 @@ func TestSummarizeFilesCountsSplitArchiveFamilyOnce(t *testing.T) {
 }
 
 type fakeReleaseRepository struct {
-	candidates         []pgindex.ReleaseCandidate
-	binariesByKey      map[string][]pgindex.BinarySummary
-	articlesByBinaryID map[int64][]pgindex.ReleaseFileArticleRecord
-	upsertedReleases   []pgindex.ReleaseRecord
-	replaceFileCalls   int
-	newsgroupCalls     int
-	nzbCalls           int
-	deletedStaleCalls  []staleDeleteCall
+	candidates                         []pgindex.ReleaseCandidate
+	existingCandidates                 []pgindex.ReleaseCandidate
+	binariesByKey                      map[string][]pgindex.BinarySummary
+	articlesByBinaryID                 map[int64][]pgindex.ReleaseFileArticleRecord
+	upsertedReleases                   []pgindex.ReleaseRecord
+	replaceFileCalls                   int
+	newsgroupCalls                     int
+	nzbCalls                           int
+	listReleaseCandidatesCalls         int
+	listExistingReleaseCandidatesCalls int
+	deletedStaleCalls                  []staleDeleteCall
 }
 
 type staleDeleteCall struct {
@@ -366,7 +491,13 @@ type staleDeleteCall struct {
 }
 
 func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
+	f.listReleaseCandidatesCalls++
 	return f.candidates, nil
+}
+
+func (f *fakeReleaseRepository) ListExistingReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
+	f.listExistingReleaseCandidatesCalls++
+	return f.existingCandidates, nil
 }
 
 func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, releaseKey string) ([]pgindex.BinarySummary, error) {

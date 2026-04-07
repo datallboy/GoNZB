@@ -1339,6 +1339,61 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 	return out, nil
 }
 
+func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit int) ([]ReleaseCandidate, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			b.provider_id,
+			b.newsgroup_id,
+			b.release_key,
+			MAX(b.release_name) AS release_name,
+			MIN(b.posted_at) AS posted_at,
+			COUNT(*)::INTEGER AS binary_count,
+			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
+		FROM binaries b
+		GROUP BY b.provider_id, b.newsgroup_id, b.release_key
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_key
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list existing release candidates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ReleaseCandidate, 0, limit)
+	for rows.Next() {
+		var item ReleaseCandidate
+		var postedAt sql.NullTime
+
+		if err := rows.Scan(
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.ReleaseKey,
+			&item.ReleaseName,
+			&postedAt,
+			&item.BinaryCount,
+			&item.TotalBytes,
+		); err != nil {
+			return nil, fmt.Errorf("scan existing release candidate: %w", err)
+		}
+
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+
+		out = append(out, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing release candidates: %w", err)
+	}
+
+	return out, nil
+}
+
 // CHANGED: fetch binaries that belong to one release candidate.
 func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]BinarySummary, error) {
 	if providerID <= 0 || newsgroupID <= 0 {
