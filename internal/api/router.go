@@ -54,6 +54,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	apiKeyMW := apiKeyMiddleware(appCtx.Config.API.Key)
 
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
+	indexerCtrl := controllers.NewIndexerController(appCtx)
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
@@ -89,6 +90,21 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 		// Keep direct NZB download endpoint under aggregator ownership.
 		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
+	}
+
+	// Indexer-owned API surface.
+	if modules.API.Enabled && modules.UsenetIndexer.Enabled {
+		v1Indexer := e.Group("/api/v1/indexer", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Indexer.GET("/overview", indexerCtrl.GetOverview)
+		v1Indexer.GET("/stages", indexerCtrl.ListStages)
+		v1Indexer.GET("/runs", indexerCtrl.ListRuns)
+		v1Indexer.POST("/stages/:stage/run", indexerCtrl.RunStage)
+		v1Indexer.POST("/stages/:stage/pause", indexerCtrl.PauseStage)
+		v1Indexer.POST("/stages/:stage/resume", indexerCtrl.ResumeStage)
+		v1Indexer.GET("/releases", indexerCtrl.ListReleases)
+		v1Indexer.GET("/releases/:id", indexerCtrl.GetRelease)
+		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
+		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 	}
 
 	// Downloader-owned API surface.

@@ -382,33 +382,33 @@ type IndexerStageClaimResult struct {
 }
 
 type IndexerStageState struct {
-	StageName       string
-	Enabled         bool
-	Paused          bool
-	IntervalSeconds int
-	BatchSize       int
-	Concurrency     int
-	BackoffSeconds  int
-	LeaseOwner      string
-	LeaseExpiresAt  *time.Time
-	LastHeartbeatAt *time.Time
-	LastRunID       int64
-	LastSuccessAt   *time.Time
-	LastError       string
-	UpdatedAt       time.Time
+	StageName       string     `json:"stage_name"`
+	Enabled         bool       `json:"enabled"`
+	Paused          bool       `json:"paused"`
+	IntervalSeconds int        `json:"interval_seconds"`
+	BatchSize       int        `json:"batch_size"`
+	Concurrency     int        `json:"concurrency"`
+	BackoffSeconds  int        `json:"backoff_seconds"`
+	LeaseOwner      string     `json:"lease_owner"`
+	LeaseExpiresAt  *time.Time `json:"lease_expires_at,omitempty"`
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	LastRunID       int64      `json:"last_run_id"`
+	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+	LastError       string     `json:"last_error"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type IndexerStageRun struct {
-	ID          int64
-	StageName   string
-	TriggerKind string
-	Status      string
-	ClaimedBy   string
-	StartedAt   time.Time
-	HeartbeatAt *time.Time
-	FinishedAt  *time.Time
-	ErrorText   string
-	MetricsJSON json.RawMessage
+	ID          int64           `json:"id"`
+	StageName   string          `json:"stage_name"`
+	TriggerKind string          `json:"trigger_kind"`
+	Status      string          `json:"status"`
+	ClaimedBy   string          `json:"claimed_by"`
+	StartedAt   time.Time       `json:"started_at"`
+	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
+	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
+	ErrorText   string          `json:"error_text"`
+	MetricsJSON json.RawMessage `json:"metrics_json"`
 }
 
 type IndexerStageFinishRequest struct {
@@ -416,6 +416,255 @@ type IndexerStageFinishRequest struct {
 	Owner       string
 	ErrorText   string
 	MetricsJSON json.RawMessage
+}
+
+type IndexerOverview struct {
+	ReleaseCount          int64 `json:"release_count"`
+	BinaryCount           int64 `json:"binary_count"`
+	FileCount             int64 `json:"file_count"`
+	InspectionCount       int64 `json:"inspection_count"`
+	ReadyNZBCount         int64 `json:"ready_nzb_count"`
+	CompletedReleaseCount int64 `json:"completed_release_count"`
+	EncryptedReleaseCount int64 `json:"encrypted_release_count"`
+	PasswordKnownCount    int64 `json:"password_known_count"`
+	PasswordUnknownCount  int64 `json:"password_unknown_count"`
+	PAR2ReleaseCount      int64 `json:"par2_release_count"`
+	NFOReleaseCount       int64 `json:"nfo_release_count"`
+	MediaProbedCount      int64 `json:"media_probed_count"`
+	RunningStageCount     int64 `json:"running_stage_count"`
+	PausedStageCount      int64 `json:"paused_stage_count"`
+	FailedRunCount        int64 `json:"failed_run_count"`
+}
+
+type IndexerReleaseSummary struct {
+	ReleaseID               string     `json:"release_id"`
+	GUID                    string     `json:"guid"`
+	ProviderID              int64      `json:"provider_id"`
+	ReleaseKey              string     `json:"release_key"`
+	GroupName               string     `json:"group_name"`
+	Title                   string     `json:"title"`
+	SourceTitle             string     `json:"source_title"`
+	DeobfuscatedTitle       string     `json:"deobfuscated_title"`
+	Category                string     `json:"category"`
+	Classification          string     `json:"classification"`
+	Poster                  string     `json:"poster"`
+	SizeBytes               int64      `json:"size_bytes"`
+	PostedAt                *time.Time `json:"posted_at,omitempty"`
+	FileCount               int        `json:"file_count"`
+	ExpectedFileCount       int        `json:"expected_file_count"`
+	ParFileCount            int        `json:"par_file_count"`
+	CompletionPct           float64    `json:"completion_pct"`
+	MatchConfidence         float64    `json:"match_confidence"`
+	IdentityStatus          string     `json:"identity_status"`
+	Passworded              bool       `json:"passworded"`
+	PasswordedKnown         bool       `json:"passworded_known"`
+	PasswordedUnknown       bool       `json:"passworded_unknown"`
+	PasswordState           string     `json:"password_state"`
+	PreferredPasswordID     int64      `json:"preferred_password_id"`
+	Encrypted               bool       `json:"encrypted"`
+	HasPAR2                 bool       `json:"has_par2"`
+	HasNFO                  bool       `json:"has_nfo"`
+	ArchiveCount            int        `json:"archive_count"`
+	VideoCount              int        `json:"video_count"`
+	AudioCount              int        `json:"audio_count"`
+	SamplePresent           bool       `json:"sample_present"`
+	AvailabilityScore       float64    `json:"availability_score"`
+	AvailabilityTier        string     `json:"availability_tier"`
+	MediaQualityScore       float64    `json:"media_quality_score"`
+	MediaQualityTier        string     `json:"media_quality_tier"`
+	IdentityConfidenceScore float64    `json:"identity_confidence_score"`
+	RuntimeSeconds          int        `json:"runtime_seconds"`
+	PrimaryResolution       string     `json:"primary_resolution"`
+	PrimaryVideoCodec       string     `json:"primary_video_codec"`
+	PrimaryAudioCodec       string     `json:"primary_audio_codec"`
+	SubtitleLanguages       []string   `json:"subtitle_languages"`
+	MediaTags               []string   `json:"media_tags"`
+	MetadataUpdatedAt       *time.Time `json:"metadata_updated_at,omitempty"`
+	NZBGenerationStatus     string     `json:"nzb_generation_status"`
+}
+
+type IndexerReleaseFileSummary struct {
+	FileID          int64      `json:"file_id"`
+	BinaryID        int64      `json:"binary_id"`
+	FileName        string     `json:"file_name"`
+	SizeBytes       int64      `json:"size_bytes"`
+	FileIndex       int        `json:"file_index"`
+	IsPars          bool       `json:"is_pars"`
+	Subject         string     `json:"subject"`
+	Poster          string     `json:"poster"`
+	PostedAt        *time.Time `json:"posted_at,omitempty"`
+	ArticleCount    int        `json:"article_count"`
+	TotalParts      int        `json:"total_parts"`
+	ObservedParts   int        `json:"observed_parts"`
+	MatchConfidence float64    `json:"match_confidence"`
+	MatchStatus     string     `json:"match_status"`
+}
+
+type IndexerPasswordCandidateSummary struct {
+	ID                 int64      `json:"id"`
+	BinaryID           int64      `json:"binary_id"`
+	ArtifactID         int64      `json:"artifact_id"`
+	SourceKind         string     `json:"source_kind"`
+	SourceRef          string     `json:"source_ref"`
+	Confidence         float64    `json:"confidence"`
+	VerificationStatus string     `json:"verification_status"`
+	LastVerifiedAt     *time.Time `json:"last_verified_at,omitempty"`
+	LastError          string     `json:"last_error"`
+}
+
+type IndexerInspectionSummary struct {
+	StageName         string          `json:"stage_name"`
+	BinaryID          int64           `json:"binary_id"`
+	ReleaseID         string          `json:"release_id"`
+	Status            string          `json:"status"`
+	ErrorText         string          `json:"error_text"`
+	MaterializedBytes int64           `json:"materialized_bytes"`
+	ToolProvenance    json.RawMessage `json:"tool_provenance_json"`
+	Summary           json.RawMessage `json:"summary_json"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	FinishedAt        *time.Time      `json:"finished_at,omitempty"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+type IndexerBinaryInspectionArtifactSummary struct {
+	StageName    string          `json:"stage_name"`
+	ArtifactRole string          `json:"artifact_role"`
+	ArtifactName string          `json:"artifact_name"`
+	ArtifactPath string          `json:"artifact_path"`
+	BytesTotal   int64           `json:"bytes_total"`
+	MIMEType     string          `json:"mime_type"`
+	Signature    string          `json:"signature"`
+	SourceKind   string          `json:"source_kind"`
+	Metadata     json.RawMessage `json:"metadata_json"`
+}
+
+type IndexerArchiveEntrySummary struct {
+	EntryName         string          `json:"entry_name"`
+	IsDir             bool            `json:"is_dir"`
+	UncompressedBytes int64           `json:"uncompressed_bytes"`
+	CompressedBytes   int64           `json:"compressed_bytes"`
+	Encrypted         bool            `json:"encrypted"`
+	Comment           string          `json:"comment"`
+	MediaType         string          `json:"media_type"`
+	Signature         string          `json:"signature"`
+	Metadata          json.RawMessage `json:"metadata_json"`
+}
+
+type IndexerMediaStreamSummary struct {
+	StreamIndex        int             `json:"stream_index"`
+	StreamType         string          `json:"stream_type"`
+	CodecName          string          `json:"codec_name"`
+	CodecLongName      string          `json:"codec_long_name"`
+	Profile            string          `json:"profile"`
+	Width              int             `json:"width"`
+	Height             int             `json:"height"`
+	Channels           int             `json:"channels"`
+	Language           string          `json:"language"`
+	DurationSeconds    float64         `json:"duration_seconds"`
+	BitRate            int64           `json:"bit_rate"`
+	DefaultDisposition bool            `json:"default_disposition"`
+	ForcedDisposition  bool            `json:"forced_disposition"`
+	Metadata           json.RawMessage `json:"metadata_json"`
+}
+
+type IndexerTextEvidenceSummary struct {
+	StageName    string          `json:"stage_name"`
+	EvidenceKind string          `json:"evidence_kind"`
+	TextValue    string          `json:"text_value"`
+	Tokens       []string        `json:"tokens"`
+	Metadata     json.RawMessage `json:"metadata_json"`
+}
+
+type IndexerPAR2SetSummary struct {
+	SetName        string          `json:"set_name"`
+	BaseName       string          `json:"base_name"`
+	IsVolume       bool            `json:"is_volume"`
+	VolumeNumber   int             `json:"volume_number"`
+	RecoveryBlocks int             `json:"recovery_blocks"`
+	SignatureOK    bool            `json:"signature_ok"`
+	Metadata       json.RawMessage `json:"metadata_json"`
+}
+
+type IndexerBinaryPartSummary struct {
+	ArticleHeaderID int64  `json:"article_header_id"`
+	MessageID       string `json:"message_id"`
+	PartNumber      int    `json:"part_number"`
+	TotalParts      int    `json:"total_parts"`
+	SegmentBytes    int64  `json:"segment_bytes"`
+	FileName        string `json:"file_name"`
+}
+
+type IndexerFileArticleSummary struct {
+	MessageID  string `json:"message_id"`
+	Bytes      int64  `json:"bytes"`
+	PartNumber int    `json:"part_number"`
+}
+
+type IndexerReleaseDetail struct {
+	Release            IndexerReleaseSummary             `json:"release"`
+	Newsgroups         []string                          `json:"newsgroups"`
+	Files              []IndexerReleaseFileSummary       `json:"files"`
+	PasswordCandidates []IndexerPasswordCandidateSummary `json:"password_candidates"`
+	Inspections        []IndexerInspectionSummary        `json:"inspections"`
+}
+
+type IndexerBinaryDetail struct {
+	BinaryID           int64                                    `json:"binary_id"`
+	ReleaseID          string                                   `json:"release_id"`
+	ReleaseTitle       string                                   `json:"release_title"`
+	GroupName          string                                   `json:"group_name"`
+	ReleaseKey         string                                   `json:"release_key"`
+	ReleaseName        string                                   `json:"release_name"`
+	BinaryKey          string                                   `json:"binary_key"`
+	BinaryName         string                                   `json:"binary_name"`
+	FileID             int64                                    `json:"file_id"`
+	FileName           string                                   `json:"file_name"`
+	ProviderID         int64                                    `json:"provider_id"`
+	NewsgroupID        int64                                    `json:"newsgroup_id"`
+	Poster             string                                   `json:"poster"`
+	PostedAt           *time.Time                               `json:"posted_at,omitempty"`
+	FileIndex          int                                      `json:"file_index"`
+	ExpectedFileCount  int                                      `json:"expected_file_count"`
+	TotalParts         int                                      `json:"total_parts"`
+	ObservedParts      int                                      `json:"observed_parts"`
+	TotalBytes         int64                                    `json:"total_bytes"`
+	FirstArticleNumber int64                                    `json:"first_article_number"`
+	LastArticleNumber  int64                                    `json:"last_article_number"`
+	MatchConfidence    float64                                  `json:"match_confidence"`
+	MatchStatus        string                                   `json:"match_status"`
+	GroupingEvidence   json.RawMessage                          `json:"grouping_evidence_json"`
+	Encrypted          bool                                     `json:"encrypted"`
+	PasswordState      string                                   `json:"password_state"`
+	Inspections        []IndexerInspectionSummary               `json:"inspections"`
+	Artifacts          []IndexerBinaryInspectionArtifactSummary `json:"artifacts"`
+	ArchiveEntries     []IndexerArchiveEntrySummary             `json:"archive_entries"`
+	MediaStreams       []IndexerMediaStreamSummary              `json:"media_streams"`
+	TextEvidence       []IndexerTextEvidenceSummary             `json:"text_evidence"`
+	PAR2Sets           []IndexerPAR2SetSummary                  `json:"par2_sets"`
+	Parts              []IndexerBinaryPartSummary               `json:"parts"`
+}
+
+type IndexerFileDetail struct {
+	FileID           int64                       `json:"file_id"`
+	ReleaseID        string                      `json:"release_id"`
+	ReleaseTitle     string                      `json:"release_title"`
+	GroupName        string                      `json:"group_name"`
+	BinaryID         int64                       `json:"binary_id"`
+	FileName         string                      `json:"file_name"`
+	SizeBytes        int64                       `json:"size_bytes"`
+	FileIndex        int                         `json:"file_index"`
+	IsPars           bool                        `json:"is_pars"`
+	Subject          string                      `json:"subject"`
+	Poster           string                      `json:"poster"`
+	PostedAt         *time.Time                  `json:"posted_at,omitempty"`
+	ArticleCount     int                         `json:"article_count"`
+	TotalParts       int                         `json:"total_parts"`
+	ObservedParts    int                         `json:"observed_parts"`
+	MatchConfidence  float64                     `json:"match_confidence"`
+	MatchStatus      string                      `json:"match_status"`
+	GroupingEvidence json.RawMessage             `json:"grouping_evidence_json"`
+	Newsgroups       []string                    `json:"newsgroups"`
+	Articles         []IndexerFileArticleSummary `json:"articles"`
 }
 
 // StableReleaseGUID returns a deterministic GUID for PG release rows.
@@ -1855,6 +2104,495 @@ func (s *Store) ListCatalogReleaseNewsgroups(ctx context.Context, releaseID stri
 	return out, nil
 }
 
+func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM releases),
+			(SELECT COUNT(*) FROM binaries),
+			(SELECT COUNT(*) FROM release_files),
+			(SELECT COUNT(*) FROM binary_inspections),
+			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
+			(SELECT COUNT(*) FROM releases WHERE completion_pct >= 100),
+			(SELECT COUNT(*) FROM releases WHERE encrypted = TRUE),
+			(SELECT COUNT(*) FROM releases WHERE passworded_known = TRUE),
+			(SELECT COUNT(*) FROM releases WHERE passworded_unknown = TRUE),
+			(SELECT COUNT(*) FROM releases WHERE has_par2 = TRUE),
+			(SELECT COUNT(*) FROM releases WHERE has_nfo = TRUE),
+			(SELECT COUNT(*) FROM releases WHERE runtime_seconds > 0 OR primary_resolution <> '' OR primary_video_codec <> '' OR primary_audio_codec <> ''),
+			(SELECT COUNT(*) FROM indexer_stage_state WHERE lease_owner <> '' AND (lease_expires_at IS NULL OR lease_expires_at > NOW())),
+			(SELECT COUNT(*) FROM indexer_stage_state WHERE paused = TRUE),
+			(SELECT COUNT(*) FROM indexer_stage_runs WHERE status = 'failed')`)
+
+	var item IndexerOverview
+	if err := row.Scan(
+		&item.ReleaseCount,
+		&item.BinaryCount,
+		&item.FileCount,
+		&item.InspectionCount,
+		&item.ReadyNZBCount,
+		&item.CompletedReleaseCount,
+		&item.EncryptedReleaseCount,
+		&item.PasswordKnownCount,
+		&item.PasswordUnknownCount,
+		&item.PAR2ReleaseCount,
+		&item.NFOReleaseCount,
+		&item.MediaProbedCount,
+		&item.RunningStageCount,
+		&item.PausedStageCount,
+		&item.FailedRunCount,
+	); err != nil {
+		return nil, fmt.Errorf("get indexer overview: %w", err)
+	}
+
+	return &item, nil
+}
+
+func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, offset int) ([]IndexerReleaseSummary, int, error) {
+	query = strings.TrimSpace(query)
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM releases r
+		WHERE ($1 = '' OR r.search_title ILIKE '%' || $1 || '%')`, query,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count indexer releases: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			r.release_id,
+			r.guid,
+			r.provider_id,
+			r.release_key,
+			r.group_name,
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			r.category,
+			r.classification,
+			r.poster,
+			r.size_bytes,
+			r.posted_at,
+			r.file_count,
+			r.expected_file_count,
+			r.par_file_count,
+			r.completion_pct,
+			r.match_confidence,
+			r.identity_status,
+			r.passworded,
+			r.passworded_known,
+			r.passworded_unknown,
+			r.password_state,
+			COALESCE(r.preferred_password_id, 0),
+			r.encrypted,
+			r.has_par2,
+			r.has_nfo,
+			r.archive_count,
+			r.video_count,
+			r.audio_count,
+			r.sample_present,
+			r.availability_score,
+			r.availability_tier,
+			r.media_quality_score,
+			r.media_quality_tier,
+			r.identity_confidence_score,
+			r.runtime_seconds,
+			r.primary_resolution,
+			r.primary_video_codec,
+			r.primary_audio_codec,
+			r.subtitle_languages_json,
+			r.media_tags_json,
+			r.metadata_updated_at,
+			COALESCE(n.generation_status, 'pending')
+		FROM releases r
+		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		WHERE ($1 = '' OR r.search_title ILIKE '%' || $1 || '%')
+		ORDER BY r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title
+		LIMIT $2 OFFSET $3`,
+		query,
+		limit,
+		offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list indexer releases: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerReleaseSummary, 0, limit)
+	for rows.Next() {
+		item, err := scanIndexerReleaseSummary(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan indexer release summary: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate indexer releases: %w", err)
+	}
+
+	return out, total, nil
+}
+
+func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*IndexerReleaseDetail, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			r.release_id,
+			r.guid,
+			r.provider_id,
+			r.release_key,
+			r.group_name,
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			r.category,
+			r.classification,
+			r.poster,
+			r.size_bytes,
+			r.posted_at,
+			r.file_count,
+			r.expected_file_count,
+			r.par_file_count,
+			r.completion_pct,
+			r.match_confidence,
+			r.identity_status,
+			r.passworded,
+			r.passworded_known,
+			r.passworded_unknown,
+			r.password_state,
+			COALESCE(r.preferred_password_id, 0),
+			r.encrypted,
+			r.has_par2,
+			r.has_nfo,
+			r.archive_count,
+			r.video_count,
+			r.audio_count,
+			r.sample_present,
+			r.availability_score,
+			r.availability_tier,
+			r.media_quality_score,
+			r.media_quality_tier,
+			r.identity_confidence_score,
+			r.runtime_seconds,
+			r.primary_resolution,
+			r.primary_video_codec,
+			r.primary_audio_codec,
+			r.subtitle_languages_json,
+			r.media_tags_json,
+			r.metadata_updated_at,
+			COALESCE(n.generation_status, 'pending')
+		FROM releases r
+		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		WHERE r.release_id = $1`, releaseID)
+
+	release, err := scanIndexerReleaseSummary(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get indexer release detail %s: %w", releaseID, err)
+	}
+
+	newsgroups, err := s.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	filesRows, err := s.db.QueryContext(ctx, `
+		SELECT
+			rf.id,
+			COALESCE(rf.binary_id, 0),
+			rf.file_name,
+			rf.size_bytes,
+			rf.file_index,
+			rf.is_pars,
+			rf.subject,
+			rf.poster,
+			rf.posted_at,
+			COUNT(rfa.id) AS article_count,
+			COALESCE(b.total_parts, 0),
+			COALESCE(b.observed_parts, 0),
+			COALESCE(b.match_confidence, 0),
+			COALESCE(b.match_status, '')
+		FROM release_files rf
+		LEFT JOIN release_file_articles rfa ON rfa.release_file_id = rf.id
+		LEFT JOIN binaries b ON b.id = rf.binary_id
+		WHERE rf.release_id = $1
+		GROUP BY rf.id, rf.binary_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, b.total_parts, b.observed_parts, b.match_confidence, b.match_status
+		ORDER BY rf.file_index, rf.id`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list release files for %s: %w", releaseID, err)
+	}
+	defer filesRows.Close()
+
+	files := make([]IndexerReleaseFileSummary, 0, 32)
+	for filesRows.Next() {
+		var item IndexerReleaseFileSummary
+		var postedAt sql.NullTime
+		if err := filesRows.Scan(
+			&item.FileID,
+			&item.BinaryID,
+			&item.FileName,
+			&item.SizeBytes,
+			&item.FileIndex,
+			&item.IsPars,
+			&item.Subject,
+			&item.Poster,
+			&postedAt,
+			&item.ArticleCount,
+			&item.TotalParts,
+			&item.ObservedParts,
+			&item.MatchConfidence,
+			&item.MatchStatus,
+		); err != nil {
+			return nil, fmt.Errorf("scan release file summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		files = append(files, item)
+	}
+	if err := filesRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate release files for %s: %w", releaseID, err)
+	}
+
+	passwordCandidates, err := s.listIndexerPasswordCandidates(ctx, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	inspections, err := s.listIndexerInspectionSummaries(ctx, "release_id = $1", releaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IndexerReleaseDetail{
+		Release:            release,
+		Newsgroups:         newsgroups,
+		Files:              files,
+		PasswordCandidates: passwordCandidates,
+		Inspections:        inspections,
+	}, nil
+}
+
+func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*IndexerBinaryDetail, error) {
+	if binaryID <= 0 {
+		return nil, fmt.Errorf("binary id is required")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			b.id,
+			COALESCE(r.release_id, ''),
+			COALESCE(r.title, ''),
+			COALESCE(r.group_name, ''),
+			b.release_key,
+			b.release_name,
+			b.binary_key,
+			b.binary_name,
+			COALESCE(rf.id, 0),
+			b.file_name,
+			b.provider_id,
+			b.newsgroup_id,
+			COALESCE(p.poster_name, ''),
+			b.posted_at,
+			b.file_index,
+			b.expected_file_count,
+			b.total_parts,
+			b.observed_parts,
+			b.total_bytes,
+			b.first_article_number,
+			b.last_article_number,
+			b.match_confidence,
+			b.match_status,
+			b.grouping_evidence_json,
+			COALESCE(r.encrypted, FALSE),
+			COALESCE(r.password_state, '')
+		FROM binaries b
+		LEFT JOIN posters p ON p.id = b.poster_id
+		LEFT JOIN release_files rf ON rf.binary_id = b.id
+		LEFT JOIN releases r ON r.release_id = rf.release_id
+		WHERE b.id = $1`, binaryID)
+
+	var item IndexerBinaryDetail
+	var postedAt sql.NullTime
+	var groupingJSON []byte
+	if err := row.Scan(
+		&item.BinaryID,
+		&item.ReleaseID,
+		&item.ReleaseTitle,
+		&item.GroupName,
+		&item.ReleaseKey,
+		&item.ReleaseName,
+		&item.BinaryKey,
+		&item.BinaryName,
+		&item.FileID,
+		&item.FileName,
+		&item.ProviderID,
+		&item.NewsgroupID,
+		&item.Poster,
+		&postedAt,
+		&item.FileIndex,
+		&item.ExpectedFileCount,
+		&item.TotalParts,
+		&item.ObservedParts,
+		&item.TotalBytes,
+		&item.FirstArticleNumber,
+		&item.LastArticleNumber,
+		&item.MatchConfidence,
+		&item.MatchStatus,
+		&groupingJSON,
+		&item.Encrypted,
+		&item.PasswordState,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get indexer binary detail %d: %w", binaryID, err)
+	}
+	if postedAt.Valid {
+		t := postedAt.Time.UTC()
+		item.PostedAt = &t
+	}
+	item.GroupingEvidence = cloneRawJSON(groupingJSON)
+
+	inspections, err := s.listIndexerInspectionSummaries(ctx, "binary_id = $1", binaryID)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err := s.listIndexerInspectionArtifacts(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	archiveEntries, err := s.listIndexerArchiveEntries(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	mediaStreams, err := s.listIndexerMediaStreams(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	textEvidence, err := s.listIndexerTextEvidence(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	par2Sets, err := s.listIndexerPAR2Sets(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := s.listIndexerBinaryParts(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+
+	item.Inspections = inspections
+	item.Artifacts = artifacts
+	item.ArchiveEntries = archiveEntries
+	item.MediaStreams = mediaStreams
+	item.TextEvidence = textEvidence
+	item.PAR2Sets = par2Sets
+	item.Parts = parts
+
+	return &item, nil
+}
+
+func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*IndexerFileDetail, error) {
+	if fileID <= 0 {
+		return nil, fmt.Errorf("file id is required")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			rf.id,
+			rf.release_id,
+			COALESCE(r.title, ''),
+			COALESCE(r.group_name, ''),
+			COALESCE(rf.binary_id, 0),
+			rf.file_name,
+			rf.size_bytes,
+			rf.file_index,
+			rf.is_pars,
+			rf.subject,
+			rf.poster,
+			rf.posted_at,
+			COALESCE(b.total_parts, 0),
+			COALESCE(b.observed_parts, 0),
+			COALESCE(b.match_confidence, 0),
+			COALESCE(b.match_status, ''),
+			COALESCE(b.grouping_evidence_json, '{}'::jsonb),
+			(SELECT COUNT(*) FROM release_file_articles WHERE release_file_id = rf.id)
+		FROM release_files rf
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binaries b ON b.id = rf.binary_id
+		WHERE rf.id = $1`, fileID)
+
+	var item IndexerFileDetail
+	var postedAt sql.NullTime
+	var groupingJSON []byte
+	if err := row.Scan(
+		&item.FileID,
+		&item.ReleaseID,
+		&item.ReleaseTitle,
+		&item.GroupName,
+		&item.BinaryID,
+		&item.FileName,
+		&item.SizeBytes,
+		&item.FileIndex,
+		&item.IsPars,
+		&item.Subject,
+		&item.Poster,
+		&postedAt,
+		&item.TotalParts,
+		&item.ObservedParts,
+		&item.MatchConfidence,
+		&item.MatchStatus,
+		&groupingJSON,
+		&item.ArticleCount,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get indexer file detail %d: %w", fileID, err)
+	}
+	if postedAt.Valid {
+		t := postedAt.Time.UTC()
+		item.PostedAt = &t
+	}
+	item.GroupingEvidence = cloneRawJSON(groupingJSON)
+
+	newsgroups, err := s.ListCatalogReleaseNewsgroups(ctx, item.ReleaseID)
+	if err != nil {
+		return nil, err
+	}
+	item.Newsgroups = newsgroups
+
+	articles, err := s.ListCatalogReleaseFileArticles(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	item.Articles = make([]IndexerFileArticleSummary, 0, len(articles))
+	for _, article := range articles {
+		item.Articles = append(item.Articles, IndexerFileArticleSummary{
+			MessageID:  article.MessageID,
+			Bytes:      article.Bytes,
+			PartNumber: article.PartNumber,
+		})
+	}
+
+	return &item, nil
+}
+
 type releaseScanner interface {
 	Scan(dest ...any) error
 }
@@ -1886,6 +2624,472 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 	rel.CachePresent = strings.EqualFold(generationStatus, "ready")
 
 	return &rel, nil
+}
+
+func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, error) {
+	var (
+		item              IndexerReleaseSummary
+		postedAt          sql.NullTime
+		metadataUpdatedAt sql.NullTime
+		subtitleJSON      []byte
+		mediaTagsJSON     []byte
+	)
+
+	if err := scanner.Scan(
+		&item.ReleaseID,
+		&item.GUID,
+		&item.ProviderID,
+		&item.ReleaseKey,
+		&item.GroupName,
+		&item.Title,
+		&item.SourceTitle,
+		&item.DeobfuscatedTitle,
+		&item.Category,
+		&item.Classification,
+		&item.Poster,
+		&item.SizeBytes,
+		&postedAt,
+		&item.FileCount,
+		&item.ExpectedFileCount,
+		&item.ParFileCount,
+		&item.CompletionPct,
+		&item.MatchConfidence,
+		&item.IdentityStatus,
+		&item.Passworded,
+		&item.PasswordedKnown,
+		&item.PasswordedUnknown,
+		&item.PasswordState,
+		&item.PreferredPasswordID,
+		&item.Encrypted,
+		&item.HasPAR2,
+		&item.HasNFO,
+		&item.ArchiveCount,
+		&item.VideoCount,
+		&item.AudioCount,
+		&item.SamplePresent,
+		&item.AvailabilityScore,
+		&item.AvailabilityTier,
+		&item.MediaQualityScore,
+		&item.MediaQualityTier,
+		&item.IdentityConfidenceScore,
+		&item.RuntimeSeconds,
+		&item.PrimaryResolution,
+		&item.PrimaryVideoCodec,
+		&item.PrimaryAudioCodec,
+		&subtitleJSON,
+		&mediaTagsJSON,
+		&metadataUpdatedAt,
+		&item.NZBGenerationStatus,
+	); err != nil {
+		return IndexerReleaseSummary{}, err
+	}
+
+	if postedAt.Valid {
+		t := postedAt.Time.UTC()
+		item.PostedAt = &t
+	}
+	if metadataUpdatedAt.Valid {
+		t := metadataUpdatedAt.Time.UTC()
+		item.MetadataUpdatedAt = &t
+	}
+	item.SubtitleLanguages = decodeJSONStringSlice(subtitleJSON)
+	item.MediaTags = decodeJSONStringSlice(mediaTagsJSON)
+
+	return item, nil
+}
+
+func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID string) ([]IndexerPasswordCandidateSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id,
+			COALESCE(binary_id, 0),
+			COALESCE(artifact_id, 0),
+			source_kind,
+			source_ref,
+			confidence,
+			verification_status,
+			last_verified_at,
+			last_error
+		FROM release_password_candidates
+		WHERE release_id = $1
+		ORDER BY verification_status DESC, confidence DESC, updated_at DESC, id DESC`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list password candidates for %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerPasswordCandidateSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerPasswordCandidateSummary
+		var lastVerifiedAt sql.NullTime
+		if err := rows.Scan(
+			&item.ID,
+			&item.BinaryID,
+			&item.ArtifactID,
+			&item.SourceKind,
+			&item.SourceRef,
+			&item.Confidence,
+			&item.VerificationStatus,
+			&lastVerifiedAt,
+			&item.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("scan password candidate summary: %w", err)
+		}
+		if lastVerifiedAt.Valid {
+			t := lastVerifiedAt.Time.UTC()
+			item.LastVerifiedAt = &t
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate password candidates for %s: %w", releaseID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerInspectionSummaries(ctx context.Context, whereClause string, args ...any) ([]IndexerInspectionSummary, error) {
+	query := `
+		SELECT
+			stage_name,
+			binary_id,
+			COALESCE(release_id, ''),
+			status,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			started_at,
+			finished_at,
+			updated_at
+		FROM binary_inspections`
+	if strings.TrimSpace(whereClause) != "" {
+		query += ` WHERE ` + whereClause
+	}
+	query += ` ORDER BY updated_at DESC, stage_name, binary_id`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection summaries: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerInspectionSummary, 0, 16)
+	for rows.Next() {
+		var (
+			item        IndexerInspectionSummary
+			startedAt   sql.NullTime
+			finishedAt  sql.NullTime
+			toolJSON    []byte
+			summaryJSON []byte
+		)
+		if err := rows.Scan(
+			&item.StageName,
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.Status,
+			&item.ErrorText,
+			&item.MaterializedBytes,
+			&toolJSON,
+			&summaryJSON,
+			&startedAt,
+			&finishedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan inspection summary: %w", err)
+		}
+		item.ToolProvenance = cloneRawJSON(toolJSON)
+		item.Summary = cloneRawJSON(summaryJSON)
+		if startedAt.Valid {
+			t := startedAt.Time.UTC()
+			item.StartedAt = &t
+		}
+		if finishedAt.Valid {
+			t := finishedAt.Time.UTC()
+			item.FinishedAt = &t
+		}
+		item.UpdatedAt = item.UpdatedAt.UTC()
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inspection summaries: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerInspectionArtifacts(ctx context.Context, binaryID int64) ([]IndexerBinaryInspectionArtifactSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stage_name,
+			artifact_role,
+			artifact_name,
+			artifact_path,
+			bytes_total,
+			mime_type,
+			signature,
+			source_kind,
+			metadata_json
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1
+		ORDER BY updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection artifacts for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerBinaryInspectionArtifactSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerBinaryInspectionArtifactSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StageName,
+			&item.ArtifactRole,
+			&item.ArtifactName,
+			&item.ArtifactPath,
+			&item.BytesTotal,
+			&item.MIMEType,
+			&item.Signature,
+			&item.SourceKind,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan inspection artifact summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inspection artifacts for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerArchiveEntries(ctx context.Context, binaryID int64) ([]IndexerArchiveEntrySummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			entry_name,
+			is_dir,
+			uncompressed_bytes,
+			compressed_bytes,
+			encrypted,
+			comment_text,
+			media_type,
+			signature,
+			metadata_json
+		FROM binary_archive_entries
+		WHERE binary_id = $1
+		ORDER BY entry_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list archive entries for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerArchiveEntrySummary, 0, 16)
+	for rows.Next() {
+		var item IndexerArchiveEntrySummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.EntryName,
+			&item.IsDir,
+			&item.UncompressedBytes,
+			&item.CompressedBytes,
+			&item.Encrypted,
+			&item.Comment,
+			&item.MediaType,
+			&item.Signature,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan archive entry summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate archive entries for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerMediaStreams(ctx context.Context, binaryID int64) ([]IndexerMediaStreamSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stream_index,
+			stream_type,
+			codec_name,
+			codec_long_name,
+			profile,
+			width,
+			height,
+			channels,
+			language,
+			duration_seconds,
+			bit_rate,
+			default_disposition,
+			forced_disposition,
+			metadata_json
+		FROM binary_media_streams
+		WHERE binary_id = $1
+		ORDER BY stream_index, stream_type`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list media streams for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerMediaStreamSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerMediaStreamSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StreamIndex,
+			&item.StreamType,
+			&item.CodecName,
+			&item.CodecLongName,
+			&item.Profile,
+			&item.Width,
+			&item.Height,
+			&item.Channels,
+			&item.Language,
+			&item.DurationSeconds,
+			&item.BitRate,
+			&item.DefaultDisposition,
+			&item.ForcedDisposition,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan media stream summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media streams for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerTextEvidence(ctx context.Context, binaryID int64) ([]IndexerTextEvidenceSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stage_name,
+			evidence_kind,
+			text_value,
+			tokens_json,
+			metadata_json
+		FROM binary_text_evidence
+		WHERE binary_id = $1
+		ORDER BY updated_at DESC, stage_name, evidence_kind`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list text evidence for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerTextEvidenceSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerTextEvidenceSummary
+		var tokensJSON []byte
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StageName,
+			&item.EvidenceKind,
+			&item.TextValue,
+			&tokensJSON,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan text evidence summary: %w", err)
+		}
+		item.Tokens = decodeJSONStringSlice(tokensJSON)
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate text evidence for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]IndexerPAR2SetSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			set_name,
+			base_name,
+			is_volume,
+			volume_number,
+			recovery_blocks,
+			signature_ok,
+			metadata_json
+		FROM binary_par2_sets
+		WHERE binary_id = $1
+		ORDER BY set_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list par2 sets for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerPAR2SetSummary, 0, 4)
+	for rows.Next() {
+		var item IndexerPAR2SetSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.SetName,
+			&item.BaseName,
+			&item.IsVolume,
+			&item.VolumeNumber,
+			&item.RecoveryBlocks,
+			&item.SignatureOK,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan par2 set summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate par2 sets for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]IndexerBinaryPartSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			article_header_id,
+			message_id,
+			part_number,
+			total_parts,
+			segment_bytes,
+			file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		ORDER BY part_number, id`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerBinaryPartSummary, 0, 128)
+	for rows.Next() {
+		var item IndexerBinaryPartSummary
+		if err := rows.Scan(
+			&item.ArticleHeaderID,
+			&item.MessageID,
+			&item.PartNumber,
+			&item.TotalParts,
+			&item.SegmentBytes,
+			&item.FileName,
+		); err != nil {
+			return nil, fmt.Errorf("scan binary part summary: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary parts for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
 }
 
 func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
@@ -3398,6 +4602,25 @@ func sanitizeStringSlice(in []string) []string {
 	}
 
 	return out
+}
+
+func decodeJSONStringSlice(raw []byte) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return []string{}
+	}
+
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return []string{}
+	}
+	return sanitizeStringSlice(out)
+}
+
+func cloneRawJSON(raw []byte) json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(append([]byte(nil), raw...))
 }
 
 func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
