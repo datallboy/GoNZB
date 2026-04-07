@@ -9,12 +9,22 @@ import (
 )
 
 type Service struct {
-	supervisor *supervisor.Supervisor
+	supervisor    *supervisor.Supervisor
+	releaseReform func(ctx context.Context) error
 }
 
-func NewService(supervisorSvc *supervisor.Supervisor) *Service {
+type Options struct {
+	ReleaseReform func(ctx context.Context) error
+}
+
+func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service {
+	var cfg Options
+	if len(opts) > 0 {
+		cfg = opts[0]
+	}
 	return &Service{
-		supervisor: supervisorSvc,
+		supervisor:    supervisorSvc,
+		releaseReform: cfg.ReleaseReform,
 	}
 }
 
@@ -52,6 +62,13 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 
 func (s *Service) ReleaseOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageRelease)
+}
+
+func (s *Service) ReformReleasesOnce(ctx context.Context) error {
+	if s.releaseReform == nil {
+		return fmt.Errorf("release reform service is not configured")
+	}
+	return s.releaseReform(ctx)
 }
 
 func (s *Service) AssembleOnce(ctx context.Context) error {

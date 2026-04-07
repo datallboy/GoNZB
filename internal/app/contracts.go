@@ -135,6 +135,7 @@ type UsenetIndexStore interface {
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
@@ -169,6 +170,7 @@ type UsenetIndexerService interface {
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	ReformReleasesOnce(ctx context.Context) error
 	InspectOnce(ctx context.Context) error
 	InspectPAR2Once(ctx context.Context) error
 	InspectNFOOnce(ctx context.Context) error

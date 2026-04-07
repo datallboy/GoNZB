@@ -15,12 +15,13 @@ var (
 	nzbPath   string
 	cfgFile   string = "config.yaml"
 
-	scrapeOnce   bool
-	assembleOnce bool
-	releaseOnce  bool
-	pipelineOnce bool
-	inspectOnce  bool
-	enrichOnce   bool
+	scrapeOnce    bool
+	assembleOnce  bool
+	releaseOnce   bool
+	releaseReform bool
+	pipelineOnce  bool
+	inspectOnce   bool
+	enrichOnce    bool
 )
 
 var rootCmd = &cobra.Command{
@@ -98,7 +99,7 @@ var indexerReleaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Form releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce)
+		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform)
 	},
 }
 
@@ -193,6 +194,7 @@ func init() {
 
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
+	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectPAR2Cmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one PAR2 inspection pass and exit")

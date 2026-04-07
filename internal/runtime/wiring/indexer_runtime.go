@@ -224,7 +224,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		Owner:   stageOwner,
 	})
 
-	service := indexing.NewService(supervisorSvc)
+	service := indexing.NewService(supervisorSvc, indexing.Options{
+		ReleaseReform: releaseSvc.RunReformOnce,
+	})
 
 	return &usenetIndexerRuntime{
 		service:        service,
