@@ -609,11 +609,11 @@ Suggested intent:
 
 ---
 
-## Milestone 7: PreDB and TMDB Enrichment
+## Milestone 7: Canonical Media Enrichment and PreDB Fallback
 
 ### Goal
 
-Add release enrichment and media matching using PreDB and TMDB.
+Add release enrichment and canonical media matching using TMDB and TVDB first, with PreDB as a weaker scene-release fallback source.
 
 ### Depends On
 
@@ -623,12 +623,24 @@ Add release enrichment and media matching using PreDB and TMDB.
 ### Concrete Deliverables
 
 - Add enrichment package
-- Implement PreDB adapters first
-- Implement TMDB matching for likely movie/TV releases
+- Implement TMDB matching for likely movie releases
+- Implement TVDB matching for likely episodic TV releases
+- Keep `enrich_tmdb` as the existing stage name for compatibility, but let it perform canonical identity enrichment using:
+  - TMDB for movie candidates
+  - TVDB first for TV/episode candidates when configured
+  - TMDB TV search as a fallback when TVDB is not configured or produces no usable match
+- Treat PreDB as an optional fallback/provider layer rather than the primary source of truth
+- Prefer `predb.ovh` as the first PreDB provider because it has public API docs and a dump feed
+- Keep `api.predb.net` behind an optional provider abstraction only if needed later
 - Persist candidate matches and selected best match
 - Allow enrichment sources to contribute password candidates and quality hints, but do not treat them as verified passwords until inspect confirms them
 - Keep enrichment non-blocking for baseline catalog formation
 - Keep metadata searches as independent enrich submodules rather than folding them into a generic inspect pipeline
+- Keep canonical identity metadata separate from local inspect-derived titles:
+  - `source_title` remains raw Usenet/source naming
+  - `deobfuscated_title` remains local inspect/source cleanup
+  - `matched_media_title` is the external canonical identity title from TMDB/TVDB
+  - external identity must not overwrite inspect-derived runtime, codec, subtitle, or archive facts
 
 ### Code Areas
 
@@ -648,6 +660,7 @@ Use and extend existing:
 Add:
 
 - `release_tmdb_matches`
+- `release_tvdb_matches`
 
 Suggested fields:
 
@@ -661,29 +674,41 @@ Suggested fields:
 - `chosen`
 - timestamps
 
+Recommended release-level fields:
+
+- `tmdb_id`
+- `tvdb_id`
+- `external_media_type`
+- `original_media_title`
+- `external_year`
+
 ### API/Settings Changes
 
 Extend indexing settings with provider config for:
 
 - PreDB sources
 - TMDB API key/base config
+- TVDB API key/base config
+- optional TVDB subscriber PIN if required by the key type
 
 ### Acceptance Criteria
 
 - Releases can have stored PreDB matches
 - Releases can have stored TMDB matches
+- Releases can have stored TVDB matches
 - Source title, deobfuscated title, and matched media title remain distinct
 - Inspect-derived runtime/codec/subtitle facts are not overwritten by TMDB identity metadata
+- TV releases can be matched canonically even when TMDB is not the best source, using TVDB first when available
+- PreDB does not block TMDB/TVDB enrichment and does not become the primary truth source for canonical media identity
 - `enrich_predb` and `enrich_tmdb` are independently runnable commands/stages
 
 ### Out of Scope
 
-- TVDB
 - IRC ingestion
 
 ### Suggested Commit
 
-`feat(indexing): add predb and tmdb enrichment for indexed releases`
+`feat(indexing): add tmdb/tvdb enrichment and predb fallback for indexed releases`
 
 ---
 

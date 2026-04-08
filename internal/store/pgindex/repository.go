@@ -336,6 +336,47 @@ type ReleaseInspectionUpdate struct {
 	MetadataUpdatedAt   *time.Time
 }
 
+type ReleaseTMDBMatchRecord struct {
+	ReleaseID     string
+	TMDBID        int64
+	MediaType     string
+	Title         string
+	OriginalTitle string
+	Year          int
+	Confidence    float64
+	Chosen        bool
+	Payload       map[string]any
+}
+
+type ReleaseTVDBMatchRecord struct {
+	ReleaseID     string
+	TVDBID        int64
+	MediaType     string
+	Title         string
+	OriginalTitle string
+	Year          int
+	Confidence    float64
+	Chosen        bool
+	Payload       map[string]any
+}
+
+type ReleaseEnrichmentUpdate struct {
+	ReleaseID               string
+	MatchedMediaTitle       string
+	OriginalMediaTitle      string
+	TMDBID                  int64
+	TVDBID                  int64
+	ExternalMediaType       string
+	ExternalYear            int
+	SeasonNumber            int
+	EpisodeNumber           int
+	SeasonEpisodeSource     string
+	SeasonEpisodeConfidence float64
+	IdentityStatus          string
+	IdentityConfidenceScore float64
+	MetadataUpdatedAt       *time.Time
+}
+
 type ReleaseTitleCandidate struct {
 	BinaryID   int64
 	Source     string
@@ -348,10 +389,13 @@ type ReleaseEnrichmentCandidate struct {
 	Title                   string
 	SourceTitle             string
 	DeobfuscatedTitle       string
+	MatchedMediaTitle       string
 	Classification          string
 	IdentityStatus          string
 	MatchConfidence         float64
 	IdentityConfidenceScore float64
+	TMDBID                  int64
+	TVDBID                  int64
 }
 
 // read DTOs for PG-backed NZB materialization in Milestone 7.
@@ -456,6 +500,15 @@ type IndexerReleaseSummary struct {
 	SourceTitle             string     `json:"source_title"`
 	DeobfuscatedTitle       string     `json:"deobfuscated_title"`
 	MatchedMediaTitle       string     `json:"matched_media_title"`
+	OriginalMediaTitle      string     `json:"original_media_title"`
+	TMDBID                  int64      `json:"tmdb_id"`
+	TVDBID                  int64      `json:"tvdb_id"`
+	ExternalMediaType       string     `json:"external_media_type"`
+	ExternalYear            int        `json:"external_year"`
+	SeasonNumber            int        `json:"season_number"`
+	EpisodeNumber           int        `json:"episode_number"`
+	SeasonEpisodeSource     string     `json:"season_episode_source"`
+	SeasonEpisodeConfidence float64    `json:"season_episode_confidence"`
 	TitleSource             string     `json:"title_source"`
 	TitleConfidence         float64    `json:"title_confidence"`
 	Category                string     `json:"category"`
@@ -619,6 +672,20 @@ type IndexerReleaseDetail struct {
 	Files              []IndexerReleaseFileSummary       `json:"files"`
 	PasswordCandidates []IndexerPasswordCandidateSummary `json:"password_candidates"`
 	Inspections        []IndexerInspectionSummary        `json:"inspections"`
+	TMDBMatches        []IndexerExternalMatchSummary     `json:"tmdb_matches"`
+	TVDBMatches        []IndexerExternalMatchSummary     `json:"tvdb_matches"`
+}
+
+type IndexerExternalMatchSummary struct {
+	Source        string          `json:"source"`
+	ExternalID    int64           `json:"external_id"`
+	MediaType     string          `json:"media_type"`
+	Title         string          `json:"title"`
+	OriginalTitle string          `json:"original_title"`
+	Year          int             `json:"year"`
+	Confidence    float64         `json:"confidence"`
+	Chosen        bool            `json:"chosen"`
+	Payload       json.RawMessage `json:"payload_json"`
 }
 
 type IndexerBinaryDetail struct {
@@ -2268,6 +2335,15 @@ func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, of
 			r.source_title,
 			r.deobfuscated_title,
 			r.matched_media_title,
+			r.original_media_title,
+			r.tmdb_id,
+			r.tvdb_id,
+			r.external_media_type,
+			r.external_year,
+			r.season_number,
+			r.episode_number,
+			r.season_episode_source,
+			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
 			r.category,
@@ -2352,6 +2428,15 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.source_title,
 			r.deobfuscated_title,
 			r.matched_media_title,
+			r.original_media_title,
+			r.tmdb_id,
+			r.tvdb_id,
+			r.external_media_type,
+			r.external_year,
+			r.season_number,
+			r.episode_number,
+			r.season_episode_source,
+			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
 			r.category,
@@ -2474,6 +2559,14 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 	if err != nil {
 		return nil, err
 	}
+	tmdbMatches, err := s.listIndexerExternalMatches(ctx, "tmdb", releaseID)
+	if err != nil {
+		return nil, err
+	}
+	tvdbMatches, err := s.listIndexerExternalMatches(ctx, "tvdb", releaseID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &IndexerReleaseDetail{
 		Release:            release,
@@ -2481,6 +2574,8 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		Files:              files,
 		PasswordCandidates: passwordCandidates,
 		Inspections:        inspections,
+		TMDBMatches:        tmdbMatches,
+		TVDBMatches:        tvdbMatches,
 	}, nil
 }
 
@@ -2743,6 +2838,15 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.SourceTitle,
 		&item.DeobfuscatedTitle,
 		&item.MatchedMediaTitle,
+		&item.OriginalMediaTitle,
+		&item.TMDBID,
+		&item.TVDBID,
+		&item.ExternalMediaType,
+		&item.ExternalYear,
+		&item.SeasonNumber,
+		&item.EpisodeNumber,
+		&item.SeasonEpisodeSource,
+		&item.SeasonEpisodeConfidence,
 		&item.TitleSource,
 		&item.TitleConfidence,
 		&item.Category,
@@ -2918,6 +3022,77 @@ func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID str
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate password candidates for %s: %w", releaseID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseID string) ([]IndexerExternalMatchSummary, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	var query string
+	switch strings.TrimSpace(source) {
+	case "tmdb":
+		query = `
+			SELECT
+				tmdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json
+			FROM release_tmdb_matches
+			WHERE release_id = $1
+			ORDER BY chosen DESC, confidence DESC, title`
+	case "tvdb":
+		query = `
+			SELECT
+				tvdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json
+			FROM release_tvdb_matches
+			WHERE release_id = $1
+			ORDER BY chosen DESC, confidence DESC, title`
+	default:
+		return nil, fmt.Errorf("unsupported external match source %q", source)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list %s matches for %s: %w", source, releaseID, err)
+	}
+	defer rows.Close()
+
+	out := []IndexerExternalMatchSummary{}
+	for rows.Next() {
+		var item IndexerExternalMatchSummary
+		item.Source = source
+		if err := rows.Scan(
+			&item.ExternalID,
+			&item.MediaType,
+			&item.Title,
+			&item.OriginalTitle,
+			&item.Year,
+			&item.Confidence,
+			&item.Chosen,
+			&item.Payload,
+		); err != nil {
+			return nil, fmt.Errorf("scan %s match summary: %w", source, err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s matches for %s: %w", source, releaseID, err)
 	}
 
 	return out, nil
@@ -4045,7 +4220,27 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 	case "enrich_predb":
 		where = "identity_status <> 'identified' OR deobfuscated_title = ''"
 	case "enrich_tmdb":
-		where = "(classification = 'video' OR classification = 'video_archive') AND identity_status <> 'identified'"
+		where = `(
+			classification IN ('video', 'video_archive')
+			OR (
+				classification = 'archive'
+				AND (
+					video_count > 0
+					OR runtime_seconds > 0
+					OR primary_resolution <> ''
+					OR primary_video_codec <> ''
+					OR matched_media_title <> ''
+					OR title_source = 'archive_entry'
+				)
+			)
+		) AND (
+			(tmdb_id = 0 AND tvdb_id = 0)
+			OR (
+				(tvdb_id > 0 OR external_media_type = 'tv')
+				AND season_number = 0
+				AND episode_number = 0
+			)
+		)`
 	default:
 		return nil, fmt.Errorf("unsupported enrichment stage %q", stageName)
 	}
@@ -4056,10 +4251,13 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 			title,
 			source_title,
 			deobfuscated_title,
+			matched_media_title,
 			classification,
 			identity_status,
 			match_confidence,
-			identity_confidence_score
+			identity_confidence_score,
+			tmdb_id,
+			tvdb_id
 		FROM releases
 		WHERE `+where+`
 		ORDER BY updated_at DESC
@@ -4077,10 +4275,13 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 			&item.Title,
 			&item.SourceTitle,
 			&item.DeobfuscatedTitle,
+			&item.MatchedMediaTitle,
 			&item.Classification,
 			&item.IdentityStatus,
 			&item.MatchConfidence,
 			&item.IdentityConfidenceScore,
+			&item.TMDBID,
+			&item.TVDBID,
 		); err != nil {
 			return nil, fmt.Errorf("scan release enrichment candidate: %w", err)
 		}
@@ -4091,6 +4292,195 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 	}
 
 	return out, nil
+}
+
+func (s *Store) ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string, rows []ReleaseTMDBMatchRecord) error {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tmdb match replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM release_tmdb_matches WHERE release_id = $1`, releaseID); err != nil {
+		return fmt.Errorf("delete tmdb matches for %s: %w", releaseID, err)
+	}
+
+	for _, row := range rows {
+		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
+		if err != nil {
+			return fmt.Errorf("marshal tmdb payload for %s/%d: %w", releaseID, row.TMDBID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO release_tmdb_matches (
+				release_id,
+				tmdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+			releaseID,
+			row.TMDBID,
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Title),
+			strings.TrimSpace(row.OriginalTitle),
+			row.Year,
+			row.Confidence,
+			row.Chosen,
+			string(payloadJSON),
+		); err != nil {
+			return fmt.Errorf("insert tmdb match for %s/%d: %w", releaseID, row.TMDBID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tmdb match replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string, rows []ReleaseTVDBMatchRecord) error {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tvdb match replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM release_tvdb_matches WHERE release_id = $1`, releaseID); err != nil {
+		return fmt.Errorf("delete tvdb matches for %s: %w", releaseID, err)
+	}
+
+	for _, row := range rows {
+		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
+		if err != nil {
+			return fmt.Errorf("marshal tvdb payload for %s/%d: %w", releaseID, row.TVDBID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO release_tvdb_matches (
+				release_id,
+				tvdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+			releaseID,
+			row.TVDBID,
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Title),
+			strings.TrimSpace(row.OriginalTitle),
+			row.Year,
+			row.Confidence,
+			row.Chosen,
+			string(payloadJSON),
+		); err != nil {
+			return fmt.Errorf("insert tvdb match for %s/%d: %w", releaseID, row.TVDBID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tvdb match replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ApplyReleaseEnrichmentUpdate(ctx context.Context, in ReleaseEnrichmentUpdate) error {
+	in.ReleaseID = strings.TrimSpace(in.ReleaseID)
+	if in.ReleaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	var metadataUpdated any
+	if in.MetadataUpdatedAt != nil {
+		metadataUpdated = in.MetadataUpdatedAt.UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE releases
+		SET matched_media_title = CASE
+		    	WHEN $2 <> '' THEN $2
+		    	ELSE matched_media_title
+		    END,
+		    original_media_title = CASE
+		    	WHEN $3 <> '' THEN $3
+		    	ELSE original_media_title
+		    END,
+		    tmdb_id = CASE
+		    	WHEN $4 > 0 THEN $4
+		    	ELSE tmdb_id
+		    END,
+		    tvdb_id = CASE
+		    	WHEN $5 > 0 THEN $5
+		    	ELSE tvdb_id
+		    END,
+		    external_media_type = CASE
+		    	WHEN $6 <> '' THEN $6
+		    	ELSE external_media_type
+		    END,
+		    external_year = CASE
+		    	WHEN $7 > 0 THEN $7
+		    	ELSE external_year
+		    END,
+		    season_number = CASE
+		    	WHEN $8 > 0 THEN $8
+		    	ELSE season_number
+		    END,
+		    episode_number = CASE
+		    	WHEN $9 > 0 THEN $9
+		    	ELSE episode_number
+		    END,
+		    season_episode_source = CASE
+		    	WHEN $10 <> '' THEN $10
+		    	ELSE season_episode_source
+		    END,
+		    season_episode_confidence = GREATEST(season_episode_confidence, $11),
+		    identity_status = CASE
+		    	WHEN $12 <> '' THEN $12
+		    	ELSE identity_status
+		    END,
+		    identity_confidence_score = GREATEST(identity_confidence_score, $13),
+		    metadata_updated_at = COALESCE($14, metadata_updated_at),
+		    updated_at = NOW()
+		WHERE release_id = $1`,
+		in.ReleaseID,
+		strings.TrimSpace(in.MatchedMediaTitle),
+		strings.TrimSpace(in.OriginalMediaTitle),
+		in.TMDBID,
+		in.TVDBID,
+		strings.TrimSpace(in.ExternalMediaType),
+		in.ExternalYear,
+		in.SeasonNumber,
+		in.EpisodeNumber,
+		strings.TrimSpace(in.SeasonEpisodeSource),
+		in.SeasonEpisodeConfidence,
+		strings.TrimSpace(in.IdentityStatus),
+		in.IdentityConfidenceScore,
+		metadataUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("apply release enrichment update %s: %w", in.ReleaseID, err)
+	}
+	return nil
 }
 
 func (s *Store) ClaimIndexerStage(ctx context.Context, req IndexerStageClaimRequest) (*IndexerStageClaimResult, error) {
@@ -4749,6 +5139,13 @@ func sanitizeAnySlice(in []any) []any {
 	}
 
 	return out
+}
+
+func jsonOrEmptyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{}
+	}
+	return sanitizeStringMap(in)
 }
 
 func rollbackTx(tx *sql.Tx) {

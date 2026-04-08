@@ -59,6 +59,12 @@ type IndexingRuntimeSettings struct {
 	EnableInspectMedia      bool     `json:"enable_inspect_media,omitempty"`
 	EnableEnrichPreDB       bool     `json:"enable_enrich_predb,omitempty"`
 	EnableEnrichTMDB        bool     `json:"enable_enrich_tmdb,omitempty"`
+	TMDBAPIKey              string   `json:"tmdb_api_key,omitempty"`
+	TMDBAccessToken         string   `json:"tmdb_access_token,omitempty"`
+	TMDBBaseURL             string   `json:"tmdb_base_url,omitempty"`
+	TVDBAPIKey              string   `json:"tvdb_api_key,omitempty"`
+	TVDBPIN                 string   `json:"tvdb_pin,omitempty"`
+	TVDBBaseURL             string   `json:"tvdb_base_url,omitempty"`
 	FFProbePath             string   `json:"ffprobe_path,omitempty"`
 	SevenZipPath            string   `json:"seven_zip_path,omitempty"`
 	UnrarPath               string   `json:"unrar_path,omitempty"`

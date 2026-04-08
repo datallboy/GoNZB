@@ -86,6 +86,12 @@ type IndexingConfig struct {
 	EnableInspectMedia      bool     `mapstructure:"enable_inspect_media" yaml:"enable_inspect_media"`
 	EnableEnrichPreDB       bool     `mapstructure:"enable_enrich_predb" yaml:"enable_enrich_predb"`
 	EnableEnrichTMDB        bool     `mapstructure:"enable_enrich_tmdb" yaml:"enable_enrich_tmdb"`
+	TMDBAPIKey              string   `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
+	TMDBAccessToken         string   `mapstructure:"tmdb_access_token" yaml:"tmdb_access_token"`
+	TMDBBaseURL             string   `mapstructure:"tmdb_base_url" yaml:"tmdb_base_url"`
+	TVDBAPIKey              string   `mapstructure:"tvdb_api_key" yaml:"tvdb_api_key"`
+	TVDBPIN                 string   `mapstructure:"tvdb_pin" yaml:"tvdb_pin"`
+	TVDBBaseURL             string   `mapstructure:"tvdb_base_url" yaml:"tvdb_base_url"`
 	FFProbePath             string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
 	SevenZipPath            string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
 	UnrarPath               string   `mapstructure:"unrar_path" yaml:"unrar_path"`
@@ -160,6 +166,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enable_inspect_media", true)
 	v.SetDefault("indexing.enable_enrich_predb", true)
 	v.SetDefault("indexing.enable_enrich_tmdb", true)
+	v.SetDefault("indexing.tmdb_api_key", "")
+	v.SetDefault("indexing.tmdb_access_token", "")
+	v.SetDefault("indexing.tmdb_base_url", "https://api.themoviedb.org/3")
+	v.SetDefault("indexing.tvdb_api_key", "")
+	v.SetDefault("indexing.tvdb_pin", "")
+	v.SetDefault("indexing.tvdb_base_url", "https://api4.thetvdb.com/v4")
 	v.SetDefault("indexing.ffprobe_path", "ffprobe")
 	v.SetDefault("indexing.seven_zip_path", "7z")
 	v.SetDefault("indexing.unrar_path", "unrar")
