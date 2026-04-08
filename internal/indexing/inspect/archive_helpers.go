@@ -94,20 +94,43 @@ func ArchiveEntryNamesFromSummary(raw json.RawMessage) []string {
 }
 
 func BestMediaEntry(entries []string) string {
-	best := ""
+	bestPrimary := ""
+	bestSample := ""
 	for _, entry := range entries {
 		name := strings.TrimSpace(entry)
 		if name == "" {
 			continue
 		}
 		if IsVideoFile(name) || IsAudioFile(name) {
+			if isSampleArchiveEntry(name) {
+				if bestSample == "" {
+					bestSample = name
+				}
+				continue
+			}
 			return name
 		}
-		if best == "" {
-			best = name
+		if isSampleArchiveEntry(name) {
+			if bestSample == "" {
+				bestSample = name
+			}
+			continue
+		}
+		if bestPrimary == "" {
+			bestPrimary = name
 		}
 	}
-	return best
+	if bestPrimary != "" {
+		return bestPrimary
+	}
+	return bestSample
+}
+
+func isSampleArchiveEntry(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(lower, "/sample/") ||
+		strings.Contains(lower, ".sample.") ||
+		strings.Contains(lower, "sample-")
 }
 
 func uniqueStrings(values []string) []string {

@@ -33,6 +33,7 @@ Future Codex sessions should treat this file as primary task scope for indexer b
 - Inspect phase package path: `internal/indexing/inspect`
 - Inspect transient workspace setting: `indexing.inspect_work_dir`
 - Default inspect workspace path: `/store/indexer/inspect`
+- Keep API/UI feature requests and nested-archive follow-ups in a separate roadmap doc so this milestone plan stays focused on backend delivery order
 
 ## Sequencing Rules
 
@@ -755,10 +756,212 @@ Add `/api/v1/indexer` endpoints:
 
 - Web UI implementation
 - Aggregator search integration
+- Nested archive and double-archive recursive inspection improvements beyond current single-level archive-backed probing
 
 ### Suggested Commit
 
 `feat(api): add indexer task and catalog endpoints`
+
+---
+
+## Milestone 8.5: Release Title Provenance And Selection
+
+### Goal
+
+Make release title derivation explicit, inspect-aware, and stable so release display titles come from the best available metadata source without losing raw source naming.
+
+### Depends On
+
+- Milestone 4
+- Milestone 6
+- Milestone 8 recommended
+
+### Concrete Deliverables
+
+- Define and persist separate title roles for:
+  - `source_title`
+  - `deobfuscated_title`
+  - `matched_media_title`
+  - `title`
+  - `title_source`
+  - optional `title_confidence`
+- Keep `source_title` as the raw best title derived from Usenet/post naming
+- Use inspect-derived metadata to produce local title candidates from:
+  - archive member names
+  - chosen media filenames
+  - NFO-derived titles when parseable
+- Allow release re-formation or a dedicated reform pass to adopt better local titles without clearing releases or inspect state
+- Keep external enrichment titles distinct from local deobfuscation
+- Ensure obfuscated archive names like random `7z` or `volXX+YY` tokens are not treated as successful deobfuscation
+
+### Code Areas
+
+- `internal/indexing/release`
+- `internal/indexing/inspect`
+- `internal/store/pgindex/repository.go`
+- `internal/store/pgindex/migrations`
+- `internal/api/controllers`
+
+### Schema Changes
+
+Extend `releases` with:
+
+- `matched_media_title`
+- `title_source`
+- optional `title_confidence`
+
+If needed for intermediate inspect rollups, add structured storage for release title candidates or fold them into existing inspect summary JSON in a stable way.
+
+### API/Settings Changes
+
+- Expose the separate title fields in release list/detail APIs
+- Surface `title_source` so UI/operator tooling can explain why a title was chosen
+- Keep `source_title` readable in APIs even when `title` is replaced by better metadata
+
+### Acceptance Criteria
+
+- `source_title`, `deobfuscated_title`, and `matched_media_title` remain distinct
+- `title` is the best display title chosen by precedence rather than blindly mirroring source naming
+- Inspect-derived runtime/codec/subtitle facts and inspect-derived title candidates can improve release display/identity state without mutating `source_title`
+- Obfuscated archive labels no longer appear as fake deobfuscation
+- Existing releases can be re-formed in place to adopt better titles without clearing inspect data
+- API responses explain the chosen display title source
+
+### Title Semantics
+
+- `source_title`
+  - raw best title derived from Usenet/post naming
+  - never overwritten by inspect or enrichment
+- `deobfuscated_title`
+  - clearer human-readable title derived from local evidence only
+  - sources may include archive members, direct media filenames, and NFO text
+  - must remain empty if no real local deobfuscation happened
+- `matched_media_title`
+  - canonical identity title from external enrichment such as PreDB or TMDB
+  - must stay distinct from local deobfuscation
+- `title`
+  - final display title used by APIs and future UI
+- `title_source`
+  - provenance for `title`, such as `source`, `deobfuscated`, `archive_entry`, `media_filename`, `nfo`, `predb`, or `tmdb`
+
+### Title Precedence
+
+Choose `title` in this order:
+
+1. high-confidence primary non-sample media title derived from local inspect evidence
+2. high-confidence external matched media title
+3. `deobfuscated_title`
+4. cleaned `source_title`
+5. fallback release key or synthetic fallback only when nothing better exists
+
+For local inspect evidence, rank candidates in this order:
+
+1. chosen non-sample media path from `inspect_media`
+2. best non-sample media archive entry from `inspect_archive`
+3. archive root folder name when it agrees with media evidence
+4. parsed NFO release title when it agrees with archive/media evidence
+5. sample media names only when there is no stronger non-sample evidence
+
+Sample media must never override a real non-sample media title for the same release.
+
+### Local Metadata Confidence Rules
+
+High-confidence local title sources:
+
+- primary non-sample archive media entry
+- chosen media filename from a direct-media release
+- NFO-derived release title when parseable and consistent
+- agreement between archive entry, media filename, and NFO evidence
+- release-level agreement between multiple local candidates, such as folder name + media filename
+
+Low-confidence sources that must not become deobfuscated titles by themselves:
+
+- raw obfuscated archive filenames
+- `.7z.001` / `.rar` / `.volXX+YY.par2`
+- sample-only names unless they agree with the main media stem
+- purely humanized obfuscated tokens
+
+### Title Formatting
+
+- `deobfuscated_title`
+  - release-style title intended to preserve release metadata
+  - use period-delimited formatting when derived from local inspect evidence
+  - retain useful release tokens such as:
+    - title
+    - year
+    - season/episode
+    - resolution
+    - source
+    - video codec
+    - audio codec
+    - release group
+  - do not include raw container extension like `.mkv` by default
+- `title`
+  - UI/display-friendly version of the chosen release title
+  - same metadata content as `deobfuscated_title`, but with spaces instead of periods
+- `matched_media_title`
+  - canonical movie/show title from enrichment only
+  - may be shorter than the release-style title and should not replace release metadata formatting by itself
+
+### Implementation Plan
+
+1. Add the new release-level fields for `matched_media_title`, `title_source`, and optional `title_confidence`.
+
+2. Add a release-title candidate resolver that can collect every reasonable local title candidate from inspect outputs:
+   - prefer the primary non-sample archive media entry from `inspect_archive` / `inspect_media`
+   - fallback to direct media filenames
+   - fallback to parsed NFO release names when available
+   - include sample names only as a last-resort local candidate
+   - record enough provenance to explain why one candidate beat another
+
+3. Normalize title candidates into both:
+   - a release-style `deobfuscated_title`
+   - a spaced display `title`
+   without destroying meaningful release tokens such as season/episode, year, resolution, source, codec tags, or release group.
+
+4. Add confidence scoring for title candidates so inspect-derived local titles can be marked `identified`, `probable`, or `unknown` with clearer provenance.
+   - boost candidates when multiple local sources agree
+   - penalize sample-only candidates
+   - penalize auxiliary/archive-volume names
+   - keep sample names from winning when a primary media candidate exists
+
+5. Update release formation and release reform to choose `title` by precedence while preserving:
+   - `source_title`
+   - `deobfuscated_title`
+   - `matched_media_title`
+   - ensure reform can revisit all existing releases rather than only the first batch of binary-derived candidates
+
+6. Set `deobfuscated_title` only when local inspect evidence produces a clearly better readable title than the source naming.
+
+7. Keep external enrichment titles separate:
+   - PreDB/TMDB may populate `matched_media_title`
+   - external matches may improve `title` only when their confidence is high enough
+   - external matches must not overwrite raw source naming
+
+8. Extend release APIs so list/detail responses include:
+   - `source_title`
+   - `deobfuscated_title`
+   - `matched_media_title`
+   - `title`
+   - `title_source`
+   - optional `title_confidence`
+
+9. Add regression tests for:
+   - obfuscated archive-only releases
+   - releases with clear archive member titles
+   - releases with NFO-only title evidence
+   - releases with both inspect-derived and enrichment-derived title candidates
+   - title precedence and provenance stability during release reform
+
+### Out of Scope
+
+- Full canonical metadata matching by itself
+- UI implementation
+- Replacing inspect-derived runtime/codec/subtitle facts with enrichment data
+
+### Suggested Commit
+
+`feat(indexing): add provenance-aware release title selection`
 
 ---
 

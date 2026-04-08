@@ -136,6 +136,17 @@ func TestArchiveEntryNamesFromSummaryReadsEntryList(t *testing.T) {
 	}
 }
 
+func TestBestMediaEntryPrefersPrimaryOverSample(t *testing.T) {
+	got := BestMediaEntry([]string{
+		"Release.Name/Sample/release.name.sample.mkv",
+		"Release.Name/Release.Name.1080p.WEB.H264-GROUP.mkv",
+	})
+	want := "Release.Name/Release.Name.1080p.WEB.H264-GROUP.mkv"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestParseSevenZipNextHeaderRange(t *testing.T) {
 	head := make([]byte, 32)
 	copy(head[:6], []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C})

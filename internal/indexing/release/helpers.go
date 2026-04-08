@@ -22,6 +22,22 @@ type clusterScore struct {
 	value float64
 }
 
+type resolvedReleaseTitle struct {
+	Title             string
+	SourceTitle       string
+	DeobfuscatedTitle string
+	MatchedMediaTitle string
+	TitleSource       string
+	TitleConfidence   float64
+}
+
+type localTitleCandidate struct {
+	ReleaseTitle string
+	DisplayTitle string
+	Source       string
+	Confidence   float64
+}
+
 var (
 	multiSpaceRE       = regexp.MustCompile(`\s+`)
 	separatorRE        = regexp.MustCompile(`[._\-]+`)
@@ -35,6 +51,7 @@ var (
 	splitZipRE         = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	parVolumeRE        = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
 	numericNoiseOnlyRE = regexp.MustCompile(`^[a-f0-9]{8,}$`)
+	longOpaqueTokenRE  = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 )
 
 func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) []releaseCluster {
@@ -172,19 +189,13 @@ func scoreCluster(candidate pgindex.ReleaseCandidate, cluster releaseCluster) fl
 	return clamp01(score)
 }
 
-func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseCluster) pgindex.ReleaseRecord {
+func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseCluster, inspectCandidates []pgindex.ReleaseTitleCandidate) pgindex.ReleaseRecord {
 	sourceTitle := representativeTitle(candidate, cluster.Binaries)
-	deobfuscatedTitle := deobfuscateTitle(sourceTitle, cluster.Binaries)
-	if deobfuscatedTitle == "" {
-		deobfuscatedTitle = sourceTitle
-	}
+	titleInfo := resolveReleaseTitle(sourceTitle, cluster.Binaries, inspectCandidates)
 
-	identityScore := computeIdentityConfidenceScore(cluster)
-	identityStatus := classifyIdentityStatus(identityScore)
-	finalTitle := strings.TrimSpace(deobfuscatedTitle)
-	if finalTitle == "" {
-		finalTitle = strings.TrimSpace(sourceTitle)
-	}
+	identityScore := computeIdentityConfidenceScore(cluster, titleInfo.TitleConfidence)
+	identityStatus := classifyIdentityStatus(identityScore, sourceTitle, titleInfo.DeobfuscatedTitle, titleInfo.TitleSource, titleInfo.TitleConfidence)
+	finalTitle := titleInfo.Title
 	if finalTitle == "" {
 		finalTitle = "unknown-release"
 	}
@@ -209,8 +220,11 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		ReleaseKey:              candidate.ReleaseKey,
 		GroupName:               deriveGroupName(candidate, cluster.Binaries),
 		Title:                   finalTitle,
-		SourceTitle:             sourceTitle,
-		DeobfuscatedTitle:       deobfuscatedTitle,
+		SourceTitle:             titleInfo.SourceTitle,
+		DeobfuscatedTitle:       titleInfo.DeobfuscatedTitle,
+		MatchedMediaTitle:       titleInfo.MatchedMediaTitle,
+		TitleSource:             titleInfo.TitleSource,
+		TitleConfidence:         titleInfo.TitleConfidence,
 		SearchTitle:             normalizeSearchTitle(finalTitle),
 		Category:                "usenet",
 		Classification:          classification,
@@ -247,6 +261,17 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		MediaTags:               mediaTags,
 		MetadataUpdatedAt:       &now,
 	}
+}
+
+func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
+	out := make([]int64, 0, len(binaries))
+	for _, binary := range binaries {
+		if binary.BinaryID <= 0 {
+			continue
+		}
+		out = append(out, binary.BinaryID)
+	}
+	return out
 }
 
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
@@ -636,12 +661,28 @@ func clusterObservedFileCount(binaries []pgindex.BinarySummary) int {
 	return len(fallbackNames)
 }
 
-func computeIdentityConfidenceScore(cluster releaseCluster) float64 {
+func computeIdentityConfidenceScore(cluster releaseCluster, titleConfidence float64) float64 {
 	score := (cluster.MatchConfidence * 100 * 0.6) + (averageBinaryMatch(cluster.Binaries) * 100 * 0.4)
+	if titleConfidence > 0 {
+		score = maxFloat64(score, clamp01(titleConfidence)*100)
+	}
 	return clampScore(score)
 }
 
-func classifyIdentityStatus(score float64) string {
+func classifyIdentityStatus(score float64, sourceTitle, deobfuscatedTitle, titleSource string, titleConfidence float64) string {
+	if titleSource != "" && titleSource != "source" && titleConfidence >= 0.90 {
+		return "identified"
+	}
+	if titleSource != "" && titleSource != "source" && titleConfidence >= 0.70 {
+		return "probable"
+	}
+	if deobfuscatedTitle == "" && !looksReadableReleaseTitle(sourceTitle) {
+		if score >= 55 {
+			return "probable"
+		}
+		return "unknown"
+	}
+
 	switch {
 	case score >= 75:
 		return "identified"
@@ -857,11 +898,201 @@ func derivePasswordState(passworded, known, unknown bool) string {
 	}
 }
 
+func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) resolvedReleaseTitle {
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	fallbackDeobf := deobfuscateTitle(sourceTitle, binaries)
+	bestLocal := chooseBestLocalTitleCandidate(sourceTitle, binaries, inspectCandidates)
+	sourceDisplay := displayTitleStyle(sourceTitle)
+
+	result := resolvedReleaseTitle{
+		SourceTitle:       sourceTitle,
+		MatchedMediaTitle: "",
+	}
+
+	switch {
+	case shouldAdoptLocalTitleCandidate(sourceTitle, bestLocal) && normalizeSearchTitle(bestLocal.DisplayTitle) != normalizeSearchTitle(sourceDisplay):
+		result.Title = bestLocal.DisplayTitle
+		result.DeobfuscatedTitle = bestLocal.ReleaseTitle
+		result.TitleSource = bestLocal.Source
+		result.TitleConfidence = bestLocal.Confidence
+	case strings.TrimSpace(fallbackDeobf) != "":
+		result.Title = displayTitleStyle(strings.TrimSpace(fallbackDeobf))
+		result.DeobfuscatedTitle = strings.TrimSpace(fallbackDeobf)
+		result.TitleSource = "deobfuscated"
+		result.TitleConfidence = 0.68
+	case sourceTitle != "":
+		result.Title = sourceDisplay
+		result.TitleSource = "source"
+		if looksReadableReleaseTitle(result.Title) {
+			result.TitleConfidence = 0.55
+		} else {
+			result.TitleConfidence = 0.30
+		}
+	default:
+		result.TitleSource = "fallback"
+	}
+
+	return result
+}
+
+func chooseBestLocalTitleCandidate(sourceTitle string, binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) localTitleCandidate {
+	candidates := make([]localTitleCandidate, 0, len(inspectCandidates)+len(binaries))
+
+	for _, candidate := range inspectCandidates {
+		if item, ok := normalizeInspectTitleCandidate(candidate); ok {
+			candidates = append(candidates, item)
+		}
+	}
+
+	for _, binary := range binaries {
+		fileName := pickFileName(binary)
+		if fileName == "" || strings.Contains(strings.ToLower(fileName), "sample") {
+			continue
+		}
+		if !isVideoFile(fileName) && !isAudioFile(fileName) {
+			continue
+		}
+		if releaseTitle, displayTitle, ok := normalizePathTitleCandidate(fileName); ok {
+			candidates = append(candidates, localTitleCandidate{
+				ReleaseTitle: releaseTitle,
+				DisplayTitle: displayTitle,
+				Source:       "media_filename",
+				Confidence:   0.88,
+			})
+		}
+	}
+
+	var best localTitleCandidate
+	for _, candidate := range candidates {
+		if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
+			continue
+		}
+		if best.ReleaseTitle == "" || candidate.Confidence > best.Confidence || (candidate.Confidence == best.Confidence && titleCandidateLooksCloserToSource(candidate.DisplayTitle, sourceTitle, best.DisplayTitle)) {
+			best = candidate
+		}
+	}
+
+	return best
+}
+
+func normalizeInspectTitleCandidate(candidate pgindex.ReleaseTitleCandidate) (localTitleCandidate, bool) {
+	switch strings.TrimSpace(candidate.Source) {
+	case "archive_entry":
+		releaseTitle, displayTitle, ok := normalizePathTitleCandidate(candidate.Value)
+		if !ok {
+			return localTitleCandidate{}, false
+		}
+		return localTitleCandidate{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "archive_entry",
+			Confidence:   clamp01(candidate.Confidence),
+		}, true
+	case "nfo":
+		releaseTitle, displayTitle, ok := extractNFOTitleCandidate(candidate.Value)
+		if !ok {
+			return localTitleCandidate{}, false
+		}
+		return localTitleCandidate{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "nfo",
+			Confidence:   clamp01(candidate.Confidence),
+		}, true
+	default:
+		return localTitleCandidate{}, false
+	}
+}
+
+func normalizePathTitleCandidate(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", false
+	}
+	clean := strings.ReplaceAll(value, "\\", "/")
+	base := filepath.Base(clean)
+	parent := filepath.Base(filepath.Dir(clean))
+	lowerPath := strings.ToLower(clean)
+	lowerBase := strings.ToLower(base)
+	if strings.Contains(lowerPath, "/sample/") || strings.Contains(lowerBase, "sample") {
+		return "", "", false
+	}
+
+	stem := mediaTitleStem(base)
+	if stem == "" && parent != "" && parent != "." {
+		stem = mediaTitleStem(parent)
+	}
+	if stem == "" {
+		return "", "", false
+	}
+
+	title := displayTitleStyle(stem)
+	if !looksReadableReleaseTitle(title) {
+		return "", "", false
+	}
+	return releaseTitleStyle(stem), title, true
+}
+
+func mediaTitleStem(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	base := filepath.Base(value)
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	base = strings.TrimSpace(base)
+	return strings.TrimSpace(base)
+}
+
+func extractNFOTitleCandidate(text string) (string, string, bool) {
+	yearRE := regexp.MustCompile(`\b(19|20)\d{2}\b`)
+	lines := strings.Split(text, "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		line = strings.Trim(line, "-_=*#[]() ")
+		if line == "" || len(line) > 140 {
+			continue
+		}
+		if !looksReadableReleaseTitle(line) {
+			continue
+		}
+		if resolutionRE.MatchString(line) || sourceTagRE.MatchString(line) || videoCodecRE.MatchString(line) || strings.Contains(strings.ToLower(line), "s0") || yearRE.MatchString(line) {
+			display := displayTitleStyle(line)
+			return releaseTitleStyle(line), display, true
+		}
+	}
+	return "", "", false
+}
+
+func shouldAdoptLocalTitleCandidate(sourceTitle string, candidate localTitleCandidate) bool {
+	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
+		return false
+	}
+	if candidate.Confidence >= 0.82 {
+		return true
+	}
+	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedReleaseTitle(sourceTitle) || !looksReadableReleaseTitle(sourceTitle))
+}
+
+func titleCandidateLooksCloserToSource(candidateTitle, sourceTitle, currentBest string) bool {
+	if titlesLookRelated(candidateTitle, sourceTitle) && !titlesLookRelated(currentBest, sourceTitle) {
+		return true
+	}
+	if currentBest == "" {
+		return true
+	}
+	return len(normalizeSearchTitle(candidateTitle)) > len(normalizeSearchTitle(currentBest))
+}
+
 func deobfuscateTitle(sourceTitle string, binaries []pgindex.BinarySummary) string {
 	sourceTitle = strings.TrimSpace(sourceTitle)
 	if sourceTitle == "" {
 		if stem := representativeStem(binaries); stem != "" {
-			return humanizeTitle(stem)
+			if looksReadableReleaseTitle(stem) {
+				return releaseTitleStyle(stem)
+			}
 		}
 		return ""
 	}
@@ -869,11 +1100,90 @@ func deobfuscateTitle(sourceTitle string, binaries []pgindex.BinarySummary) stri
 	normalized := normalizeSearchTitle(sourceTitle)
 	if normalized == "" || numericNoiseOnlyRE.MatchString(strings.ReplaceAll(normalized, " ", "")) {
 		if stem := representativeStem(binaries); stem != "" {
-			return humanizeTitle(stem)
+			humanizedStem := humanizeTitle(stem)
+			if looksReadableReleaseTitle(humanizedStem) && normalizeSearchTitle(humanizedStem) != normalized {
+				return releaseTitleStyle(stem)
+			}
 		}
+		return ""
 	}
 
-	return humanizeTitle(sourceTitle)
+	if looksObfuscatedReleaseTitle(sourceTitle) {
+		if stem := representativeStem(binaries); stem != "" {
+			humanizedStem := humanizeTitle(stem)
+			if looksReadableReleaseTitle(humanizedStem) && normalizeSearchTitle(humanizedStem) != normalized {
+				return releaseTitleStyle(stem)
+			}
+		}
+		return ""
+	}
+
+	return ""
+}
+
+func displayReleaseTitle(sourceTitle, deobfuscatedTitle string) string {
+	if strings.TrimSpace(deobfuscatedTitle) != "" {
+		return strings.TrimSpace(deobfuscatedTitle)
+	}
+	if strings.TrimSpace(sourceTitle) != "" {
+		return humanizeTitle(sourceTitle)
+	}
+	return ""
+}
+
+func looksObfuscatedReleaseTitle(title string) bool {
+	normalized := normalizeSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+
+	core := normalized
+	if stem := normalizeStem(title); stem != "" {
+		core = normalizeSearchTitle(stem)
+	}
+	condensed := strings.ReplaceAll(core, " ", "")
+	if condensed == "" {
+		return false
+	}
+	if numericNoiseOnlyRE.MatchString(condensed) {
+		return true
+	}
+
+	parts := strings.Fields(core)
+	if len(parts) == 1 && longOpaqueTokenRE.MatchString(parts[0]) {
+		return true
+	}
+
+	hasSemanticToken := resolutionRE.MatchString(normalized) ||
+		videoCodecRE.MatchString(normalized) ||
+		audioCodecRE.MatchString(normalized) ||
+		sourceTagRE.MatchString(normalized)
+
+	return !hasSemanticToken && len(parts) <= 2 && longOpaqueTokenRE.MatchString(parts[0])
+}
+
+func looksReadableReleaseTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false
+	}
+	if looksObfuscatedReleaseTitle(title) {
+		return false
+	}
+
+	normalized := normalizeSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+	parts := strings.Fields(normalized)
+	if len(parts) >= 2 {
+		return true
+	}
+
+	return resolutionRE.MatchString(normalized) ||
+		videoCodecRE.MatchString(normalized) ||
+		audioCodecRE.MatchString(normalized) ||
+		sourceTagRE.MatchString(normalized)
 }
 
 func pickFileName(binary pgindex.BinarySummary) string {
@@ -1013,6 +1323,37 @@ func humanizeTitle(v string) string {
 	v = separatorRE.ReplaceAllString(v, " ")
 	v = multiSpaceRE.ReplaceAllString(v, " ")
 	return strings.TrimSpace(v)
+}
+
+func displayTitleStyle(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "_", " ")
+	v = strings.ReplaceAll(v, ".", " ")
+	v = multiSpaceRE.ReplaceAllString(v, " ")
+	return strings.TrimSpace(v)
+}
+
+func releaseTitleStyle(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "\\", ".")
+	v = strings.ReplaceAll(v, "/", ".")
+	v = strings.ReplaceAll(v, "_", ".")
+	v = strings.ReplaceAll(v, " ", ".")
+	v = regexp.MustCompile(`\.+`).ReplaceAllString(v, ".")
+	return strings.Trim(v, ".")
+}
+
+func maxFloat64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func normalizeTag(v string) string {
