@@ -228,6 +228,74 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	}
 }
 
+func TestRunOncePrefersInspectArchiveEntryForObfuscatedTitles(t *testing.T) {
+	baseTime := time.Date(2026, 4, 7, 1, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "obfuscated source key",
+			ReleaseName: "ZwL0GNkCujTrnihx9MLvgT8IMx92t0H2.vol00+01",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"obfuscated source key": {{
+				BinaryID:        41,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "obfuscated source key",
+				ReleaseName:     "ZwL0GNkCujTrnihx9MLvgT8IMx92t0H2.vol00+01",
+				FileName:        "ZwL0GNkCujTrnihx9MLvgT8IMx92t0H2.7z.001",
+				Poster:          "poster-a",
+				PostedAt:        ptrTime(baseTime),
+				TotalParts:      12,
+				ObservedParts:   12,
+				TotalBytes:      900_000_000,
+				MatchConfidence: 0.93,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			41: {{ArticleHeaderID: 301, PartNumber: 1}},
+		},
+		titleCandidatesByBinaryID: map[int64][]pgindex.ReleaseTitleCandidate{
+			41: {{
+				BinaryID:   41,
+				Source:     "archive_entry",
+				Value:      "From.Russia.With.Love.1963.1080p.BluRay.x265-YAWNTiC/From.Russia.With.Love.1963.1080p.BluRay.x265-YAWNTiC.mkv",
+				Confidence: 0.98,
+			}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+
+	got := repo.upsertedReleases[0]
+	if got.SourceTitle != "ZwL0GNkCujTrnihx9MLvgT8IMx92t0H2.vol00+01" {
+		t.Fatalf("expected source title to stay raw, got %q", got.SourceTitle)
+	}
+	if got.DeobfuscatedTitle != "From.Russia.With.Love.1963.1080p.BluRay.x265-YAWNTiC" {
+		t.Fatalf("expected inspect-derived deobfuscated title, got %q", got.DeobfuscatedTitle)
+	}
+	if got.Title != "From Russia With Love 1963 1080p BluRay x265-YAWNTiC" {
+		t.Fatalf("expected display title to adopt inspect title, got title=%q deobf=%q", got.Title, got.DeobfuscatedTitle)
+	}
+	if got.TitleSource != "archive_entry" {
+		t.Fatalf("expected title_source archive_entry, got %q", got.TitleSource)
+	}
+	if got.TitleConfidence < 0.9 {
+		t.Fatalf("expected high title confidence, got %.2f", got.TitleConfidence)
+	}
+	if got.IdentityStatus != "identified" {
+		t.Fatalf("expected identified identity status, got %q", got.IdentityStatus)
+	}
+}
+
 func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
@@ -313,7 +381,7 @@ func TestBuildReleaseRecordLeavesDeobfuscatedTitleEmptyForObfuscatedSource(t *te
 		NewsgroupID: 2,
 		ReleaseKey:  "obfuscated source key",
 		ReleaseName: "Ko2GU4qPjsTdBQdZ3vzjvL0K5TghWJrW.7z",
-	}, cluster)
+	}, cluster, nil)
 
 	if record.DeobfuscatedTitle != "" {
 		t.Fatalf("expected empty deobfuscated title, got %q", record.DeobfuscatedTitle)
@@ -350,16 +418,48 @@ func TestBuildReleaseRecordKeepsReadableSourceWithoutDeobfuscation(t *testing.T)
 		NewsgroupID: 2,
 		ReleaseKey:  "readable source key",
 		ReleaseName: "Show.S01E01.1080p.WEB-DL.x265",
-	}, cluster)
+	}, cluster, nil)
 
 	if record.DeobfuscatedTitle != "" {
 		t.Fatalf("expected empty deobfuscated title for already-readable source, got %q", record.DeobfuscatedTitle)
 	}
-	if record.Title != "Show S01E01 1080p WEB DL x265" {
+	if record.Title != "Show S01E01 1080p WEB-DL x265" {
 		t.Fatalf("expected humanized display title, got %q", record.Title)
 	}
 	if record.IdentityStatus != "identified" {
 		t.Fatalf("expected readable source title to keep identified status, got %q", record.IdentityStatus)
+	}
+}
+
+func TestRunReformOncePagesThroughExistingCandidates(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		existingCandidates: []pgindex.ReleaseCandidate{
+			{ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k1"},
+			{ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k2"},
+			{ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k3"},
+		},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"k1": {{BinaryID: 1, ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k1", FileName: "show.one.mkv", TotalParts: 1, ObservedParts: 1, TotalBytes: 1, MatchConfidence: 0.9}},
+			"k2": {{BinaryID: 2, ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k2", FileName: "show.two.mkv", TotalParts: 1, ObservedParts: 1, TotalBytes: 1, MatchConfidence: 0.9}},
+			"k3": {{BinaryID: 3, ProviderID: 1, NewsgroupID: 2, ReleaseKey: "k3", FileName: "show.three.mkv", TotalParts: 1, ObservedParts: 1, TotalBytes: 1, MatchConfidence: 0.9}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 1, PartNumber: 1}},
+			2: {{ArticleHeaderID: 2, PartNumber: 1}},
+			3: {{ArticleHeaderID: 3, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 2, ReleaseMinConfidence: 0.55})
+	if err := svc.RunReformOnce(context.Background()); err != nil {
+		t.Fatalf("run reform once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 3 {
+		t.Fatalf("expected 3 releases to reform across pages, got %d", len(repo.upsertedReleases))
+	}
+	if repo.listExistingReleaseCandidatesCalls < 2 {
+		t.Fatalf("expected paged existing-candidate calls, got %d", repo.listExistingReleaseCandidatesCalls)
 	}
 }
 
@@ -475,6 +575,7 @@ type fakeReleaseRepository struct {
 	existingCandidates                 []pgindex.ReleaseCandidate
 	binariesByKey                      map[string][]pgindex.BinarySummary
 	articlesByBinaryID                 map[int64][]pgindex.ReleaseFileArticleRecord
+	titleCandidatesByBinaryID          map[int64][]pgindex.ReleaseTitleCandidate
 	upsertedReleases                   []pgindex.ReleaseRecord
 	replaceFileCalls                   int
 	newsgroupCalls                     int
@@ -495,9 +596,19 @@ func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int) ([]p
 	return f.candidates, nil
 }
 
-func (f *fakeReleaseRepository) ListExistingReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
+func (f *fakeReleaseRepository) ListExistingReleaseCandidates(_ context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error) {
 	f.listExistingReleaseCandidatesCalls++
-	return f.existingCandidates, nil
+	if offset >= len(f.existingCandidates) {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = len(f.existingCandidates)
+	}
+	end := offset + limit
+	if end > len(f.existingCandidates) {
+		end = len(f.existingCandidates)
+	}
+	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates[offset:end]...), nil
 }
 
 func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, releaseKey string) ([]pgindex.BinarySummary, error) {
@@ -506,6 +617,14 @@ func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Contex
 
 func (f *fakeReleaseRepository) ListBinaryPartArticles(_ context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error) {
 	return f.articlesByBinaryID[binaryID], nil
+}
+
+func (f *fakeReleaseRepository) ListReleaseTitleCandidates(_ context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error) {
+	out := make([]pgindex.ReleaseTitleCandidate, 0, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		out = append(out, f.titleCandidatesByBinaryID[binaryID]...)
+	}
+	return out, nil
 }
 
 func (f *fakeReleaseRepository) UpsertRelease(_ context.Context, in pgindex.ReleaseRecord) (string, error) {

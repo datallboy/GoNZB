@@ -16,9 +16,10 @@ type logger interface {
 
 type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
-	ListExistingReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
+	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error
@@ -75,9 +76,20 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		err        error
 	)
 	if reform {
-		candidates, err = s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize)
-		if err != nil {
-			return fmt.Errorf("list existing release candidates: %w", err)
+		offset := 0
+		for {
+			page, pageErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize, offset)
+			if pageErr != nil {
+				return fmt.Errorf("list existing release candidates: %w", pageErr)
+			}
+			if len(page) == 0 {
+				break
+			}
+			candidates = append(candidates, page...)
+			if len(page) < s.opts.BatchSize {
+				break
+			}
+			offset += len(page)
 		}
 	} else {
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
@@ -138,7 +150,12 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			return formed, err
 		}
 
-		record := buildReleaseRecord(candidate, cluster)
+		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
+		if err != nil {
+			return formed, fmt.Errorf("list release title candidates for %s: %w", candidate.ReleaseKey, err)
+		}
+
+		record := buildReleaseRecord(candidate, cluster, titleCandidates)
 		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
 			s.log.Debug(
 				"release: skipped group=%s source_release_key=%s confidence=%.2f threshold=%.2f binaries=%d",

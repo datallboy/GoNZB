@@ -118,6 +118,9 @@ type ReleaseRecord struct {
 	Title                   string
 	SourceTitle             string
 	DeobfuscatedTitle       string
+	MatchedMediaTitle       string
+	TitleSource             string
+	TitleConfidence         float64
 	SearchTitle             string
 	Category                string
 	Classification          string
@@ -333,6 +336,13 @@ type ReleaseInspectionUpdate struct {
 	MetadataUpdatedAt   *time.Time
 }
 
+type ReleaseTitleCandidate struct {
+	BinaryID   int64
+	Source     string
+	Value      string
+	Confidence float64
+}
+
 type ReleaseEnrichmentCandidate struct {
 	ReleaseID               string
 	Title                   string
@@ -445,6 +455,9 @@ type IndexerReleaseSummary struct {
 	Title                   string     `json:"title"`
 	SourceTitle             string     `json:"source_title"`
 	DeobfuscatedTitle       string     `json:"deobfuscated_title"`
+	MatchedMediaTitle       string     `json:"matched_media_title"`
+	TitleSource             string     `json:"title_source"`
+	TitleConfidence         float64    `json:"title_confidence"`
 	Category                string     `json:"category"`
 	Classification          string     `json:"classification"`
 	Poster                  string     `json:"poster"`
@@ -1339,24 +1352,30 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 	return out, nil
 }
 
-func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit int) ([]ReleaseCandidate, error) {
+func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]ReleaseCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			b.provider_id,
-			b.newsgroup_id,
+			0::BIGINT AS newsgroup_id,
 			b.release_key,
 			MAX(b.release_name) AS release_name,
 			MIN(b.posted_at) AS posted_at,
 			COUNT(*)::INTEGER AS binary_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
-		FROM binaries b
-		GROUP BY b.provider_id, b.newsgroup_id, b.release_key
+		FROM releases r
+		JOIN binaries b
+		  ON b.provider_id = r.provider_id
+		 AND b.release_key = r.release_key
+		GROUP BY b.provider_id, b.release_key
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_key
-		LIMIT $1`, limit)
+		LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list existing release candidates: %w", err)
 	}
@@ -1396,15 +1415,15 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit int) ([
 
 // CHANGED: fetch binaries that belong to one release candidate.
 func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]BinarySummary, error) {
-	if providerID <= 0 || newsgroupID <= 0 {
-		return nil, fmt.Errorf("provider id and newsgroup id are required")
+	if providerID <= 0 {
+		return nil, fmt.Errorf("provider id is required")
 	}
 	releaseKey = strings.TrimSpace(releaseKey)
 	if releaseKey == "" {
 		return nil, fmt.Errorf("release key is required")
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT
 			b.id,
 			b.provider_id,
@@ -1428,11 +1447,17 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 		FROM binaries b
 		LEFT JOIN posters p ON p.id = b.poster_id
 		WHERE b.provider_id = $1
-		  AND b.newsgroup_id = $2
-		  AND b.release_key = $3
-		ORDER BY b.file_index, b.file_name, b.first_article_number, b.id`,
-		providerID, newsgroupID, releaseKey,
-	)
+		  AND b.release_key = $2`
+	args := []any{providerID, releaseKey}
+	if newsgroupID > 0 {
+		query += `
+		  AND b.newsgroup_id = $3`
+		args = append(args, newsgroupID)
+	}
+	query += `
+		ORDER BY b.file_index, b.file_name, b.first_article_number, b.id`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list binaries for release candidate: %w", err)
 	}
@@ -1566,6 +1591,9 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			title,
 			source_title,
 			deobfuscated_title,
+			matched_media_title,
+			title_source,
+			title_confidence,
 			search_title,
 			category,
 			classification,
@@ -1605,13 +1633,19 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,'usenet_index',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,'usenet_index',NOW())
 		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
 		    release_key = EXCLUDED.release_key,
 		    title = EXCLUDED.title,
 		    source_title = EXCLUDED.source_title,
 		    deobfuscated_title = EXCLUDED.deobfuscated_title,
+		    matched_media_title = CASE
+		    	WHEN EXCLUDED.matched_media_title <> '' THEN EXCLUDED.matched_media_title
+		    	ELSE releases.matched_media_title
+		    END,
+		    title_source = EXCLUDED.title_source,
+		    title_confidence = EXCLUDED.title_confidence,
 		    search_title = EXCLUDED.search_title,
 		    category = EXCLUDED.category,
 		    classification = EXCLUDED.classification,
@@ -1685,6 +1719,9 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		strings.TrimSpace(in.Title),
 		strings.TrimSpace(in.SourceTitle),
 		strings.TrimSpace(in.DeobfuscatedTitle),
+		strings.TrimSpace(in.MatchedMediaTitle),
+		strings.TrimSpace(in.TitleSource),
+		in.TitleConfidence,
 		strings.TrimSpace(in.SearchTitle),
 		strings.TrimSpace(in.Category),
 		strings.TrimSpace(in.Classification),
@@ -2230,6 +2267,9 @@ func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, of
 			r.title,
 			r.source_title,
 			r.deobfuscated_title,
+			r.matched_media_title,
+			r.title_source,
+			r.title_confidence,
 			r.category,
 			r.classification,
 			r.poster,
@@ -2311,6 +2351,9 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.title,
 			r.source_title,
 			r.deobfuscated_title,
+			r.matched_media_title,
+			r.title_source,
+			r.title_confidence,
 			r.category,
 			r.classification,
 			r.poster,
@@ -2699,6 +2742,9 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.Title,
 		&item.SourceTitle,
 		&item.DeobfuscatedTitle,
+		&item.MatchedMediaTitle,
+		&item.TitleSource,
+		&item.TitleConfidence,
 		&item.Category,
 		&item.Classification,
 		&item.Poster,
@@ -2751,6 +2797,80 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 	item.MediaTags = decodeJSONStringSlice(mediaTagsJSON)
 
 	return item, nil
+}
+
+func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]ReleaseTitleCandidate, error) {
+	if len(binaryIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, 0, len(binaryIDs))
+	args := make([]any, 0, len(binaryIDs))
+	for idx, binaryID := range binaryIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx+1))
+		args = append(args, binaryID)
+	}
+	filter := strings.Join(placeholders, ",")
+
+	out := make([]ReleaseTitleCandidate, 0, len(binaryIDs)*3)
+	appendRows := func(query string, source string, confidence float64) error {
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var item ReleaseTitleCandidate
+			item.Source = source
+			item.Confidence = confidence
+			if err := rows.Scan(&item.BinaryID, &item.Value); err != nil {
+				return err
+			}
+			item.Value = strings.TrimSpace(item.Value)
+			if item.Value == "" {
+				continue
+			}
+			out = append(out, item)
+		}
+		return rows.Err()
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, summary_json->>'archive_entry'
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_media'
+		  AND binary_id IN (`+filter+`)
+		  AND COALESCE(summary_json->>'archive_entry', '') <> ''`,
+		"archive_entry", 0.98); err != nil {
+		return nil, fmt.Errorf("list inspect_media title candidates: %w", err)
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, entry_name
+		FROM binary_archive_entries
+		WHERE binary_id IN (`+filter+`)
+		  AND is_dir = FALSE
+		  AND (
+			media_type IN ('video', 'audio')
+			OR lower(entry_name) ~ '\\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
+		  )`,
+		"archive_entry", 0.92); err != nil {
+		return nil, fmt.Errorf("list archive entry title candidates: %w", err)
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, text_value
+		FROM binary_text_evidence
+		WHERE stage_name = 'inspect_nfo'
+		  AND evidence_kind = 'nfo_text'
+		  AND binary_id IN (`+filter+`)
+		  AND text_value <> ''`,
+		"nfo", 0.84); err != nil {
+		return nil, fmt.Errorf("list nfo title candidates: %w", err)
+	}
+
+	return out, nil
 }
 
 func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID string) ([]IndexerPasswordCandidateSummary, error) {
