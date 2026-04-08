@@ -175,6 +175,14 @@ func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
 					SeasonNumber:       0,
 					EpisodeNumber:      0,
 				},
+				PredbMatches: []pgindex.IndexerPredbMatchSummary{{
+					EntryID:    99,
+					Title:      "Example.Feature.1963.1080p.BluRay.x265-GROUP",
+					Category:   "MOVIE-HD-X265",
+					Source:     "predb.ovh",
+					Confidence: 0.91,
+					Chosen:     true,
+				}},
 				TMDBMatches: []pgindex.IndexerExternalMatchSummary{{
 					Source:     "tmdb",
 					ExternalID: 657,
@@ -200,6 +208,7 @@ func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
 		`"external_media_type":"movie"`,
 		`"season_number":0`,
 		`"episode_number":0`,
+		`"predb_matches":[`,
 		`"tmdb_matches":[`,
 	} {
 		if !strings.Contains(body, needle) {

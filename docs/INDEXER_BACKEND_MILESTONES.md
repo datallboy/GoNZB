@@ -642,6 +642,74 @@ Add release enrichment and canonical media matching using TMDB and TVDB first, w
   - `matched_media_title` is the external canonical identity title from TMDB/TVDB
   - external identity must not overwrite inspect-derived runtime, codec, subtitle, or archive facts
 
+### PreDB Fallback Plan
+
+Treat PreDB as a last-resort scene-release hinting source, not as the primary truth source for identity.
+
+Use it only after:
+
+1. local inspect-derived titles are exhausted
+2. TMDB/TVDB canonical matching is absent or still too weak
+3. the release still looks obfuscated or weakly identified
+
+Recommended provider strategy:
+
+1. `predb.club` JSON API as the first concrete provider
+2. `predb.me` live RSS feed as a secondary recent-release fallback/cache warmer
+3. dump import only after a stable source is confirmed again
+4. `api.predb.net` only behind the same provider abstraction as an optional secondary fallback if needed later
+
+Implementation shape:
+
+- define a generic PreDB provider/search interface in `internal/indexing/enrich/predb`
+- keep provider-specific HTTP and dump logic behind concrete adapters
+- keep `enrich_predb` as the stage name and orchestration point regardless of provider
+- persist raw PreDB entries plus release-specific scored matches
+- expose stored PreDB matches via the dedicated indexer release detail API
+
+PreDB matching inputs should use supporting evidence, not title-only heuristics:
+
+- local parsed title tokens when available
+- season/episode when available
+- release year when available
+- runtime/playtime when available
+- resolution/source/codec/group tags
+- article upload time compared against PreDB `preAt`
+- later container hints such as chapters if they become available
+
+PreDB should primarily help when release groups hide titles to bypass takedowns. In those cases it may supply a release-style scene name that can be used as a better `deobfuscated_title` / display `title`, while `matched_media_title` remains reserved for canonical TMDB/TVDB identity.
+
+Recommended precedence:
+
+1. local inspect-derived title
+2. TMDB/TVDB canonical identity
+3. high-confidence PreDB scene-release match
+4. cleaned source title
+5. raw source title
+
+Recommended implementation plan:
+
+1. Add a generic provider interface and `predb.club` live API adapter.
+2. Extend `predb_entries` / `release_predb_matches` so raw PreDB data and scored match decisions can be stored cleanly.
+3. Add repository helpers to replace and read PreDB matches for a release.
+4. Limit `enrich_predb` candidates to weakly identified releases where `title_source='source'` or local title quality is still poor.
+5. Add a `predb.me` RSS/live-feed adapter for recent-release fallback matching.
+6. Build a PreDB query parser/scorer that uses supporting evidence such as year, season/episode, runtime, and posted/pre timestamps.
+7. Apply a chosen PreDB match only when it improves the release title provenance without overwriting stronger inspect- or TMDB/TVDB-derived identity.
+8. Add API release-detail exposure for stored PreDB matches.
+9. Add dump-import support later as a follow-up enhancement behind the same provider abstraction.
+
+Recommended operator workflows:
+
+- `scene-name-recovery`
+  - use live PreDB search only when we already have a strong local or canonical identity and only want a better scene-style release string
+- `metadata-only-fallback`
+  - use locally synced PreDB entries and supporting metadata such as season/episode, year, runtime, resolution, codecs, and post/pre timestamps to recover weakly identified releases
+- `sync-feed`
+  - ingest recent PreDB feed entries into the local database so metadata-only fallback can compare against a local candidate pool instead of relying only on live title search
+- `sync-backfill`
+  - page historical PreDB entries into the local database until the earliest indexed release/article window is covered, so metadata-only fallback has local candidates for older content instead of only the current feed
+
 ### Code Areas
 
 - `internal/indexing/enrich`
@@ -701,6 +769,8 @@ Extend indexing settings with provider config for:
 - TV releases can be matched canonically even when TMDB is not the best source, using TVDB first when available
 - PreDB does not block TMDB/TVDB enrichment and does not become the primary truth source for canonical media identity
 - `enrich_predb` and `enrich_tmdb` are independently runnable commands/stages
+- PreDB providers are swappable behind a generic interface
+- A high-confidence PreDB match can improve `deobfuscated_title` / `title` only when no stronger local or canonical identity source is available
 
 ### Out of Scope
 

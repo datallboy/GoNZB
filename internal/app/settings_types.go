@@ -59,6 +59,10 @@ type IndexingRuntimeSettings struct {
 	EnableInspectMedia      bool     `json:"enable_inspect_media,omitempty"`
 	EnableEnrichPreDB       bool     `json:"enable_enrich_predb,omitempty"`
 	EnableEnrichTMDB        bool     `json:"enable_enrich_tmdb,omitempty"`
+	PreDBProvider           string   `json:"predb_provider,omitempty"`
+	PreDBBaseURL            string   `json:"predb_base_url,omitempty"`
+	PreDBFeedURL            string   `json:"predb_feed_url,omitempty"`
+	PreDBDumpURL            string   `json:"predb_dump_url,omitempty"`
 	TMDBAPIKey              string   `json:"tmdb_api_key,omitempty"`
 	TMDBAccessToken         string   `json:"tmdb_access_token,omitempty"`
 	TMDBBaseURL             string   `json:"tmdb_base_url,omitempty"`

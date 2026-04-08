@@ -9,12 +9,20 @@ import (
 )
 
 type Service struct {
-	supervisor    *supervisor.Supervisor
-	releaseReform func(ctx context.Context) error
+	supervisor              *supervisor.Supervisor
+	releaseReform           func(ctx context.Context) error
+	enrichPredbSceneName    func(ctx context.Context) error
+	enrichPredbMetadataOnly func(ctx context.Context) error
+	enrichPredbSyncFeed     func(ctx context.Context) error
+	enrichPredbSyncBackfill func(ctx context.Context) error
 }
 
 type Options struct {
-	ReleaseReform func(ctx context.Context) error
+	ReleaseReform           func(ctx context.Context) error
+	EnrichPredbSceneName    func(ctx context.Context) error
+	EnrichPredbMetadataOnly func(ctx context.Context) error
+	EnrichPredbSyncFeed     func(ctx context.Context) error
+	EnrichPredbSyncBackfill func(ctx context.Context) error
 }
 
 func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service {
@@ -23,8 +31,12 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 		cfg = opts[0]
 	}
 	return &Service{
-		supervisor:    supervisorSvc,
-		releaseReform: cfg.ReleaseReform,
+		supervisor:              supervisorSvc,
+		releaseReform:           cfg.ReleaseReform,
+		enrichPredbSceneName:    cfg.EnrichPredbSceneName,
+		enrichPredbMetadataOnly: cfg.EnrichPredbMetadataOnly,
+		enrichPredbSyncFeed:     cfg.EnrichPredbSyncFeed,
+		enrichPredbSyncBackfill: cfg.EnrichPredbSyncBackfill,
 	}
 }
 
@@ -108,6 +120,34 @@ func (s *Service) InspectMediaOnce(ctx context.Context) error {
 
 func (s *Service) EnrichPredbOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageEnrichPreDB)
+}
+
+func (s *Service) EnrichPredbSceneNameRecoveryOnce(ctx context.Context) error {
+	if s.enrichPredbSceneName == nil {
+		return fmt.Errorf("predb scene-name-recovery service is not configured")
+	}
+	return s.enrichPredbSceneName(ctx)
+}
+
+func (s *Service) EnrichPredbMetadataFallbackOnce(ctx context.Context) error {
+	if s.enrichPredbMetadataOnly == nil {
+		return fmt.Errorf("predb metadata-only-fallback service is not configured")
+	}
+	return s.enrichPredbMetadataOnly(ctx)
+}
+
+func (s *Service) EnrichPredbSyncFeedOnce(ctx context.Context) error {
+	if s.enrichPredbSyncFeed == nil {
+		return fmt.Errorf("predb sync-feed service is not configured")
+	}
+	return s.enrichPredbSyncFeed(ctx)
+}
+
+func (s *Service) EnrichPredbSyncBackfillOnce(ctx context.Context) error {
+	if s.enrichPredbSyncBackfill == nil {
+		return fmt.Errorf("predb sync-backfill service is not configured")
+	}
+	return s.enrichPredbSyncBackfill(ctx)
 }
 
 func (s *Service) EnrichTMDBOnce(ctx context.Context) error {

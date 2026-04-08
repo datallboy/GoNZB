@@ -39,6 +39,10 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			EnableInspectMedia:      cfg.Indexing.EnableInspectMedia,
 			EnableEnrichPreDB:       cfg.Indexing.EnableEnrichPreDB,
 			EnableEnrichTMDB:        cfg.Indexing.EnableEnrichTMDB,
+			PreDBProvider:           cfg.Indexing.PreDBProvider,
+			PreDBBaseURL:            cfg.Indexing.PreDBBaseURL,
+			PreDBFeedURL:            cfg.Indexing.PreDBFeedURL,
+			PreDBDumpURL:            cfg.Indexing.PreDBDumpURL,
 			TMDBAPIKey:              cfg.Indexing.TMDBAPIKey,
 			TMDBAccessToken:         cfg.Indexing.TMDBAccessToken,
 			TMDBBaseURL:             cfg.Indexing.TMDBBaseURL,
@@ -171,6 +175,18 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.EnableInspectMedia = runtime.Indexing.EnableInspectMedia
 		effective.Indexing.EnableEnrichPreDB = runtime.Indexing.EnableEnrichPreDB
 		effective.Indexing.EnableEnrichTMDB = runtime.Indexing.EnableEnrichTMDB
+		if strings.TrimSpace(runtime.Indexing.PreDBProvider) != "" {
+			effective.Indexing.PreDBProvider = runtime.Indexing.PreDBProvider
+		}
+		if strings.TrimSpace(runtime.Indexing.PreDBBaseURL) != "" {
+			effective.Indexing.PreDBBaseURL = runtime.Indexing.PreDBBaseURL
+		}
+		if strings.TrimSpace(runtime.Indexing.PreDBFeedURL) != "" {
+			effective.Indexing.PreDBFeedURL = runtime.Indexing.PreDBFeedURL
+		}
+		if strings.TrimSpace(runtime.Indexing.PreDBDumpURL) != "" {
+			effective.Indexing.PreDBDumpURL = runtime.Indexing.PreDBDumpURL
+		}
 		if strings.TrimSpace(runtime.Indexing.TMDBAPIKey) != "" {
 			effective.Indexing.TMDBAPIKey = runtime.Indexing.TMDBAPIKey
 		}
@@ -337,6 +353,10 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnableInspectMedia:      in.EnableInspectMedia,
 		EnableEnrichPreDB:       in.EnableEnrichPreDB,
 		EnableEnrichTMDB:        in.EnableEnrichTMDB,
+		PreDBProvider:           in.PreDBProvider,
+		PreDBBaseURL:            in.PreDBBaseURL,
+		PreDBFeedURL:            in.PreDBFeedURL,
+		PreDBDumpURL:            in.PreDBDumpURL,
 		TMDBAPIKey:              in.TMDBAPIKey,
 		TMDBAccessToken:         in.TMDBAccessToken,
 		TMDBBaseURL:             in.TMDBBaseURL,

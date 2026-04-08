@@ -166,9 +166,41 @@ var indexerEnrichCmd = &cobra.Command{
 
 var indexerEnrichPreDBCmd = &cobra.Command{
 	Use:   "predb",
-	Short: "Run the PreDB enrichment submodule once",
+	Short: "Run PreDB enrichment workflows",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerEnrichPreDB(enrichOnce)
+	},
+}
+
+var indexerEnrichPreDBSceneNameCmd = &cobra.Command{
+	Use:   "scene-name-recovery",
+	Short: "Recover scene-style release names using PreDB search",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichPreDBSceneNameRecovery(enrichOnce)
+	},
+}
+
+var indexerEnrichPreDBMetadataFallbackCmd = &cobra.Command{
+	Use:   "metadata-only-fallback",
+	Short: "Use synced PreDB metadata as a local fallback for weakly identified releases",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichPreDBMetadataOnlyFallback(enrichOnce)
+	},
+}
+
+var indexerEnrichPreDBSyncFeedCmd = &cobra.Command{
+	Use:   "sync-feed",
+	Short: "Sync recent PreDB feed entries into the local database",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichPreDBSyncFeed(enrichOnce)
+	},
+}
+
+var indexerEnrichPreDBSyncBackfillCmd = &cobra.Command{
+	Use:   "sync-backfill",
+	Short: "Backfill historical PreDB entries into the local database for the indexed article window",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerEnrichPreDBSyncBackfill(enrichOnce)
 	},
 }
 
@@ -203,6 +235,10 @@ func init() {
 	indexerInspectPasswordCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one password inspection pass and exit")
 	indexerInspectMediaCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one media inspection pass and exit")
 	indexerEnrichPreDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB enrichment pass and exit")
+	indexerEnrichPreDBSceneNameCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one scene-name recovery pass and exit")
+	indexerEnrichPreDBMetadataFallbackCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one metadata-only fallback pass and exit")
+	indexerEnrichPreDBSyncFeedCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB feed sync pass and exit")
+	indexerEnrichPreDBSyncBackfillCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB backfill sync pass and exit")
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
@@ -220,6 +256,10 @@ func init() {
 	indexerInspectCmd.AddCommand(indexerInspectMediaCmd)
 	indexerCmd.AddCommand(indexerEnrichCmd)
 	indexerEnrichCmd.AddCommand(indexerEnrichPreDBCmd)
+	indexerEnrichPreDBCmd.AddCommand(indexerEnrichPreDBSceneNameCmd)
+	indexerEnrichPreDBCmd.AddCommand(indexerEnrichPreDBMetadataFallbackCmd)
+	indexerEnrichPreDBCmd.AddCommand(indexerEnrichPreDBSyncFeedCmd)
+	indexerEnrichPreDBCmd.AddCommand(indexerEnrichPreDBSyncBackfillCmd)
 	indexerEnrichCmd.AddCommand(indexerEnrichTMDBCmd)
 }
 

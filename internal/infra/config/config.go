@@ -86,6 +86,10 @@ type IndexingConfig struct {
 	EnableInspectMedia      bool     `mapstructure:"enable_inspect_media" yaml:"enable_inspect_media"`
 	EnableEnrichPreDB       bool     `mapstructure:"enable_enrich_predb" yaml:"enable_enrich_predb"`
 	EnableEnrichTMDB        bool     `mapstructure:"enable_enrich_tmdb" yaml:"enable_enrich_tmdb"`
+	PreDBProvider           string   `mapstructure:"predb_provider" yaml:"predb_provider"`
+	PreDBBaseURL            string   `mapstructure:"predb_base_url" yaml:"predb_base_url"`
+	PreDBFeedURL            string   `mapstructure:"predb_feed_url" yaml:"predb_feed_url"`
+	PreDBDumpURL            string   `mapstructure:"predb_dump_url" yaml:"predb_dump_url"`
 	TMDBAPIKey              string   `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
 	TMDBAccessToken         string   `mapstructure:"tmdb_access_token" yaml:"tmdb_access_token"`
 	TMDBBaseURL             string   `mapstructure:"tmdb_base_url" yaml:"tmdb_base_url"`
@@ -166,6 +170,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enable_inspect_media", true)
 	v.SetDefault("indexing.enable_enrich_predb", true)
 	v.SetDefault("indexing.enable_enrich_tmdb", true)
+	v.SetDefault("indexing.predb_provider", "club,me")
+	v.SetDefault("indexing.predb_base_url", "https://predb.club/api/v1")
+	v.SetDefault("indexing.predb_feed_url", "https://predb.me/?rss=1")
+	v.SetDefault("indexing.predb_dump_url", "")
 	v.SetDefault("indexing.tmdb_api_key", "")
 	v.SetDefault("indexing.tmdb_access_token", "")
 	v.SetDefault("indexing.tmdb_base_url", "https://api.themoviedb.org/3")

@@ -86,6 +86,10 @@ indexing:
   release_min_completion_pct: 0
   enable_enrich_predb: true
   enable_enrich_tmdb: true
+  predb_provider: "club,me"
+  predb_base_url: "https://predb.club/api/v1"
+  predb_feed_url: "https://predb.me/?rss=1"
+  predb_dump_url: ""
   tmdb_api_key: ""
   tmdb_access_token: ""
   tmdb_base_url: "https://api.themoviedb.org/3"
