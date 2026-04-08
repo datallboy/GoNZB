@@ -151,3 +151,59 @@ func TestIndexerControllerGetBinaryRejectsInvalidID(t *testing.T) {
 		t.Fatalf("expected status 400, got %d", rec.Code)
 	}
 }
+
+func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/releases/rel-1", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/indexer/releases/:id")
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: "rel-1"}})
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			release: &pgindex.IndexerReleaseDetail{
+				Release: pgindex.IndexerReleaseSummary{
+					ReleaseID:          "rel-1",
+					Title:              "Example Feature 1963 1080p BluRay x265-GROUP",
+					MatchedMediaTitle:  "Example Feature",
+					OriginalMediaTitle: "Example Feature",
+					TMDBID:             657,
+					TVDBID:             0,
+					ExternalMediaType:  "movie",
+					ExternalYear:       1963,
+					SeasonNumber:       0,
+					EpisodeNumber:      0,
+				},
+				TMDBMatches: []pgindex.IndexerExternalMatchSummary{{
+					Source:     "tmdb",
+					ExternalID: 657,
+					MediaType:  "movie",
+					Title:      "Example Feature",
+					Year:       1963,
+					Chosen:     true,
+				}},
+			},
+		},
+	}
+
+	if err := ctrl.GetRelease(c); err != nil {
+		t.Fatalf("GetRelease returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{
+		`"matched_media_title":"Example Feature"`,
+		`"tmdb_id":657`,
+		`"external_media_type":"movie"`,
+		`"season_number":0`,
+		`"episode_number":0`,
+		`"tmdb_matches":[`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}

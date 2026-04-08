@@ -40,6 +40,7 @@ type usenetIndexerConfig struct {
 	ReleaseMinCompletion  float64
 	ScrapeServer          *config.ServerConfig
 	Inspect               inspectpkg.Options
+	EnrichTMDB            tmdb.Options
 	EnableInspectPAR2     bool
 	EnableInspectNFO      bool
 	EnableInspectArchive  bool
@@ -124,7 +125,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
 	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
-	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
+	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
@@ -260,6 +261,15 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			UnrarPath:          cfg.Indexing.UnrarPath,
 			PAR2Path:           cfg.Indexing.PAR2Path,
 			CandidateBatchSize: 100,
+		}),
+		EnrichTMDB: tmdb.DefaultOptions(tmdb.Options{
+			Limit:           100,
+			TMDBAPIKey:      cfg.Indexing.TMDBAPIKey,
+			TMDBAccessToken: cfg.Indexing.TMDBAccessToken,
+			TMDBBaseURL:     cfg.Indexing.TMDBBaseURL,
+			TVDBAPIKey:      cfg.Indexing.TVDBAPIKey,
+			TVDBPIN:         cfg.Indexing.TVDBPIN,
+			TVDBBaseURL:     cfg.Indexing.TVDBBaseURL,
 		}),
 		EnableInspectPAR2:     cfg.Indexing.EnableInspectPAR2,
 		EnableInspectNFO:      cfg.Indexing.EnableInspectNFO,

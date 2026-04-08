@@ -84,3 +84,11 @@ indexing:
   schedule_interval_minutes: 10
   release_min_confidence: 0.55
   release_min_completion_pct: 0
+  enable_enrich_predb: true
+  enable_enrich_tmdb: true
+  tmdb_api_key: ""
+  tmdb_access_token: ""
+  tmdb_base_url: "https://api.themoviedb.org/3"
+  tvdb_api_key: ""
+  tvdb_pin: ""
+  tvdb_base_url: "https://api4.thetvdb.com/v4"

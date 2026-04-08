@@ -39,6 +39,12 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			EnableInspectMedia:      cfg.Indexing.EnableInspectMedia,
 			EnableEnrichPreDB:       cfg.Indexing.EnableEnrichPreDB,
 			EnableEnrichTMDB:        cfg.Indexing.EnableEnrichTMDB,
+			TMDBAPIKey:              cfg.Indexing.TMDBAPIKey,
+			TMDBAccessToken:         cfg.Indexing.TMDBAccessToken,
+			TMDBBaseURL:             cfg.Indexing.TMDBBaseURL,
+			TVDBAPIKey:              cfg.Indexing.TVDBAPIKey,
+			TVDBPIN:                 cfg.Indexing.TVDBPIN,
+			TVDBBaseURL:             cfg.Indexing.TVDBBaseURL,
 			FFProbePath:             cfg.Indexing.FFProbePath,
 			SevenZipPath:            cfg.Indexing.SevenZipPath,
 			UnrarPath:               cfg.Indexing.UnrarPath,
@@ -165,6 +171,24 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.EnableInspectMedia = runtime.Indexing.EnableInspectMedia
 		effective.Indexing.EnableEnrichPreDB = runtime.Indexing.EnableEnrichPreDB
 		effective.Indexing.EnableEnrichTMDB = runtime.Indexing.EnableEnrichTMDB
+		if strings.TrimSpace(runtime.Indexing.TMDBAPIKey) != "" {
+			effective.Indexing.TMDBAPIKey = runtime.Indexing.TMDBAPIKey
+		}
+		if strings.TrimSpace(runtime.Indexing.TMDBAccessToken) != "" {
+			effective.Indexing.TMDBAccessToken = runtime.Indexing.TMDBAccessToken
+		}
+		if strings.TrimSpace(runtime.Indexing.TMDBBaseURL) != "" {
+			effective.Indexing.TMDBBaseURL = runtime.Indexing.TMDBBaseURL
+		}
+		if strings.TrimSpace(runtime.Indexing.TVDBAPIKey) != "" {
+			effective.Indexing.TVDBAPIKey = runtime.Indexing.TVDBAPIKey
+		}
+		if strings.TrimSpace(runtime.Indexing.TVDBPIN) != "" {
+			effective.Indexing.TVDBPIN = runtime.Indexing.TVDBPIN
+		}
+		if strings.TrimSpace(runtime.Indexing.TVDBBaseURL) != "" {
+			effective.Indexing.TVDBBaseURL = runtime.Indexing.TVDBBaseURL
+		}
 		if strings.TrimSpace(runtime.Indexing.FFProbePath) != "" {
 			effective.Indexing.FFProbePath = runtime.Indexing.FFProbePath
 		}
@@ -313,6 +337,12 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnableInspectMedia:      in.EnableInspectMedia,
 		EnableEnrichPreDB:       in.EnableEnrichPreDB,
 		EnableEnrichTMDB:        in.EnableEnrichTMDB,
+		TMDBAPIKey:              in.TMDBAPIKey,
+		TMDBAccessToken:         in.TMDBAccessToken,
+		TMDBBaseURL:             in.TMDBBaseURL,
+		TVDBAPIKey:              in.TVDBAPIKey,
+		TVDBPIN:                 in.TVDBPIN,
+		TVDBBaseURL:             in.TVDBBaseURL,
 		FFProbePath:             in.FFProbePath,
 		SevenZipPath:            in.SevenZipPath,
 		UnrarPath:               in.UnrarPath,
