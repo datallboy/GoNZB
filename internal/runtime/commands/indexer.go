@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
@@ -105,14 +107,17 @@ func (r *Runner) ExecuteIndexerInspect(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
-	if !once {
-		appCtx.Logger.Fatal("indexer inspect currently supports --once only")
+	if once {
+		if err := appCtx.UsenetIndexer.InspectOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer inspect --once completed")
+		return
 	}
 
-	if err := appCtx.UsenetIndexer.InspectOnce(ctx); err != nil {
-		appCtx.Logger.Fatal("indexer inspect --once failed: %v", err)
+	if err := wiring.RunIndexerInspectScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect scheduler failed: %v", err)
 	}
-	appCtx.Logger.Info("indexer inspect --once completed")
 }
 
 func (r *Runner) ExecuteIndexerInspectPAR2(once bool) {
@@ -120,7 +125,10 @@ func (r *Runner) ExecuteIndexerInspectPAR2(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer inspect par2 currently supports --once only")
+		if err := wiring.RunIndexerInspectPAR2Scheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect par2 scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.InspectPAR2Once(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer inspect par2 --once failed: %v", err)
@@ -133,7 +141,10 @@ func (r *Runner) ExecuteIndexerInspectNFO(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer inspect nfo currently supports --once only")
+		if err := wiring.RunIndexerInspectNFOScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect nfo scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.InspectNFOOnce(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer inspect nfo --once failed: %v", err)
@@ -146,7 +157,10 @@ func (r *Runner) ExecuteIndexerInspectArchive(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer inspect archive currently supports --once only")
+		if err := wiring.RunIndexerInspectArchiveScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect archive scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.InspectArchiveOnce(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -163,7 +177,10 @@ func (r *Runner) ExecuteIndexerInspectPassword(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer inspect password currently supports --once only")
+		if err := wiring.RunIndexerInspectPasswordScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect password scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.InspectPasswordOnce(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer inspect password --once failed: %v", err)
@@ -176,7 +193,10 @@ func (r *Runner) ExecuteIndexerInspectMedia(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer inspect media currently supports --once only")
+		if err := wiring.RunIndexerInspectMediaScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect media scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.InspectMediaOnce(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer inspect media --once failed: %v", err)
@@ -189,7 +209,10 @@ func (r *Runner) ExecuteIndexerEnrichPreDB(once bool) {
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer enrich predb currently supports --once only")
+		if err := wiring.RunIndexerEnrichPredbScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer enrich predb scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.EnrichPredbOnce(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer enrich predb --once failed: %v", err)
@@ -197,12 +220,87 @@ func (r *Runner) ExecuteIndexerEnrichPreDB(once bool) {
 	appCtx.Logger.Info("indexer enrich predb --once completed")
 }
 
+func (r *Runner) ExecuteIndexerEnrichPreDBSceneNameRecovery(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+			return appCtx.UsenetIndexer.EnrichPredbSceneNameRecoveryOnce(runCtx)
+		}); err != nil {
+			appCtx.Logger.Fatal("indexer enrich predb scene-name-recovery scheduler failed: %v", err)
+		}
+		return
+	}
+	if err := appCtx.UsenetIndexer.EnrichPredbSceneNameRecoveryOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich predb scene-name-recovery --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich predb scene-name-recovery --once completed")
+}
+
+func (r *Runner) ExecuteIndexerEnrichPreDBMetadataOnlyFallback(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+			return appCtx.UsenetIndexer.EnrichPredbMetadataFallbackOnce(runCtx)
+		}); err != nil {
+			appCtx.Logger.Fatal("indexer enrich predb metadata-only-fallback scheduler failed: %v", err)
+		}
+		return
+	}
+	if err := appCtx.UsenetIndexer.EnrichPredbMetadataFallbackOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich predb metadata-only-fallback --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich predb metadata-only-fallback --once completed")
+}
+
+func (r *Runner) ExecuteIndexerEnrichPreDBSyncFeed(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+			return appCtx.UsenetIndexer.EnrichPredbSyncFeedOnce(runCtx)
+		}); err != nil {
+			appCtx.Logger.Fatal("indexer enrich predb sync-feed scheduler failed: %v", err)
+		}
+		return
+	}
+	if err := appCtx.UsenetIndexer.EnrichPredbSyncFeedOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich predb sync-feed --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich predb sync-feed --once completed")
+}
+
+func (r *Runner) ExecuteIndexerEnrichPreDBSyncBackfill(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+			return appCtx.UsenetIndexer.EnrichPredbSyncBackfillOnce(runCtx)
+		}); err != nil {
+			appCtx.Logger.Fatal("indexer enrich predb sync-backfill scheduler failed: %v", err)
+		}
+		return
+	}
+	if err := appCtx.UsenetIndexer.EnrichPredbSyncBackfillOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer enrich predb sync-backfill --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer enrich predb sync-backfill --once completed")
+}
+
 func (r *Runner) ExecuteIndexerEnrichTMDB(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
 	if !once {
-		appCtx.Logger.Fatal("indexer enrich tmdb currently supports --once only")
+		if err := wiring.RunIndexerEnrichTMDBScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer enrich tmdb scheduler failed: %v", err)
+		}
+		return
 	}
 	if err := appCtx.UsenetIndexer.EnrichTMDBOnce(ctx); err != nil {
 		appCtx.Logger.Fatal("indexer enrich tmdb --once failed: %v", err)
@@ -239,4 +337,15 @@ func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context,
 		stop()
 		appCtx.Close()
 	}
+}
+
+type taskRunnerFunc func(ctx context.Context) error
+
+func (fn taskRunnerFunc) RunOnce(ctx context.Context) error {
+	return fn(ctx)
+}
+
+func (r *Runner) runIndexerTaskScheduler(ctx context.Context, appCtx *app.Context, runOnce func(context.Context) error) error {
+	interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes * float64(time.Minute))
+	return scheduler.NewService(taskRunnerFunc(runOnce), appCtx.Logger, interval).Run(ctx)
 }

@@ -157,8 +157,16 @@ type UsenetIndexStore interface {
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
 	ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.ReleaseEnrichmentCandidate, error)
+	UpsertPredbEntries(ctx context.Context, rows []pgindex.PredbEntryRecord) error
+	GetPredbBackfillWindow(ctx context.Context) (*pgindex.PredbBackfillWindow, error)
+	GetPredbEntryWindow(ctx context.Context) (*pgindex.PredbBackfillWindow, error)
+	GetPredbBackfillCheckpoint(ctx context.Context, provider string) (*pgindex.PredbBackfillCheckpoint, error)
+	UpsertPredbBackfillCheckpoint(ctx context.Context, in pgindex.PredbBackfillCheckpoint) error
+	ListPredbEntriesForWindow(ctx context.Context, from, to *time.Time, categoryHint string, limit int) ([]pgindex.PredbEntrySummary, error)
+	ReplaceReleasePredbMatches(ctx context.Context, releaseID string, rows []pgindex.ReleasePredbMatchRecord) error
 	ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTMDBMatchRecord) error
 	ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTVDBMatchRecord) error
+	ApplyReleasePredbUpdate(ctx context.Context, in pgindex.ReleasePredbUpdate) error
 	ApplyReleaseEnrichmentUpdate(ctx context.Context, in pgindex.ReleaseEnrichmentUpdate) error
 }
 
@@ -182,6 +190,10 @@ type UsenetIndexerService interface {
 	InspectPasswordOnce(ctx context.Context) error
 	InspectMediaOnce(ctx context.Context) error
 	EnrichPredbOnce(ctx context.Context) error
+	EnrichPredbSceneNameRecoveryOnce(ctx context.Context) error
+	EnrichPredbMetadataFallbackOnce(ctx context.Context) error
+	EnrichPredbSyncFeedOnce(ctx context.Context) error
+	EnrichPredbSyncBackfillOnce(ctx context.Context) error
 	EnrichTMDBOnce(ctx context.Context) error
 	RunStageOnce(ctx context.Context, stageName string) error
 	RunPipelineOnce(ctx context.Context) error

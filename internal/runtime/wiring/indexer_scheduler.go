@@ -35,6 +35,46 @@ func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error 
 	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)
 }
 
+func RunIndexerInspectScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(
+		ctx,
+		appCtx,
+		supervisor.StageInspectPAR2,
+		supervisor.StageInspectNFO,
+		supervisor.StageInspectArchive,
+		supervisor.StageInspectPassword,
+		supervisor.StageInspectMedia,
+	)
+}
+
+func RunIndexerInspectPAR2Scheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectPAR2)
+}
+
+func RunIndexerInspectNFOScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectNFO)
+}
+
+func RunIndexerInspectArchiveScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectArchive)
+}
+
+func RunIndexerInspectPasswordScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectPassword)
+}
+
+func RunIndexerInspectMediaScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectMedia)
+}
+
+func RunIndexerEnrichPredbScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageEnrichPreDB)
+}
+
+func RunIndexerEnrichTMDBScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageEnrichTMDB)
+}
+
 func runIndexerStages(ctx context.Context, appCtx *app.Context, stages ...supervisor.StageName) error {
 	if appCtx == nil {
 		return fmt.Errorf("app context is required")

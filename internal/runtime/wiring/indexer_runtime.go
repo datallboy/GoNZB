@@ -40,6 +40,7 @@ type usenetIndexerConfig struct {
 	ReleaseMinCompletion  float64
 	ScrapeServer          *config.ServerConfig
 	Inspect               inspectpkg.Options
+	EnrichPreDB           predb.Options
 	EnrichTMDB            tmdb.Options
 	EnableInspectPAR2     bool
 	EnableInspectNFO      bool
@@ -124,7 +125,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
 	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
 	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
-	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, int(runtimeCfg.Inspect.CandidateBatchSize))
+	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
@@ -226,7 +227,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	service := indexing.NewService(supervisorSvc, indexing.Options{
-		ReleaseReform: releaseSvc.RunReformOnce,
+		ReleaseReform:           releaseSvc.RunReformOnce,
+		EnrichPredbSceneName:    enrichPreDBSvc.RunSceneNameRecoveryOnce,
+		EnrichPredbMetadataOnly: enrichPreDBSvc.RunMetadataFallbackOnce,
+		EnrichPredbSyncFeed:     enrichPreDBSvc.RunSyncFeedOnce,
+		EnrichPredbSyncBackfill: enrichPreDBSvc.RunSyncBackfillOnce,
 	})
 
 	return &usenetIndexerRuntime{
@@ -270,6 +275,14 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			TVDBAPIKey:      cfg.Indexing.TVDBAPIKey,
 			TVDBPIN:         cfg.Indexing.TVDBPIN,
 			TVDBBaseURL:     cfg.Indexing.TVDBBaseURL,
+		}),
+		EnrichPreDB: predb.DefaultOptions(predb.Options{
+			Limit:       100,
+			Provider:    cfg.Indexing.PreDBProvider,
+			BaseURL:     cfg.Indexing.PreDBBaseURL,
+			FeedURL:     cfg.Indexing.PreDBFeedURL,
+			DumpURL:     cfg.Indexing.PreDBDumpURL,
+			HTTPTimeout: 15 * time.Second,
 		}),
 		EnableInspectPAR2:     cfg.Indexing.EnableInspectPAR2,
 		EnableInspectNFO:      cfg.Indexing.EnableInspectNFO,
