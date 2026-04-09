@@ -37,11 +37,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 			UsenetIndexer: config.ModuleToggle{Enabled: true},
 		},
 		Indexing: config.IndexingConfig{
-			Newsgroups:              []string{"alt.binaries.test"},
-			ScrapeBatchSize:         5000,
-			ScheduleIntervalMinutes: 10,
-			ReleaseMinConfidence:    0.55,
-			ReleaseMinCompletionPct: 5,
+			Newsgroups: []string{"alt.binaries.test"},
 		},
 	}
 	cfg.Indexing.ScrapeLatest = config.IndexingStageConfig{
@@ -89,6 +85,16 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		HTTPTimeoutSeconds: &tmdbTimeout,
 		TMDBAPIKey:         "tmdb-key",
 		TMDBAccessToken:    "tmdb-token",
+	}
+	cfg.Indexing.Inspect = config.IndexingInspectConfig{
+		WorkDir:         "/tmp/inspect",
+		FFProbePath:     "ffprobe",
+		SevenZipPath:    "7z",
+		UnrarPath:       "unrar",
+		PAR2Path:        "par2",
+		MaxBytes:        1024,
+		MaxArchiveDepth: 2,
+		ToolTimeoutSecs: 15,
 	}
 
 	got, err := deriveUsenetIndexerConfig(cfg)

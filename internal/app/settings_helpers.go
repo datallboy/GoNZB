@@ -56,24 +56,20 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 
 func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSettings {
 	out := IndexingRuntimeSettings{
-		Newsgroups:              append([]string(nil), cfg.Newsgroups...),
-		ScrapeBatchSize:         cfg.ScrapeBatchSize,
-		ScheduleIntervalMinutes: cfg.ScheduleIntervalMinutes,
-		ReleaseMinConfidence:    cfg.ReleaseMinConfidence,
-		ReleaseMinCompletionPct: cfg.ReleaseMinCompletionPct,
+		Newsgroups: append([]string(nil), cfg.Newsgroups...),
 	}
 
-	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, cfg.ScheduleIntervalMinutes, int(cfg.ScrapeBatchSize))
-	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, cfg.ScheduleIntervalMinutes, int(cfg.ScrapeBatchSize))
-	out.Assemble = indexStageRuntimeFromConfig(cfg.Assemble, true, cfg.ScheduleIntervalMinutes, int(cfg.ScrapeBatchSize))
+	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
+	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
+	out.Assemble = indexStageRuntimeFromConfig(cfg.Assemble, true, 10, 5000)
 	out.Release = IndexingReleaseRuntimeSettings{
 		Enabled:          boolValue(cfg.Release.Enabled, true),
-		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, cfg.ScheduleIntervalMinutes),
+		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, 10),
 		BatchSize:        intValue(cfg.Release.BatchSize, 1000),
 		Concurrency:      intValue(cfg.Release.Concurrency, 1),
 		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
-		MinConfidence:    float64Value(cfg.Release.MinConfidence, cfg.ReleaseMinConfidence),
-		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, cfg.ReleaseMinCompletionPct),
+		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
+		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
 	}
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
@@ -81,76 +77,48 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		ArticleBucketSize:           int64Value(cfg.Match.ArticleBucketSize, 5000),
 	}
 	out.Inspect = IndexingInspectRuntimeSettings{
-		WorkDir:         firstNonEmpty(cfg.Inspect.WorkDir, cfg.InspectWorkDir, "/store/indexer/inspect"),
-		MaxBytes:        firstNonZeroInt64(cfg.Inspect.MaxBytes, cfg.InspectMaxBytes, 2*1024*1024*1024),
-		MaxArchiveDepth: firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, cfg.InspectMaxArchiveDepth, 3),
-		ToolTimeoutSecs: firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, cfg.InspectToolTimeoutSecs, 30),
-		FFProbePath:     firstNonEmpty(cfg.Inspect.FFProbePath, cfg.FFProbePath, "ffprobe"),
-		SevenZipPath:    firstNonEmpty(cfg.Inspect.SevenZipPath, cfg.SevenZipPath, "7z"),
-		UnrarPath:       firstNonEmpty(cfg.Inspect.UnrarPath, cfg.UnrarPath, "unrar"),
-		PAR2Path:        firstNonEmpty(cfg.Inspect.PAR2Path, cfg.PAR2Path, "par2"),
+		WorkDir:         firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
+		MaxBytes:        firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MaxArchiveDepth: firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
+		ToolTimeoutSecs: firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
+		FFProbePath:     firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
+		SevenZipPath:    firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
+		UnrarPath:       firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
+		PAR2Path:        firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
-	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, cfg.EnableInspectPAR2, cfg.ScheduleIntervalMinutes, 100)
-	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, cfg.EnableInspectNFO, cfg.ScheduleIntervalMinutes, 100)
-	out.InspectArchive = indexStageRuntimeFromConfig(cfg.InspectArchive, cfg.EnableInspectArchive, cfg.ScheduleIntervalMinutes, 100)
-	out.InspectPassword = indexStageRuntimeFromConfig(cfg.InspectPassword, cfg.EnableInspectPassword, cfg.ScheduleIntervalMinutes, 100)
-	out.InspectMedia = indexStageRuntimeFromConfig(cfg.InspectMedia, cfg.EnableInspectMedia, cfg.ScheduleIntervalMinutes, 100)
+	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
+	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
+	out.InspectArchive = indexStageRuntimeFromConfig(cfg.InspectArchive, true, 10, 100)
+	out.InspectPassword = indexStageRuntimeFromConfig(cfg.InspectPassword, true, 10, 100)
+	out.InspectMedia = indexStageRuntimeFromConfig(cfg.InspectMedia, true, 10, 100)
 	out.EnrichPreDB = IndexingPreDBRuntimeSettings{
-		Enabled:            boolValue(cfg.EnrichPreDB.Enabled, cfg.EnableEnrichPreDB),
-		IntervalMinutes:    float64Value(cfg.EnrichPreDB.IntervalMinutes, cfg.ScheduleIntervalMinutes),
+		Enabled:            boolValue(cfg.EnrichPreDB.Enabled, true),
+		IntervalMinutes:    float64Value(cfg.EnrichPreDB.IntervalMinutes, 10),
 		BatchSize:          intValue(cfg.EnrichPreDB.BatchSize, 100),
 		Concurrency:        intValue(cfg.EnrichPreDB.Concurrency, 1),
 		BackoffSeconds:     intValue(cfg.EnrichPreDB.BackoffSeconds, 0),
-		Provider:           firstNonEmpty(cfg.EnrichPreDB.Provider, cfg.PreDBProvider, "club,me"),
-		BaseURL:            firstNonEmpty(cfg.EnrichPreDB.BaseURL, cfg.PreDBBaseURL, "https://predb.club/api/v1"),
-		FeedURL:            firstNonEmpty(cfg.EnrichPreDB.FeedURL, cfg.PreDBFeedURL, "https://predb.me/?rss=1"),
-		DumpURL:            firstNonEmpty(cfg.EnrichPreDB.DumpURL, cfg.PreDBDumpURL),
+		Provider:           firstNonEmpty(cfg.EnrichPreDB.Provider, "club,me"),
+		BaseURL:            firstNonEmpty(cfg.EnrichPreDB.BaseURL, "https://predb.club/api/v1"),
+		FeedURL:            firstNonEmpty(cfg.EnrichPreDB.FeedURL, "https://predb.me/?rss=1"),
+		DumpURL:            firstNonEmpty(cfg.EnrichPreDB.DumpURL),
 		HTTPTimeoutSeconds: intValue(cfg.EnrichPreDB.HTTPTimeoutSeconds, 10),
 		BackfillPageSize:   intValue(cfg.EnrichPreDB.BackfillPageSize, 1000),
 		MaxBackfillPages:   intValue(cfg.EnrichPreDB.MaxBackfillPages, 250),
 	}
 	out.EnrichTMDB = IndexingTMDBRuntimeSettings{
-		Enabled:            boolValue(cfg.EnrichTMDB.Enabled, cfg.EnableEnrichTMDB),
-		IntervalMinutes:    float64Value(cfg.EnrichTMDB.IntervalMinutes, cfg.ScheduleIntervalMinutes),
+		Enabled:            boolValue(cfg.EnrichTMDB.Enabled, true),
+		IntervalMinutes:    float64Value(cfg.EnrichTMDB.IntervalMinutes, 10),
 		BatchSize:          intValue(cfg.EnrichTMDB.BatchSize, 100),
 		Concurrency:        intValue(cfg.EnrichTMDB.Concurrency, 1),
 		BackoffSeconds:     intValue(cfg.EnrichTMDB.BackoffSeconds, 0),
 		HTTPTimeoutSeconds: intValue(cfg.EnrichTMDB.HTTPTimeoutSeconds, 15),
-		TMDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TMDBAPIKey, cfg.TMDBAPIKey),
-		TMDBAccessToken:    firstNonEmpty(cfg.EnrichTMDB.TMDBAccessToken, cfg.TMDBAccessToken),
-		TMDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TMDBBaseURL, cfg.TMDBBaseURL, "https://api.themoviedb.org/3"),
-		TVDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TVDBAPIKey, cfg.TVDBAPIKey),
-		TVDBPIN:            firstNonEmpty(cfg.EnrichTMDB.TVDBPIN, cfg.TVDBPIN),
-		TVDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TVDBBaseURL, cfg.TVDBBaseURL, "https://api4.thetvdb.com/v4"),
+		TMDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TMDBAPIKey),
+		TMDBAccessToken:    firstNonEmpty(cfg.EnrichTMDB.TMDBAccessToken),
+		TMDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TMDBBaseURL, "https://api.themoviedb.org/3"),
+		TVDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TVDBAPIKey),
+		TVDBPIN:            firstNonEmpty(cfg.EnrichTMDB.TVDBPIN),
+		TVDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TVDBBaseURL, "https://api4.thetvdb.com/v4"),
 	}
-
-	out.InspectWorkDir = out.Inspect.WorkDir
-	out.ReleaseMinConfidence = out.Release.MinConfidence
-	out.ReleaseMinCompletionPct = out.Release.MinCompletionPct
-	out.InspectMaxBytes = out.Inspect.MaxBytes
-	out.InspectMaxArchiveDepth = out.Inspect.MaxArchiveDepth
-	out.InspectToolTimeoutSecs = out.Inspect.ToolTimeoutSecs
-	out.EnableInspectPAR2 = out.InspectPAR2.Enabled
-	out.EnableInspectNFO = out.InspectNFO.Enabled
-	out.EnableInspectArchive = out.InspectArchive.Enabled
-	out.EnableInspectPassword = out.InspectPassword.Enabled
-	out.EnableInspectMedia = out.InspectMedia.Enabled
-	out.EnableEnrichPreDB = out.EnrichPreDB.Enabled
-	out.EnableEnrichTMDB = out.EnrichTMDB.Enabled
-	out.PreDBProvider = out.EnrichPreDB.Provider
-	out.PreDBBaseURL = out.EnrichPreDB.BaseURL
-	out.PreDBFeedURL = out.EnrichPreDB.FeedURL
-	out.PreDBDumpURL = out.EnrichPreDB.DumpURL
-	out.TMDBAPIKey = out.EnrichTMDB.TMDBAPIKey
-	out.TMDBAccessToken = out.EnrichTMDB.TMDBAccessToken
-	out.TMDBBaseURL = out.EnrichTMDB.TMDBBaseURL
-	out.TVDBAPIKey = out.EnrichTMDB.TVDBAPIKey
-	out.TVDBPIN = out.EnrichTMDB.TVDBPIN
-	out.TVDBBaseURL = out.EnrichTMDB.TVDBBaseURL
-	out.FFProbePath = out.Inspect.FFProbePath
-	out.SevenZipPath = out.Inspect.SevenZipPath
-	out.UnrarPath = out.Inspect.UnrarPath
-	out.PAR2Path = out.Inspect.PAR2Path
 
 	return out
 }
@@ -218,112 +186,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		if indexing.Newsgroups != nil {
 			effective.Indexing.Newsgroups = append([]string(nil), indexing.Newsgroups...)
 		}
-		if indexing.ScrapeBatchSize > 0 {
-			effective.Indexing.ScrapeBatchSize = indexing.ScrapeBatchSize
-		}
-		if indexing.ScheduleIntervalMinutes > 0 {
-			effective.Indexing.ScheduleIntervalMinutes = indexing.ScheduleIntervalMinutes
-		}
-		if indexing.ReleaseMinConfidence > 0 {
-			effective.Indexing.ReleaseMinConfidence = indexing.ReleaseMinConfidence
-		}
-		if indexing.ReleaseMinCompletionPct >= 0 {
-			effective.Indexing.ReleaseMinCompletionPct = indexing.ReleaseMinCompletionPct
-		}
-		if strings.TrimSpace(indexing.InspectWorkDir) != "" {
-			effective.Indexing.InspectWorkDir = indexing.InspectWorkDir
-		}
-		if indexing.InspectMaxBytes > 0 {
-			effective.Indexing.InspectMaxBytes = indexing.InspectMaxBytes
-		}
-		if indexing.InspectMaxArchiveDepth > 0 {
-			effective.Indexing.InspectMaxArchiveDepth = indexing.InspectMaxArchiveDepth
-		}
-		if indexing.InspectToolTimeoutSecs > 0 {
-			effective.Indexing.InspectToolTimeoutSecs = indexing.InspectToolTimeoutSecs
-		}
-		effective.Indexing.EnableInspectPAR2 = indexing.EnableInspectPAR2
-		effective.Indexing.EnableInspectNFO = indexing.EnableInspectNFO
-		effective.Indexing.EnableInspectArchive = indexing.EnableInspectArchive
-		effective.Indexing.EnableInspectPassword = indexing.EnableInspectPassword
-		effective.Indexing.EnableInspectMedia = indexing.EnableInspectMedia
-		effective.Indexing.EnableEnrichPreDB = indexing.EnableEnrichPreDB
-		effective.Indexing.EnableEnrichTMDB = indexing.EnableEnrichTMDB
-		if strings.TrimSpace(indexing.PreDBProvider) != "" {
-			effective.Indexing.PreDBProvider = indexing.PreDBProvider
-		}
-		if strings.TrimSpace(indexing.PreDBBaseURL) != "" {
-			effective.Indexing.PreDBBaseURL = indexing.PreDBBaseURL
-		}
-		if strings.TrimSpace(indexing.PreDBFeedURL) != "" {
-			effective.Indexing.PreDBFeedURL = indexing.PreDBFeedURL
-		}
-		if strings.TrimSpace(indexing.PreDBDumpURL) != "" {
-			effective.Indexing.PreDBDumpURL = indexing.PreDBDumpURL
-		}
-		if strings.TrimSpace(indexing.TMDBAPIKey) != "" {
-			effective.Indexing.TMDBAPIKey = indexing.TMDBAPIKey
-		}
-		if strings.TrimSpace(indexing.TMDBAccessToken) != "" {
-			effective.Indexing.TMDBAccessToken = indexing.TMDBAccessToken
-		}
-		if strings.TrimSpace(indexing.TMDBBaseURL) != "" {
-			effective.Indexing.TMDBBaseURL = indexing.TMDBBaseURL
-		}
-		if strings.TrimSpace(indexing.TVDBAPIKey) != "" {
-			effective.Indexing.TVDBAPIKey = indexing.TVDBAPIKey
-		}
-		if strings.TrimSpace(indexing.TVDBPIN) != "" {
-			effective.Indexing.TVDBPIN = indexing.TVDBPIN
-		}
-		if strings.TrimSpace(indexing.TVDBBaseURL) != "" {
-			effective.Indexing.TVDBBaseURL = indexing.TVDBBaseURL
-		}
-		if strings.TrimSpace(indexing.FFProbePath) != "" {
-			effective.Indexing.FFProbePath = indexing.FFProbePath
-		}
-		if strings.TrimSpace(indexing.SevenZipPath) != "" {
-			effective.Indexing.SevenZipPath = indexing.SevenZipPath
-		}
-		if strings.TrimSpace(indexing.UnrarPath) != "" {
-			effective.Indexing.UnrarPath = indexing.UnrarPath
-		}
-		if strings.TrimSpace(indexing.PAR2Path) != "" {
-			effective.Indexing.PAR2Path = indexing.PAR2Path
-		}
-
-		if strings.TrimSpace(indexing.Inspect.WorkDir) != "" {
-			effective.Indexing.Inspect.WorkDir = indexing.Inspect.WorkDir
-			effective.Indexing.InspectWorkDir = indexing.Inspect.WorkDir
-		}
-		if indexing.Inspect.MaxBytes > 0 {
-			effective.Indexing.Inspect.MaxBytes = indexing.Inspect.MaxBytes
-			effective.Indexing.InspectMaxBytes = indexing.Inspect.MaxBytes
-		}
-		if indexing.Inspect.MaxArchiveDepth > 0 {
-			effective.Indexing.Inspect.MaxArchiveDepth = indexing.Inspect.MaxArchiveDepth
-			effective.Indexing.InspectMaxArchiveDepth = indexing.Inspect.MaxArchiveDepth
-		}
-		if indexing.Inspect.ToolTimeoutSecs > 0 {
-			effective.Indexing.Inspect.ToolTimeoutSecs = indexing.Inspect.ToolTimeoutSecs
-			effective.Indexing.InspectToolTimeoutSecs = indexing.Inspect.ToolTimeoutSecs
-		}
-		if strings.TrimSpace(indexing.Inspect.FFProbePath) != "" {
-			effective.Indexing.Inspect.FFProbePath = indexing.Inspect.FFProbePath
-			effective.Indexing.FFProbePath = indexing.Inspect.FFProbePath
-		}
-		if strings.TrimSpace(indexing.Inspect.SevenZipPath) != "" {
-			effective.Indexing.Inspect.SevenZipPath = indexing.Inspect.SevenZipPath
-			effective.Indexing.SevenZipPath = indexing.Inspect.SevenZipPath
-		}
-		if strings.TrimSpace(indexing.Inspect.UnrarPath) != "" {
-			effective.Indexing.Inspect.UnrarPath = indexing.Inspect.UnrarPath
-			effective.Indexing.UnrarPath = indexing.Inspect.UnrarPath
-		}
-		if strings.TrimSpace(indexing.Inspect.PAR2Path) != "" {
-			effective.Indexing.Inspect.PAR2Path = indexing.Inspect.PAR2Path
-			effective.Indexing.PAR2Path = indexing.Inspect.PAR2Path
-		}
 
 		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
@@ -337,16 +199,20 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
 			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
 		}
-		if indexing.Release.MinConfidence > 0 {
-			effective.Indexing.ReleaseMinConfidence = indexing.Release.MinConfidence
-		}
-		if indexing.Release.MinCompletionPct >= 0 {
-			effective.Indexing.ReleaseMinCompletionPct = indexing.Release.MinCompletionPct
-		}
 		effective.Indexing.Match = config.IndexingMatchConfig{
 			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),
 			ProbableConfidenceThreshold: float64Ptr(indexing.Match.ProbableConfidenceThreshold),
 			ArticleBucketSize:           int64Ptr(indexing.Match.ArticleBucketSize),
+		}
+		effective.Indexing.Inspect = config.IndexingInspectConfig{
+			WorkDir:         indexing.Inspect.WorkDir,
+			MaxBytes:        indexing.Inspect.MaxBytes,
+			MaxArchiveDepth: indexing.Inspect.MaxArchiveDepth,
+			ToolTimeoutSecs: indexing.Inspect.ToolTimeoutSecs,
+			FFProbePath:     indexing.Inspect.FFProbePath,
+			SevenZipPath:    indexing.Inspect.SevenZipPath,
+			UnrarPath:       indexing.Inspect.UnrarPath,
+			PAR2Path:        indexing.Inspect.PAR2Path,
 		}
 		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
 		effective.Indexing.InspectNFO = toStageConfig(indexing.InspectNFO)
@@ -452,10 +318,6 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 		out.ArrIntegrations[i].APIKey = ""
 	}
 	if out.Indexing != nil {
-		out.Indexing.TMDBAPIKey = ""
-		out.Indexing.TMDBAccessToken = ""
-		out.Indexing.TVDBAPIKey = ""
-		out.Indexing.TVDBPIN = ""
 		out.Indexing.EnrichTMDB.TMDBAPIKey = ""
 		out.Indexing.EnrichTMDB.TMDBAccessToken = ""
 		out.Indexing.EnrichTMDB.TVDBAPIKey = ""
@@ -512,49 +374,20 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		return nil
 	}
 	return &IndexingRuntimeSettings{
-		Newsgroups:              append([]string(nil), in.Newsgroups...),
-		ScrapeBatchSize:         in.ScrapeBatchSize,
-		ScheduleIntervalMinutes: in.ScheduleIntervalMinutes,
-		ReleaseMinConfidence:    in.ReleaseMinConfidence,
-		ReleaseMinCompletionPct: in.ReleaseMinCompletionPct,
-		InspectWorkDir:          in.InspectWorkDir,
-		InspectMaxBytes:         in.InspectMaxBytes,
-		InspectMaxArchiveDepth:  in.InspectMaxArchiveDepth,
-		InspectToolTimeoutSecs:  in.InspectToolTimeoutSecs,
-		EnableInspectPAR2:       in.EnableInspectPAR2,
-		EnableInspectNFO:        in.EnableInspectNFO,
-		EnableInspectArchive:    in.EnableInspectArchive,
-		EnableInspectPassword:   in.EnableInspectPassword,
-		EnableInspectMedia:      in.EnableInspectMedia,
-		EnableEnrichPreDB:       in.EnableEnrichPreDB,
-		EnableEnrichTMDB:        in.EnableEnrichTMDB,
-		PreDBProvider:           in.PreDBProvider,
-		PreDBBaseURL:            in.PreDBBaseURL,
-		PreDBFeedURL:            in.PreDBFeedURL,
-		PreDBDumpURL:            in.PreDBDumpURL,
-		TMDBAPIKey:              in.TMDBAPIKey,
-		TMDBAccessToken:         in.TMDBAccessToken,
-		TMDBBaseURL:             in.TMDBBaseURL,
-		TVDBAPIKey:              in.TVDBAPIKey,
-		TVDBPIN:                 in.TVDBPIN,
-		TVDBBaseURL:             in.TVDBBaseURL,
-		FFProbePath:             in.FFProbePath,
-		SevenZipPath:            in.SevenZipPath,
-		UnrarPath:               in.UnrarPath,
-		PAR2Path:                in.PAR2Path,
-		ScrapeLatest:            in.ScrapeLatest,
-		ScrapeBackfill:          in.ScrapeBackfill,
-		Assemble:                in.Assemble,
-		Release:                 in.Release,
-		Match:                   in.Match,
-		Inspect:                 in.Inspect,
-		InspectPAR2:             in.InspectPAR2,
-		InspectNFO:              in.InspectNFO,
-		InspectArchive:          in.InspectArchive,
-		InspectPassword:         in.InspectPassword,
-		InspectMedia:            in.InspectMedia,
-		EnrichPreDB:             in.EnrichPreDB,
-		EnrichTMDB:              in.EnrichTMDB,
+		Newsgroups:      append([]string(nil), in.Newsgroups...),
+		ScrapeLatest:    in.ScrapeLatest,
+		ScrapeBackfill:  in.ScrapeBackfill,
+		Assemble:        in.Assemble,
+		Release:         in.Release,
+		Match:           in.Match,
+		Inspect:         in.Inspect,
+		InspectPAR2:     in.InspectPAR2,
+		InspectNFO:      in.InspectNFO,
+		InspectArchive:  in.InspectArchive,
+		InspectPassword: in.InspectPassword,
+		InspectMedia:    in.InspectMedia,
+		EnrichPreDB:     in.EnrichPreDB,
+		EnrichTMDB:      in.EnrichTMDB,
 	}
 }
 
