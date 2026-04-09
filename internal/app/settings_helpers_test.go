@@ -19,12 +19,15 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	httpTimeout := 21
 
 	runtime := IndexingRuntimeFromConfig(config.IndexingConfig{
-		Newsgroups:              []string{"alt.binaries.test"},
-		ScrapeBatchSize:         5000,
-		ScheduleIntervalMinutes: 10,
-		ReleaseMinConfidence:    0.55,
-		ReleaseMinCompletionPct: 12,
+		Newsgroups: []string{"alt.binaries.test"},
+		ScrapeBackfill: config.IndexingStageConfig{
+			BatchSize: func() *int { v := 5000; return &v }(),
+		},
+		Assemble: config.IndexingStageConfig{
+			BatchSize: func() *int { v := 5000; return &v }(),
+		},
 		Release: config.IndexingReleaseConfig{
+			IntervalMinutes:  func() *float64 { v := 10.0; return &v }(),
 			MinConfidence:    &high,
 			MinCompletionPct: func() *float64 { v := 34.0; return &v }(),
 		},
@@ -88,13 +91,13 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	if runtime.Match.HighConfidenceThreshold != high || runtime.Match.ArticleBucketSize != bucket {
 		t.Fatalf("unexpected match config: %+v", runtime.Match)
 	}
-	if runtime.Inspect.WorkDir != "/tmp/inspect" || runtime.InspectWorkDir != "/tmp/inspect" {
+	if runtime.Inspect.WorkDir != "/tmp/inspect" {
 		t.Fatalf("expected inspect work dir to be mirrored, got %+v", runtime.Inspect)
 	}
 	if runtime.EnrichPreDB.Provider != "club" || runtime.EnrichPreDB.HTTPTimeoutSeconds != httpTimeout {
 		t.Fatalf("unexpected predb config: %+v", runtime.EnrichPreDB)
 	}
-	if runtime.TMDBAPIKey != "tmdb-key" || runtime.EnrichTMDB.TVDBPIN != "1234" {
+	if runtime.EnrichTMDB.TMDBAPIKey != "tmdb-key" || runtime.EnrichTMDB.TVDBPIN != "1234" {
 		t.Fatalf("expected enrichment secrets to be mirrored, got %+v", runtime.EnrichTMDB)
 	}
 }
@@ -120,10 +123,6 @@ func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
 func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 	redacted := RedactedCopy(&RuntimeSettings{
 		Indexing: &IndexingRuntimeSettings{
-			TMDBAPIKey:      "top-level-tmdb",
-			TMDBAccessToken: "top-level-token",
-			TVDBAPIKey:      "top-level-tvdb",
-			TVDBPIN:         "top-level-pin",
 			EnrichTMDB: IndexingTMDBRuntimeSettings{
 				TMDBAPIKey:      "nested-tmdb",
 				TMDBAccessToken: "nested-token",
@@ -133,9 +132,6 @@ func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 		},
 	})
 
-	if redacted.Indexing.TMDBAPIKey != "" || redacted.Indexing.TMDBAccessToken != "" {
-		t.Fatalf("expected top-level TMDB secrets to be redacted, got %+v", redacted.Indexing)
-	}
 	if redacted.Indexing.EnrichTMDB.TVDBAPIKey != "" || redacted.Indexing.EnrichTMDB.TVDBPIN != "" {
 		t.Fatalf("expected nested TVDB secrets to be redacted, got %+v", redacted.Indexing.EnrichTMDB)
 	}

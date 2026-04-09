@@ -70,49 +70,20 @@ type APIConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups              []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
-	ScrapeBatchSize         int64                 `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
-	ScheduleIntervalMinutes float64               `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
-	ReleaseMinConfidence    float64               `mapstructure:"release_min_confidence" yaml:"release_min_confidence"`
-	ReleaseMinCompletionPct float64               `mapstructure:"release_min_completion_pct" yaml:"release_min_completion_pct"`
-	InspectWorkDir          string                `mapstructure:"inspect_work_dir" yaml:"inspect_work_dir"`
-	InspectMaxBytes         int64                 `mapstructure:"inspect_max_bytes" yaml:"inspect_max_bytes"`
-	InspectMaxArchiveDepth  int                   `mapstructure:"inspect_max_archive_depth" yaml:"inspect_max_archive_depth"`
-	InspectToolTimeoutSecs  int                   `mapstructure:"inspect_tool_timeout_seconds" yaml:"inspect_tool_timeout_seconds"`
-	EnableInspectPAR2       bool                  `mapstructure:"enable_inspect_par2" yaml:"enable_inspect_par2"`
-	EnableInspectNFO        bool                  `mapstructure:"enable_inspect_nfo" yaml:"enable_inspect_nfo"`
-	EnableInspectArchive    bool                  `mapstructure:"enable_inspect_archive" yaml:"enable_inspect_archive"`
-	EnableInspectPassword   bool                  `mapstructure:"enable_inspect_password" yaml:"enable_inspect_password"`
-	EnableInspectMedia      bool                  `mapstructure:"enable_inspect_media" yaml:"enable_inspect_media"`
-	EnableEnrichPreDB       bool                  `mapstructure:"enable_enrich_predb" yaml:"enable_enrich_predb"`
-	EnableEnrichTMDB        bool                  `mapstructure:"enable_enrich_tmdb" yaml:"enable_enrich_tmdb"`
-	PreDBProvider           string                `mapstructure:"predb_provider" yaml:"predb_provider"`
-	PreDBBaseURL            string                `mapstructure:"predb_base_url" yaml:"predb_base_url"`
-	PreDBFeedURL            string                `mapstructure:"predb_feed_url" yaml:"predb_feed_url"`
-	PreDBDumpURL            string                `mapstructure:"predb_dump_url" yaml:"predb_dump_url"`
-	TMDBAPIKey              string                `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
-	TMDBAccessToken         string                `mapstructure:"tmdb_access_token" yaml:"tmdb_access_token"`
-	TMDBBaseURL             string                `mapstructure:"tmdb_base_url" yaml:"tmdb_base_url"`
-	TVDBAPIKey              string                `mapstructure:"tvdb_api_key" yaml:"tvdb_api_key"`
-	TVDBPIN                 string                `mapstructure:"tvdb_pin" yaml:"tvdb_pin"`
-	TVDBBaseURL             string                `mapstructure:"tvdb_base_url" yaml:"tvdb_base_url"`
-	FFProbePath             string                `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
-	SevenZipPath            string                `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
-	UnrarPath               string                `mapstructure:"unrar_path" yaml:"unrar_path"`
-	PAR2Path                string                `mapstructure:"par2_path" yaml:"par2_path"`
-	ScrapeLatest            IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill          IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble                IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
-	Release                 IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
-	Match                   IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
-	Inspect                 IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
-	InspectPAR2             IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO              IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive          IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword         IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia            IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB             IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB              IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups      []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
+	ScrapeLatest    IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill  IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	Assemble        IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	Release         IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
+	Match           IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
+	Inspect         IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
+	InspectPAR2     IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO      IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive  IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia    IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB     IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB      IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -233,37 +204,88 @@ func Load(path string) (*Config, error) {
 
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
-	v.SetDefault("indexing.scrape_batch_size", 5000)
-	v.SetDefault("indexing.schedule_interval_minutes", 10.0)
-	v.SetDefault("indexing.release_min_confidence", 0.55)
-	v.SetDefault("indexing.release_min_completion_pct", 0.0)
+	v.SetDefault("indexing.scrape_latest.enabled", true)
+	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
+	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
+	v.SetDefault("indexing.scrape_latest.concurrency", 1)
+	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
+	v.SetDefault("indexing.scrape_backfill.enabled", true)
+	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
+	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
+	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
+	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
+	v.SetDefault("indexing.assemble.enabled", true)
+	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
+	v.SetDefault("indexing.assemble.batch_size", 5000)
+	v.SetDefault("indexing.assemble.concurrency", 1)
+	v.SetDefault("indexing.assemble.backoff_seconds", 0)
+	v.SetDefault("indexing.release.enabled", true)
+	v.SetDefault("indexing.release.interval_minutes", 10.0)
+	v.SetDefault("indexing.release.batch_size", 1000)
+	v.SetDefault("indexing.release.concurrency", 1)
+	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
-	v.SetDefault("indexing.inspect_work_dir", "/store/indexer/inspect")
-	v.SetDefault("indexing.inspect_max_bytes", int64(2*1024*1024*1024))
-	v.SetDefault("indexing.inspect_max_archive_depth", 3)
-	v.SetDefault("indexing.inspect_tool_timeout_seconds", 30)
-	v.SetDefault("indexing.enable_inspect_par2", true)
-	v.SetDefault("indexing.enable_inspect_nfo", true)
-	v.SetDefault("indexing.enable_inspect_archive", true)
-	v.SetDefault("indexing.enable_inspect_password", true)
-	v.SetDefault("indexing.enable_inspect_media", true)
-	v.SetDefault("indexing.enable_enrich_predb", true)
-	v.SetDefault("indexing.enable_enrich_tmdb", true)
-	v.SetDefault("indexing.predb_provider", "club,me")
-	v.SetDefault("indexing.predb_base_url", "https://predb.club/api/v1")
-	v.SetDefault("indexing.predb_feed_url", "https://predb.me/?rss=1")
-	v.SetDefault("indexing.predb_dump_url", "")
-	v.SetDefault("indexing.tmdb_api_key", "")
-	v.SetDefault("indexing.tmdb_access_token", "")
-	v.SetDefault("indexing.tmdb_base_url", "https://api.themoviedb.org/3")
-	v.SetDefault("indexing.tvdb_api_key", "")
-	v.SetDefault("indexing.tvdb_pin", "")
-	v.SetDefault("indexing.tvdb_base_url", "https://api4.thetvdb.com/v4")
-	v.SetDefault("indexing.ffprobe_path", "ffprobe")
-	v.SetDefault("indexing.seven_zip_path", "7z")
-	v.SetDefault("indexing.unrar_path", "unrar")
-	v.SetDefault("indexing.par2_path", "par2")
+	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
+	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
+	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
+	v.SetDefault("indexing.inspect.work_dir", "/store/indexer/inspect")
+	v.SetDefault("indexing.inspect.max_bytes", int64(2*1024*1024*1024))
+	v.SetDefault("indexing.inspect.max_archive_depth", 3)
+	v.SetDefault("indexing.inspect.tool_timeout_seconds", 30)
+	v.SetDefault("indexing.inspect.ffprobe_path", "ffprobe")
+	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
+	v.SetDefault("indexing.inspect.unrar_path", "unrar")
+	v.SetDefault("indexing.inspect.par2_path", "par2")
+	v.SetDefault("indexing.inspect_par2.enabled", true)
+	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_par2.batch_size", 100)
+	v.SetDefault("indexing.inspect_par2.concurrency", 1)
+	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_nfo.enabled", true)
+	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_nfo.batch_size", 100)
+	v.SetDefault("indexing.inspect_nfo.concurrency", 1)
+	v.SetDefault("indexing.inspect_nfo.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_archive.enabled", true)
+	v.SetDefault("indexing.inspect_archive.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_archive.batch_size", 100)
+	v.SetDefault("indexing.inspect_archive.concurrency", 1)
+	v.SetDefault("indexing.inspect_archive.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_password.enabled", true)
+	v.SetDefault("indexing.inspect_password.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_password.batch_size", 100)
+	v.SetDefault("indexing.inspect_password.concurrency", 1)
+	v.SetDefault("indexing.inspect_password.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_media.enabled", true)
+	v.SetDefault("indexing.inspect_media.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_media.batch_size", 100)
+	v.SetDefault("indexing.inspect_media.concurrency", 1)
+	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_predb.enabled", true)
+	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
+	v.SetDefault("indexing.enrich_predb.batch_size", 100)
+	v.SetDefault("indexing.enrich_predb.concurrency", 1)
+	v.SetDefault("indexing.enrich_predb.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_predb.provider", "club,me")
+	v.SetDefault("indexing.enrich_predb.base_url", "https://predb.club/api/v1")
+	v.SetDefault("indexing.enrich_predb.feed_url", "https://predb.me/?rss=1")
+	v.SetDefault("indexing.enrich_predb.dump_url", "")
+	v.SetDefault("indexing.enrich_predb.http_timeout_seconds", 10)
+	v.SetDefault("indexing.enrich_predb.backfill_page_size", 1000)
+	v.SetDefault("indexing.enrich_predb.max_backfill_pages", 250)
+	v.SetDefault("indexing.enrich_tmdb.enabled", true)
+	v.SetDefault("indexing.enrich_tmdb.interval_minutes", 10.0)
+	v.SetDefault("indexing.enrich_tmdb.batch_size", 100)
+	v.SetDefault("indexing.enrich_tmdb.concurrency", 1)
+	v.SetDefault("indexing.enrich_tmdb.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_tmdb.http_timeout_seconds", 15)
+	v.SetDefault("indexing.enrich_tmdb.tmdb_api_key", "")
+	v.SetDefault("indexing.enrich_tmdb.tmdb_access_token", "")
+	v.SetDefault("indexing.enrich_tmdb.tmdb_base_url", "https://api.themoviedb.org/3")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_api_key", "")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_pin", "")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_base_url", "https://api4.thetvdb.com/v4")
 
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
@@ -310,47 +332,6 @@ func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
-	}
-
-	if c.Indexing.ScrapeBatchSize <= 0 {
-		c.Indexing.ScrapeBatchSize = 5000
-	}
-
-	if c.Indexing.ScheduleIntervalMinutes <= 0 {
-		c.Indexing.ScheduleIntervalMinutes = 10
-	}
-	if c.Indexing.ReleaseMinConfidence <= 0 {
-		c.Indexing.ReleaseMinConfidence = 0.55
-	}
-	if c.Indexing.ReleaseMinConfidence > 1 {
-		return errors.New("indexing.release_min_confidence must be between 0 and 1")
-	}
-	if c.Indexing.ReleaseMinCompletionPct < 0 || c.Indexing.ReleaseMinCompletionPct > 100 {
-		return errors.New("indexing.release_min_completion_pct must be between 0 and 100")
-	}
-	if strings.TrimSpace(c.Indexing.InspectWorkDir) == "" {
-		c.Indexing.InspectWorkDir = "/store/indexer/inspect"
-	}
-	if c.Indexing.InspectMaxBytes <= 0 {
-		c.Indexing.InspectMaxBytes = 2 * 1024 * 1024 * 1024
-	}
-	if c.Indexing.InspectMaxArchiveDepth <= 0 {
-		c.Indexing.InspectMaxArchiveDepth = 3
-	}
-	if c.Indexing.InspectToolTimeoutSecs <= 0 {
-		c.Indexing.InspectToolTimeoutSecs = 30
-	}
-	if strings.TrimSpace(c.Indexing.FFProbePath) == "" {
-		c.Indexing.FFProbePath = "ffprobe"
-	}
-	if strings.TrimSpace(c.Indexing.SevenZipPath) == "" {
-		c.Indexing.SevenZipPath = "7z"
-	}
-	if strings.TrimSpace(c.Indexing.UnrarPath) == "" {
-		c.Indexing.UnrarPath = "unrar"
-	}
-	if strings.TrimSpace(c.Indexing.PAR2Path) == "" {
-		c.Indexing.PAR2Path = "par2"
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
