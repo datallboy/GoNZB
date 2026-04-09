@@ -181,6 +181,43 @@ func TestRunStageOnceCompletesTrackedRun(t *testing.T) {
 	}
 }
 
+func TestRunStageOnceFailsTrackedRunWhenRunnerErrors(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: true,
+			Run: &pgindex.IndexerStageRun{
+				ID:        77,
+				StageName: string(StageInspectArchive),
+			},
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageInspectArchive,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				return context.DeadlineExceeded
+			}),
+		},
+	}, Options{
+		Tracker: tracker,
+		Owner:   "test-owner",
+	})
+
+	err := svc.RunStageOnce(context.Background(), StageInspectArchive)
+	if err == nil {
+		t.Fatal("expected runner error, got nil")
+	}
+	if tracker.fails != 1 {
+		t.Fatalf("expected 1 failed finish call, got %d", tracker.fails)
+	}
+	if tracker.completes != 0 {
+		t.Fatalf("expected no completion calls, got %d", tracker.completes)
+	}
+}
+
 type fakeTracker struct {
 	mu          sync.Mutex
 	claimResult *pgindex.IndexerStageClaimResult

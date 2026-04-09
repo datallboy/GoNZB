@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,157 @@ func TestRunOnceSkipsNonEncryptedArchiveCandidates(t *testing.T) {
 	}
 	if len(repo.updatedCandidateStatuses) != 0 {
 		t.Fatalf("expected no password candidate status updates, got %d", len(repo.updatedCandidateStatuses))
+	}
+}
+
+func TestRunOnceMarksEncryptedReleaseUnknownWhenNoPasswordCandidatesExist(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeRepository{
+		binaryCandidates: []pgindex.BinaryInspectionCandidate{
+			{
+				BinaryID:        7,
+				ReleaseID:       "rel-unknown",
+				ReleaseTitle:    "Locked.Release.2026",
+				FileName:        "locked.rar",
+				SourceUpdatedAt: &now,
+				ArchiveSummaryJSON: mustJSON(t, map[string]any{
+					"encrypted": true,
+				}),
+			},
+		},
+	}
+
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), fakeFetcher{}, fakeCommandRunner{}, testLogger{}, inspectpkg.Options{})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.updatedCandidateStatuses) != 0 {
+		t.Fatalf("expected no candidate status updates, got %d", len(repo.updatedCandidateStatuses))
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected 1 release update, got %d", len(repo.releaseUpdates))
+	}
+	update := repo.releaseUpdates[0]
+	if !boolPtrValue(update.Passworded) || boolPtrValue(update.PasswordedKnown) || !boolPtrValue(update.PasswordedUnknown) {
+		t.Fatalf("expected password flags true/false/true, got %+v", update)
+	}
+	if update.PasswordState != "passworded_unknown" {
+		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	}
+	if update.PreferredPasswordID != nil {
+		t.Fatalf("expected no preferred password id, got %#v", update.PreferredPasswordID)
+	}
+}
+
+func TestRunOnceRejectsFalsePositivePasswordHintAndKeepsUnknownState(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeRepository{
+		binaryCandidates: []pgindex.BinaryInspectionCandidate{
+			{
+				BinaryID:        7,
+				ReleaseID:       "rel-false-positive",
+				ReleaseTitle:    "Release password:not-it",
+				FileName:        "locked.rar",
+				SourceUpdatedAt: &now,
+				ArchiveSummaryJSON: mustJSON(t, map[string]any{
+					"encrypted": true,
+				}),
+			},
+		},
+		passwordCandidates: []pgindex.PasswordVerificationCandidate{
+			{
+				ID:            21,
+				ReleaseID:     "rel-false-positive",
+				BinaryID:      7,
+				PasswordValue: "not-it",
+				SourceRef:     "title-hint",
+				Title:         "Release password:not-it",
+			},
+		},
+	}
+
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), fakeFetcher{}, fakeCommandRunner{}, testLogger{}, inspectpkg.Options{})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.updatedCandidateStatuses) != 1 {
+		t.Fatalf("expected 1 password candidate status update, got %d", len(repo.updatedCandidateStatuses))
+	}
+	if repo.updatedCandidateStatuses[0].status != "rejected" {
+		t.Fatalf("expected rejected status, got %q", repo.updatedCandidateStatuses[0].status)
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected 1 release update, got %d", len(repo.releaseUpdates))
+	}
+	update := repo.releaseUpdates[0]
+	if !boolPtrValue(update.Passworded) || boolPtrValue(update.PasswordedKnown) || !boolPtrValue(update.PasswordedUnknown) {
+		t.Fatalf("expected password flags true/false/true, got %+v", update)
+	}
+	if update.PasswordState != "passworded_unknown" {
+		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	}
+}
+
+func TestRunOnceVerifiesLaterPasswordCandidateAfterRejectingEarlierHint(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeRepository{
+		binaryCandidates: []pgindex.BinaryInspectionCandidate{
+			{
+				BinaryID:        7,
+				ReleaseID:       "rel-multi",
+				ReleaseTitle:    "Show.S01E01 password:wrong-one",
+				FileName:        "sample.rar",
+				SourceUpdatedAt: &now,
+				ArchiveSummaryJSON: mustJSON(t, map[string]any{
+					"encrypted": true,
+				}),
+			},
+		},
+		passwordCandidates: []pgindex.PasswordVerificationCandidate{
+			{
+				ID:            31,
+				ReleaseID:     "rel-multi",
+				BinaryID:      7,
+				PasswordValue: "wrong-one",
+				SourceRef:     "title-hint",
+				Title:         "Show.S01E01 password:wrong-one",
+			},
+			{
+				ID:            32,
+				ReleaseID:     "rel-multi",
+				BinaryID:      7,
+				PasswordValue: "open-sesame",
+				SourceRef:     "predb",
+				Title:         "Show.S01E01",
+			},
+		},
+	}
+
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), fakeFetcher{}, fakeCommandRunner{acceptedPassword: "open-sesame"}, testLogger{}, inspectpkg.Options{})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.updatedCandidateStatuses) != 2 {
+		t.Fatalf("expected 2 password candidate updates, got %d", len(repo.updatedCandidateStatuses))
+	}
+	if repo.updatedCandidateStatuses[0].status != "rejected" || repo.updatedCandidateStatuses[1].status != "verified" {
+		t.Fatalf("expected rejected then verified statuses, got %+v", repo.updatedCandidateStatuses)
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected 1 release update, got %d", len(repo.releaseUpdates))
+	}
+	update := repo.releaseUpdates[0]
+	if !boolPtrValue(update.Passworded) || !boolPtrValue(update.PasswordedKnown) || boolPtrValue(update.PasswordedUnknown) {
+		t.Fatalf("expected password flags true/true/false, got %+v", update)
+	}
+	if update.PreferredPasswordID == nil || *update.PreferredPasswordID != 32 {
+		t.Fatalf("expected preferred password id 32, got %#v", update.PreferredPasswordID)
+	}
+	if update.PasswordState != "passworded_known" {
+		t.Fatalf("expected passworded_known, got %q", update.PasswordState)
 	}
 }
 
@@ -197,14 +349,27 @@ func (fakeFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
 }
 
 type fakeCommandRunner struct {
-	verifyOK bool
+	verifyOK         bool
+	acceptedPassword string
 }
 
-func (f fakeCommandRunner) Run(context.Context, string, ...string) ([]byte, error) {
+func (f fakeCommandRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	if f.acceptedPassword != "" {
+		for _, arg := range args {
+			if strings.TrimSpace(arg) == "-p"+f.acceptedPassword {
+				return []byte("Path = sample.rar\n"), nil
+			}
+		}
+		return []byte("Wrong password"), fmt.Errorf("wrong password")
+	}
 	if f.verifyOK {
 		return []byte("Path = sample.rar\n"), nil
 	}
 	return []byte("Wrong password"), fmt.Errorf("wrong password")
+}
+
+func boolPtrValue(v *bool) bool {
+	return v != nil && *v
 }
 
 func encodeYEnc(data []byte) string {

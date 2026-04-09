@@ -220,3 +220,31 @@ func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) 
 		t.Fatalf("expected outer file counter 11/14, got %d/%d", got.FileIndex, got.ExpectedFileCount)
 	}
 }
+
+func TestMatchDoesNotMergeNearbyPostsWithDifferentExplicitFilenames(t *testing.T) {
+	svc := NewService()
+	postedAt := time.Date(2026, 4, 9, 21, 0, 0, 0, time.UTC)
+
+	first := svc.Match(Candidate{
+		MessageID: "<movie-one@host.example>",
+		Subject:   `[1/10] - "Movie.One.2026.1080p.BluRay.x265-GRP.r00" yEnc (1/100)`,
+		Poster:    `same.poster@example.com`,
+		PostedAt:  &postedAt,
+		Xref:      `news.example alt.binaries.movies:10001`,
+	})
+	secondPostedAt := postedAt.Add(2 * time.Minute)
+	second := svc.Match(Candidate{
+		MessageID: "<movie-two@host.example>",
+		Subject:   `[1/10] - "Movie.Two.2026.1080p.BluRay.x265-GRP.r00" yEnc (1/100)`,
+		Poster:    `same.poster@example.com`,
+		PostedAt:  &secondPostedAt,
+		Xref:      `news.example alt.binaries.movies:10002`,
+	})
+
+	if first.ReleaseKey == second.ReleaseKey {
+		t.Fatalf("expected different release keys, got %q", first.ReleaseKey)
+	}
+	if first.BinaryKey == second.BinaryKey {
+		t.Fatalf("expected different binary keys, got %q", first.BinaryKey)
+	}
+}
