@@ -33,22 +33,33 @@ type usenetIndexerRuntime struct {
 }
 
 type usenetIndexerConfig struct {
-	Newsgroups            []string
-	ScrapeBatchSize       int64
-	StageInterval         time.Duration
-	ReleaseMinConfidence  float64
-	ReleaseMinCompletion  float64
-	ScrapeServer          *config.ServerConfig
-	Inspect               inspectpkg.Options
-	EnrichPreDB           predb.Options
-	EnrichTMDB            tmdb.Options
-	EnableInspectPAR2     bool
-	EnableInspectNFO      bool
-	EnableInspectArchive  bool
-	EnableInspectPassword bool
-	EnableInspectMedia    bool
-	EnableEnrichPreDB     bool
-	EnableEnrichTMDB      bool
+	Newsgroups           []string
+	ScrapeServer         *config.ServerConfig
+	ReleaseMinConfidence float64
+	ReleaseMinCompletion float64
+	Match                match.Options
+	Inspect              inspectpkg.Options
+	EnrichPreDB          predb.Options
+	EnrichTMDB           tmdb.Options
+	ScrapeLatest         indexerStageConfig
+	ScrapeBackfill       indexerStageConfig
+	Assemble             indexerStageConfig
+	ReleaseStage         indexerStageConfig
+	InspectPAR2          indexerStageConfig
+	InspectNFO           indexerStageConfig
+	InspectArchive       indexerStageConfig
+	InspectPassword      indexerStageConfig
+	InspectMedia         indexerStageConfig
+	EnrichPreDBStage     indexerStageConfig
+	EnrichTMDBStage      indexerStageConfig
+}
+
+type indexerStageConfig struct {
+	Enabled     bool
+	Interval    time.Duration
+	BatchSize   int
+	Concurrency int
+	Backoff     time.Duration
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -68,9 +79,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	}
 
 	var (
-		scrapeSvc      *scrape.Service
-		scrapeProvider io.Closer
-		inspectFetcher inspectpkg.ArticleFetcher
+		scrapeLatestSvc   *scrape.Service
+		scrapeBackfillSvc *scrape.Service
+		scrapeProvider    io.Closer
+		inspectFetcher    inspectpkg.ArticleFetcher
 	)
 
 	if len(runtimeCfg.Newsgroups) > 0 {
@@ -86,26 +98,35 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		}
 
 		scrapeAdapter := scrape.NewNNTPAdapter(provider)
-		scrapeSvc = scrape.NewService(
+		scrapeLatestSvc = scrape.NewService(
 			appCtx.PGIndexStore,
 			scrapeAdapter,
 			appCtx.Logger,
 			scrape.Options{
 				Newsgroups: runtimeCfg.Newsgroups,
-				BatchSize:  runtimeCfg.ScrapeBatchSize,
+				BatchSize:  int64(runtimeCfg.ScrapeLatest.BatchSize),
+			},
+		)
+		scrapeBackfillSvc = scrape.NewService(
+			appCtx.PGIndexStore,
+			scrapeAdapter,
+			appCtx.Logger,
+			scrape.Options{
+				Newsgroups: runtimeCfg.Newsgroups,
+				BatchSize:  int64(runtimeCfg.ScrapeBackfill.BatchSize),
 			},
 		)
 		scrapeProvider = provider
 		inspectFetcher = provider
 	}
 
-	matcherSvc := match.NewService()
+	matcherSvc := match.NewService(runtimeCfg.Match)
 	assembleSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize: int(runtimeCfg.ScrapeBatchSize),
+			BatchSize: runtimeCfg.Assemble.BatchSize,
 		},
 	)
 
@@ -113,110 +134,139 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		appCtx.Logger,
 		release.Options{
-			BatchSize:            1000,
+			BatchSize:            runtimeCfg.ReleaseStage.BatchSize,
 			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
 			ReleaseMinCompletion: runtimeCfg.ReleaseMinCompletion,
 		},
 	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
-	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, runtimeCfg.Inspect)
-	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, runtimeCfg.Inspect)
-	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
-	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, runtimeCfg.Inspect)
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPAR2.BatchSize))
+	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
+	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectArchive.BatchSize))
+	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectMedia.BatchSize))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
-			Name:      supervisor.StageScrapeLatest,
-			Interval:  runtimeCfg.StageInterval,
-			Enabled:   scrapeSvc != nil,
-			BatchSize: int(runtimeCfg.ScrapeBatchSize),
+			Name:        supervisor.StageScrapeLatest,
+			Interval:    runtimeCfg.ScrapeLatest.Interval,
+			Enabled:     scrapeLatestSvc != nil && runtimeCfg.ScrapeLatest.Enabled,
+			BatchSize:   runtimeCfg.ScrapeLatest.BatchSize,
+			Concurrency: runtimeCfg.ScrapeLatest.Concurrency,
+			Backoff:     runtimeCfg.ScrapeLatest.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return scrapeSvc.RunLatestOnce(ctx)
+				return scrapeLatestSvc.RunLatestOnce(ctx)
 			}),
 		},
 		{
-			Name:      supervisor.StageScrapeBackfill,
-			Interval:  runtimeCfg.StageInterval,
-			Enabled:   scrapeSvc != nil,
-			BatchSize: int(runtimeCfg.ScrapeBatchSize),
+			Name:        supervisor.StageScrapeBackfill,
+			Interval:    runtimeCfg.ScrapeBackfill.Interval,
+			Enabled:     scrapeBackfillSvc != nil && runtimeCfg.ScrapeBackfill.Enabled,
+			BatchSize:   runtimeCfg.ScrapeBackfill.BatchSize,
+			Concurrency: runtimeCfg.ScrapeBackfill.Concurrency,
+			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return scrapeSvc.RunBackfillOnce(ctx)
+				return scrapeBackfillSvc.RunBackfillOnce(ctx)
 			}),
 		},
 		{
-			Name:      supervisor.StageAssemble,
-			Interval:  runtimeCfg.StageInterval,
-			Enabled:   assembleSvc != nil,
-			BatchSize: int(runtimeCfg.ScrapeBatchSize),
+			Name:        supervisor.StageAssemble,
+			Interval:    runtimeCfg.Assemble.Interval,
+			Enabled:     assembleSvc != nil && runtimeCfg.Assemble.Enabled,
+			BatchSize:   runtimeCfg.Assemble.BatchSize,
+			Concurrency: runtimeCfg.Assemble.Concurrency,
+			Backoff:     runtimeCfg.Assemble.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return assembleSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:      supervisor.StageRelease,
-			Interval:  runtimeCfg.StageInterval,
-			Enabled:   releaseSvc != nil,
-			BatchSize: 1000,
+			Name:        supervisor.StageRelease,
+			Interval:    runtimeCfg.ReleaseStage.Interval,
+			Enabled:     releaseSvc != nil && runtimeCfg.ReleaseStage.Enabled,
+			BatchSize:   runtimeCfg.ReleaseStage.BatchSize,
+			Concurrency: runtimeCfg.ReleaseStage.Concurrency,
+			Backoff:     runtimeCfg.ReleaseStage.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return releaseSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageInspectPAR2,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableInspectPAR2,
+			Name:        supervisor.StageInspectPAR2,
+			Interval:    runtimeCfg.InspectPAR2.Interval,
+			Enabled:     runtimeCfg.InspectPAR2.Enabled,
+			BatchSize:   runtimeCfg.InspectPAR2.BatchSize,
+			Concurrency: runtimeCfg.InspectPAR2.Concurrency,
+			Backoff:     runtimeCfg.InspectPAR2.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectPAR2Svc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageInspectNFO,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableInspectNFO,
+			Name:        supervisor.StageInspectNFO,
+			Interval:    runtimeCfg.InspectNFO.Interval,
+			Enabled:     runtimeCfg.InspectNFO.Enabled,
+			BatchSize:   runtimeCfg.InspectNFO.BatchSize,
+			Concurrency: runtimeCfg.InspectNFO.Concurrency,
+			Backoff:     runtimeCfg.InspectNFO.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectNFOSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageInspectArchive,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableInspectArchive,
+			Name:        supervisor.StageInspectArchive,
+			Interval:    runtimeCfg.InspectArchive.Interval,
+			Enabled:     runtimeCfg.InspectArchive.Enabled,
+			BatchSize:   runtimeCfg.InspectArchive.BatchSize,
+			Concurrency: runtimeCfg.InspectArchive.Concurrency,
+			Backoff:     runtimeCfg.InspectArchive.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectArchiveSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageInspectPassword,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableInspectPassword,
+			Name:        supervisor.StageInspectPassword,
+			Interval:    runtimeCfg.InspectPassword.Interval,
+			Enabled:     runtimeCfg.InspectPassword.Enabled,
+			BatchSize:   runtimeCfg.InspectPassword.BatchSize,
+			Concurrency: runtimeCfg.InspectPassword.Concurrency,
+			Backoff:     runtimeCfg.InspectPassword.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectPasswordSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageInspectMedia,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableInspectMedia,
+			Name:        supervisor.StageInspectMedia,
+			Interval:    runtimeCfg.InspectMedia.Interval,
+			Enabled:     runtimeCfg.InspectMedia.Enabled,
+			BatchSize:   runtimeCfg.InspectMedia.BatchSize,
+			Concurrency: runtimeCfg.InspectMedia.Concurrency,
+			Backoff:     runtimeCfg.InspectMedia.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return inspectMediaSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageEnrichPreDB,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableEnrichPreDB,
+			Name:        supervisor.StageEnrichPreDB,
+			Interval:    runtimeCfg.EnrichPreDBStage.Interval,
+			Enabled:     runtimeCfg.EnrichPreDBStage.Enabled,
+			BatchSize:   runtimeCfg.EnrichPreDBStage.BatchSize,
+			Concurrency: runtimeCfg.EnrichPreDBStage.Concurrency,
+			Backoff:     runtimeCfg.EnrichPreDBStage.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return enrichPreDBSvc.RunOnce(ctx)
 			}),
 		},
 		{
-			Name:     supervisor.StageEnrichTMDB,
-			Interval: runtimeCfg.StageInterval,
-			Enabled:  runtimeCfg.EnableEnrichTMDB,
+			Name:        supervisor.StageEnrichTMDB,
+			Interval:    runtimeCfg.EnrichTMDBStage.Interval,
+			Enabled:     runtimeCfg.EnrichTMDBStage.Enabled,
+			BatchSize:   runtimeCfg.EnrichTMDBStage.BatchSize,
+			Concurrency: runtimeCfg.EnrichTMDBStage.Concurrency,
+			Backoff:     runtimeCfg.EnrichTMDBStage.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return enrichTMDBSvc.RunOnce(ctx)
 			}),
@@ -250,47 +300,65 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		return usenetIndexerConfig{}, fmt.Errorf("app config is required")
 	}
 
+	indexingCfg := app.IndexingRuntimeFromConfig(cfg.Indexing)
+
 	out := usenetIndexerConfig{
-		Newsgroups:           append([]string(nil), cfg.Indexing.Newsgroups...),
-		ScrapeBatchSize:      cfg.Indexing.ScrapeBatchSize,
-		StageInterval:        time.Duration(cfg.Indexing.ScheduleIntervalMinutes * float64(time.Minute)),
-		ReleaseMinConfidence: cfg.Indexing.ReleaseMinConfidence,
-		ReleaseMinCompletion: cfg.Indexing.ReleaseMinCompletionPct,
+		Newsgroups:           append([]string(nil), indexingCfg.Newsgroups...),
+		ReleaseMinConfidence: indexingCfg.Release.MinConfidence,
+		ReleaseMinCompletion: indexingCfg.Release.MinCompletionPct,
+		Match: match.Options{
+			HighConfidenceThreshold:     indexingCfg.Match.HighConfidenceThreshold,
+			ProbableConfidenceThreshold: indexingCfg.Match.ProbableConfidenceThreshold,
+			ArticleBucketSize:           indexingCfg.Match.ArticleBucketSize,
+		},
 		Inspect: inspectpkg.DefaultOptions(inspectpkg.Options{
-			WorkDir:            cfg.Indexing.InspectWorkDir,
-			MaxBytes:           cfg.Indexing.InspectMaxBytes,
-			MaxArchiveDepth:    cfg.Indexing.InspectMaxArchiveDepth,
-			ToolTimeout:        time.Duration(cfg.Indexing.InspectToolTimeoutSecs) * time.Second,
-			FFProbePath:        cfg.Indexing.FFProbePath,
-			SevenZipPath:       cfg.Indexing.SevenZipPath,
-			UnrarPath:          cfg.Indexing.UnrarPath,
-			PAR2Path:           cfg.Indexing.PAR2Path,
+			WorkDir:            indexingCfg.Inspect.WorkDir,
+			MaxBytes:           indexingCfg.Inspect.MaxBytes,
+			MaxArchiveDepth:    indexingCfg.Inspect.MaxArchiveDepth,
+			ToolTimeout:        time.Duration(indexingCfg.Inspect.ToolTimeoutSecs) * time.Second,
+			FFProbePath:        indexingCfg.Inspect.FFProbePath,
+			SevenZipPath:       indexingCfg.Inspect.SevenZipPath,
+			UnrarPath:          indexingCfg.Inspect.UnrarPath,
+			PAR2Path:           indexingCfg.Inspect.PAR2Path,
 			CandidateBatchSize: 100,
 		}),
 		EnrichTMDB: tmdb.DefaultOptions(tmdb.Options{
-			Limit:           100,
-			TMDBAPIKey:      cfg.Indexing.TMDBAPIKey,
-			TMDBAccessToken: cfg.Indexing.TMDBAccessToken,
-			TMDBBaseURL:     cfg.Indexing.TMDBBaseURL,
-			TVDBAPIKey:      cfg.Indexing.TVDBAPIKey,
-			TVDBPIN:         cfg.Indexing.TVDBPIN,
-			TVDBBaseURL:     cfg.Indexing.TVDBBaseURL,
+			Limit:           indexingCfg.EnrichTMDB.BatchSize,
+			HTTPTimeout:     time.Duration(indexingCfg.EnrichTMDB.HTTPTimeoutSeconds) * time.Second,
+			TMDBAPIKey:      indexingCfg.EnrichTMDB.TMDBAPIKey,
+			TMDBAccessToken: indexingCfg.EnrichTMDB.TMDBAccessToken,
+			TMDBBaseURL:     indexingCfg.EnrichTMDB.TMDBBaseURL,
+			TVDBAPIKey:      indexingCfg.EnrichTMDB.TVDBAPIKey,
+			TVDBPIN:         indexingCfg.EnrichTMDB.TVDBPIN,
+			TVDBBaseURL:     indexingCfg.EnrichTMDB.TVDBBaseURL,
 		}),
 		EnrichPreDB: predb.DefaultOptions(predb.Options{
-			Limit:       100,
-			Provider:    cfg.Indexing.PreDBProvider,
-			BaseURL:     cfg.Indexing.PreDBBaseURL,
-			FeedURL:     cfg.Indexing.PreDBFeedURL,
-			DumpURL:     cfg.Indexing.PreDBDumpURL,
-			HTTPTimeout: 15 * time.Second,
+			Limit:            indexingCfg.EnrichPreDB.BatchSize,
+			Provider:         indexingCfg.EnrichPreDB.Provider,
+			BaseURL:          indexingCfg.EnrichPreDB.BaseURL,
+			FeedURL:          indexingCfg.EnrichPreDB.FeedURL,
+			DumpURL:          indexingCfg.EnrichPreDB.DumpURL,
+			HTTPTimeout:      time.Duration(indexingCfg.EnrichPreDB.HTTPTimeoutSeconds) * time.Second,
+			BackfillPageSize: indexingCfg.EnrichPreDB.BackfillPageSize,
+			MaxBackfillPages: indexingCfg.EnrichPreDB.MaxBackfillPages,
 		}),
-		EnableInspectPAR2:     cfg.Indexing.EnableInspectPAR2,
-		EnableInspectNFO:      cfg.Indexing.EnableInspectNFO,
-		EnableInspectArchive:  cfg.Indexing.EnableInspectArchive,
-		EnableInspectPassword: cfg.Indexing.EnableInspectPassword,
-		EnableInspectMedia:    cfg.Indexing.EnableInspectMedia,
-		EnableEnrichPreDB:     cfg.Indexing.EnableEnrichPreDB,
-		EnableEnrichTMDB:      cfg.Indexing.EnableEnrichTMDB,
+		ScrapeLatest:   newIndexerStageConfig(indexingCfg.ScrapeLatest),
+		ScrapeBackfill: newIndexerStageConfig(indexingCfg.ScrapeBackfill),
+		Assemble:       newIndexerStageConfig(indexingCfg.Assemble),
+		ReleaseStage: newIndexerStageConfig(app.IndexingStageRuntimeSettings{
+			Enabled:         indexingCfg.Release.Enabled,
+			IntervalMinutes: indexingCfg.Release.IntervalMinutes,
+			BatchSize:       indexingCfg.Release.BatchSize,
+			Concurrency:     indexingCfg.Release.Concurrency,
+			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
+		}),
+		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
+		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),
+		InspectArchive:   newIndexerStageConfig(indexingCfg.InspectArchive),
+		InspectPassword:  newIndexerStageConfig(indexingCfg.InspectPassword),
+		InspectMedia:     newIndexerStageConfig(indexingCfg.InspectMedia),
+		EnrichPreDBStage: newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
+		EnrichTMDBStage:  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
 	}
 
 	if len(cfg.Servers) > 0 {
@@ -299,4 +367,42 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	}
 
 	return out, nil
+}
+
+func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConfig {
+	return indexerStageConfig{
+		Enabled:     in.Enabled,
+		Interval:    time.Duration(in.IntervalMinutes * float64(time.Minute)),
+		BatchSize:   in.BatchSize,
+		Concurrency: in.Concurrency,
+		Backoff:     time.Duration(in.BackoffSeconds) * time.Second,
+	}
+}
+
+func withInspectBatch(in inspectpkg.Options, batchSize int) inspectpkg.Options {
+	out := in
+	if batchSize > 0 {
+		out.CandidateBatchSize = batchSize
+	}
+	return out
+}
+
+func IndexingStageRuntimeSettingsFromPredb(in app.IndexingPreDBRuntimeSettings) app.IndexingStageRuntimeSettings {
+	return app.IndexingStageRuntimeSettings{
+		Enabled:         in.Enabled,
+		IntervalMinutes: in.IntervalMinutes,
+		BatchSize:       in.BatchSize,
+		Concurrency:     in.Concurrency,
+		BackoffSeconds:  in.BackoffSeconds,
+	}
+}
+
+func IndexingStageRuntimeSettingsFromTMDB(in app.IndexingTMDBRuntimeSettings) app.IndexingStageRuntimeSettings {
+	return app.IndexingStageRuntimeSettings{
+		Enabled:         in.Enabled,
+		IntervalMinutes: in.IntervalMinutes,
+		BatchSize:       in.BatchSize,
+		Concurrency:     in.Concurrency,
+		BackoffSeconds:  in.BackoffSeconds,
+	}
 }

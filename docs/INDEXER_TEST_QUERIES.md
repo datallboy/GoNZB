@@ -10,7 +10,7 @@ Let backfill run until you have enough header depth to form binaries and release
 gonzb --config config.yaml indexer scrape backfill
 ```
 
-The backfill loop uses `indexing.schedule_interval_minutes` between passes. Fractional values are supported, so `0.25` means 15 seconds.
+The backfill loop uses `indexing.scrape_backfill.interval_minutes` between passes. Fractional values are supported, so `0.25` means 15 seconds.
 
 Single pass:
 
@@ -83,7 +83,8 @@ To suppress tiny partial releases while you are trying to get one inspectable re
 
 ```yaml
 indexing:
-  release_min_completion_pct: 25
+  release:
+    min_completion_pct: 25
 ```
 
 Quick release summary:

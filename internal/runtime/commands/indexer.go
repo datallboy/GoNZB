@@ -225,7 +225,7 @@ func (r *Runner) ExecuteIndexerEnrichPreDBSceneNameRecovery(once bool) {
 	defer cleanup()
 
 	if !once {
-		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, app.IndexingRuntimeFromConfig(appCtx.Config.Indexing).EnrichPreDB.IntervalMinutes, func(runCtx context.Context) error {
 			return appCtx.UsenetIndexer.EnrichPredbSceneNameRecoveryOnce(runCtx)
 		}); err != nil {
 			appCtx.Logger.Fatal("indexer enrich predb scene-name-recovery scheduler failed: %v", err)
@@ -243,7 +243,7 @@ func (r *Runner) ExecuteIndexerEnrichPreDBMetadataOnlyFallback(once bool) {
 	defer cleanup()
 
 	if !once {
-		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, app.IndexingRuntimeFromConfig(appCtx.Config.Indexing).EnrichPreDB.IntervalMinutes, func(runCtx context.Context) error {
 			return appCtx.UsenetIndexer.EnrichPredbMetadataFallbackOnce(runCtx)
 		}); err != nil {
 			appCtx.Logger.Fatal("indexer enrich predb metadata-only-fallback scheduler failed: %v", err)
@@ -261,7 +261,7 @@ func (r *Runner) ExecuteIndexerEnrichPreDBSyncFeed(once bool) {
 	defer cleanup()
 
 	if !once {
-		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, app.IndexingRuntimeFromConfig(appCtx.Config.Indexing).EnrichPreDB.IntervalMinutes, func(runCtx context.Context) error {
 			return appCtx.UsenetIndexer.EnrichPredbSyncFeedOnce(runCtx)
 		}); err != nil {
 			appCtx.Logger.Fatal("indexer enrich predb sync-feed scheduler failed: %v", err)
@@ -279,7 +279,7 @@ func (r *Runner) ExecuteIndexerEnrichPreDBSyncBackfill(once bool) {
 	defer cleanup()
 
 	if !once {
-		if err := r.runIndexerTaskScheduler(ctx, appCtx, func(runCtx context.Context) error {
+		if err := r.runIndexerTaskScheduler(ctx, appCtx, app.IndexingRuntimeFromConfig(appCtx.Config.Indexing).EnrichPreDB.IntervalMinutes, func(runCtx context.Context) error {
 			return appCtx.UsenetIndexer.EnrichPredbSyncBackfillOnce(runCtx)
 		}); err != nil {
 			appCtx.Logger.Fatal("indexer enrich predb sync-backfill scheduler failed: %v", err)
@@ -345,7 +345,10 @@ func (fn taskRunnerFunc) RunOnce(ctx context.Context) error {
 	return fn(ctx)
 }
 
-func (r *Runner) runIndexerTaskScheduler(ctx context.Context, appCtx *app.Context, runOnce func(context.Context) error) error {
-	interval := time.Duration(appCtx.Config.Indexing.ScheduleIntervalMinutes * float64(time.Minute))
+func (r *Runner) runIndexerTaskScheduler(ctx context.Context, appCtx *app.Context, intervalMinutes float64, runOnce func(context.Context) error) error {
+	interval := time.Duration(intervalMinutes * float64(time.Minute))
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
 	return scheduler.NewService(taskRunnerFunc(runOnce), appCtx.Logger, interval).Run(ctx)
 }

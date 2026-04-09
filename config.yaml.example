@@ -80,19 +80,84 @@ store:
 indexing:
   newsgroups:
     - "alt.binaries.test"
-  scrape_batch_size: 5000
-  schedule_interval_minutes: 10
-  release_min_confidence: 0.55
-  release_min_completion_pct: 0
-  enable_enrich_predb: true
-  enable_enrich_tmdb: true
-  predb_provider: "club,me"
-  predb_base_url: "https://predb.club/api/v1"
-  predb_feed_url: "https://predb.me/?rss=1"
-  predb_dump_url: ""
-  tmdb_api_key: ""
-  tmdb_access_token: ""
-  tmdb_base_url: "https://api.themoviedb.org/3"
-  tvdb_api_key: ""
-  tvdb_pin: ""
-  tvdb_base_url: "https://api4.thetvdb.com/v4"
+  scrape_latest:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 5000
+    concurrency: 1
+    backoff_seconds: 0
+  scrape_backfill:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 5000
+  assemble:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 5000
+  release:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 1000
+    concurrency: 1
+    backoff_seconds: 0
+    min_confidence: 0.55
+    min_completion_pct: 0
+  match:
+    high_confidence_threshold: 0.85
+    probable_confidence_threshold: 0.55
+    article_bucket_size: 5000
+  inspect:
+    work_dir: "/store/indexer/inspect"
+    max_bytes: 2147483648
+    max_archive_depth: 3
+    tool_timeout_seconds: 30
+    ffprobe_path: "ffprobe"
+    seven_zip_path: "7z"
+    unrar_path: "unrar"
+    par2_path: "par2"
+  inspect_par2:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+  inspect_nfo:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+  inspect_archive:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+  inspect_password:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+  inspect_media:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+  enrich_predb:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+    concurrency: 1
+    backoff_seconds: 0
+    provider: "club,me"
+    base_url: "https://predb.club/api/v1"
+    feed_url: "https://predb.me/?rss=1"
+    dump_url: ""
+    http_timeout_seconds: 10
+    backfill_page_size: 1000
+    max_backfill_pages: 250
+  enrich_tmdb:
+    enabled: true
+    interval_minutes: 10
+    batch_size: 100
+    concurrency: 1
+    backoff_seconds: 0
+    http_timeout_seconds: 15
+    tmdb_api_key: ""
+    tmdb_access_token: ""
+    tmdb_base_url: "https://api.themoviedb.org/3"
+    tvdb_api_key: ""
+    tvdb_pin: ""
+    tvdb_base_url: "https://api4.thetvdb.com/v4"
