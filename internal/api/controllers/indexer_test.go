@@ -134,6 +134,62 @@ func TestIndexerControllerRunStageAccepted(t *testing.T) {
 	}
 }
 
+func TestIndexerControllerPauseStageReturnsUpdatedState(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/indexer/stages/inspect_archive/pause", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/indexer/stages/:stage/pause")
+	c.SetPathValues(echo.PathValues{{Name: "stage", Value: "inspect_archive"}})
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			stages: []indexerStageView{
+				{StageName: "inspect_archive", Enabled: true, Paused: false},
+			},
+		},
+	}
+
+	if err := ctrl.PauseStage(c); err != nil {
+		t.Fatalf("PauseStage returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"action":"pause"`) || !strings.Contains(body, `"paused":true`) {
+		t.Fatalf("expected pause response payload, got %s", body)
+	}
+}
+
+func TestIndexerControllerResumeStageReturnsUpdatedState(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/indexer/stages/inspect_archive/resume", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/indexer/stages/:stage/resume")
+	c.SetPathValues(echo.PathValues{{Name: "stage", Value: "inspect_archive"}})
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			stages: []indexerStageView{
+				{StageName: "inspect_archive", Enabled: true, Paused: true},
+			},
+		},
+	}
+
+	if err := ctrl.ResumeStage(c); err != nil {
+		t.Fatalf("ResumeStage returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"action":"resume"`) || !strings.Contains(body, `"paused":false`) {
+		t.Fatalf("expected resume response payload, got %s", body)
+	}
+}
+
 func TestIndexerControllerGetBinaryRejectsInvalidID(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/binaries/not-a-number", nil)

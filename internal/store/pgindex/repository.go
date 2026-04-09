@@ -3964,6 +3964,11 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		return fmt.Errorf("release id is required")
 	}
 
+	adjustedAvailability, adjustedTier, err := s.deriveAdjustedAvailability(ctx, in)
+	if err != nil {
+		return err
+	}
+
 	subtitlesJSON, err := json.Marshal(sanitizeStringSlice(in.SubtitleLanguages))
 	if err != nil {
 		return fmt.Errorf("marshal subtitle languages for %s: %w", in.ReleaseID, err)
@@ -4040,7 +4045,101 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		return fmt.Errorf("apply release inspection update %s: %w", in.ReleaseID, err)
 	}
 
+	if adjustedAvailability != nil {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE releases
+			SET availability_score = $2,
+			    availability_tier = $3,
+			    updated_at = NOW()
+			WHERE release_id = $1`,
+			in.ReleaseID,
+			*adjustedAvailability,
+			adjustedTier,
+		); err != nil {
+			return fmt.Errorf("apply availability adjustment %s: %w", in.ReleaseID, err)
+		}
+	}
+
 	return nil
+}
+
+func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspectionUpdate) (*float64, string, error) {
+	if s == nil || s.db == nil {
+		return nil, "", fmt.Errorf("pgindex store is not initialized")
+	}
+
+	var (
+		completionPct     float64
+		availabilityScore float64
+		passwordedKnown   bool
+		passwordedUnknown bool
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT completion_pct, availability_score, passworded_known, passworded_unknown
+		FROM releases
+		WHERE release_id = $1`,
+		in.ReleaseID,
+	).Scan(&completionPct, &availabilityScore, &passwordedKnown, &passwordedUnknown); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", fmt.Errorf("release %s not found", in.ReleaseID)
+		}
+		return nil, "", fmt.Errorf("load current availability for %s: %w", in.ReleaseID, err)
+	}
+
+	finalKnown := passwordedKnown
+	if in.PasswordedKnown != nil {
+		finalKnown = *in.PasswordedKnown
+	}
+	finalUnknown := passwordedUnknown
+	if in.PasswordedUnknown != nil {
+		finalUnknown = *in.PasswordedUnknown
+	}
+	if finalKnown {
+		finalUnknown = false
+	}
+
+	switch {
+	case finalUnknown:
+		capped := availabilityScore
+		unknownCap := completionPct * 0.6
+		if unknownCap < 25 {
+			unknownCap = 25
+		}
+		if capped > unknownCap {
+			capped = unknownCap
+		}
+		capped = clampStoreScore(capped)
+		return &capped, storeAvailabilityTier(capped), nil
+	case finalKnown && availabilityScore < completionPct:
+		restored := clampStoreScore(completionPct)
+		return &restored, storeAvailabilityTier(restored), nil
+	default:
+		return nil, "", nil
+	}
+}
+
+func clampStoreScore(score float64) float64 {
+	switch {
+	case score < 0:
+		return 0
+	case score > 100:
+		return 100
+	default:
+		return score
+	}
+}
+
+func storeAvailabilityTier(score float64) string {
+	switch {
+	case score >= 85:
+		return "excellent"
+	case score >= 70:
+		return "good"
+	case score >= 50:
+		return "partial"
+	default:
+		return "low"
+	}
 }
 
 func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {

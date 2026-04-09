@@ -357,6 +357,216 @@ func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	}
 }
 
+func TestRunOncePAR2BackedReleaseBoostsAvailabilityAboveCompletion(t *testing.T) {
+	baseTime := time.Date(2026, 4, 9, 20, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "repairable source key",
+			ReleaseName: "Repairable.Release.2026.1080p.BluRay.x265",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"repairable source key": {
+				{
+					BinaryID:        1,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "repairable source key",
+					ReleaseName:     "Repairable.Release.2026.1080p.BluRay.x265",
+					FileName:        "repairable.release.2026.1080p.bluray.x265.mkv",
+					Poster:          "poster-a",
+					PostedAt:        ptrTime(baseTime),
+					TotalParts:      10,
+					ObservedParts:   5,
+					TotalBytes:      1_500_000_000,
+					MatchConfidence: 0.92,
+				},
+				{
+					BinaryID:        2,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "repairable source key",
+					ReleaseName:     "Repairable.Release.2026.1080p.BluRay.x265",
+					FileName:        "repairable.release.2026.par2",
+					Poster:          "poster-a",
+					PostedAt:        ptrTime(baseTime.Add(5 * time.Minute)),
+					TotalParts:      1,
+					ObservedParts:   1,
+					TotalBytes:      1_048_576,
+					MatchConfidence: 0.88,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 401, PartNumber: 1}},
+			2: {{ArticleHeaderID: 402, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+
+	got := repo.upsertedReleases[0]
+	if !got.HasPAR2 {
+		t.Fatalf("expected has_par2 to be true, got %+v", got)
+	}
+	if got.AvailabilityScore <= got.CompletionPct {
+		t.Fatalf("expected availability %.2f to exceed completion %.2f for PAR2-backed release", got.AvailabilityScore, got.CompletionPct)
+	}
+	if got.MediaQualityScore == got.CompletionPct || got.MediaQualityScore == got.AvailabilityScore {
+		t.Fatalf("expected media_quality_score to remain independent, got completion=%.2f availability=%.2f media=%.2f", got.CompletionPct, got.AvailabilityScore, got.MediaQualityScore)
+	}
+}
+
+func TestRunOnceAdoptsNFOTitleCandidateForObfuscatedSource(t *testing.T) {
+	baseTime := time.Date(2026, 4, 9, 22, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "nfo source key",
+			ReleaseName: "Qw9pLm82ZxvK",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"nfo source key": {{
+				BinaryID:        81,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "nfo source key",
+				ReleaseName:     "Qw9pLm82ZxvK",
+				FileName:        "qw9plm82zxvk.nfo",
+				Poster:          "poster-a",
+				PostedAt:        ptrTime(baseTime),
+				TotalParts:      1,
+				ObservedParts:   1,
+				TotalBytes:      4096,
+				MatchConfidence: 0.92,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			81: {{ArticleHeaderID: 901, PartNumber: 1}},
+		},
+		titleCandidatesByBinaryID: map[int64][]pgindex.ReleaseTitleCandidate{
+			81: {{
+				BinaryID:   81,
+				Source:     "nfo",
+				Value:      "Random preamble\nExample.Feature.2026.1080p.BluRay.x265-GRP\nMore text",
+				Confidence: 0.95,
+			}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+
+	got := repo.upsertedReleases[0]
+	if got.TitleSource != "nfo" {
+		t.Fatalf("expected nfo title source, got %q", got.TitleSource)
+	}
+	if got.DeobfuscatedTitle != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
+		t.Fatalf("expected deobfuscated title from nfo, got %q", got.DeobfuscatedTitle)
+	}
+	if got.Title != "Example Feature 2026 1080p BluRay x265-GRP" {
+		t.Fatalf("expected display title from nfo, got %q", got.Title)
+	}
+	if got.IdentityStatus != "identified" {
+		t.Fatalf("expected identified identity status, got %q", got.IdentityStatus)
+	}
+}
+
+func TestRunReformOnceUpdatesReleaseIdentityAfterNewEvidence(t *testing.T) {
+	baseTime := time.Date(2026, 4, 10, 1, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "reform evidence key",
+			ReleaseName: "Qw9pLm82ZxvK",
+		}},
+		existingCandidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "reform evidence key",
+			ReleaseName: "Qw9pLm82ZxvK",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"reform evidence key": {{
+				BinaryID:        91,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "reform evidence key",
+				ReleaseName:     "Qw9pLm82ZxvK",
+				FileName:        "qw9plm82zxvk.7z.001",
+				Poster:          "poster-a",
+				PostedAt:        ptrTime(baseTime),
+				TotalParts:      10,
+				ObservedParts:   10,
+				TotalBytes:      900_000_000,
+				MatchConfidence: 0.92,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			91: {{ArticleHeaderID: 1001, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected first release formation, got %d rows", len(repo.upsertedReleases))
+	}
+	first := repo.upsertedReleases[0]
+	if first.TitleSource == "nfo" || first.DeobfuscatedTitle != "" {
+		t.Fatalf("expected initial release to stay obfuscated, got %+v", first)
+	}
+
+	repo.titleCandidatesByBinaryID = map[int64][]pgindex.ReleaseTitleCandidate{
+		91: {{
+			BinaryID:   91,
+			Source:     "nfo",
+			Value:      "Header\nExample.Feature.2026.1080p.BluRay.x265-GRP\nFooter",
+			Confidence: 0.95,
+		}},
+	}
+
+	if err := svc.RunReformOnce(context.Background()); err != nil {
+		t.Fatalf("run reform once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 2 {
+		t.Fatalf("expected re-formed release row, got %d rows", len(repo.upsertedReleases))
+	}
+	second := repo.upsertedReleases[1]
+	if second.TitleSource != "nfo" {
+		t.Fatalf("expected nfo title source after reform, got %q", second.TitleSource)
+	}
+	if second.DeobfuscatedTitle != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
+		t.Fatalf("expected deobfuscated title after reform, got %q", second.DeobfuscatedTitle)
+	}
+	if second.Title != "Example Feature 2026 1080p BluRay x265-GRP" {
+		t.Fatalf("expected display title after reform, got %q", second.Title)
+	}
+	if second.IdentityStatus != "identified" {
+		t.Fatalf("expected identified status after reform, got %q", second.IdentityStatus)
+	}
+}
+
 func TestBuildReleaseRecordLeavesDeobfuscatedTitleEmptyForObfuscatedSource(t *testing.T) {
 	cluster := releaseCluster{
 		MatchConfidence: 0.90,
