@@ -24,6 +24,7 @@ type counterPair struct {
 
 type matchState struct {
 	candidate           Candidate
+	opts                Options
 	cleanSubject        string
 	subjectWithoutYEnc  string
 	normalizedSubject   string
@@ -61,7 +62,7 @@ var (
 	rarTokenRE       = regexp.MustCompile(`(?i)^r\d{2,3}$`)
 )
 
-func newMatchState(candidate Candidate) *matchState {
+func newMatchState(candidate Candidate, opts Options) *matchState {
 	clean := strings.TrimSpace(html.UnescapeString(candidate.Subject))
 	partNumber, totalParts := parsePartInfo(clean)
 	fileIndex, expectedFileCount := parseFileInfo(clean, partNumber, totalParts)
@@ -75,6 +76,7 @@ func newMatchState(candidate Candidate) *matchState {
 
 	return &matchState{
 		candidate:          candidate,
+		opts:               opts,
 		cleanSubject:       clean,
 		subjectWithoutYEnc: stripYEnc(clean),
 		normalizedSubject:  normalizeKey(clean),
@@ -581,11 +583,10 @@ func derivePostingWindow(postedAt *time.Time) string {
 	return fmt.Sprintf("%s-%d", utc.Format("20060102"), utc.Hour()/6)
 }
 
-func deriveArticleBucket(articleNumber int64) int64 {
-	if articleNumber <= 0 {
+func deriveArticleBucket(articleNumber, window int64) int64 {
+	if articleNumber <= 0 || window <= 0 {
 		return 0
 	}
-	const window = int64(5000)
 	return (articleNumber / window) * window
 }
 

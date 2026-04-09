@@ -33,6 +33,7 @@ type Result struct {
 type Options struct {
 	HighConfidenceThreshold     float64
 	ProbableConfidenceThreshold float64
+	ArticleBucketSize           int64
 }
 
 type Service struct {
@@ -49,6 +50,7 @@ func NewService(opts ...Options) *Service {
 	cfg := Options{
 		HighConfidenceThreshold:     0.85,
 		ProbableConfidenceThreshold: 0.55,
+		ArticleBucketSize:           5000,
 	}
 	if len(opts) > 0 {
 		if opts[0].HighConfidenceThreshold > 0 {
@@ -56,6 +58,9 @@ func NewService(opts ...Options) *Service {
 		}
 		if opts[0].ProbableConfidenceThreshold > 0 {
 			cfg.ProbableConfidenceThreshold = opts[0].ProbableConfidenceThreshold
+		}
+		if opts[0].ArticleBucketSize > 0 {
+			cfg.ArticleBucketSize = opts[0].ArticleBucketSize
 		}
 	}
 	if cfg.ProbableConfidenceThreshold > cfg.HighConfidenceThreshold {
@@ -80,7 +85,7 @@ func NewService(opts ...Options) *Service {
 }
 
 func (s *Service) Match(candidate Candidate) Result {
-	state := newMatchState(candidate)
+	state := newMatchState(candidate, s.opts)
 
 	for _, module := range s.modules {
 		module.run(state)

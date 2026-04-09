@@ -116,7 +116,7 @@ func runPostingWindowModule(state *matchState) {
 }
 
 func runArticleProximityModule(state *matchState) {
-	bucket := deriveArticleBucket(state.candidate.ArticleNumber)
+	bucket := deriveArticleBucket(state.candidate.ArticleNumber, state.opts.ArticleBucketSize)
 	if bucket == 0 {
 		return
 	}
