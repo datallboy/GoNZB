@@ -258,6 +258,54 @@ func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
 	}
 }
 
+func TestRunOnceUsesReleaseFamilyKeyForCandidateWork(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			SourceReleaseKey: "matcher trace key",
+			ReleaseFamilyKey: "family key",
+			ReleaseKey:       "",
+			ReleaseName:      "Example.Release.2026",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"family key": {{
+				BinaryID:         1,
+				ProviderID:       1,
+				NewsgroupID:      2,
+				SourceReleaseKey: "matcher trace key",
+				ReleaseFamilyKey: "family key",
+				ReleaseKey:       "family key",
+				ReleaseName:      "Example.Release.2026",
+				FileName:         "example.release.2026.mkv",
+				ObservedParts:    1,
+				TotalParts:       1,
+				TotalBytes:       1024,
+				MatchConfidence:  0.95,
+				IsMainPayload:    true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release to be formed, got %d", len(repo.upsertedReleases))
+	}
+	if len(repo.deletedStaleCalls) != 1 {
+		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	}
+	if repo.deletedStaleCalls[0].releaseKey != "family key" {
+		t.Fatalf("expected stale delete to use family key, got %q", repo.deletedStaleCalls[0].releaseKey)
+	}
+}
+
 func TestRunOnceSkipsFragmentaryMultiFileClustersUntilMultipleMainFilesExist(t *testing.T) {
 	baseTime := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{

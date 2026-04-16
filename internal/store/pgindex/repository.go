@@ -213,6 +213,16 @@ func normalizeReleaseIdentity(in *ReleaseRecord) {
 	in.SourceReleaseKey = firstNonBlank(in.SourceReleaseKey, in.ReleaseFamilyKey, in.ReleaseKey, in.GroupName)
 }
 
+func normalizeBinaryIdentity(in *BinaryRecord) {
+	if in == nil {
+		return
+	}
+	in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+	in.SourceReleaseKey = firstNonBlank(in.SourceReleaseKey, in.ReleaseFamilyKey, in.ReleaseKey)
+	// Keep legacy release_key as a compatibility mirror of release_family_key during cutover.
+	in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+}
+
 // article mapping row per release file.
 type ReleaseFileArticleRecord struct {
 	ArticleHeaderID int64
@@ -1342,7 +1352,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		return 0, fmt.Errorf("provider id and newsgroup id are required")
 	}
 
-	in.ReleaseKey = strings.TrimSpace(in.ReleaseKey)
+	normalizeBinaryIdentity(&in)
 	in.BinaryKey = strings.TrimSpace(in.BinaryKey)
 	if in.ReleaseKey == "" || in.BinaryKey == "" {
 		return 0, fmt.Errorf("release key and binary key are required")
