@@ -314,6 +314,80 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	}
 }
 
+func TestUpsertReleaseReplacesAvailabilityScoreOnLaterWorseSnapshot(t *testing.T) {
+	store := openTestStore(t)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	releaseKey := fmt.Sprintf("test-release-availability-%d", now.UnixNano())
+	groupName := fmt.Sprintf("alt.binaries.test.%d", now.UnixNano())
+
+	record := ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              releaseKey,
+		GroupName:               groupName,
+		Title:                   "Example Release 2026",
+		SourceTitle:             "Example.Release.2026",
+		DeobfuscatedTitle:       "Example.Release.2026",
+		TitleSource:             "source",
+		TitleConfidence:         0.90,
+		SearchTitle:             "example release 2026",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  "poster-a",
+		SizeBytes:               1000,
+		PostedAt:                &now,
+		FileCount:               86,
+		ExpectedFileCount:       86,
+		ParFileCount:            0,
+		CompletionPct:           100,
+		MatchConfidence:         0.90,
+		IdentityStatus:          "identified",
+		PasswordState:           "unknown",
+		ArchiveCount:            1,
+		VideoCount:              1,
+		AudioCount:              1,
+		AvailabilityScore:       88,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       50,
+		MediaQualityTier:        "good",
+		IdentityConfidenceScore: 50,
+		MetadataUpdatedAt:       &now,
+	}
+
+	releaseID, err := store.UpsertRelease(ctx, record)
+	if err != nil {
+		t.Fatalf("seed release: %v", err)
+	}
+
+	record.FileCount = 2
+	record.CompletionPct = 2.33
+	record.AvailabilityScore = 9.25
+	record.AvailabilityTier = "poor"
+	record.MetadataUpdatedAt = &now
+
+	if _, err := store.UpsertRelease(ctx, record); err != nil {
+		t.Fatalf("upsert worse availability snapshot: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release == nil {
+		t.Fatalf("expected release %s", releaseID)
+	}
+	if release.Release.AvailabilityScore != 9.25 {
+		t.Fatalf("expected availability_score to be replaced with 9.25, got %.2f", release.Release.AvailabilityScore)
+	}
+	if release.Release.CompletionPct != 2.33 {
+		t.Fatalf("expected completion_pct to be updated to 2.33, got %.2f", release.Release.CompletionPct)
+	}
+	if release.Release.ExpectedFileCount != 86 {
+		t.Fatalf("expected expected_file_count to remain 86, got %d", release.Release.ExpectedFileCount)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

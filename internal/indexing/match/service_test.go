@@ -248,3 +248,82 @@ func TestMatchDoesNotMergeNearbyPostsWithDifferentExplicitFilenames(t *testing.T
 		t.Fatalf("expected different binary keys, got %q", first.BinaryKey)
 	}
 }
+
+func TestMatchUsesContextualReleaseKeyForObfuscatedMultiFilePosts(t *testing.T) {
+	svc := NewService()
+	postedAt := time.Date(2026, 4, 9, 21, 0, 0, 0, time.UTC)
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 10001,
+		MessageID:     "<opaque-a@host.example>",
+		Subject:       `[001/287] - "hZ7i0SlcYTqKw0NySlolEljNiSIfzgQI.7z.001" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		PostedAt:      &postedAt,
+		Xref:          `news.example alt.binaries.test:10001`,
+	})
+	secondPostedAt := postedAt.Add(2 * time.Minute)
+	second := svc.Match(Candidate{
+		ArticleNumber: 42001,
+		MessageID:     "<opaque-b@host.example>",
+		Subject:       `[002/287] - "gY8j1TmcZUuLr3MxPq9AnVaKoEdXcRpw.7z.002" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		PostedAt:      &secondPostedAt,
+		Xref:          `news.example alt.binaries.test:42001`,
+	})
+
+	if first.ReleaseKey != second.ReleaseKey {
+		t.Fatalf("expected contextual release key to group obfuscated files, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+	if first.BinaryKey == second.BinaryKey {
+		t.Fatalf("expected distinct binary keys for distinct files, got %q", first.BinaryKey)
+	}
+	if first.ReleaseKey == "hz7i0slcytqkw0nysloleljnisifzgqi" || second.ReleaseKey == "gy8j1tmczuulr3mxpq9anvakoedxcrpw" {
+		t.Fatalf("expected contextual release key instead of per-file opaque stem, got %q / %q", first.ReleaseKey, second.ReleaseKey)
+	}
+}
+
+func TestMatchSplitsSmallObfuscatedReleaseFamiliesByArticleLocality(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 2348912960,
+		MessageID:     "<opaque-a@host.example>",
+		Subject:       `[001/8] - "UwQtVWAaOxNHrRMXve53q3fgOlNLK5jr.7z.001" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:2348912960`,
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 2348958172,
+		MessageID:     "<opaque-b@host.example>",
+		Subject:       `[001/8] - "xxJ08j5Ul4KxEebRbd7K32ghm1Z1t3ok.7z.001" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:2348958172`,
+	})
+
+	if first.ReleaseKey == second.ReleaseKey {
+		t.Fatalf("expected repeated small obfuscated sets to split by article locality, got %q", first.ReleaseKey)
+	}
+}
+
+func TestMatchKeepsSmallIndexedArchiveFamilyTogetherByStem(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 2348958172,
+		MessageID:     "<opaque-a@host.example>",
+		Subject:       `[001/8] - "xxJ08j5Ul4KxEebRbd7K32ghm1Z1t3ok.7z.001" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:2348958172`,
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 2348958764,
+		MessageID:     "<opaque-b@host.example>",
+		Subject:       `[005/8] - "xxJ08j5Ul4KxEebRbd7K32ghm1Z1t3ok.7z.005" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:2348958764`,
+	})
+
+	if first.ReleaseKey != second.ReleaseKey {
+		t.Fatalf("expected small indexed archive family to stay together, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+}

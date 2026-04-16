@@ -105,14 +105,14 @@ func PrepareArchiveProbe(ctx context.Context, workspace *Workspace, repo Catalog
 		result.Strategy = "sparse_combined_7z"
 		result.ProbePath = filepath.Join(workspace.Dir, filepath.Base(ArchiveProbePath(candidate.FileName)))
 		if log != nil {
-			log.Info("inspect_archive: materializing sparse combined 7z binary_id=%d release_id=%s files=%d probe=%s", candidate.BinaryID, candidate.ReleaseID, len(family), result.ProbePath)
+			log.Debug("inspect_archive: materializing sparse combined 7z binary_id=%d release_id=%s files=%d probe=%s", candidate.BinaryID, candidate.ReleaseID, len(family), result.ProbePath)
 		}
 		result.MaterializedBytes, err = materializeSparseSplitArchive(ctx, repo, fetcher, groups, family, result.ProbePath, log, candidate, opts)
 	default:
 		result.ProbePath = filepath.Join(workspace.Dir, filepath.Base(ArchiveProbePath(candidate.FileName)))
 		result.Strategy = "leading_archive_header"
 		if log != nil {
-			log.Info("inspect_archive: materializing leading header binary_id=%d release_id=%s probe=%s", candidate.BinaryID, candidate.ReleaseID, result.ProbePath)
+			log.Debug("inspect_archive: materializing leading header binary_id=%d release_id=%s probe=%s", candidate.BinaryID, candidate.ReleaseID, result.ProbePath)
 		}
 		result.MaterializedBytes, err = materializeLeadingArchive(ctx, repo, fetcher, groups, family[0], result.ProbePath)
 	}
@@ -128,7 +128,7 @@ func PrepareArchiveProbe(ctx context.Context, workspace *Workspace, repo Catalog
 	toolCtx, cancel := context.WithTimeout(ctx, opts.ToolTimeout)
 	defer cancel()
 	if log != nil {
-		log.Info("inspect_archive: invoking 7z binary_id=%d release_id=%s timeout=%s probe=%s", candidate.BinaryID, candidate.ReleaseID, opts.ToolTimeout, result.ProbePath)
+		log.Debug("inspect_archive: invoking 7z binary_id=%d release_id=%s timeout=%s probe=%s", candidate.BinaryID, candidate.ReleaseID, opts.ToolTimeout, result.ProbePath)
 	}
 	output, err := runner.Run(toolCtx, opts.SevenZipPath, "l", "-slt", result.ProbePath)
 	result.Entries, result.Encrypted = parseSevenZipListingDetails(output, result.ProbePath)
@@ -199,7 +199,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		return headWritten, err
 	}
 	if log != nil {
-		log.Info(
+		log.Debug(
 			"inspect_archive: parsed 7z header binary_id=%d release_id=%s next_header_start=%d next_header_end=%d next_header_bytes=%d total_archive_size=%d observed_family_size=%d overlap_files=%s",
 			candidate.BinaryID,
 			candidate.ReleaseID,
@@ -225,7 +225,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		return 0, err
 	}
 	if log != nil {
-		log.Info(
+		log.Debug(
 			"inspect_archive: created sparse combined 7z binary_id=%d release_id=%s size=%d",
 			candidate.BinaryID,
 			candidate.ReleaseID,
@@ -242,7 +242,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		return written, err
 	}
 	if log != nil {
-		log.Info(
+		log.Debug(
 			"inspect_archive: materialized leading article binary_id=%d release_id=%s file=%s bytes=%d",
 			candidate.BinaryID,
 			candidate.ReleaseID,
@@ -256,7 +256,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		return written + nextWritten, err
 	}
 	if log != nil {
-		log.Info(
+		log.Debug(
 			"inspect_archive: fetched next header bytes binary_id=%d release_id=%s fetched=%d expected=%d",
 			candidate.BinaryID,
 			candidate.ReleaseID,
@@ -285,7 +285,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		absoluteEncodedStart := int64(32) + encodedHeaderStart
 		absoluteEncodedEnd := int64(32) + encodedHeaderEnd
 		if log != nil {
-			log.Info(
+			log.Debug(
 				"inspect_archive: encoded header pack range binary_id=%d release_id=%s start=%d end=%d bytes=%d overlap_files=%s",
 				candidate.BinaryID,
 				candidate.ReleaseID,
@@ -310,7 +310,7 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 		}
 	}
 	if log != nil {
-		log.Info(
+		log.Debug(
 			"inspect_archive: materialized sparse combined 7z segments binary_id=%d release_id=%s bytes=%d",
 			candidate.BinaryID,
 			candidate.ReleaseID,

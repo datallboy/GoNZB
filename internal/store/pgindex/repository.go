@@ -8,12 +8,27 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/segmentio/ksuid"
+)
+
+var (
+	releaseTitleMultiSpaceRE  = regexp.MustCompile(`\s+`)
+	releaseTitleSeparatorRE   = regexp.MustCompile(`[._\-]+`)
+	releaseTitleResolutionRE  = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
+	releaseTitleVideoCodecRE  = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
+	releaseTitleAudioCodecRE  = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
+	releaseTitleSourceTagRE   = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
+	releaseTitleNumericNoise  = regexp.MustCompile(`^[a-f0-9]{8,}$`)
+	releaseTitleLongOpaqueRE  = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	releaseTitleDotsRE        = regexp.MustCompile(`\.+`)
+	releaseTitleYearLineRE    = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 )
 
 type ArticleHeader struct {
@@ -49,6 +64,14 @@ type BinaryRecord struct {
 	ProviderID        int64
 	NewsgroupID       int64
 	PosterID          int64
+	SourceReleaseKey  string
+	ReleaseFamilyKey  string
+	FileFamilyKey     string
+	FamilyKind        string
+	BaseStem          string
+	PostingBucket     string
+	IsAuxiliary       bool
+	IsMainPayload     bool
 	ReleaseKey        string
 	ReleaseName       string
 	BinaryKey         string
@@ -79,6 +102,14 @@ type BinarySummary struct {
 	BinaryID           int64
 	ProviderID         int64
 	NewsgroupID        int64
+	SourceReleaseKey   string
+	ReleaseFamilyKey   string
+	FileFamilyKey      string
+	FamilyKind         string
+	BaseStem           string
+	PostingBucket      string
+	IsAuxiliary        bool
+	IsMainPayload      bool
 	ReleaseKey         string
 	ReleaseName        string
 	BinaryKey          string
@@ -99,13 +130,15 @@ type BinarySummary struct {
 
 // grouped release candidate used by release formation.
 type ReleaseCandidate struct {
-	ProviderID  int64
-	NewsgroupID int64
-	ReleaseKey  string
-	ReleaseName string
-	PostedAt    *time.Time
-	BinaryCount int
-	TotalBytes  int64
+	ProviderID       int64
+	NewsgroupID      int64
+	SourceReleaseKey string
+	ReleaseFamilyKey string
+	ReleaseKey       string
+	ReleaseName      string
+	PostedAt         *time.Time
+	BinaryCount      int
+	TotalBytes       int64
 }
 
 // release catalog upsert input.
@@ -113,6 +146,8 @@ type ReleaseRecord struct {
 	ReleaseID               string
 	GUID                    string
 	ProviderID              int64
+	SourceReleaseKey        string
+	ReleaseFamilyKey        string
 	ReleaseKey              string
 	GroupName               string
 	Title                   string
@@ -454,6 +489,13 @@ type ReleaseTitleCandidate struct {
 	Source     string
 	Value      string
 	Confidence float64
+}
+
+type inspectionTitleCandidate struct {
+	ReleaseTitle string
+	DisplayTitle string
+	Source       string
+	Confidence   float64
 }
 
 type ReleaseEnrichmentCandidate struct {
@@ -1316,6 +1358,14 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			provider_id,
 			newsgroup_id,
 			poster_id,
+			source_release_key,
+			release_family_key,
+			file_family_key,
+			family_kind,
+			base_stem,
+			posting_bucket,
+			is_auxiliary,
+			is_main_payload,
 			release_key,
 			release_name,
 			binary_key,
@@ -1330,9 +1380,17 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
+		    source_release_key = EXCLUDED.source_release_key,
+		    release_family_key = EXCLUDED.release_family_key,
+		    file_family_key = EXCLUDED.file_family_key,
+		    family_kind = EXCLUDED.family_kind,
+		    base_stem = EXCLUDED.base_stem,
+		    posting_bucket = EXCLUDED.posting_bucket,
+		    is_auxiliary = EXCLUDED.is_auxiliary,
+		    is_main_payload = EXCLUDED.is_main_payload,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
 		    binary_name = EXCLUDED.binary_name,
@@ -1358,6 +1416,14 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		in.ProviderID,
 		in.NewsgroupID,
 		posterID,
+		strings.TrimSpace(in.SourceReleaseKey),
+		strings.TrimSpace(in.ReleaseFamilyKey),
+		strings.TrimSpace(in.FileFamilyKey),
+		strings.TrimSpace(in.FamilyKind),
+		strings.TrimSpace(in.BaseStem),
+		strings.TrimSpace(in.PostingBucket),
+		in.IsAuxiliary,
+		in.IsMainPayload,
 		in.ReleaseKey,
 		strings.TrimSpace(in.ReleaseName),
 		in.BinaryKey,
@@ -1461,25 +1527,45 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
+		WITH candidate_binaries AS (
+			SELECT
+				b.*,
+				CASE
+					WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+					 AND b.expected_file_count > 1
+					 AND COUNT(*) OVER (
+						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), b.expected_file_count
+					 ) > 1
+					THEN LOWER(BTRIM(b.base_stem))
+					ELSE b.release_family_key
+				END AS effective_release_family_key
+			FROM binaries b
+		)
 		SELECT
 			b.provider_id,
 			b.newsgroup_id,
-			b.release_key,
+			MAX(b.source_release_key) AS source_release_key,
+			b.effective_release_family_key,
+			b.effective_release_family_key,
 			MAX(b.release_name) AS release_name,
 			MIN(b.posted_at) AS posted_at,
 			COUNT(*)::INTEGER AS binary_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
-		FROM binaries b
+		FROM candidate_binaries b
 		LEFT JOIN (
-			SELECT provider_id, release_key, MAX(updated_at) AS updated_at
+			SELECT provider_id, release_family_key, MAX(updated_at) AS updated_at
 			FROM releases
-			GROUP BY provider_id, release_key
+			GROUP BY provider_id, release_family_key
 		) r
 			ON r.provider_id = b.provider_id
-			AND r.release_key = b.release_key
-		GROUP BY b.provider_id, b.newsgroup_id, b.release_key, r.updated_at
-		HAVING r.updated_at IS NULL OR MAX(b.updated_at) > r.updated_at
-		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_key
+			AND r.release_family_key = b.effective_release_family_key
+		GROUP BY b.provider_id, b.newsgroup_id, b.effective_release_family_key, r.updated_at
+		HAVING (r.updated_at IS NULL OR MAX(b.updated_at) > r.updated_at)
+		   AND (
+			COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+			OR COALESCE(MAX(b.expected_file_count), 0) <= 1
+		   )
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.effective_release_family_key
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
@@ -1494,6 +1580,8 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		if err := rows.Scan(
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.SourceReleaseKey,
+			&item.ReleaseFamilyKey,
 			&item.ReleaseKey,
 			&item.ReleaseName,
 			&postedAt,
@@ -1527,20 +1615,38 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
+		WITH candidate_binaries AS (
+			SELECT
+				b.*,
+				CASE
+					WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+					 AND b.expected_file_count > 1
+					 AND COUNT(*) OVER (
+						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), b.expected_file_count
+					 ) > 1
+					THEN LOWER(BTRIM(b.base_stem))
+					ELSE b.release_family_key
+				END AS effective_release_family_key
+			FROM binaries b
+		)
 		SELECT
 			b.provider_id,
-			0::BIGINT AS newsgroup_id,
-			b.release_key,
+			MIN(b.newsgroup_id)::BIGINT AS newsgroup_id,
+			MAX(b.source_release_key) AS source_release_key,
+			b.effective_release_family_key,
+			b.effective_release_family_key,
 			MAX(b.release_name) AS release_name,
 			MIN(b.posted_at) AS posted_at,
 			COUNT(*)::INTEGER AS binary_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
 		FROM releases r
-		JOIN binaries b
+		JOIN candidate_binaries b
 		  ON b.provider_id = r.provider_id
-		 AND b.release_key = r.release_key
-		GROUP BY b.provider_id, b.release_key
-		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_key
+		 AND b.effective_release_family_key = r.release_family_key
+		GROUP BY b.provider_id, b.effective_release_family_key
+		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR COALESCE(MAX(b.expected_file_count), 0) <= 1
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.effective_release_family_key
 		LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list existing release candidates: %w", err)
@@ -1555,6 +1661,8 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		if err := rows.Scan(
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.SourceReleaseKey,
+			&item.ReleaseFamilyKey,
 			&item.ReleaseKey,
 			&item.ReleaseName,
 			&postedAt,
@@ -1590,11 +1698,44 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	}
 
 	query := `
+		WITH candidate_binaries AS (
+			SELECT b.*
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.release_family_key = $2
+			UNION
+			SELECT b.*
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.expected_file_count > 1
+			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND LOWER(BTRIM(b.base_stem)) = $2
+		)
 		SELECT
 			b.id,
 			b.provider_id,
 			b.newsgroup_id,
-			b.release_key,
+			b.source_release_key,
+			CASE
+				WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+				 AND b.expected_file_count > 1
+				 AND LOWER(BTRIM(b.base_stem)) = $2
+				THEN LOWER(BTRIM(b.base_stem))
+				ELSE b.release_family_key
+			END AS effective_release_family_key,
+			b.file_family_key,
+			b.family_kind,
+			b.base_stem,
+			b.posting_bucket,
+			b.is_auxiliary,
+			b.is_main_payload,
+			CASE
+				WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+				 AND b.expected_file_count > 1
+				 AND LOWER(BTRIM(b.base_stem)) = $2
+				THEN LOWER(BTRIM(b.base_stem))
+				ELSE b.release_family_key
+			END AS effective_release_key,
 			b.release_name,
 			b.binary_key,
 			b.binary_name,
@@ -1610,10 +1751,9 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status
-		FROM binaries b
+		FROM candidate_binaries b
 		LEFT JOIN posters p ON p.id = b.poster_id
-		WHERE b.provider_id = $1
-		  AND b.release_key = $2`
+		WHERE b.provider_id = $1`
 	args := []any{providerID, releaseKey}
 	if newsgroupID > 0 {
 		query += `
@@ -1638,6 +1778,14 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			&item.BinaryID,
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.SourceReleaseKey,
+			&item.ReleaseFamilyKey,
+			&item.FileFamilyKey,
+			&item.FamilyKind,
+			&item.BaseStem,
+			&item.PostingBucket,
+			&item.IsAuxiliary,
+			&item.IsMainPayload,
 			&item.ReleaseKey,
 			&item.ReleaseName,
 			&item.BinaryKey,
@@ -1752,6 +1900,8 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			release_id,
 			guid,
 			provider_id,
+			source_release_key,
+			release_family_key,
 			release_key,
 			group_name,
 			title,
@@ -1799,9 +1949,11 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,'usenet_index',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,'usenet_index',NOW())
 		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
+		    source_release_key = EXCLUDED.source_release_key,
+		    release_family_key = EXCLUDED.release_family_key,
 		    release_key = EXCLUDED.release_key,
 		    title = EXCLUDED.title,
 		    source_title = EXCLUDED.source_title,
@@ -1845,7 +1997,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    video_count = GREATEST(releases.video_count, EXCLUDED.video_count),
 		    audio_count = GREATEST(releases.audio_count, EXCLUDED.audio_count),
 		    sample_present = releases.sample_present OR EXCLUDED.sample_present,
-		    availability_score = GREATEST(releases.availability_score, EXCLUDED.availability_score),
+		    availability_score = EXCLUDED.availability_score,
 		    availability_tier = EXCLUDED.availability_tier,
 		    media_quality_score = GREATEST(releases.media_quality_score, EXCLUDED.media_quality_score),
 		    media_quality_tier = CASE
@@ -1880,6 +2032,8 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		in.ReleaseID,
 		in.GUID,
 		in.ProviderID,
+		strings.TrimSpace(in.SourceReleaseKey),
+		strings.TrimSpace(in.ReleaseFamilyKey),
 		in.ReleaseKey,
 		in.GroupName,
 		strings.TrimSpace(in.Title),
@@ -1946,12 +2100,12 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM releases
 			WHERE provider_id = $1
-			  AND release_key = $2`,
+			  AND release_family_key = $2`,
 			providerID,
 			releaseKey,
 		)
 		if err != nil {
-			return fmt.Errorf("delete stale releases for provider=%d release_key=%q: %w", providerID, releaseKey, err)
+			return fmt.Errorf("delete stale releases for provider=%d release_family_key=%q: %w", providerID, releaseKey, err)
 		}
 		return nil
 	}
@@ -1968,12 +2122,12 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 	query := `
 		DELETE FROM releases
 		WHERE provider_id = $1
-		  AND release_key = $2
+		  AND release_family_key = $2
 		  AND group_name NOT IN (` + strings.Join(placeholders, ",") + `)`
 
 	_, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("delete stale releases for provider=%d release_key=%q keep=%v: %w", providerID, releaseKey, keep, err)
+		return fmt.Errorf("delete stale releases for provider=%d release_family_key=%q keep=%v: %w", providerID, releaseKey, keep, err)
 	}
 
 	return nil
@@ -3131,6 +3285,246 @@ func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID str
 	return out, nil
 }
 
+func chooseBestInspectionTitleCandidate(sourceTitle string, candidates []ReleaseTitleCandidate) (inspectionTitleCandidate, bool) {
+	best := inspectionTitleCandidate{}
+	for _, candidate := range candidates {
+		item, ok := normalizeInspectionTitleCandidate(candidate)
+		if !ok {
+			continue
+		}
+		if best.ReleaseTitle == "" || item.Confidence > best.Confidence || (item.Confidence == best.Confidence && inspectionTitleLooksCloserToSource(item.DisplayTitle, sourceTitle, best.DisplayTitle)) {
+			best = item
+		}
+	}
+	return best, best.ReleaseTitle != ""
+}
+
+func normalizeInspectionTitleCandidate(candidate ReleaseTitleCandidate) (inspectionTitleCandidate, bool) {
+	switch strings.TrimSpace(candidate.Source) {
+	case "archive_entry":
+		releaseTitle, displayTitle, ok := normalizeInspectionPathTitleCandidate(candidate.Value)
+		if !ok {
+			return inspectionTitleCandidate{}, false
+		}
+		return inspectionTitleCandidate{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "archive_entry",
+			Confidence:   clampInspectionConfidence(candidate.Confidence),
+		}, true
+	case "nfo":
+		releaseTitle, displayTitle, ok := extractInspectionNFOTitleCandidate(candidate.Value)
+		if !ok {
+			return inspectionTitleCandidate{}, false
+		}
+		return inspectionTitleCandidate{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "nfo",
+			Confidence:   clampInspectionConfidence(candidate.Confidence),
+		}, true
+	default:
+		return inspectionTitleCandidate{}, false
+	}
+}
+
+func normalizeInspectionPathTitleCandidate(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", false
+	}
+	clean := strings.ReplaceAll(value, "\\", "/")
+	base := filepath.Base(clean)
+	parent := filepath.Base(filepath.Dir(clean))
+	lowerPath := strings.ToLower(clean)
+	lowerBase := strings.ToLower(base)
+	if strings.Contains(lowerPath, "/sample/") || strings.Contains(lowerBase, "sample") {
+		return "", "", false
+	}
+
+	stem := inspectionMediaTitleStem(base)
+	if stem == "" && parent != "" && parent != "." {
+		stem = inspectionMediaTitleStem(parent)
+	}
+	if stem == "" {
+		return "", "", false
+	}
+
+	title := displayReleaseTitleStyle(stem)
+	if !looksReadableInspectionReleaseTitle(title) {
+		return "", "", false
+	}
+	return releaseTitleStyle(stem), title, true
+}
+
+func inspectionMediaTitleStem(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	base := filepath.Base(value)
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	return strings.TrimSpace(base)
+}
+
+func extractInspectionNFOTitleCandidate(text string) (string, string, bool) {
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		line = strings.Trim(line, "-_=*#[]() ")
+		if line == "" || len(line) > 140 {
+			continue
+		}
+		if !looksReadableInspectionReleaseTitle(line) {
+			continue
+		}
+		if releaseTitleResolutionRE.MatchString(line) || releaseTitleSourceTagRE.MatchString(line) || releaseTitleVideoCodecRE.MatchString(line) || strings.Contains(strings.ToLower(line), "s0") || releaseTitleYearLineRE.MatchString(line) {
+			display := displayReleaseTitleStyle(line)
+			return releaseTitleStyle(line), display, true
+		}
+	}
+	return "", "", false
+}
+
+func shouldAdoptInspectionTitleCandidate(sourceTitle string, candidate inspectionTitleCandidate) bool {
+	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
+		return false
+	}
+	if candidate.Confidence >= 0.82 {
+		return true
+	}
+	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedInspectionReleaseTitle(sourceTitle) || !looksReadableInspectionReleaseTitle(sourceTitle))
+}
+
+func inspectionTitleLooksCloserToSource(candidateTitle, sourceTitle, currentBest string) bool {
+	if inspectionTitlesLookRelated(candidateTitle, sourceTitle) && !inspectionTitlesLookRelated(currentBest, sourceTitle) {
+		return true
+	}
+	if currentBest == "" {
+		return true
+	}
+	return len(normalizeReleaseSearchTitle(candidateTitle)) > len(normalizeReleaseSearchTitle(currentBest))
+}
+
+func looksObfuscatedInspectionReleaseTitle(title string) bool {
+	normalized := normalizeReleaseSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+	condensed := strings.ReplaceAll(normalized, " ", "")
+	if condensed == "" {
+		return false
+	}
+	if releaseTitleNumericNoise.MatchString(condensed) {
+		return true
+	}
+	parts := strings.Fields(normalized)
+	if len(parts) == 1 && releaseTitleLongOpaqueRE.MatchString(parts[0]) {
+		return true
+	}
+	hasSemanticToken := releaseTitleResolutionRE.MatchString(normalized) ||
+		releaseTitleVideoCodecRE.MatchString(normalized) ||
+		releaseTitleAudioCodecRE.MatchString(normalized) ||
+		releaseTitleSourceTagRE.MatchString(normalized)
+	return !hasSemanticToken && len(parts) <= 2 && len(parts) > 0 && releaseTitleLongOpaqueRE.MatchString(parts[0])
+}
+
+func looksReadableInspectionReleaseTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false
+	}
+	if looksObfuscatedInspectionReleaseTitle(title) {
+		return false
+	}
+	normalized := normalizeReleaseSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+	parts := strings.Fields(normalized)
+	if len(parts) >= 2 {
+		return true
+	}
+	return releaseTitleResolutionRE.MatchString(normalized) ||
+		releaseTitleVideoCodecRE.MatchString(normalized) ||
+		releaseTitleAudioCodecRE.MatchString(normalized) ||
+		releaseTitleSourceTagRE.MatchString(normalized)
+}
+
+func inspectionTitlesLookRelated(a, b string) bool {
+	a = normalizeReleaseSearchTitle(a)
+	b = normalizeReleaseSearchTitle(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aFields := strings.Fields(a)
+	bFields := strings.Fields(b)
+	if len(aFields) == 0 || len(bFields) == 0 {
+		return false
+	}
+	matches := 0
+	for _, left := range aFields {
+		for _, right := range bFields {
+			if left == right {
+				matches++
+				break
+			}
+		}
+	}
+	minFields := len(aFields)
+	if len(bFields) < minFields {
+		minFields = len(bFields)
+	}
+	return minFields > 0 && float64(matches)/float64(minFields) >= 0.6
+}
+
+func normalizeReleaseSearchTitle(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.ReplaceAll(v, "_", " ")
+	v = strings.ReplaceAll(v, ".", " ")
+	v = strings.ReplaceAll(v, "-", " ")
+	return strings.Join(strings.Fields(v), " ")
+}
+
+func displayReleaseTitleStyle(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "_", " ")
+	v = strings.ReplaceAll(v, ".", " ")
+	v = releaseTitleMultiSpaceRE.ReplaceAllString(v, " ")
+	return strings.TrimSpace(v)
+}
+
+func releaseTitleStyle(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "\\", ".")
+	v = strings.ReplaceAll(v, "/", ".")
+	v = strings.ReplaceAll(v, "_", ".")
+	v = strings.ReplaceAll(v, " ", ".")
+	v = releaseTitleDotsRE.ReplaceAllString(v, ".")
+	return strings.Trim(v, ".")
+}
+
+func clampInspectionConfidence(v float64) float64 {
+	switch {
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	default:
+		return v
+	}
+}
+
 func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseID string) ([]IndexerExternalMatchSummary, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
@@ -4060,7 +4454,115 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		}
 	}
 
+	if err := s.applyDerivedInspectionTitleUpdate(ctx, in.ReleaseID, in.MetadataUpdatedAt); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID string, metadataUpdatedAt *time.Time) error {
+	sourceTitle, currentTitleSource, currentTitleConfidence, binaryIDs, err := s.loadReleaseTitleInputs(ctx, releaseID)
+	if err != nil {
+		return err
+	}
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+
+	candidates, err := s.ListReleaseTitleCandidates(ctx, binaryIDs)
+	if err != nil {
+		return err
+	}
+	best, ok := chooseBestInspectionTitleCandidate(sourceTitle, candidates)
+	if !ok {
+		return nil
+	}
+	if !shouldAdoptInspectionTitleCandidate(sourceTitle, best) {
+		return nil
+	}
+
+	displaySource := displayReleaseTitleStyle(sourceTitle)
+	if normalizeReleaseSearchTitle(best.DisplayTitle) == normalizeReleaseSearchTitle(displaySource) {
+		return nil
+	}
+	if currentTitleSource != "" && currentTitleSource != "source" && currentTitleConfidence >= best.Confidence {
+		return nil
+	}
+
+	var metadataUpdated any
+	if metadataUpdatedAt != nil {
+		metadataUpdated = metadataUpdatedAt.UTC()
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE releases
+		SET title = $2,
+		    deobfuscated_title = $3,
+		    title_source = $4,
+		    title_confidence = $5,
+		    search_title = $6,
+		    metadata_updated_at = COALESCE($7, metadata_updated_at),
+		    updated_at = NOW()
+		WHERE release_id = $1`,
+		releaseID,
+		strings.TrimSpace(best.DisplayTitle),
+		strings.TrimSpace(best.ReleaseTitle),
+		strings.TrimSpace(best.Source),
+		best.Confidence,
+		normalizeReleaseSearchTitle(best.DisplayTitle),
+		metadataUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("apply derived inspection title update %s: %w", releaseID, err)
+	}
+	return nil
+}
+
+func (s *Store) loadReleaseTitleInputs(ctx context.Context, releaseID string) (string, string, float64, []int64, error) {
+	var (
+		sourceTitle      string
+		currentTitleFrom string
+		currentConfidence float64
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(source_title, ''), COALESCE(title_source, ''), COALESCE(title_confidence, 0)
+		FROM releases
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&sourceTitle, &currentTitleFrom, &currentConfidence); err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", 0, nil, fmt.Errorf("release %s not found for title inputs", releaseID)
+		}
+		return "", "", 0, nil, fmt.Errorf("load release title inputs %s: %w", releaseID, err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT binary_id
+		FROM release_files
+		WHERE release_id = $1
+		  AND binary_id IS NOT NULL
+		ORDER BY binary_id`, releaseID)
+	if err != nil {
+		return "", "", 0, nil, fmt.Errorf("load release file binary ids %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	binaryIDs := make([]int64, 0, 16)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			return "", "", 0, nil, fmt.Errorf("scan release file binary id %s: %w", releaseID, err)
+		}
+		if binaryID > 0 {
+			binaryIDs = append(binaryIDs, binaryID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", 0, nil, fmt.Errorf("iterate release file binary ids %s: %w", releaseID, err)
+	}
+
+	return sourceTitle, currentTitleFrom, currentConfidence, binaryIDs, nil
 }
 
 func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspectionUpdate) (*float64, string, error) {

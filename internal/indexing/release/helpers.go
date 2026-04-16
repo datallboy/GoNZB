@@ -68,8 +68,18 @@ func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.Bina
 		return ordered[i].BinaryID < ordered[j].BinaryID
 	})
 
-	clusters := make([]releaseCluster, 0, len(ordered))
+	mainPayload := make([]pgindex.BinarySummary, 0, len(ordered))
+	auxiliary := make([]pgindex.BinarySummary, 0, len(ordered))
 	for _, binary := range ordered {
+		if binary.IsAuxiliary {
+			auxiliary = append(auxiliary, binary)
+			continue
+		}
+		mainPayload = append(mainPayload, binary)
+	}
+
+	clusters := make([]releaseCluster, 0, len(ordered))
+	for _, binary := range mainPayload {
 		bestIdx := -1
 		bestScore := 0.0
 
@@ -82,6 +92,28 @@ func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.Bina
 		}
 
 		if bestIdx >= 0 && bestScore >= releaseJoinThreshold {
+			clusters[bestIdx].Binaries = append(clusters[bestIdx].Binaries, binary)
+			continue
+		}
+
+		clusters = append(clusters, releaseCluster{
+			Binaries: []pgindex.BinarySummary{binary},
+		})
+	}
+
+	for _, binary := range auxiliary {
+		bestIdx := -1
+		bestScore := 0.0
+
+		for idx := range clusters {
+			score := scoreAuxiliaryAgainstCluster(binary, clusters[idx])
+			if score > bestScore {
+				bestScore = score
+				bestIdx = idx
+			}
+		}
+
+		if bestIdx >= 0 && bestScore >= 0.55 {
 			clusters[bestIdx].Binaries = append(clusters[bestIdx].Binaries, binary)
 			continue
 		}
@@ -107,6 +139,13 @@ func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.Bina
 }
 
 func scoreBinaryAgainstCluster(candidate pgindex.ReleaseCandidate, binary pgindex.BinarySummary, cluster releaseCluster) float64 {
+	if !indexedFileLayoutCompatible(binary, cluster.Binaries) {
+		return 0
+	}
+	if !expectedFileCountCompatible(binary, cluster.Binaries) {
+		return 0
+	}
+
 	score := 0.22
 
 	if dominant := dominantPoster(cluster.Binaries); dominant != "" && strings.EqualFold(strings.TrimSpace(binary.Poster), dominant) {
@@ -138,8 +177,42 @@ func scoreBinaryAgainstCluster(candidate pgindex.ReleaseCandidate, binary pginde
 	if sizeLooksCoherent(binary, cluster.Binaries) {
 		score += 0.05
 	}
+	if indexedFileLayoutReinforces(binary, cluster.Binaries) {
+		score += 0.12
+	}
 
 	score += clamp01(binary.MatchConfidence) * 0.10
+	return clamp01(score)
+}
+
+func scoreAuxiliaryAgainstCluster(binary pgindex.BinarySummary, cluster releaseCluster) float64 {
+	if len(cluster.Binaries) == 0 {
+		return 0
+	}
+	if !expectedFileCountCompatible(binary, cluster.Binaries) {
+		return 0
+	}
+
+	score := 0.10
+	if stemsRelated(bestBinaryStem(binary), representativeStem(cluster.Binaries)) {
+		score += 0.38
+	}
+	if dominant := dominantPoster(cluster.Binaries); dominant != "" && strings.EqualFold(strings.TrimSpace(binary.Poster), dominant) {
+		score += 0.18
+	}
+	timeDelta := clusterTimeDelta(binary, cluster.Binaries)
+	switch {
+	case timeDelta >= 0 && timeDelta <= 2*time.Hour:
+		score += 0.18
+	case timeDelta <= 12*time.Hour:
+		score += 0.10
+	case timeDelta <= 24*time.Hour:
+		score += 0.05
+	}
+	if clusterHasComplementaryFiles(binary, cluster.Binaries) {
+		score += 0.10
+	}
+	score += clamp01(binary.MatchConfidence) * 0.06
 	return clamp01(score)
 }
 
@@ -217,7 +290,9 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 
 	return pgindex.ReleaseRecord{
 		ProviderID:              candidate.ProviderID,
-		ReleaseKey:              candidate.ReleaseKey,
+		SourceReleaseKey:        dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey),
+		ReleaseFamilyKey:        releaseFamilyKey(candidate, cluster.Binaries),
+		ReleaseKey:              releaseFamilyKey(candidate, cluster.Binaries),
 		GroupName:               deriveGroupName(candidate, cluster.Binaries),
 		Title:                   finalTitle,
 		SourceTitle:             titleInfo.SourceTitle,
@@ -276,7 +351,7 @@ func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
 	seed := strings.Join([]string{
-		candidate.ReleaseKey,
+		releaseFamilyKey(candidate, binaries),
 		normalizeSearchTitle(dominantPoster(binaries)),
 		representativeStem(binaries),
 		clusterTimeBucket(binaries),
@@ -425,11 +500,50 @@ func bestBinaryTitle(candidate pgindex.ReleaseCandidate, binary pgindex.BinarySu
 }
 
 func bestBinaryStem(binary pgindex.BinarySummary) string {
+	if value := strings.TrimSpace(binary.BaseStem); value != "" {
+		return normalizeSearchTitle(value)
+	}
 	name := pickFileName(binary)
 	if name == "" {
 		return ""
 	}
 	return normalizeStem(name)
+}
+
+func dominantSourceReleaseKey(binaries []pgindex.BinarySummary, fallback string) string {
+	counts := make(map[string]int)
+	best := strings.TrimSpace(fallback)
+	bestCount := 0
+	for _, binary := range binaries {
+		key := strings.TrimSpace(binary.SourceReleaseKey)
+		if key == "" {
+			continue
+		}
+		counts[key]++
+		if counts[key] > bestCount {
+			best = key
+			bestCount = counts[key]
+		}
+	}
+	return best
+}
+
+func releaseFamilyKey(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
+	if value := strings.TrimSpace(candidate.ReleaseFamilyKey); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(candidate.ReleaseKey); value != "" {
+		return value
+	}
+	for _, binary := range binaries {
+		if value := strings.TrimSpace(binary.ReleaseFamilyKey); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(binary.ReleaseKey); value != "" {
+			return value
+		}
+	}
+	return "unknown-release-family"
 }
 
 func normalizeStem(name string) string {
@@ -525,6 +639,82 @@ func clusterHasComplementaryFiles(binary pgindex.BinarySummary, binaries []pgind
 		}
 	}
 	return false
+}
+
+func indexedFileLayoutCompatible(binary pgindex.BinarySummary, binaries []pgindex.BinarySummary) bool {
+	if binary.FileIndex <= 0 || len(binaries) == 0 {
+		return true
+	}
+
+	expectedFiles := binary.ExpectedFileCount
+	if clusterExpected := clusterExpectedFileCount(binaries); clusterExpected > expectedFiles {
+		expectedFiles = clusterExpected
+	}
+	if expectedFiles <= 1 {
+		return true
+	}
+
+	for _, other := range binaries {
+		if other.FileIndex == binary.FileIndex {
+			return false
+		}
+	}
+
+	return true
+}
+
+func expectedFileCountCompatible(binary pgindex.BinarySummary, binaries []pgindex.BinarySummary) bool {
+	if binary.ExpectedFileCount <= 0 {
+		return true
+	}
+	for _, other := range binaries {
+		if other.ExpectedFileCount <= 0 {
+			continue
+		}
+		if other.ExpectedFileCount == binary.ExpectedFileCount {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func indexedFileLayoutReinforces(binary pgindex.BinarySummary, binaries []pgindex.BinarySummary) bool {
+	if binary.FileIndex <= 0 || len(binaries) == 0 {
+		return false
+	}
+
+	expectedFiles := binary.ExpectedFileCount
+	if clusterExpected := clusterExpectedFileCount(binaries); clusterExpected > expectedFiles {
+		expectedFiles = clusterExpected
+	}
+	if expectedFiles <= 1 {
+		return false
+	}
+
+	minIndex := 0
+	maxIndex := 0
+	for _, other := range binaries {
+		if other.FileIndex <= 0 {
+			continue
+		}
+		if minIndex == 0 || other.FileIndex < minIndex {
+			minIndex = other.FileIndex
+		}
+		if other.FileIndex > maxIndex {
+			maxIndex = other.FileIndex
+		}
+	}
+	if minIndex == 0 || maxIndex == 0 {
+		return false
+	}
+
+	if binary.FileIndex == minIndex-1 || binary.FileIndex == maxIndex+1 {
+		return true
+	}
+
+	// Sparse partial grabs can still belong together even when indexes skip.
+	return binary.FileIndex > minIndex && binary.FileIndex < maxIndex
 }
 
 func sizeLooksCoherent(binary pgindex.BinarySummary, binaries []pgindex.BinarySummary) bool {
@@ -634,6 +824,16 @@ func clusterExpectedFileCount(binaries []pgindex.BinarySummary) int {
 		}
 	}
 	return best
+}
+
+func countMainPayloadBinaries(binaries []pgindex.BinarySummary) int {
+	count := 0
+	for _, binary := range binaries {
+		if binary.IsMainPayload || !binary.IsAuxiliary {
+			count++
+		}
+	}
+	return count
 }
 
 func clusterObservedFileCount(binaries []pgindex.BinarySummary) int {
