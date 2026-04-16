@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -1147,10 +1148,21 @@ func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, i
 func chooseBestLocalTitleCandidate(sourceTitle string, binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) localTitleCandidate {
 	candidates := make([]localTitleCandidate, 0, len(inspectCandidates)+len(binaries))
 
+	inspectionInputs := make([]releasetitle.InspectionCandidate, 0, len(inspectCandidates))
 	for _, candidate := range inspectCandidates {
-		if item, ok := normalizeInspectTitleCandidate(candidate); ok {
-			candidates = append(candidates, item)
-		}
+		inspectionInputs = append(inspectionInputs, releasetitle.InspectionCandidate{
+			Source:     candidate.Source,
+			Value:      candidate.Value,
+			Confidence: candidate.Confidence,
+		})
+	}
+	if item, ok := releasetitle.ChooseBestInspectionTitle(sourceTitle, inspectionInputs); ok {
+		candidates = append(candidates, localTitleCandidate{
+			ReleaseTitle: item.ReleaseTitle,
+			DisplayTitle: item.DisplayTitle,
+			Source:       item.Source,
+			Confidence:   item.Confidence,
+		})
 	}
 
 	for _, binary := range binaries {

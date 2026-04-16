@@ -8,27 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 	"github.com/segmentio/ksuid"
-)
-
-var (
-	releaseTitleMultiSpaceRE = regexp.MustCompile(`\s+`)
-	releaseTitleSeparatorRE  = regexp.MustCompile(`[._\-]+`)
-	releaseTitleResolutionRE = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
-	releaseTitleVideoCodecRE = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
-	releaseTitleAudioCodecRE = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
-	releaseTitleSourceTagRE  = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
-	releaseTitleNumericNoise = regexp.MustCompile(`^[a-f0-9]{8,}$`)
-	releaseTitleLongOpaqueRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
-	releaseTitleDotsRE       = regexp.MustCompile(`\.+`)
-	releaseTitleYearLineRE   = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 )
 
 type ArticleHeader struct {
@@ -518,13 +504,6 @@ type ReleaseTitleCandidate struct {
 	Source     string
 	Value      string
 	Confidence float64
-}
-
-type inspectionTitleCandidate struct {
-	ReleaseTitle string
-	DisplayTitle string
-	Source       string
-	Confidence   float64
 }
 
 type ReleaseEnrichmentCandidate struct {
@@ -3315,246 +3294,6 @@ func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID str
 	return out, nil
 }
 
-func chooseBestInspectionTitleCandidate(sourceTitle string, candidates []ReleaseTitleCandidate) (inspectionTitleCandidate, bool) {
-	best := inspectionTitleCandidate{}
-	for _, candidate := range candidates {
-		item, ok := normalizeInspectionTitleCandidate(candidate)
-		if !ok {
-			continue
-		}
-		if best.ReleaseTitle == "" || item.Confidence > best.Confidence || (item.Confidence == best.Confidence && inspectionTitleLooksCloserToSource(item.DisplayTitle, sourceTitle, best.DisplayTitle)) {
-			best = item
-		}
-	}
-	return best, best.ReleaseTitle != ""
-}
-
-func normalizeInspectionTitleCandidate(candidate ReleaseTitleCandidate) (inspectionTitleCandidate, bool) {
-	switch strings.TrimSpace(candidate.Source) {
-	case "archive_entry":
-		releaseTitle, displayTitle, ok := normalizeInspectionPathTitleCandidate(candidate.Value)
-		if !ok {
-			return inspectionTitleCandidate{}, false
-		}
-		return inspectionTitleCandidate{
-			ReleaseTitle: releaseTitle,
-			DisplayTitle: displayTitle,
-			Source:       "archive_entry",
-			Confidence:   clampInspectionConfidence(candidate.Confidence),
-		}, true
-	case "nfo":
-		releaseTitle, displayTitle, ok := extractInspectionNFOTitleCandidate(candidate.Value)
-		if !ok {
-			return inspectionTitleCandidate{}, false
-		}
-		return inspectionTitleCandidate{
-			ReleaseTitle: releaseTitle,
-			DisplayTitle: displayTitle,
-			Source:       "nfo",
-			Confidence:   clampInspectionConfidence(candidate.Confidence),
-		}, true
-	default:
-		return inspectionTitleCandidate{}, false
-	}
-}
-
-func normalizeInspectionPathTitleCandidate(value string) (string, string, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", "", false
-	}
-	clean := strings.ReplaceAll(value, "\\", "/")
-	base := filepath.Base(clean)
-	parent := filepath.Base(filepath.Dir(clean))
-	lowerPath := strings.ToLower(clean)
-	lowerBase := strings.ToLower(base)
-	if strings.Contains(lowerPath, "/sample/") || strings.Contains(lowerBase, "sample") {
-		return "", "", false
-	}
-
-	stem := inspectionMediaTitleStem(base)
-	if stem == "" && parent != "" && parent != "." {
-		stem = inspectionMediaTitleStem(parent)
-	}
-	if stem == "" {
-		return "", "", false
-	}
-
-	title := displayReleaseTitleStyle(stem)
-	if !looksReadableInspectionReleaseTitle(title) {
-		return "", "", false
-	}
-	return releaseTitleStyle(stem), title, true
-}
-
-func inspectionMediaTitleStem(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	base := filepath.Base(value)
-	if ext := filepath.Ext(base); ext != "" {
-		base = strings.TrimSuffix(base, ext)
-	}
-	return strings.TrimSpace(base)
-}
-
-func extractInspectionNFOTitleCandidate(text string) (string, string, bool) {
-	for _, rawLine := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(rawLine)
-		line = strings.Trim(line, "-_=*#[]() ")
-		if line == "" || len(line) > 140 {
-			continue
-		}
-		if !looksReadableInspectionReleaseTitle(line) {
-			continue
-		}
-		if releaseTitleResolutionRE.MatchString(line) || releaseTitleSourceTagRE.MatchString(line) || releaseTitleVideoCodecRE.MatchString(line) || strings.Contains(strings.ToLower(line), "s0") || releaseTitleYearLineRE.MatchString(line) {
-			display := displayReleaseTitleStyle(line)
-			return releaseTitleStyle(line), display, true
-		}
-	}
-	return "", "", false
-}
-
-func shouldAdoptInspectionTitleCandidate(sourceTitle string, candidate inspectionTitleCandidate) bool {
-	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
-		return false
-	}
-	if candidate.Confidence >= 0.82 {
-		return true
-	}
-	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedInspectionReleaseTitle(sourceTitle) || !looksReadableInspectionReleaseTitle(sourceTitle))
-}
-
-func inspectionTitleLooksCloserToSource(candidateTitle, sourceTitle, currentBest string) bool {
-	if inspectionTitlesLookRelated(candidateTitle, sourceTitle) && !inspectionTitlesLookRelated(currentBest, sourceTitle) {
-		return true
-	}
-	if currentBest == "" {
-		return true
-	}
-	return len(normalizeReleaseSearchTitle(candidateTitle)) > len(normalizeReleaseSearchTitle(currentBest))
-}
-
-func looksObfuscatedInspectionReleaseTitle(title string) bool {
-	normalized := normalizeReleaseSearchTitle(title)
-	if normalized == "" {
-		return false
-	}
-	condensed := strings.ReplaceAll(normalized, " ", "")
-	if condensed == "" {
-		return false
-	}
-	if releaseTitleNumericNoise.MatchString(condensed) {
-		return true
-	}
-	parts := strings.Fields(normalized)
-	if len(parts) == 1 && releaseTitleLongOpaqueRE.MatchString(parts[0]) {
-		return true
-	}
-	hasSemanticToken := releaseTitleResolutionRE.MatchString(normalized) ||
-		releaseTitleVideoCodecRE.MatchString(normalized) ||
-		releaseTitleAudioCodecRE.MatchString(normalized) ||
-		releaseTitleSourceTagRE.MatchString(normalized)
-	return !hasSemanticToken && len(parts) <= 2 && len(parts) > 0 && releaseTitleLongOpaqueRE.MatchString(parts[0])
-}
-
-func looksReadableInspectionReleaseTitle(title string) bool {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return false
-	}
-	if looksObfuscatedInspectionReleaseTitle(title) {
-		return false
-	}
-	normalized := normalizeReleaseSearchTitle(title)
-	if normalized == "" {
-		return false
-	}
-	parts := strings.Fields(normalized)
-	if len(parts) >= 2 {
-		return true
-	}
-	return releaseTitleResolutionRE.MatchString(normalized) ||
-		releaseTitleVideoCodecRE.MatchString(normalized) ||
-		releaseTitleAudioCodecRE.MatchString(normalized) ||
-		releaseTitleSourceTagRE.MatchString(normalized)
-}
-
-func inspectionTitlesLookRelated(a, b string) bool {
-	a = normalizeReleaseSearchTitle(a)
-	b = normalizeReleaseSearchTitle(b)
-	if a == "" || b == "" {
-		return false
-	}
-	if a == b {
-		return true
-	}
-	aFields := strings.Fields(a)
-	bFields := strings.Fields(b)
-	if len(aFields) == 0 || len(bFields) == 0 {
-		return false
-	}
-	matches := 0
-	for _, left := range aFields {
-		for _, right := range bFields {
-			if left == right {
-				matches++
-				break
-			}
-		}
-	}
-	minFields := len(aFields)
-	if len(bFields) < minFields {
-		minFields = len(bFields)
-	}
-	return minFields > 0 && float64(matches)/float64(minFields) >= 0.6
-}
-
-func normalizeReleaseSearchTitle(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	v = strings.ReplaceAll(v, "_", " ")
-	v = strings.ReplaceAll(v, ".", " ")
-	v = strings.ReplaceAll(v, "-", " ")
-	return strings.Join(strings.Fields(v), " ")
-}
-
-func displayReleaseTitleStyle(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	v = strings.ReplaceAll(v, "_", " ")
-	v = strings.ReplaceAll(v, ".", " ")
-	v = releaseTitleMultiSpaceRE.ReplaceAllString(v, " ")
-	return strings.TrimSpace(v)
-}
-
-func releaseTitleStyle(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	v = strings.ReplaceAll(v, "\\", ".")
-	v = strings.ReplaceAll(v, "/", ".")
-	v = strings.ReplaceAll(v, "_", ".")
-	v = strings.ReplaceAll(v, " ", ".")
-	v = releaseTitleDotsRE.ReplaceAllString(v, ".")
-	return strings.Trim(v, ".")
-}
-
-func clampInspectionConfidence(v float64) float64 {
-	switch {
-	case v < 0:
-		return 0
-	case v > 1:
-		return 1
-	default:
-		return v
-	}
-}
-
 func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseID string) ([]IndexerExternalMatchSummary, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
@@ -4504,16 +4243,24 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 	if err != nil {
 		return err
 	}
-	best, ok := chooseBestInspectionTitleCandidate(sourceTitle, candidates)
+	inspectionInputs := make([]releasetitle.InspectionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		inspectionInputs = append(inspectionInputs, releasetitle.InspectionCandidate{
+			Source:     candidate.Source,
+			Value:      candidate.Value,
+			Confidence: candidate.Confidence,
+		})
+	}
+	best, ok := releasetitle.ChooseBestInspectionTitle(sourceTitle, inspectionInputs)
 	if !ok {
 		return nil
 	}
-	if !shouldAdoptInspectionTitleCandidate(sourceTitle, best) {
+	if !releasetitle.ShouldAdoptInspectionTitle(sourceTitle, best) {
 		return nil
 	}
 
-	displaySource := displayReleaseTitleStyle(sourceTitle)
-	if normalizeReleaseSearchTitle(best.DisplayTitle) == normalizeReleaseSearchTitle(displaySource) {
+	displaySource := releasetitle.DisplayTitleStyle(sourceTitle)
+	if releasetitle.NormalizeSearchTitle(best.DisplayTitle) == releasetitle.NormalizeSearchTitle(displaySource) {
 		return nil
 	}
 	if currentTitleSource != "" && currentTitleSource != "source" && currentTitleConfidence >= best.Confidence {
@@ -4540,7 +4287,7 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.Source),
 		best.Confidence,
-		normalizeReleaseSearchTitle(best.DisplayTitle),
+		releasetitle.NormalizeSearchTitle(best.DisplayTitle),
 		metadataUpdated,
 	)
 	if err != nil {
