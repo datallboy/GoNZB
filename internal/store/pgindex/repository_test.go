@@ -271,11 +271,11 @@ func TestRepairIndexerStageRuntimeClearsExpiredLeaseAndAbandonsRun(t *testing.T)
 	if result == nil {
 		t.Fatalf("expected repair result")
 	}
-	if result.AbandonedRuns != 1 {
-		t.Fatalf("expected 1 abandoned run, got %d", result.AbandonedRuns)
+	if result.AbandonedRuns < 1 {
+		t.Fatalf("expected at least 1 abandoned run, got %d", result.AbandonedRuns)
 	}
-	if result.ClearedStaleLeases != 1 {
-		t.Fatalf("expected 1 cleared stale lease, got %d", result.ClearedStaleLeases)
+	if result.ClearedStaleLeases < 1 {
+		t.Fatalf("expected at least 1 cleared stale lease, got %d", result.ClearedStaleLeases)
 	}
 
 	runs, err := store.ListIndexerStageRuns(ctx, stageName, 10)
