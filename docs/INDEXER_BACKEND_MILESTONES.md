@@ -495,7 +495,7 @@ Submodule responsibilities:
 
 Extend runtime indexing settings with:
 
-- `inspect_work_dir`
+- `inspect.work_dir`
 - inspect max bytes
 - inspect max archive depth
 - per-tool timeout
@@ -932,22 +932,23 @@ If needed for intermediate inspect rollups, add structured storage for release t
   - sources may include archive members, direct media filenames, and NFO text
   - must remain empty if no real local deobfuscation happened
 - `matched_media_title`
-  - canonical identity title from external enrichment such as PreDB or TMDB
-  - must stay distinct from local deobfuscation
+  - canonical identity title from external enrichment such as TMDB/TVDB
+  - must stay distinct from local deobfuscation and release-style scene names
 - `title`
   - final display title used by APIs and future UI
 - `title_source`
-  - provenance for `title`, such as `source`, `deobfuscated`, `archive_entry`, `media_filename`, `nfo`, `predb`, or `tmdb`
+  - provenance for `title`, such as `source`, `deobfuscated`, `archive_entry`, `media_filename`, `nfo`, or `predb`
 
 ### Title Precedence
 
 Choose `title` in this order:
 
 1. high-confidence primary non-sample media title derived from local inspect evidence
-2. high-confidence external matched media title
-3. `deobfuscated_title`
-4. cleaned `source_title`
-5. fallback release key or synthetic fallback only when nothing better exists
+2. `deobfuscated_title`
+3. cleaned `source_title`
+4. fallback release key or synthetic fallback only when nothing better exists
+
+Canonical external identity remains in `matched_media_title` and related enrichment fields. It should not replace a richer release-style `title` by default.
 
 For local inspect evidence, rank candidates in this order:
 
@@ -1029,9 +1030,9 @@ Low-confidence sources that must not become deobfuscated titles by themselves:
 6. Set `deobfuscated_title` only when local inspect evidence produces a clearly better readable title than the source naming.
 
 7. Keep external enrichment titles separate:
-   - PreDB/TMDB may populate `matched_media_title`
-   - external matches may improve `title` only when their confidence is high enough
-   - external matches must not overwrite raw source naming
+   - TMDB/TVDB may populate `matched_media_title`
+   - PreDB may improve `deobfuscated_title` / `title` only when the current title still comes from weak source naming
+   - canonical external matches should not overwrite raw source naming or richer release-style local titles by default
 
 8. Extend release APIs so list/detail responses include:
    - `source_title`
@@ -1192,6 +1193,255 @@ Add tests for:
 ### Suggested Commit
 
 `test(indexing): add supervisor grouping inspection and enrichment fixtures`
+
+---
+
+## Post-Milestone 10: Cleanup, Refactor, And Stabilization
+
+### Purpose
+
+After Milestone 10 lands, use the new regression coverage as a safety net for targeted cleanup and stabilization work that makes future indexer feature work easier and less risky.
+
+These chunks are intentionally separate from Milestone 10 so test/fixture work can land first and then protect the cleanup passes that follow.
+
+### Sequencing Rules
+
+- Do not start these chunks until Milestone 10 fixture coverage is in place.
+- Keep each chunk focused enough to land in one reviewable commit.
+- Prefer structural cleanup that reduces future expansion cost, not cosmetic churn.
+- Avoid broad package moves unless a chunk explicitly calls for it.
+
+## Chunk A: Fixture Harness And Test Utilities
+
+### Goal
+
+Turn the Milestone 10 fixtures into a reusable, low-friction test harness for future indexer backend work.
+
+### Concrete Deliverables
+
+- Create reusable fixture builders/loaders for:
+  - article header sets
+  - assembled binaries
+  - release candidates
+  - inspection artifacts
+  - enrichment inputs and outputs
+- Add helper assertions for:
+  - stage state and recent runs
+  - release rollups and tags
+  - per-submodule side effects
+- Reduce repeated setup boilerplate across indexer backend tests
+- Document how new fixture scenarios should be added
+
+### Code Areas
+
+- `internal/indexing/*_test.go`
+- `internal/store/pgindex/*_test.go`
+- shared test helper packages if needed
+
+### Acceptance Criteria
+
+- New indexer tests can add realistic scenarios without duplicating large setup blocks
+- Stage-control, rerun, and release-rollup assertions use common helpers
+- Fixture additions for future milestones/features are straightforward
+
+### Suggested Commit
+
+`test(indexing): add reusable fixture harness for indexer backend`
+
+## Chunk B: Supervisor Execution Semantics
+
+### Goal
+
+Tighten supervisor behavior so configured stage controls are not just tracked state but meaningful runtime behavior where practical.
+
+### Concrete Deliverables
+
+- Decide and implement clear semantics for:
+  - `concurrency`
+  - `backoff_seconds`
+  - lease recovery timing
+  - rebuild behavior when settings change mid-run
+- Add tests for:
+  - retry/backoff after failure
+  - concurrent stage workers where supported
+  - settings reload behavior during active stage execution
+- Keep one-shot commands and long-running workers behaviorally aligned
+
+### Code Areas
+
+- `internal/indexing/supervisor`
+- `internal/runtime/wiring/indexer_runtime.go`
+- `internal/runtime/wiring/runtime_modules.go`
+- `internal/store/pgindex/repository.go`
+
+### Acceptance Criteria
+
+- Stage concurrency/backoff behavior is explicit and tested
+- Runtime settings changes produce predictable next-run behavior
+- Lease recovery semantics remain restart-safe
+
+### Suggested Commit
+
+`refactor(supervisor): tighten stage execution and reload semantics`
+
+## Chunk C: Settings Surface Consolidation
+
+### Goal
+
+Keep bootstrap config, runtime-editable settings, docs, and example config aligned so future indexing settings changes do not drift across multiple shapes.
+
+### Concrete Deliverables
+
+- Reduce duplicate settings translation logic where practical
+- Keep nested indexing settings as the authoritative model
+- Add tests that assert config-to-runtime and runtime-to-config round-tripping for indexing settings
+- Audit docs/examples for stale key names or old fallback paths
+- Ensure secret-bearing provider settings stay redacted consistently on read
+
+### Code Areas
+
+- `internal/app/settings_types.go`
+- `internal/app/settings_helpers.go`
+- `internal/infra/config/config.go`
+- `internal/store/settings/*`
+- docs and config examples
+
+### Acceptance Criteria
+
+- One clear indexing settings shape is documented and tested
+- Runtime settings API payloads match the intended config structure
+- Settings additions in future work require minimal translation glue
+
+### Suggested Commit
+
+`refactor(settings): consolidate nested indexer settings surface`
+
+## Chunk D: Runtime Wiring And Stage Construction Cleanup
+
+### Goal
+
+Reduce friction in the runtime wiring layer so adding or modifying stages later does not require repetitive edits across multiple files.
+
+### Concrete Deliverables
+
+- Simplify stage construction in indexer runtime wiring
+- Extract repeated inspect/enrich stage option building where useful
+- Make stage registration easier to extend without copy/paste drift
+- Clarify boundaries between:
+  - config derivation
+  - runtime construction
+  - module reload behavior
+
+### Code Areas
+
+- `internal/runtime/wiring/indexer_runtime.go`
+- `internal/runtime/wiring/indexer_scheduler.go`
+- `internal/runtime/wiring/runtime_modules.go`
+- `internal/indexing/service.go`
+
+### Acceptance Criteria
+
+- Adding a new stage or modifying stage settings requires fewer coordinated edits
+- Runtime wiring is easier to understand and extend
+- Stage setup logic is covered by focused tests
+
+### Suggested Commit
+
+`refactor(runtime): simplify indexer stage wiring and construction`
+
+## Chunk E: Package Boundary And Expansion Readiness Review
+
+### Goal
+
+Do a final targeted pass on package seams introduced during the branch so future feature additions can extend the backend without another broad cleanup first.
+
+### Concrete Deliverables
+
+- Review whether responsibilities are in the right package for:
+  - match/grouping
+  - inspect shared helpers
+  - enrichment query derivation
+  - runtime settings translation
+- Extract small internal helper packages only where they reduce real coupling
+- Remove dead paths or temporary glue left behind by the branch where safe
+- Add README or short package notes only where they materially improve handoff clarity
+
+### Code Areas
+
+- `internal/indexing/match`
+- `internal/indexing/inspect`
+- `internal/indexing/enrich/*`
+- `internal/runtime/wiring`
+- `internal/app`
+
+### Acceptance Criteria
+
+- Future feature work can extend stages/submodules without tripping over branch-era glue code
+- Package responsibilities are clearer
+- Cleanup remains incremental rather than a broad architectural rewrite
+
+### Suggested Commit
+
+`refactor(indexing): clean seams for future backend expansion`
+
+## Chunk F: Database Footprint And Retention Review
+
+### Goal
+
+Measure why the PostgreSQL indexer catalog is growing quickly, decide what raw and derived data is truly worth keeping, and define a safe retention/reclamation plan before the next release.
+
+### Concrete Deliverables
+
+- Produce a table and column size inventory for the heaviest indexer tables, including:
+  - `article_headers`
+  - `binary_parts`
+  - `release_file_articles`
+  - inspection/enrichment tables with `JSONB` payloads
+- Review whether these columns are still necessary at full retention:
+  - `article_headers.raw_overview_json`
+  - `article_headers.xref`
+  - duplicated poster/source fields that can already be derived elsewhere
+  - large low-value `JSONB` payloads or summary blobs
+- Define retention tiers for:
+  - raw scraped headers
+  - assembly-level rows
+  - release catalog rows
+  - inspection/enrichment evidence
+- Decide whether old raw rows should be:
+  - deleted
+  - archived to cheaper tables/partitions
+  - compacted into release-level summaries
+- Add operator-facing SQL/docs for:
+  - measuring table, index, and TOAST growth
+  - identifying dead tuples/bloat
+  - verifying reclaim after cleanup
+- Document the DB-level reclamation path after deletes, for example:
+  - `VACUUM (ANALYZE)`
+  - `VACUUM FULL` or `pg_repack` when lock/space tradeoffs are acceptable
+  - reindex only where measurements justify it
+
+### Code Areas
+
+- `internal/store/pgindex/migrations`
+- `internal/store/pgindex/repository.go`
+- `docs/INDEXER_TEST_QUERIES.md`
+- runtime/operator docs if retention settings or maintenance commands are added
+
+### Acceptance Criteria
+
+- We know which tables and columns dominate storage in a realistic dev dataset
+- A concrete keep/prune/archive policy exists for raw header-era data versus release-era data
+- Any schema/settings changes needed for retention are identified and scoped into follow-up commits
+- Operators have a documented way to both trim data and reclaim disk space safely
+
+### Suggested Commit
+
+`docs(pgindex): add database footprint and retention review chunk`
+
+## Release Formation Reference
+
+- Current snapshot and proposed release-formation redesign:
+  - `docs/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
 
 ## PostgreSQL Schema Roadmap
 

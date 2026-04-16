@@ -210,6 +210,10 @@ Storage:
 
 - PostgreSQL catalog/index state
 
+Quick terminology reference:
+
+- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the short explanation of how `article_headers`, `binaries`, `release_files`, and `releases` relate to each other
+
 Runtime notes:
 
 - the usenet indexer runtime now derives a dedicated runtime config before runtime construction
