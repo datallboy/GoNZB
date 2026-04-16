@@ -233,6 +233,29 @@ Work:
   - defer from API/UI but keep in schema
   - remove/migrate later
 
+Current classification for stabilization:
+
+- keep for near-term product value:
+  - none of the listed low-value fields currently clear the bar for core API/UI exposure
+- defer from API/UI but keep in schema for now:
+  - `matched_media_title`
+  - `tmdb_id`
+  - `tvdb_id`
+  - `external_media_type`
+  - `original_media_title`
+  - `external_year`
+  - `season_number`
+  - `episode_number`
+  - `season_episode_source`
+- remove/migrate later:
+  - after API/UI stabilization, move external-id and season/episode enrichment behind side storage instead of keeping them on the core `releases` row
+
+Why this classification:
+
+- these fields have some enrichment and repair value today
+- they do not belong in the minimum stable release contract yet
+- deferring them avoids hardening weak or sparsely-populated schema choices before the core model is stable
+
 ### 8. Clean Up Stage And Logging Debt
 
 Problem:

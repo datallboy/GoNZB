@@ -195,6 +195,21 @@ These should be classified as keep, move, or defer before API/UI work hardens th
 - season/episode columns
 - optional media rollups that could move to side storage
 
+Current stabilization classification:
+
+- `matched_media_title`:
+  - defer from API/UI
+  - keep in schema temporarily while inspection and enrichment continue to settle
+- external-id columns (`tmdb_id`, `tvdb_id`, `external_media_type`, `original_media_title`, `external_year`):
+  - defer from API/UI
+  - plan to move behind `release_external_ids`
+- season/episode columns (`season_number`, `episode_number`, `season_episode_source`):
+  - defer from API/UI
+  - keep only as enrichment-side data unless the stable release core proves it needs them
+- optional media rollups:
+  - keep only the compact fields that already support current release quality summaries
+  - move richer metadata behind side tables rather than widening `releases`
+
 ## Query And Index Rules
 
 1. Keep indexes only for active access patterns.
