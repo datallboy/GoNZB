@@ -109,6 +109,7 @@ type UsenetIndexStore interface {
 	FailIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
 	PauseIndexerStage(ctx context.Context, stageName string) error
 	ResumeIndexerStage(ctx context.Context, stageName string) error
+	RepairIndexerStageRuntime(ctx context.Context) (*pgindex.IndexerStageRepairResult, error)
 	ListIndexerStageStates(ctx context.Context) ([]pgindex.IndexerStageState, error)
 	ListIndexerStageRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
 	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)

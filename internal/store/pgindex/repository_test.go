@@ -232,6 +232,72 @@ func TestCompleteIndexerStageRunAllowsImmediateRerunClaim(t *testing.T) {
 	}
 }
 
+func TestRepairIndexerStageRuntimeClearsExpiredLeaseAndAbandonsRun(t *testing.T) {
+	store := openTestStore(t)
+	stageName := uniqueTestStageName("repair_runtime")
+	cleanupTestStage(t, store, stageName)
+	t.Cleanup(func() { cleanupTestStage(t, store, stageName) })
+
+	ctx := context.Background()
+	claim, err := store.ClaimIndexerStage(ctx, IndexerStageClaimRequest{
+		StageName:     stageName,
+		Owner:         "owner-a",
+		Enabled:       true,
+		Interval:      time.Minute,
+		BatchSize:     10,
+		Concurrency:   1,
+		LeaseDuration: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("claim stage run: %v", err)
+	}
+	if claim == nil || !claim.Claimed || claim.Run == nil {
+		t.Fatalf("expected claimed run, got %#v", claim)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE indexer_stage_state
+		SET lease_expires_at = NOW() - INTERVAL '1 second'
+		WHERE stage_name = $1`,
+		stageName,
+	); err != nil {
+		t.Fatalf("expire stage lease: %v", err)
+	}
+
+	result, err := store.RepairIndexerStageRuntime(ctx)
+	if err != nil {
+		t.Fatalf("repair indexer stage runtime: %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected repair result")
+	}
+	if result.AbandonedRuns != 1 {
+		t.Fatalf("expected 1 abandoned run, got %d", result.AbandonedRuns)
+	}
+	if result.ClearedStaleLeases != 1 {
+		t.Fatalf("expected 1 cleared stale lease, got %d", result.ClearedStaleLeases)
+	}
+
+	runs, err := store.ListIndexerStageRuns(ctx, stageName, 10)
+	if err != nil {
+		t.Fatalf("list stage runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "abandoned" {
+		t.Fatalf("expected abandoned repaired run, got %#v", runs)
+	}
+	if !strings.Contains(runs[0].ErrorText, "repair cleanup") {
+		t.Fatalf("expected repair cleanup error text, got %q", runs[0].ErrorText)
+	}
+
+	state := findStageState(t, store, stageName)
+	if state.LeaseOwner != "" {
+		t.Fatalf("expected cleared lease owner, got %q", state.LeaseOwner)
+	}
+	if state.LeaseExpiresAt != nil {
+		t.Fatalf("expected cleared lease expiry, got %+v", state.LeaseExpiresAt)
+	}
+}
+
 func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing.T) {
 	store := openTestStore(t)
 	releaseID := seedTestRelease(t, store, "mixed_password_rollup")

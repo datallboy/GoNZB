@@ -208,17 +208,6 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)
 		formed++
-
-		s.log.Debug(
-			"release: release_id=%s group=%s title=%q files=%d confidence=%.2f completion_pct=%.2f availability_score=%.2f",
-			releaseID,
-			record.GroupName,
-			record.Title,
-			len(files),
-			record.MatchConfidence,
-			record.CompletionPct,
-			record.AvailabilityScore,
-		)
 	}
 
 	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {

@@ -605,6 +605,11 @@ type IndexerStageFinishRequest struct {
 	MetricsJSON json.RawMessage
 }
 
+type IndexerStageRepairResult struct {
+	AbandonedRuns      int64 `json:"abandoned_runs"`
+	ClearedStaleLeases int64 `json:"cleared_stale_leases"`
+}
+
 type IndexerOverview struct {
 	ReleaseCount          int64 `json:"release_count"`
 	BinaryCount           int64 `json:"binary_count"`
@@ -5842,6 +5847,62 @@ func (s *Store) PauseIndexerStage(ctx context.Context, stageName string) error {
 
 func (s *Store) ResumeIndexerStage(ctx context.Context, stageName string) error {
 	return s.setIndexerStagePaused(ctx, stageName, false)
+}
+
+func (s *Store) RepairIndexerStageRuntime(ctx context.Context) (*IndexerStageRepairResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin repair indexer stage runtime tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	repair := &IndexerStageRepairResult{}
+
+	abandonedResult, err := tx.ExecContext(ctx, `
+		UPDATE indexer_stage_runs r
+		SET status = 'abandoned',
+		    error_text = CASE
+		    	WHEN r.error_text = '' THEN 'lease expired before repair cleanup'
+		    	ELSE r.error_text
+		    END,
+		    heartbeat_at = COALESCE(r.heartbeat_at, NOW()),
+		    finished_at = COALESCE(r.finished_at, NOW())
+		FROM indexer_stage_state s
+		WHERE s.last_run_id = r.id
+		  AND r.status = 'running'
+		  AND s.lease_expires_at IS NOT NULL
+		  AND s.lease_expires_at < NOW()`)
+	if err != nil {
+		return nil, fmt.Errorf("abandon stale indexer stage runs: %w", err)
+	}
+	if repair.AbandonedRuns, err = abandonedResult.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("abandon stale indexer stage runs rows affected: %w", err)
+	}
+
+	clearedResult, err := tx.ExecContext(ctx, `
+		UPDATE indexer_stage_state
+		SET lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE lease_owner <> ''
+		  AND lease_expires_at IS NOT NULL
+		  AND lease_expires_at < NOW()`)
+	if err != nil {
+		return nil, fmt.Errorf("clear stale indexer stage leases: %w", err)
+	}
+	if repair.ClearedStaleLeases, err = clearedResult.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("clear stale indexer stage leases rows affected: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit repair indexer stage runtime tx: %w", err)
+	}
+
+	return repair, nil
 }
 
 func (s *Store) ListIndexerStageStates(ctx context.Context) ([]IndexerStageState, error) {
