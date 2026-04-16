@@ -448,6 +448,66 @@ func TestUpsertReleaseNormalizesBlankFamilyIdentity(t *testing.T) {
 	}
 }
 
+func TestUpsertBinaryMirrorsReleaseFamilyKeyIntoLegacyReleaseKey(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.identity.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "matcher trace key",
+		ReleaseFamilyKey:  "family key",
+		ReleaseKey:        "legacy source alias",
+		BinaryKey:         fmt.Sprintf("binary-identity-%d", time.Now().UnixNano()),
+		BinaryName:        "example.release.2026.mkv",
+		FileName:          "example.release.2026.mkv",
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	var releaseKey string
+	var sourceReleaseKey string
+	var releaseFamilyKey string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT release_key, source_release_key, release_family_key
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&releaseKey, &sourceReleaseKey, &releaseFamilyKey); err != nil {
+		t.Fatalf("query binary identity: %v", err)
+	}
+
+	if releaseFamilyKey != "family key" {
+		t.Fatalf("expected release_family_key to remain family key, got %q", releaseFamilyKey)
+	}
+	if releaseKey != "family key" {
+		t.Fatalf("expected legacy release_key mirror family key, got %q", releaseKey)
+	}
+	if sourceReleaseKey != "matcher trace key" {
+		t.Fatalf("expected source_release_key matcher trace to be preserved, got %q", sourceReleaseKey)
+	}
+}
+
 func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

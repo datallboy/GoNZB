@@ -140,12 +140,17 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 }
 
 func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate) (int, int, int, int, error) {
-	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.ReleaseKey)
+	familyKey := candidateFamilyKey(candidate)
+	if familyKey == "" {
+		return 0, 0, 0, 0, fmt.Errorf("release family key is required")
+	}
+
+	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey)
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("list binaries for release candidate: %w", err)
 	}
 	if len(binaries) == 0 {
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.ReleaseKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("delete empty stale releases: %w", err)
 		}
 		return 0, 0, 0, 0, nil
@@ -165,7 +170,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
 		if err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("list release title candidates for %s: %w", candidate.ReleaseKey, err)
+			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
 		}
 
 		record := buildReleaseRecord(candidate, cluster, titleCandidates)
@@ -216,11 +221,18 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		)
 	}
 
-	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.ReleaseKey, keepGroupNames); err != nil {
-		return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("delete stale release groups for %s: %w", candidate.ReleaseKey, err)
+	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
+		return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
 	}
 
 	return formed, skippedFragments, skippedConfidence, skippedCompletion, nil
+}
+
+func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
+	if key := strings.TrimSpace(candidate.ReleaseFamilyKey); key != "" {
+		return key
+	}
+	return strings.TrimSpace(candidate.ReleaseKey)
 }
 
 func shouldPersistCluster(cluster releaseCluster) bool {
