@@ -388,6 +388,66 @@ func TestUpsertReleaseReplacesAvailabilityScoreOnLaterWorseSnapshot(t *testing.T
 	}
 }
 
+func TestUpsertReleaseNormalizesBlankFamilyIdentity(t *testing.T) {
+	store := openTestStore(t)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	releaseKey := fmt.Sprintf("test-release-identity-%d", now.UnixNano())
+	groupName := fmt.Sprintf("alt.binaries.identity.%d", now.UnixNano())
+
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              releaseKey,
+		GroupName:               groupName,
+		Title:                   "Identity Repair Example 2026",
+		SourceTitle:             "Identity.Repair.Example.2026",
+		TitleSource:             "source",
+		TitleConfidence:         0.90,
+		SearchTitle:             "identity repair example 2026",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  "poster-a",
+		SizeBytes:               1000,
+		PostedAt:                &now,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.90,
+		IdentityStatus:          "identified",
+		PasswordState:           "unknown",
+		ArchiveCount:            1,
+		VideoCount:              1,
+		AudioCount:              1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       50,
+		MediaQualityTier:        "good",
+		IdentityConfidenceScore: 50,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release with blank family identity: %v", err)
+	}
+
+	var sourceReleaseKey string
+	var releaseFamilyKey string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT source_release_key, release_family_key
+		FROM releases
+		WHERE release_id = $1`, releaseID,
+	).Scan(&sourceReleaseKey, &releaseFamilyKey); err != nil {
+		t.Fatalf("query release identity: %v", err)
+	}
+
+	if sourceReleaseKey != releaseKey {
+		t.Fatalf("expected source_release_key fallback %q, got %q", releaseKey, sourceReleaseKey)
+	}
+	if releaseFamilyKey != releaseKey {
+		t.Fatalf("expected release_family_key fallback %q, got %q", releaseKey, releaseFamilyKey)
+	}
+}
+
 func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

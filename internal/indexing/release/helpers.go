@@ -265,6 +265,7 @@ func scoreCluster(candidate pgindex.ReleaseCandidate, cluster releaseCluster) fl
 func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseCluster, inspectCandidates []pgindex.ReleaseTitleCandidate) pgindex.ReleaseRecord {
 	sourceTitle := representativeTitle(candidate, cluster.Binaries)
 	titleInfo := resolveReleaseTitle(sourceTitle, cluster.Binaries, inspectCandidates)
+	familyKey := releaseFamilyKey(candidate, cluster.Binaries)
 
 	identityScore := computeIdentityConfidenceScore(cluster, titleInfo.TitleConfidence)
 	identityStatus := classifyIdentityStatus(identityScore, sourceTitle, titleInfo.DeobfuscatedTitle, titleInfo.TitleSource, titleInfo.TitleConfidence)
@@ -290,9 +291,9 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 
 	return pgindex.ReleaseRecord{
 		ProviderID:              candidate.ProviderID,
-		SourceReleaseKey:        dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey),
-		ReleaseFamilyKey:        releaseFamilyKey(candidate, cluster.Binaries),
-		ReleaseKey:              releaseFamilyKey(candidate, cluster.Binaries),
+		SourceReleaseKey:        dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey, familyKey),
+		ReleaseFamilyKey:        familyKey,
+		ReleaseKey:              familyKey,
 		GroupName:               deriveGroupName(candidate, cluster.Binaries),
 		Title:                   finalTitle,
 		SourceTitle:             titleInfo.SourceTitle,
@@ -510,9 +511,9 @@ func bestBinaryStem(binary pgindex.BinarySummary) string {
 	return normalizeStem(name)
 }
 
-func dominantSourceReleaseKey(binaries []pgindex.BinarySummary, fallback string) string {
+func dominantSourceReleaseKey(binaries []pgindex.BinarySummary, fallbacks ...string) string {
 	counts := make(map[string]int)
-	best := strings.TrimSpace(fallback)
+	best := ""
 	bestCount := 0
 	for _, binary := range binaries {
 		key := strings.TrimSpace(binary.SourceReleaseKey)
@@ -523,6 +524,14 @@ func dominantSourceReleaseKey(binaries []pgindex.BinarySummary, fallback string)
 		if counts[key] > bestCount {
 			best = key
 			bestCount = counts[key]
+		}
+	}
+	if best != "" {
+		return best
+	}
+	for _, fallback := range fallbacks {
+		if value := strings.TrimSpace(fallback); value != "" {
+			return value
 		}
 	}
 	return best
