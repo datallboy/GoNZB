@@ -526,6 +526,6 @@ Future coverage that is still valuable:
 
 ## Related Documents
 
-- [MODULAR_REFACTOR.md](MODULAR_REFACTOR.md)
+- [archive/MODULAR_REFACTOR.md](archive/MODULAR_REFACTOR.md)
 - [README.md](../README.md)
 - [INDEXER_PLAN.md](archive/INDEXER_PLAN.md)

@@ -7,6 +7,12 @@ This document has two jobs:
 1. capture how release formation currently works in code
 2. define a concrete target plan for how release formation should work next
 
+Use this as the primary release-design reference during stabilization.
+
+Use `docs/active/INDEXER_STABILIZATION_WORKLIST.md` for the active execution backlog.
+
+Use `docs/active/INDEXER_SCHEMA_TARGET.md` for the intended schema end state.
+
 The main reason this exists is that the current `release_key` is doing too many jobs at once:
 
 - early matcher grouping hint
@@ -235,6 +241,8 @@ These concepts should not share one string:
 - unique final release identity
 
 ## Target Plan
+
+This target plan is the end goal for how release formation should behave once stabilization is complete.
 
 ## Guiding Rules
 

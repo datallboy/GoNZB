@@ -6,6 +6,19 @@ This document turns the current release/database assessment into a commit-sized 
 
 The goal is not to add new capabilities. The goal is to make the current indexer model trustworthy, smaller, easier to reason about, and easier to expose safely.
 
+This is the primary execution-plan document for the current stabilization phase.
+
+Related docs:
+
+- target release-formation design:
+  - `docs/active/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
+- target schema and table boundaries:
+  - `docs/active/INDEXER_SCHEMA_TARGET.md`
+- short current-state terminology reference:
+  - `docs/INDEXER_HOW_IT_WORKS.md`
+- docs map and which files are active vs reference:
+  - `docs/active/INDEXER_FOUNDATION_DOCS.md`
+
 ## Current Snapshot
 
 Live DB snapshot from 2026-04-16:
@@ -34,6 +47,49 @@ Important live correctness notes:
 3. shrink hot tables and indexes where the data is redundant or debug-only
 4. move non-essential enrichment out of the critical path
 5. leave a schema and codebase that are safe to build API/UI on top of
+
+## Definition Of Stable
+
+The stabilization phase should not be considered done until these conditions are true:
+
+### Release Formation
+
+- blank `source_release_key` rows in `releases`: `0`
+- blank `release_family_key` rows in `releases`: `0`
+- `release_family_key` fan-out only exists for intentional repost / separate posting-wave cases
+- multi-file family fragmentation is rare enough that canary families consistently assemble into one logical release row
+- release clustering is using persisted timing data, not mostly-null timing fields
+
+### Data Quality
+
+- `binaries.posted_at` is populated for the overwhelming majority of assembled binaries
+- `release_files.posted_at` is populated for the overwhelming majority of release files backed by binaries
+- release title fields have a clear source-of-truth order and no longer depend on ad hoc store-side overrides
+
+### Schema And Storage
+
+- duplicate hot-path identity columns have a defined final role or have been removed
+- redundant hot indexes are removed after query-plan validation
+- bulky debug payloads are no longer inflating the hottest operational tables unnecessarily
+
+### Operational Health
+
+- stage state can be repaired/rebuilt with a documented runbook
+- logs no longer grow explosively from expected release/inspect behavior
+- we have a small set of validation queries that can quickly confirm release-health after changes
+
+## Primary Execution Order
+
+These are the chunks we should execute in order unless a later item is required to unblock an earlier one:
+
+1. binary timing persistence and backfill
+2. blank family identity fix and repair
+3. identity cutover and duplicate-index cleanup
+4. store-vs-domain release logic cleanup
+5. derived-table slimming and debug-evidence normalization
+6. raw-header index cleanup
+7. release-column trim and enrichment boundary cleanup
+8. stage/logging operational cleanup
 
 ## Commit-Sized Work Plan
 
@@ -272,6 +328,105 @@ Recommendation:
 
 - continue using dimension tables when values are repeated at scale
 - avoid embedding more repeated long strings directly on hot rows unless they are part of a stable key
+
+## Target Schema Summary
+
+The intended stable schema shape is documented in:
+
+- `docs/active/INDEXER_SCHEMA_TARGET.md`
+
+The short version is:
+
+- `article_headers`: raw provider scrape state
+- `binaries`: compact assembled-file identity and completeness state
+- side tables for bulky debug evidence and optional enrichment
+- `releases`: compact release identity and release-level readiness
+- optional release enrichment split out from the core release row where appropriate
+
+The important schema rule is:
+
+- keep hot identity rows small
+- move debug, provenance history, and optional enrichment to side tables once they no longer belong in the critical path
+
+## Removal And Deprecation Plan
+
+These removals should happen only after the replacement path is active and validated.
+
+### Identity
+
+- stop treating legacy `release_key` as a separate operational identity once `release_family_key` is fully authoritative
+- remove duplicate `binaries.release_key` hot-path use after cutover
+- drop duplicate indexes that only support the retired identity path
+
+### Debug Payloads
+
+- if `grouping_evidence_json` moves to side storage, leave only compact summary/confidence state on `binaries`
+
+### Release Columns
+
+- classify underused release columns as:
+  - core and keep
+  - optional and move behind enrichment tables
+  - remove from near-term API/UI surface
+
+### Indexes
+
+- validate usage before dropping any index
+- prefer removing one redundant index at a time with measurement before/after
+
+## Validation Queries And Health Checks
+
+We should keep a short repeatable validation checklist after each release-formation or schema change.
+
+### Release Identity Checks
+
+- blank release-family rows
+- blank source-release rows
+- release-family values with more than one release row
+- release-family values with only singleton multi-file fragments
+
+### Release Quality Checks
+
+- release count vs complete release count
+- average `file_count`
+- average `expected_file_count`
+- releases with inspect-derived titles
+- releases still stuck on `title_source = 'source'`
+
+### Storage Checks
+
+- top tables by `pg_total_relation_size`
+- top indexes by size on `article_headers`, `binaries`, and `releases`
+- check whether expected cleanup actually reclaimed space
+
+### Runtime Checks
+
+- stale or abandoned stage runs
+- running stages with stale heartbeats
+- whether assemble/release/inspect are producing eligible work
+
+## Rebuild And Repair Procedure
+
+Any stabilization chunk that changes identity, clustering, or release persistence should follow a standard repair path.
+
+1. pause or stop active assemble/release/inspect workers
+2. apply migrations
+3. backfill any required derived fields
+4. clear only the derived state that is invalidated by the change
+5. rerun `assemble`, then `release`, then inspect stages
+6. run the validation queries
+7. only resume normal background processing after the health checks look correct
+
+Important rule:
+
+- keep `article_headers` unless we have explicitly decided raw scrape history itself is invalid
+
+## Guideline Rules For Execution
+
+- use this document as the active backlog, not `INDEXER_BACKEND_MILESTONES.md`
+- keep commits narrow enough that each chunk can be validated independently
+- update the "Current Snapshot" and any success metrics when a chunk materially changes the live state
+- when a chunk changes the intended end state, update the target design docs in the same commit
 
 ## What I Would Not Do Yet
 

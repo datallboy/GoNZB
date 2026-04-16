@@ -1441,7 +1441,7 @@ Measure why the PostgreSQL indexer catalog is growing quickly, decide what raw a
 ## Release Formation Reference
 
 - Current snapshot and proposed release-formation redesign:
-  - `docs/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
+  - `docs/active/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
 
 ## PostgreSQL Schema Roadmap
 
