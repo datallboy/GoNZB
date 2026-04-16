@@ -388,6 +388,162 @@ func TestUpsertReleaseReplacesAvailabilityScoreOnLaterWorseSnapshot(t *testing.T
 	}
 }
 
+func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.refresh.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	earliest := time.Date(2026, 4, 16, 10, 5, 0, 0, time.UTC)
+	later := earliest.Add(12 * time.Minute)
+	suffix := time.Now().UnixNano()
+	inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 101,
+			MessageID:     fmt.Sprintf("<binary-refresh-%d-1@test>", suffix),
+			Subject:       `Test Release [1/2] - "test.7z.001" yEnc (1/20)`,
+			Poster:        posterName,
+			DateUTC:       &earliest,
+			Bytes:         500,
+			Lines:         10,
+		},
+		{
+			ArticleNumber: 102,
+			MessageID:     fmt.Sprintf("<binary-refresh-%d-2@test>", suffix),
+			Subject:       `Test Release [1/2] - "test.7z.001" yEnc (2/20)`,
+			Poster:        posterName,
+			DateUTC:       &later,
+			Bytes:         700,
+			Lines:         12,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+	if inserted != 2 {
+		t.Fatalf("expected 2 inserted headers, got %d", inserted)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT id, article_number
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		ORDER BY article_number`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query article headers: %v", err)
+	}
+	defer rows.Close()
+
+	type articleRow struct {
+		id            int64
+		articleNumber int64
+	}
+	articles := make([]articleRow, 0, 2)
+	for rows.Next() {
+		var item articleRow
+		if err := rows.Scan(&item.id, &item.articleNumber); err != nil {
+			t.Fatalf("scan article header: %v", err)
+		}
+		articles = append(articles, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate article headers: %v", err)
+	}
+	if len(articles) != 2 {
+		t.Fatalf("expected 2 stored article headers, got %d", len(articles))
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  "test-release-source",
+		ReleaseFamilyKey:  "test-release-family",
+		FileFamilyKey:     "test-file-family",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "test",
+		PostingBucket:     "20260416-1",
+		IsMainPayload:     true,
+		ReleaseKey:        "test-release-family",
+		ReleaseName:       "Test Release",
+		BinaryKey:         fmt.Sprintf("test-release-source::binary-%d", suffix),
+		BinaryName:        "test.7z.001",
+		FileName:          "test.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        20,
+		MatchConfidence:   0.90,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	for idx, article := range articles {
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: article.id,
+			MessageID:       fmt.Sprintf("<part-%d-%d@test>", suffix, idx+1),
+			PartNumber:      idx + 1,
+			TotalParts:      20,
+			SegmentBytes:    int64(500 + idx),
+			FileName:        "test.7z.001",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", idx, err)
+		}
+	}
+
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats: %v", err)
+	}
+
+	var gotPostedAt time.Time
+	var firstArticleNumber int64
+	var lastArticleNumber int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT posted_at, first_article_number, last_article_number
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&gotPostedAt, &firstArticleNumber, &lastArticleNumber); err != nil {
+		t.Fatalf("query refreshed binary: %v", err)
+	}
+	if !gotPostedAt.Equal(earliest) {
+		t.Fatalf("expected earliest posted_at %s, got %s", earliest, gotPostedAt.UTC())
+	}
+	if firstArticleNumber != 101 || lastArticleNumber != 102 {
+		t.Fatalf("expected article number range 101-102, got %d-%d", firstArticleNumber, lastArticleNumber)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

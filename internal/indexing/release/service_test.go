@@ -368,6 +368,40 @@ func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
 	}
 }
 
+func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{})
+	postedAt := time.Date(2026, 4, 16, 14, 0, 0, 0, time.UTC)
+
+	files, err := svc.buildReleaseFiles(context.Background(), releaseCluster{
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:      1,
+				FileName:      "release.7z.001",
+				PostedAt:      &postedAt,
+				ObservedParts: 1,
+				TotalBytes:    100,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one release file, got %d", len(files))
+	}
+	if files[0].PostedAt == nil {
+		t.Fatalf("expected file posted_at to be preserved")
+	}
+	if !files[0].PostedAt.Equal(postedAt) {
+		t.Fatalf("expected file posted_at %s, got %s", postedAt, files[0].PostedAt.UTC())
+	}
+}
+
 func TestRunOnceSkipsLowConfidenceReleaseBelowThreshold(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{

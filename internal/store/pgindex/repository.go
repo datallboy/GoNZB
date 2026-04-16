@@ -19,16 +19,16 @@ import (
 )
 
 var (
-	releaseTitleMultiSpaceRE  = regexp.MustCompile(`\s+`)
-	releaseTitleSeparatorRE   = regexp.MustCompile(`[._\-]+`)
-	releaseTitleResolutionRE  = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
-	releaseTitleVideoCodecRE  = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
-	releaseTitleAudioCodecRE  = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
-	releaseTitleSourceTagRE   = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
-	releaseTitleNumericNoise  = regexp.MustCompile(`^[a-f0-9]{8,}$`)
-	releaseTitleLongOpaqueRE  = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
-	releaseTitleDotsRE        = regexp.MustCompile(`\.+`)
-	releaseTitleYearLineRE    = regexp.MustCompile(`\b(19|20)\d{2}\b`)
+	releaseTitleMultiSpaceRE = regexp.MustCompile(`\s+`)
+	releaseTitleSeparatorRE  = regexp.MustCompile(`[._\-]+`)
+	releaseTitleResolutionRE = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
+	releaseTitleVideoCodecRE = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
+	releaseTitleAudioCodecRE = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
+	releaseTitleSourceTagRE  = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
+	releaseTitleNumericNoise = regexp.MustCompile(`^[a-f0-9]{8,}$`)
+	releaseTitleLongOpaqueRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	releaseTitleDotsRE       = regexp.MustCompile(`\.+`)
+	releaseTitleYearLineRE   = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 )
 
 type ArticleHeader struct {
@@ -1499,6 +1499,7 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 		    total_bytes = agg.total_bytes,
 		    first_article_number = agg.first_article_number,
 		    last_article_number = agg.last_article_number,
+		    posted_at = COALESCE(agg.posted_at, b.posted_at),
 		    updated_at = NOW()
 		FROM (
 			SELECT
@@ -1506,7 +1507,8 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 				COUNT(*)::INTEGER AS observed_parts,
 				COALESCE(SUM(bp.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(ah.article_number), 0)::BIGINT AS first_article_number,
-				COALESCE(MAX(ah.article_number), 0)::BIGINT AS last_article_number
+				COALESCE(MAX(ah.article_number), 0)::BIGINT AS last_article_number,
+				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts bp
 			JOIN article_headers ah ON ah.id = bp.article_header_id
 			WHERE bp.binary_id = $1
@@ -4521,8 +4523,8 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 
 func (s *Store) loadReleaseTitleInputs(ctx context.Context, releaseID string) (string, string, float64, []int64, error) {
 	var (
-		sourceTitle      string
-		currentTitleFrom string
+		sourceTitle       string
+		currentTitleFrom  string
 		currentConfidence float64
 	)
 	if err := s.db.QueryRowContext(ctx, `
