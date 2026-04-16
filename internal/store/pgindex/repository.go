@@ -194,6 +194,25 @@ type ReleaseRecord struct {
 	MetadataUpdatedAt       *time.Time
 }
 
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func normalizeReleaseIdentity(in *ReleaseRecord) {
+	if in == nil {
+		return
+	}
+	in.ReleaseKey = firstNonBlank(in.ReleaseKey)
+	in.GroupName = firstNonBlank(in.GroupName)
+	in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey, in.GroupName)
+	in.SourceReleaseKey = firstNonBlank(in.SourceReleaseKey, in.ReleaseFamilyKey, in.ReleaseKey, in.GroupName)
+}
+
 // article mapping row per release file.
 type ReleaseFileArticleRecord struct {
 	ArticleHeaderID int64
@@ -1860,11 +1879,10 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	if in.ProviderID <= 0 {
 		return "", fmt.Errorf("provider id is required")
 	}
-	in.ReleaseKey = strings.TrimSpace(in.ReleaseKey)
+	normalizeReleaseIdentity(&in)
 	if in.ReleaseKey == "" {
 		return "", fmt.Errorf("release key is required")
 	}
-	in.GroupName = strings.TrimSpace(in.GroupName)
 	if in.GroupName == "" {
 		return "", fmt.Errorf("group name is required")
 	}

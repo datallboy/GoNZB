@@ -955,6 +955,40 @@ func TestBuildReleaseRecordKeepsReadableSourceWithoutDeobfuscation(t *testing.T)
 	}
 }
 
+func TestBuildReleaseRecordNeverLeavesFamilyIdentityBlank(t *testing.T) {
+	record := buildReleaseRecord(pgindex.ReleaseCandidate{
+		ProviderID:  1,
+		NewsgroupID: 2,
+		ReleaseKey:  "legacy family key",
+		ReleaseName: "Example.Release.2026",
+	}, releaseCluster{
+		MatchConfidence: 0.90,
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:          1,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseName:       "Example.Release.2026",
+				FileName:          "example.release.2026.mkv",
+				ExpectedFileCount: 1,
+				ObservedParts:     10,
+				TotalParts:        10,
+				MatchConfidence:   0.90,
+			},
+		},
+	}, nil)
+
+	if record.ReleaseFamilyKey != "legacy family key" {
+		t.Fatalf("expected release family key fallback, got %q", record.ReleaseFamilyKey)
+	}
+	if record.SourceReleaseKey != "legacy family key" {
+		t.Fatalf("expected source release key fallback, got %q", record.SourceReleaseKey)
+	}
+	if record.ReleaseKey != "legacy family key" {
+		t.Fatalf("expected release key fallback, got %q", record.ReleaseKey)
+	}
+}
+
 func TestRunReformOncePagesThroughExistingCandidates(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		existingCandidates: []pgindex.ReleaseCandidate{
