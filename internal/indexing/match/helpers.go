@@ -57,9 +57,13 @@ var (
 	unsafeFileRE     = regexp.MustCompile(`[\\/:*?"<>|]+`)
 	nonKeyCharsRE    = regexp.MustCompile(`[^\pL\pN]+`)
 	parFileRE        = regexp.MustCompile(`(?i)\.par2$|\.vol\d+\+\d+\.par2$`)
+	parVolumeStemRE  = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
+	splitArchiveRE   = regexp.MustCompile(`(?i)\.(7z|zip)\.\d{3}$`)
+	rarFamilyRE      = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	volumeTokenRE    = regexp.MustCompile(`(?i)^vol\d+$`)
 	partTokenRE      = regexp.MustCompile(`(?i)^part\d+$`)
 	rarTokenRE       = regexp.MustCompile(`(?i)^r\d{2,3}$`)
+	opaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 )
 
 func newMatchState(candidate Candidate, opts Options) *matchState {
@@ -154,6 +158,97 @@ func (s *matchState) contextSeed() string {
 	return strings.Join(parts, "-")
 }
 
+func (s *matchState) releaseContextSeed() string {
+	parts := make([]string, 0, 8)
+
+	if v := normalizePoster(s.candidate.Poster); v != "" {
+		parts = append(parts, v)
+	}
+	if v := extractMessageHost(s.candidate.MessageID); v != "" {
+		parts = append(parts, v)
+	}
+	if groups := parseXrefGroups(s.candidate.Xref); len(groups) > 0 {
+		parts = append(parts, strings.Join(groups, "_"))
+	}
+	if v := derivePostingWindow(s.candidate.PostedAt); v != "" {
+		parts = append(parts, v)
+	}
+	if bucket := deriveArticleBucket(s.candidate.ArticleNumber, s.releaseArticleBucketSize()); bucket > 0 {
+		parts = append(parts, fmt.Sprintf("release-%d", bucket))
+	}
+	if family := s.releaseFamilyHint(); family != "" {
+		parts = append(parts, family)
+	}
+	if s.expectedFileCount > 0 {
+		parts = append(parts, fmt.Sprintf("files-%d", s.expectedFileCount))
+	}
+	if len(parts) == 0 {
+		return s.contextSeed()
+	}
+	return strings.Join(parts, "-")
+}
+
+func (s *matchState) releaseFamilyContextSeed() string {
+	parts := make([]string, 0, 7)
+
+	if v := normalizePoster(s.candidate.Poster); v != "" {
+		parts = append(parts, v)
+	}
+	if groups := parseXrefGroups(s.candidate.Xref); len(groups) > 0 {
+		parts = append(parts, strings.Join(groups, "_"))
+	}
+	if v := derivePostingWindow(s.candidate.PostedAt); v != "" {
+		parts = append(parts, v)
+	}
+	if bucket := deriveArticleBucket(s.candidate.ArticleNumber, s.releaseArticleBucketSize()); bucket > 0 {
+		parts = append(parts, fmt.Sprintf("release-%d", bucket))
+	}
+	if s.expectedFileCount > 0 {
+		parts = append(parts, fmt.Sprintf("files-%d", s.expectedFileCount))
+	}
+	if len(parts) == 0 {
+		return s.contextSeed()
+	}
+	return strings.Join(parts, "-")
+}
+
+func (s *matchState) releaseArticleBucketSize() int64 {
+	if s.expectedFileCount <= 1 {
+		return 100000
+	}
+
+	size := int64(s.expectedFileCount) * 300
+	if size < 2500 {
+		size = 2500
+	}
+	if size > 100000 {
+		size = 100000
+	}
+	return size
+}
+
+func (s *matchState) releaseFamilyHint() string {
+	for _, value := range []string{s.fileName, s.quotedFilename, s.structured.Name, s.cleanSubject} {
+		lower := strings.ToLower(strings.TrimSpace(value))
+		if lower == "" {
+			continue
+		}
+		if match := splitArchiveRE.FindStringSubmatch(lower); len(match) == 2 {
+			return strings.ToLower(match[1])
+		}
+		switch {
+		case rarFamilyRE.MatchString(lower) || strings.HasSuffix(lower, ".rar"):
+			return "rar"
+		case parFileRE.MatchString(lower):
+			return "par2"
+		}
+		if ext := strings.TrimPrefix(extractExtensionHint(lower), "."); ext != "" && !isAllDigits(ext) {
+			return ext
+		}
+	}
+	return ""
+}
+
 func (s *matchState) contextualReleaseName() string {
 	if releaseName := deriveReleaseName(s.cleanSubject, s.bestFileName()); releaseName != "" {
 		return releaseName
@@ -207,14 +302,26 @@ func (s *matchState) finalize(opts Options) Result {
 		s.partNumber = 1
 	}
 
-	releaseKey := canonicalReleaseKey(releaseName)
-	if releaseKey == "" {
-		releaseKey = canonicalReleaseKey(s.contextSeed())
+	sourceReleaseKey := s.sourceReleaseKey(releaseName, explicitFileName)
+	releaseFamilyKey, familyKind, baseStem := s.releaseFamilyKey(releaseName, explicitFileName)
+	if baseStem == "" {
+		for _, value := range []string{explicitFileName, s.quotedFilename, s.structured.Name, s.fileName} {
+			if stem := archiveFamilyBaseStem(value); stem != "" {
+				baseStem = stem
+				break
+			}
+		}
+	}
+	if releaseFamilyKey == "" {
+		releaseFamilyKey = sourceReleaseKey
+	}
+	if sourceReleaseKey == "" {
+		sourceReleaseKey = releaseFamilyKey
 	}
 
 	fileKey := normalizeKey(fileName)
 	if fileKey == "" {
-		fileKey = normalizeKey(s.contextSeed())
+		fileKey = normalizeKey(sourceReleaseKey)
 	}
 	if explicitFileName == "" && s.fileIndex > 0 && s.expectedFileCount > 0 {
 		fileKey = normalizeKey("file " + strconv.Itoa(s.fileIndex) + " of " + strconv.Itoa(s.expectedFileCount))
@@ -233,6 +340,11 @@ func (s *matchState) finalize(opts Options) Result {
 		"fallback_used":         s.fallbackUsed,
 		"file_index":            s.fileIndex,
 		"expected_file_count":   s.expectedFileCount,
+		"source_release_key":    sourceReleaseKey,
+		"release_family_key":    releaseFamilyKey,
+		"family_kind":           familyKind,
+		"base_stem":             baseStem,
+		"posting_bucket":        derivePostingWindow(s.candidate.PostedAt),
 		"short_circuited_after": s.shortCircuitedAfter,
 	}
 	if s.fallbackUsed {
@@ -242,11 +354,23 @@ func (s *matchState) finalize(opts Options) Result {
 		}
 	}
 
+	isAuxiliary := isAuxiliaryFamilyFile(fileName)
+	isMainPayload := fileName != "" && !isAuxiliary
+	fileFamilyKey := normalizeKey(firstNonEmpty(baseStem, fileName, releaseFamilyKey))
+
 	return Result{
+		SourceReleaseKey:  sourceReleaseKey,
+		ReleaseFamilyKey:  releaseFamilyKey,
+		FileFamilyKey:     fileFamilyKey,
+		FamilyKind:        familyKind,
+		BaseStem:          baseStem,
+		PostingBucket:     derivePostingWindow(s.candidate.PostedAt),
+		IsAuxiliary:       isAuxiliary,
+		IsMainPayload:     isMainPayload,
 		ReleaseName:       releaseName,
-		ReleaseKey:        releaseKey,
+		ReleaseKey:        releaseFamilyKey,
 		BinaryName:        fileName,
-		BinaryKey:         releaseKey + "::" + fileKey,
+		BinaryKey:         sourceReleaseKey + "::" + fileKey,
 		FileName:          fileName,
 		FileIndex:         s.fileIndex,
 		ExpectedFileCount: s.expectedFileCount,
@@ -259,6 +383,113 @@ func (s *matchState) finalize(opts Options) Result {
 	}
 }
 
+func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) string {
+	releaseKey := ""
+	if key := s.smallIndexedArchiveStemReleaseKey(explicitFileName); key != "" {
+		releaseKey = key
+	}
+	if s.shouldPreferContextualReleaseKey(releaseName, explicitFileName) {
+		if releaseKey == "" {
+			releaseKey = canonicalReleaseKey(s.releaseContextSeed())
+		}
+	}
+	if releaseKey == "" {
+		releaseKey = canonicalReleaseKey(releaseName)
+	}
+	if releaseKey == "" {
+		releaseKey = canonicalReleaseKey(s.contextSeed())
+	}
+	return releaseKey
+}
+
+func (s *matchState) releaseFamilyKey(releaseName, explicitFileName string) (string, string, string) {
+	if key := readableReleaseFamilyKey(releaseName); key != "" {
+		return key, "readable_title", archiveFamilyBaseStem(explicitFileName)
+	}
+
+	for _, value := range []string{explicitFileName, s.quotedFilename, s.structured.Name, s.fileName} {
+		if key, baseStem := s.smallArchiveFamilyReleaseKey(value); key != "" {
+			return key, "archive_stem", baseStem
+		}
+	}
+
+	if key := canonicalReleaseKey(s.releaseFamilyContextSeed()); key != "" {
+		return key, "contextual_obfuscated", ""
+	}
+	return canonicalReleaseKey(s.contextSeed()), "contextual_obfuscated", ""
+}
+
+func (s *matchState) smallArchiveFamilyReleaseKey(fileName string) (string, string) {
+	fileName = sanitizeFileName(fileName)
+	lower := strings.ToLower(fileName)
+	if lower == "" {
+		return "", ""
+	}
+	if !splitArchiveRE.MatchString(lower) && !rarFamilyRE.MatchString(lower) && !strings.HasSuffix(lower, ".rar") && !parFileRE.MatchString(lower) {
+		return "", ""
+	}
+	if s.fileIndex > 0 && s.expectedFileCount > 16 {
+		return "", ""
+	}
+	baseStem := archiveFamilyBaseStem(fileName)
+	if baseStem == "" {
+		return "", ""
+	}
+	key := normalizeKey(baseStem)
+	if key == "" {
+		return "", ""
+	}
+	return key, baseStem
+}
+
+func (s *matchState) smallIndexedArchiveStemReleaseKey(explicitFileName string) string {
+	if s.fileIndex <= 0 || s.expectedFileCount <= 1 || s.expectedFileCount > 16 {
+		return ""
+	}
+	explicitFileName = sanitizeFileName(explicitFileName)
+	if explicitFileName == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(explicitFileName)
+	if !splitArchiveRE.MatchString(lower) && !rarFamilyRE.MatchString(lower) && !strings.HasSuffix(lower, ".rar") {
+		return ""
+	}
+
+	key := canonicalReleaseKey(explicitFileName)
+	fields := strings.Fields(key)
+	if len(fields) != 1 || !opaqueTokenRE.MatchString(fields[0]) {
+		return ""
+	}
+	return key
+}
+
+func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileName string) bool {
+	if s.fileIndex <= 0 || s.expectedFileCount <= 1 {
+		return false
+	}
+
+	candidate := firstNonEmpty(releaseName, explicitFileName, s.quotedFilename, s.structured.Name)
+	if candidate == "" {
+		return false
+	}
+
+	key := canonicalReleaseKey(candidate)
+	if key == "" {
+		key = normalizeKey(candidate)
+	}
+	fields := strings.Fields(key)
+	if len(fields) == 0 || len(fields) > 2 {
+		return false
+	}
+	for _, field := range fields {
+		if !opaqueTokenRE.MatchString(field) {
+			return false
+		}
+	}
+	return true
+}
+
 func canonicalReleaseKey(value string) string {
 	key := normalizeKey(value)
 	if key == "" {
@@ -268,6 +499,10 @@ func canonicalReleaseKey(value string) string {
 	tokens := strings.Fields(key)
 	for len(tokens) > 0 {
 		if len(tokens) >= 2 && volumeTokenRE.MatchString(tokens[len(tokens)-2]) && isAllDigits(tokens[len(tokens)-1]) {
+			tokens = tokens[:len(tokens)-2]
+			continue
+		}
+		if len(tokens) >= 2 && isCanonicalReleaseSuffix(tokens[len(tokens)-2]) && isAllDigits(tokens[len(tokens)-1]) {
 			tokens = tokens[:len(tokens)-2]
 			continue
 		}
@@ -285,6 +520,69 @@ func canonicalReleaseKey(value string) string {
 	}
 
 	return strings.Join(tokens, " ")
+}
+
+func readableReleaseFamilyKey(releaseName string) string {
+	key := canonicalReleaseKey(releaseName)
+	if key == "" {
+		return ""
+	}
+	fields := strings.Fields(key)
+	if len(fields) == 0 {
+		return ""
+	}
+	opaque := 0
+	for _, field := range fields {
+		if opaqueTokenRE.MatchString(field) {
+			opaque++
+		}
+	}
+	if opaque == len(fields) {
+		return ""
+	}
+	return key
+}
+
+func archiveFamilyBaseStem(fileName string) string {
+	fileName = sanitizeFileName(fileName)
+	if fileName == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(fileName)
+	switch {
+	case splitArchiveRE.MatchString(lower):
+		lower = splitArchiveRE.ReplaceAllString(lower, "")
+	case rarFamilyRE.MatchString(lower):
+		lower = rarFamilyRE.ReplaceAllString(lower, "")
+	case strings.HasSuffix(lower, ".rar"):
+		lower = strings.TrimSuffix(lower, ".rar")
+	case parFileRE.MatchString(lower):
+		lower = parVolumeStemRE.ReplaceAllString(lower, "")
+		lower = strings.TrimSuffix(lower, ".par2")
+	default:
+		lower = strings.TrimSuffix(lower, filepath.Ext(lower))
+	}
+
+	lower = separatorRE.ReplaceAllString(lower, " ")
+	lower = multiSpaceRE.ReplaceAllString(lower, " ")
+	lower = strings.TrimSpace(lower)
+	if lower == "" {
+		return ""
+	}
+	return lower
+}
+
+func isAuxiliaryFamilyFile(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" {
+		return false
+	}
+	return parFileRE.MatchString(lower) ||
+		strings.HasSuffix(lower, ".nfo") ||
+		strings.HasSuffix(lower, ".sfv") ||
+		strings.HasSuffix(lower, ".srr") ||
+		strings.Contains(lower, "sample")
 }
 
 func isCanonicalReleaseSuffix(token string) bool {

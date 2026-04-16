@@ -97,7 +97,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 
 	encrypted := inspectpkg.InferEncrypted(candidate)
 	if s != nil && s.log != nil {
-		s.log.Info(
+		s.log.Debug(
 			"inspect_archive: starting binary_id=%d release_id=%s file=%s",
 			candidate.BinaryID,
 			candidate.ReleaseID,
@@ -114,7 +114,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if probe != nil {
 		encrypted = encrypted || probe.Encrypted
 		if s != nil && s.log != nil {
-			s.log.Info(
+			s.log.Debug(
 				"inspect_archive: binary_id=%d release_id=%s strategy=%s files=%d materialized_bytes=%d",
 				candidate.BinaryID,
 				candidate.ReleaseID,
@@ -222,7 +222,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 	if s != nil && s.log != nil && ctx.Err() == nil {
-		s.log.Info(
+		s.log.Debug(
 			"inspect_archive: completed binary_id=%d release_id=%s encrypted=%t entries=%d",
 			candidate.BinaryID,
 			candidate.ReleaseID,

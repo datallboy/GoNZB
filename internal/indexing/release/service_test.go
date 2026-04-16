@@ -88,6 +88,286 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 	}
 }
 
+func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
+	baseTime := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "coarse contextual key",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"coarse contextual key": {
+				{
+					BinaryID:           1,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "a1opaque.7z.001",
+					FileIndex:          1,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 1000,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           2,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "b2opaque.7z.002",
+					FileIndex:          2,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(3 * time.Minute)),
+					FirstArticleNumber: 1200,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           3,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "c3opaque.7z.003",
+					FileIndex:          3,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(6 * time.Minute)),
+					FirstArticleNumber: 1400,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           4,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "d4opaque.7z.004",
+					FileIndex:          4,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(9 * time.Minute)),
+					FirstArticleNumber: 1600,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           5,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "w1opaque.7z.001",
+					FileIndex:          1,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(45 * time.Minute)),
+					FirstArticleNumber: 5000,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           6,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "x2opaque.7z.002",
+					FileIndex:          2,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(48 * time.Minute)),
+					FirstArticleNumber: 5200,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           7,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "y3opaque.7z.003",
+					FileIndex:          3,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(51 * time.Minute)),
+					FirstArticleNumber: 5400,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+				{
+					BinaryID:           8,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseKey:         "coarse contextual key",
+					FileName:           "z4opaque.7z.004",
+					FileIndex:          4,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(54 * time.Minute)),
+					FirstArticleNumber: 5600,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+			3: {{ArticleHeaderID: 103, PartNumber: 1}},
+			4: {{ArticleHeaderID: 104, PartNumber: 1}},
+			5: {{ArticleHeaderID: 105, PartNumber: 1}},
+			6: {{ArticleHeaderID: 106, PartNumber: 1}},
+			7: {{ArticleHeaderID: 107, PartNumber: 1}},
+			8: {{ArticleHeaderID: 108, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 2 {
+		t.Fatalf("expected 2 clustered releases, got %d", len(repo.upsertedReleases))
+	}
+	for _, release := range repo.upsertedReleases {
+		if release.FileCount != 4 {
+			t.Fatalf("expected each clustered release to contain 4 files, got %d", release.FileCount)
+		}
+		if release.ExpectedFileCount != 4 {
+			t.Fatalf("expected expected_file_count 4, got %d", release.ExpectedFileCount)
+		}
+	}
+}
+
+func TestRunOnceSkipsFragmentaryMultiFileClustersUntilMultipleMainFilesExist(t *testing.T) {
+	baseTime := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "family-key",
+			ReleaseKey:       "family-key",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"family-key": {
+				{
+					BinaryID:           1,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "family-key",
+					ReleaseKey:         "family-key",
+					FileName:           "opaque.7z.001",
+					FileIndex:          1,
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 1000,
+					TotalParts:         10,
+					ObservedParts:      10,
+					TotalBytes:         700_000_000,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+				{
+					BinaryID:           2,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "family-key",
+					ReleaseKey:         "family-key",
+					FileName:           "opaque.vol00+01.par2",
+					ExpectedFileCount:  4,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime.Add(2 * time.Minute)),
+					FirstArticleNumber: 1100,
+					TotalParts:         2,
+					ObservedParts:      2,
+					TotalBytes:         1024,
+					MatchConfidence:    0.90,
+					IsAuxiliary:        true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected fragmentary multi-file cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if len(repo.deletedStaleCalls) != 1 {
+		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	}
+}
+
+func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 201, PartNumber: 1}, {ArticleHeaderID: 202, PartNumber: 2}},
+		},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{})
+
+	files, err := svc.buildReleaseFiles(context.Background(), releaseCluster{
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:        1,
+				FileName:        "duplicate.vol00+01.par2",
+				ObservedParts:   1,
+				TotalBytes:      100,
+				MatchConfidence: 0.80,
+				IsAuxiliary:     true,
+			},
+			{
+				BinaryID:        2,
+				FileName:        "duplicate.vol00+01.par2",
+				ObservedParts:   2,
+				TotalBytes:      200,
+				MatchConfidence: 0.90,
+				IsAuxiliary:     true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one deduplicated file, got %d", len(files))
+	}
+	if files[0].BinaryID != 2 {
+		t.Fatalf("expected better duplicate binary to win, got %d", files[0].BinaryID)
+	}
+	if len(files[0].Articles) != 2 {
+		t.Fatalf("expected winning binary articles to be kept, got %d", len(files[0].Articles))
+	}
+}
+
 func TestRunOnceSkipsLowConfidenceReleaseBelowThreshold(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
