@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/indexing/releasepolicy"
 	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 	"github.com/segmentio/ksuid"
 )
@@ -4377,48 +4378,13 @@ func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspec
 		finalUnknown = false
 	}
 
-	switch {
-	case finalUnknown:
-		capped := availabilityScore
-		unknownCap := completionPct * 0.6
-		if unknownCap < 25 {
-			unknownCap = 25
-		}
-		if capped > unknownCap {
-			capped = unknownCap
-		}
-		capped = clampStoreScore(capped)
-		return &capped, storeAvailabilityTier(capped), nil
-	case finalKnown && availabilityScore < completionPct:
-		restored := clampStoreScore(completionPct)
-		return &restored, storeAvailabilityTier(restored), nil
-	default:
-		return nil, "", nil
-	}
-}
-
-func clampStoreScore(score float64) float64 {
-	switch {
-	case score < 0:
-		return 0
-	case score > 100:
-		return 100
-	default:
-		return score
-	}
-}
-
-func storeAvailabilityTier(score float64) string {
-	switch {
-	case score >= 85:
-		return "excellent"
-	case score >= 70:
-		return "good"
-	case score >= 50:
-		return "partial"
-	default:
-		return "low"
-	}
+	adjusted, tier := releasepolicy.AdjustAvailabilityForInspection(releasepolicy.AvailabilityAdjustmentInput{
+		CompletionPct:     completionPct,
+		AvailabilityScore: availabilityScore,
+		PasswordedKnown:   finalKnown,
+		PasswordedUnknown: finalUnknown,
+	})
+	return adjusted, tier, nil
 }
 
 func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {

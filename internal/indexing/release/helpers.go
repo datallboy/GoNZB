@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/indexing/releasepolicy"
 	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -326,7 +327,7 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		AudioCount:              audioCount,
 		SamplePresent:           samplePresent,
 		AvailabilityScore:       availabilityScore,
-		AvailabilityTier:        scoreTier(availabilityScore),
+		AvailabilityTier:        releasepolicy.AvailabilityTier(availabilityScore),
 		MediaQualityScore:       mediaQualityScore,
 		MediaQualityTier:        mediaQualityTier(mediaQualityScore),
 		IdentityConfidenceScore: identityScore,
@@ -914,19 +915,6 @@ func computeAvailabilityScore(cluster releaseCluster) float64 {
 	}
 	score += averageBinaryMatch(cluster.Binaries) * 8
 	return clampScore(score)
-}
-
-func scoreTier(score float64) string {
-	switch {
-	case score >= 85:
-		return "excellent"
-	case score >= 70:
-		return "good"
-	case score >= 50:
-		return "partial"
-	default:
-		return "low"
-	}
 }
 
 func mediaQualityTier(score float64) string {
