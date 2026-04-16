@@ -20,6 +20,30 @@ The main reason this exists is that the current `release_key` is doing too many 
 - debug string
 - sometimes human-readable release identifier
 
+## Validation Status
+
+Validation date: 2026-04-16
+
+Release-formation sign-off status:
+
+- release identity cutover work is implemented and validated on the dev DB
+- blank family identity rows are repaired and prevented from being re-persisted
+- release/title and availability rules are moved out of store persistence helpers and into shared domain helpers
+- `release_family_key` is the active family-level grouping key in the current service/store path
+
+Live validation notes:
+
+- blank `source_release_key` / `release_family_key` rows: `0`
+- release-family fan-out rows: `0`
+- `title_source = 'archive_entry'`: `57`
+- non-empty `deobfuscated_title`: `69`
+
+Remaining release-formation caveat:
+
+- this document's timing-based clustering goal is not fully signed off on the current dev DB yet
+- persisted timing remains sparse live because only `15 / 178,817` binaries currently connect to any dated raw headers through `binary_parts`
+- treat the release-formation design as implemented, but keep live operational validation for timing-sensitive clustering open until historical date lineage is repaired or intentionally re-scoped
+
 That makes it hard to reason about whether two binaries should become one release, and it makes the DB difficult to inspect when keys are long, opaque, or inconsistent.
 
 ## Current Behavior In Code

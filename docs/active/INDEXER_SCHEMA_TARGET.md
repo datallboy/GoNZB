@@ -6,6 +6,30 @@ This document describes the intended stable schema shape for the indexer after t
 
 This is not a migration checklist. It is the target data-model reference we should evaluate changes against.
 
+## Validation Status
+
+Validation date: 2026-04-16
+
+Schema-target sign-off status:
+
+- signed off for the current stabilization code and dev DB schema
+
+Validated against dev DB:
+
+- pgindex schema version: `23`
+- `binary_grouping_evidence` side table present and populated for all current binaries: `178,817` rows
+- inline `binaries.grouping_evidence_json` is normalized empty for all current rows
+- redundant `idx_article_headers_newsgroup_article_desc` index is absent
+- release identity columns now have distinct active roles in code and docs:
+  - `source_release_key`: matcher/debug trace
+  - `release_family_key`: family-level grouping key
+  - `group_name` / `release_id`: final release identity
+
+Schema-target caveat:
+
+- the schema shape is signed off, but the live dev DB still lacks broad persisted posting-time coverage
+- that is a data/backfill problem against this schema, not a reason to reopen the current schema target
+
 ## Design Rules
 
 1. Keep hot operational identity rows small.

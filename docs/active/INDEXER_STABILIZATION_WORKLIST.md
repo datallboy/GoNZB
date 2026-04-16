@@ -40,6 +40,61 @@ Important live correctness notes:
 - only `49` releases currently have `title_source = 'archive_entry'`
 - only `52` releases currently have `deobfuscated_title`
 
+## Validation Status
+
+Validation date: 2026-04-16
+
+Implementation status:
+
+- the commit-sized stabilization backlog in this document is complete in code
+- migrations `019` through `023` are applied on the dev DB
+- repo validation passed with:
+  - `go test ./internal/store/pgindex`
+  - `go test ./internal/indexing/release`
+  - `go test ./internal/runtime/commands`
+
+Operational validation run on dev DB:
+
+- `./bin/gonzb --config config.yaml indexer assemble --once`
+- `./bin/gonzb --config config.yaml indexer release --once`
+- `./bin/gonzb --config config.yaml indexer release --once --reform`
+  - started cleanly but was canceled after a bounded validation window while still processing candidates
+- validation queries run directly against the dev DB after migrations and command execution
+
+Validated live results:
+
+- schema version: `23`
+- blank `source_release_key` / `release_family_key` rows: `0`
+- release-family fan-out rows: `0`
+- `binary_grouping_evidence` side-table rows: `178,817`
+- non-empty inline `binaries.grouping_evidence_json` rows: `0`
+- redundant descending `article_headers` index present: `0`
+- stale stage runtime rows: `0`
+- orphaned running stage rows: `0`
+- complete releases: `433 / 999`
+- `title_source = 'archive_entry'`: `57`
+- non-empty `deobfuscated_title`: `69`
+
+Definition-of-stable sign-off:
+
+- schema and storage goals: signed off on dev DB
+- release identity goals: signed off on dev DB
+- stage/runtime repair goals: signed off on dev DB
+- full stabilization sign-off: not yet granted
+
+Reason full sign-off is still blocked:
+
+- `binaries.posted_at` is still only `15 / 178,817`
+- `release_files.posted_at` is still only `7 / 14,526`
+- only `15 / 178,817` binaries have any linked `article_headers.date_utc` through `binary_parts`
+- `article_headers.date_utc` is populated on only `4,210,593 / 33,259,357` raw headers (`12.66%`)
+
+Current conclusion:
+
+- the stabilization code and schema work are complete and validated
+- the remaining blocker is live data coverage for persisted posting time, not a remaining migration gap in the current repo
+- do not mark the stabilization phase fully complete for API/UI hardening until the historical header-date / posting-time lineage gap is repaired or explicitly re-scoped
+
 ## Stabilization Goals
 
 1. make release formation deterministic and explainable
