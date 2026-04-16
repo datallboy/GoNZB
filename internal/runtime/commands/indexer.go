@@ -331,6 +331,17 @@ func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context,
 	if appCtx.UsenetIndexer == nil {
 		appCtx.Logger.Fatal("%s", notConfiguredMessage)
 	}
+	if appCtx.PGIndexStore != nil {
+		if repair, err := appCtx.PGIndexStore.RepairIndexerStageRuntime(context.Background()); err != nil {
+			appCtx.Logger.Warn("indexer stage runtime repair failed: %v", err)
+		} else if repair != nil && (repair.AbandonedRuns > 0 || repair.ClearedStaleLeases > 0) {
+			appCtx.Logger.Info(
+				"indexer stage runtime repair: abandoned_runs=%d cleared_stale_leases=%d",
+				repair.AbandonedRuns,
+				repair.ClearedStaleLeases,
+			)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	return appCtx, ctx, func() {
