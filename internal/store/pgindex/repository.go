@@ -1361,8 +1361,14 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		evidenceJSON = b
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin binary upsert tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
 	var id int64
-	err := s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO binaries (
 			provider_id,
 			newsgroup_id,
@@ -1444,13 +1450,57 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		postedAt,
 		in.MatchConfidence,
 		in.MatchStatus,
-		evidenceJSON,
+		[]byte(`{}`),
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert binary %q: %w", in.BinaryKey, err)
 	}
 
+	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit binary upsert tx %q: %w", in.BinaryKey, err)
+	}
+
 	return id, nil
+}
+
+func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte) error {
+	if tx == nil {
+		return fmt.Errorf("binary grouping evidence tx is required")
+	}
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	if len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM binary_grouping_evidence
+			WHERE binary_id = $1`, binaryID); err != nil {
+			return fmt.Errorf("delete binary grouping evidence %d: %w", binaryID, err)
+		}
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO binary_grouping_evidence (
+			binary_id,
+			evidence_source,
+			evidence_version,
+			payload_json,
+			updated_at
+		)
+		VALUES ($1, 'matcher', 'v1', $2, NOW())
+		ON CONFLICT (binary_id) DO UPDATE
+		SET payload_json = EXCLUDED.payload_json,
+		    updated_at = NOW()`,
+		binaryID,
+		payload,
+	); err != nil {
+		return fmt.Errorf("upsert binary grouping evidence %d: %w", binaryID, err)
+	}
+	return nil
 }
 
 // CHANGED: add/update one binary part row.
@@ -2877,10 +2927,11 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status,
-			b.grouping_evidence_json,
+			COALESCE(bge.payload_json, '{}'::jsonb),
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
 		FROM binaries b
+		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
@@ -2991,11 +3042,12 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
-			COALESCE(b.grouping_evidence_json, '{}'::jsonb),
+			COALESCE(bge.payload_json, '{}'::jsonb),
 			(SELECT COUNT(*) FROM release_file_articles WHERE release_file_id = rf.id)
 		FROM release_files rf
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binaries b ON b.id = rf.binary_id
+		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
 		WHERE rf.id = $1`, fileID)
 
 	var item IndexerFileDetail
