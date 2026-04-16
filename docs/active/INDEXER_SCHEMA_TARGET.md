@@ -70,6 +70,11 @@ Should contain:
 - part number
 - part counts / bytes needed for binary completeness
 
+Current stabilization note:
+
+- `binary_parts` remains the canonical binary-to-article lineage
+- `release_file_articles` still stays materialized for now because current NZB and inspect paths depend on release-file-scoped ordered article refs
+
 ### `releases`
 
 Purpose:

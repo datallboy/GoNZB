@@ -133,6 +133,8 @@ They look similar, but they serve different stages of the pipeline.
 - which files belong to this final release?
 - what article refs should be emitted into the NZB?
 
+Today those NZB/article refs are materialized through `release_file_articles` rather than derived on demand from `binary_parts`.
+
 Short version:
 
 - release = the whole package

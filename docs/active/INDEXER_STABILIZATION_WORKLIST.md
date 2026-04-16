@@ -340,6 +340,21 @@ Why:
   - `binary_parts -> article_headers`
   - `release_file_articles -> article_headers`
 
+Current review outcome:
+
+- keep `release_file_articles` materialized for now
+- do not trim or derive it on demand yet
+
+Reason:
+
+- NZB generation currently reads exact release-file article refs from `release_file_articles`
+- inspect/materialization flows also depend on release-file-scoped article ordering
+- removing it before those consumers change would shift complexity into hot runtime paths instead of reducing it
+
+Later direction:
+
+- revisit only after NZB and inspect paths can reliably derive the same ordered refs from `binary_parts` without increasing runtime cost or coupling
+
 ### Opportunity 5. Poster And Newsgroup Dimensions Are Good Patterns To Reuse
 
 Current state:
