@@ -508,6 +508,85 @@ func TestUpsertBinaryMirrorsReleaseFamilyKeyIntoLegacyReleaseKey(t *testing.T) {
 	}
 }
 
+func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.evidence.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "matcher trace key",
+		ReleaseFamilyKey:  "family key",
+		ReleaseKey:        "family key",
+		BinaryKey:         fmt.Sprintf("binary-evidence-%d", time.Now().UnixNano()),
+		BinaryName:        "example.release.2026.mkv",
+		FileName:          "example.release.2026.mkv",
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind": "readable_title",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	var inlineEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT grouping_evidence_json
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&inlineEvidence); err != nil {
+		t.Fatalf("query inline grouping evidence: %v", err)
+	}
+	if strings.TrimSpace(string(inlineEvidence)) != "{}" {
+		t.Fatalf("expected inline grouping evidence to be cleared, got %s", string(inlineEvidence))
+	}
+
+	var sideEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT payload_json
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, binaryID,
+	).Scan(&sideEvidence); err != nil {
+		t.Fatalf("query side-table grouping evidence: %v", err)
+	}
+	if !strings.Contains(string(sideEvidence), "\"readable_title\"") {
+		t.Fatalf("expected side-table grouping evidence payload, got %s", string(sideEvidence))
+	}
+
+	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
+	if err != nil {
+		t.Fatalf("get indexer binary detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected binary detail for %d", binaryID)
+	}
+	if !strings.Contains(string(detail.GroupingEvidence), "\"readable_title\"") {
+		t.Fatalf("expected binary detail grouping evidence from side table, got %s", string(detail.GroupingEvidence))
+	}
+}
+
 func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
