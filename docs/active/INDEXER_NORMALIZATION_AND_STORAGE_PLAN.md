@@ -216,6 +216,23 @@ Default expectation:
 
 - evaluate retention, partitioning, and index discipline before any normalization of raw header text fields
 
+## Phase 1 Outcome Snapshot
+
+- `release_family_key` is the authoritative release-family identity in formation and storage flows; legacy `release_key` remains only as compatibility/debug identity and is no longer the catalog/product identity path.
+- repository boundaries are now split by concern across:
+  - `catalog_reads.go`
+  - `inspect_reads.go`
+  - `inspection_store.go`
+  - `enrichment_store.go`
+  - `release_store.go`
+  - `assembly_store.go`
+  - `stage_runtime_store.go`
+- chosen title fields remain inline on `releases`; Phase 1 did not expand title provenance on the main row, and existing provenance-side storage remains the boundary if that history is touched later.
+- `release_file_articles` remains materialized for NZB and file-detail flows through the initial API/UI phase.
+- `raw_overview_json` remains inline on `article_headers` for now; Phase 1 does not force a side-storage migration without a measured operational win and a clean debug/date-repair story.
+- release enrichment storage stays inline for the current internal phase; broader side-table redesign is deferred until after the first hardened release contract/API phase if pressure remains.
+- `article_headers` work stays focused on retention, partitioning, and index discipline rather than lookup-table normalization or release-shape shrinkage.
+
 ## Commit-Sized Execution Order
 
 1. Inventory current storage and read-model coupling points.
