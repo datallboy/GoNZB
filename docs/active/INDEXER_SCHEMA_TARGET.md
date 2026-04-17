@@ -8,7 +8,7 @@ This is not a migration checklist. It is the target data-model reference we shou
 
 ## Validation Status
 
-Validation date: 2026-04-16
+Validation date: 2026-04-17
 
 Schema-target sign-off status:
 
@@ -27,8 +27,9 @@ Validated against dev DB:
 
 Schema-target caveat:
 
-- the schema shape is signed off, but the live dev DB still lacks broad persisted posting-time coverage
-- that is a data/backfill problem against this schema, not a reason to reopen the current schema target
+- the schema shape remains signed off after live timing repair
+- assembled-binary and release-file posting-time persistence is now fully populated on the dev DB
+- the previous timing gap was repaired from saved raw overview lines without reopening the schema target
 
 ## Design Rules
 

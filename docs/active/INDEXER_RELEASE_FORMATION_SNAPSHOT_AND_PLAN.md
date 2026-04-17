@@ -22,7 +22,7 @@ The main reason this exists is that the current `release_key` is doing too many 
 
 ## Validation Status
 
-Validation date: 2026-04-16
+Validation date: 2026-04-17
 
 Release-formation sign-off status:
 
@@ -40,9 +40,12 @@ Live validation notes:
 
 Remaining release-formation caveat:
 
-- this document's timing-based clustering goal is not fully signed off on the current dev DB yet
-- persisted timing remains sparse live because only `15 / 178,817` binaries currently connect to any dated raw headers through `binary_parts`
-- treat the release-formation design as implemented, but keep live operational validation for timing-sensitive clustering open until historical date lineage is repaired or intentionally re-scoped
+- timing-based clustering is now signed off on the current dev DB for assembled binaries and release files
+- the last blocker was an NNTP overview date parser gap for two-digit-year rows
+- after repairing saved raw header dates and re-backfilling persisted timing:
+  - `binaries.posted_at`: `178,817 / 178,817`
+  - `release_files.posted_at`: `14,526 / 14,526`
+  - binaries with linked dated raw headers through `binary_parts`: `178,817 / 178,817`
 
 That makes it hard to reason about whether two binaries should become one release, and it makes the DB difficult to inspect when keys are long, opaque, or inconsistent.
 

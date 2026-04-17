@@ -75,25 +75,34 @@ Validated live results:
 - `title_source = 'archive_entry'`: `57`
 - non-empty `deobfuscated_title`: `69`
 
+Follow-up validation date: 2026-04-17
+
+Timing repair completed:
+
+- fixed NNTP overview date parsing for two-digit-year rows such as `Thu, 09 Apr 26 18:13:57 UTC`
+- repaired `4,250,363` binary-linked `article_headers.date_utc` rows in the dev DB from saved raw XOVER lines
+- backfilled persisted timing again into `binaries`, `release_files`, and `releases`
+
+Post-repair live results:
+
+- `binaries.posted_at`: `178,817 / 178,817`
+- `release_files.posted_at`: `14,526 / 14,526`
+- binaries with any linked dated header through `binary_parts`: `178,817 / 178,817`
+- `article_headers.date_utc`: `8,465,956 / 33,264,357`
+
 Definition-of-stable sign-off:
 
 - schema and storage goals: signed off on dev DB
 - release identity goals: signed off on dev DB
+- data-quality timing goals for assembled binaries and release files: signed off on dev DB
 - stage/runtime repair goals: signed off on dev DB
-- full stabilization sign-off: not yet granted
-
-Reason full sign-off is still blocked:
-
-- `binaries.posted_at` is still only `15 / 178,817`
-- `release_files.posted_at` is still only `7 / 14,526`
-- only `15 / 178,817` binaries have any linked `article_headers.date_utc` through `binary_parts`
-- `article_headers.date_utc` is populated on only `4,210,593 / 33,259,357` raw headers (`12.66%`)
+- full stabilization sign-off: granted
 
 Current conclusion:
 
 - the stabilization code and schema work are complete and validated
-- the remaining blocker is live data coverage for persisted posting time, not a remaining migration gap in the current repo
-- do not mark the stabilization phase fully complete for API/UI hardening until the historical header-date / posting-time lineage gap is repaired or explicitly re-scoped
+- the active stabilization backlog in this document is complete
+- the foundation is ready for the next API/UI phase without the previous posting-time blocker
 
 ## Stabilization Goals
 
