@@ -1,43 +1,46 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-04-16
+Snapshot date: 2026-04-17
 
-This file exists to keep the active indexer docs organized.
+This file exists to keep the indexer docs organized after the stabilization phase completed.
 
-We currently have several planning/reference documents. This file defines which ones are active execution guides and which ones are design or reference material.
+We currently have several planning/reference documents. This file defines which ones are active execution guides, which ones were completed and archived, and which ones are design or reference material.
 
-## Use These As The Active Execution Docs
+## Current Status
 
-### 1. `docs/active/INDEXER_STABILIZATION_WORKLIST.md`
+- the 2026 indexer stabilization phase is complete
+- the former active execution docs for that phase now live under:
+  - `docs/archive/completed/indexer/`
+- there is no active indexer stabilization backlog in `docs/active/` right now
+- start a new active plan only when we intentionally begin the next indexer phase
 
-Use for:
+## Archived Completed Indexer Docs
 
-- the current stabilization backlog
-- sequencing work into reviewable chunks
-- validation rules
-- repair/rebuild process
-
-This is the primary execution-plan document right now.
-
-### 2. `docs/active/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
+### `docs/archive/completed/indexer/INDEXER_STABILIZATION_WORKLIST.md`
 
 Use for:
 
-- the target release-formation behavior
-- the rules we want the release pipeline to follow
-- comparing the current implementation against the intended design
+- the completed stabilization backlog
+- the validation history and sign-off for that phase
+- the final checklist of what was done and why
 
-This is the primary release-design document right now.
-
-## Use These As End-State Reference Docs
-
-### `docs/active/INDEXER_SCHEMA_TARGET.md`
+### `docs/archive/completed/indexer/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
 
 Use for:
 
-- the intended stable schema shape
-- table boundaries
-- what belongs in hot rows vs side tables
+- the stabilized release-formation model from that phase
+- the final release-identity and clustering notes
+- historical reference while planning the next release-quality iteration
+
+### `docs/archive/completed/indexer/INDEXER_SCHEMA_TARGET.md`
+
+Use for:
+
+- the stabilized schema target from that phase
+- side-table / hot-row boundary decisions that were signed off
+- historical reference while planning future normalization work
+
+## Current Reference Docs
 
 ### `docs/INDEXER_HOW_IT_WORKS.md`
 
@@ -53,7 +56,7 @@ Use for:
 - module-level boundaries
 - how the indexer fits into the larger app architecture
 
-## Use These As Broader Context, Not The Active Backlog
+## Broader Context Docs
 
 ### `docs/archive/INDEXER_BACKEND_MILESTONES.md`
 
@@ -75,8 +78,7 @@ Do not let this drive schema expansion before the stabilization docs say the fou
 
 ## Guideline Rules
 
-1. When doing stabilization work, update `docs/active/INDEXER_STABILIZATION_WORKLIST.md`.
-2. When changing the intended release model, update `docs/active/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`.
-3. When changing the intended schema end state, update `docs/active/INDEXER_SCHEMA_TARGET.md`.
-4. Keep milestone docs as context, not as the active source of truth for current execution.
-5. Avoid creating new "plan" docs unless they clearly replace or narrow one of the active docs above.
+1. Do not treat the completed docs under `docs/archive/completed/indexer/` as an active backlog.
+2. When starting the next indexer phase, create a new active plan in `docs/active/` instead of reopening the completed stabilization worklist.
+3. Keep milestone docs as context, not as the active source of truth for current execution.
+4. Avoid creating new plan docs unless they clearly define the next bounded phase of work.
