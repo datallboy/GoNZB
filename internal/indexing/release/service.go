@@ -18,12 +18,12 @@ type logger interface {
 type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
-	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
+	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
-	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error
+	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseFamilyKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
@@ -117,7 +117,7 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		}
 		count, fragmentSkips, confidenceSkips, completionSkips, err := s.formCandidate(ctx, candidate)
 		if err != nil {
-			return fmt.Errorf("form release candidate %s: %w", candidate.ReleaseKey, err)
+			return fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
 		}
 		formed += count
 		skippedFragments += fragmentSkips
@@ -219,6 +219,9 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
 	if key := strings.TrimSpace(candidate.ReleaseFamilyKey); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(candidate.SourceReleaseKey); key != "" {
 		return key
 	}
 	return strings.TrimSpace(candidate.ReleaseKey)

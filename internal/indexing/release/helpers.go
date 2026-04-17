@@ -466,6 +466,9 @@ func representativeTitle(candidate pgindex.ReleaseCandidate, binaries []pgindex.
 	if stem := representativeStem(binaries); stem != "" {
 		return humanizeTitle(stem)
 	}
+	if value := strings.TrimSpace(candidate.ReleaseFamilyKey); value != "" {
+		return humanizeTitle(value)
+	}
 	if value := strings.TrimSpace(candidate.ReleaseKey); value != "" {
 		return humanizeTitle(value)
 	}
@@ -543,11 +546,17 @@ func releaseFamilyKey(candidate pgindex.ReleaseCandidate, binaries []pgindex.Bin
 	if value := strings.TrimSpace(candidate.ReleaseFamilyKey); value != "" {
 		return value
 	}
+	if value := strings.TrimSpace(candidate.SourceReleaseKey); value != "" {
+		return value
+	}
 	if value := strings.TrimSpace(candidate.ReleaseKey); value != "" {
 		return value
 	}
 	for _, binary := range binaries {
 		if value := strings.TrimSpace(binary.ReleaseFamilyKey); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(binary.SourceReleaseKey); value != "" {
 			return value
 		}
 		if value := strings.TrimSpace(binary.ReleaseKey); value != "" {
@@ -1407,6 +1416,9 @@ func pickFileName(binary pgindex.BinarySummary) string {
 	}
 
 	name = strings.TrimSpace(binary.ReleaseName)
+	if name == "" {
+		name = strings.TrimSpace(binary.ReleaseFamilyKey)
+	}
 	if name == "" {
 		name = strings.TrimSpace(binary.ReleaseKey)
 	}
