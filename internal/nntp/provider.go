@@ -312,8 +312,17 @@ func parseNNTPDate(s string) *time.Time {
 	layouts := []string{
 		time.RFC1123Z,
 		time.RFC1123,
+		"Mon, 02 Jan 06 15:04:05 MST",
+		"Mon, 2 Jan 06 15:04:05 MST",
+		"Mon, 02 Jan 06 15:04:05 -0700",
+		"Mon, 2 Jan 06 15:04:05 -0700",
 		"Mon, 2 Jan 2006 15:04:05 -0700",
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"Mon, 02 Jan 2006 15:04:05 MST",
+		"Mon, 2 Jan 2006 15:04:05 MST",
+		"2 Jan 06 15:04:05 MST",
 		"2 Jan 2006 15:04:05 -0700",
+		"2 Jan 06 15:04:05 -0700",
 		time.RFC3339,
 	}
 
