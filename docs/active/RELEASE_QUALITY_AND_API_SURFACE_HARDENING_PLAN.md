@@ -203,6 +203,28 @@ Current transport boundary:
 
 Those routes may still be valuable, but they should not define the first end-user product contract.
 
+Current internal-debug detail payloads that stay out of the public Phase 2 contract:
+
+- binary detail fields:
+  - `release_key`
+  - `binary_key`
+  - `grouping_evidence_json`
+  - `inspections`
+  - `artifacts`
+  - `archive_entries`
+  - `media_streams`
+  - `text_evidence`
+  - `par2_sets`
+  - `parts`
+  - low-level article-number, match-status, and provider/newsgroup tracing fields
+- file detail fields:
+  - `binary_id`
+  - `subject`
+  - `grouping_evidence_json`
+  - `newsgroups`
+  - `articles`
+  - low-level part-observation and match-tracing fields
+
 ## Query And Code Refactors Required Before Phase 3
 
 - stop using the current wide `IndexerReleaseSummary` and `IndexerReleaseDetail` shapes as the implicit product contract
@@ -257,3 +279,19 @@ Those routes may still be valuable, but they should not define the first end-use
   - provenance internals
   - enrichment internals
   - binary/file inspection payloads
+
+## Current Implementation Status
+
+Phase 2 is complete for the current planned scope.
+
+Completed outcomes:
+
+- public `/api/v1/indexer/releases` list and detail now use explicit public DTOs instead of the wide inspect/debug read models
+- public release responses suppress weak fragment rows, seed/test-style rows, placeholder titles, and unstable password-state values
+- the minimum stable public release contract is implemented and documented field-by-field
+- release list/detail controller coverage prevents internal identity, provenance, and enrichment fields from leaking back into the product contract
+- binary/file inspection routes remain available for operations and debugging, but are explicitly marked as `internal-debug` transport surfaces
+- current binary/file debug payload families are explicitly named as out of scope for the product contract
+- repo test coverage now enforces the public-vs-debug API boundary needed before Phase 3 UI work
+
+Phase 3 can proceed on the current hardened release contract without depending on inspect/debug DTO shape.

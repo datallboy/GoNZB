@@ -74,6 +74,32 @@ func (s *stubIndexerService) GetFile(ctx context.Context, fileID int64) (*pginde
 	return s.file, nil
 }
 
+func TestIndexerControllerGetOverviewMarksResponseAsInternalDebug(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/overview", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			overview: &pgindex.IndexerOverview{ReleaseCount: 5},
+		},
+	}
+
+	if err := ctrl.GetOverview(c); err != nil {
+		t.Fatalf("GetOverview returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	if !strings.Contains(rec.Body.String(), `"release_count":5`) {
+		t.Fatalf("expected overview payload, got %s", rec.Body.String())
+	}
+}
+
 func TestIndexerControllerListStages(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/stages", nil)
@@ -116,6 +142,35 @@ func TestIndexerControllerListStages(t *testing.T) {
 	}
 }
 
+func TestIndexerControllerListRunsMarksResponseAsInternalDebug(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/runs?stage=inspect_archive&limit=5", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			runs: []pgindex.IndexerStageRun{{ID: 11, StageName: "inspect_archive", Status: "completed"}},
+		},
+	}
+
+	if err := ctrl.ListRuns(c); err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"count":1`, `"stage":"inspect_archive"`, `"stage_name":"inspect_archive"`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
 func TestIndexerControllerRunStageAccepted(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/indexer/stages/inspect_archive/run", nil)
@@ -131,6 +186,9 @@ func TestIndexerControllerRunStageAccepted(t *testing.T) {
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
 	}
 	if !strings.Contains(rec.Body.String(), `"stage_name":"inspect_archive"`) {
 		t.Fatalf("expected stage_name in response, got %s", rec.Body.String())
@@ -159,6 +217,9 @@ func TestIndexerControllerPauseStageReturnsUpdatedState(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `"action":"pause"`) || !strings.Contains(body, `"paused":true`) {
 		t.Fatalf("expected pause response payload, got %s", body)
@@ -186,6 +247,9 @@ func TestIndexerControllerResumeStageReturnsUpdatedState(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `"action":"resume"`) || !strings.Contains(body, `"paused":false`) {

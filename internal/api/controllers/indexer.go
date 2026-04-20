@@ -185,6 +185,7 @@ func (ctrl *IndexerController) runStageAction(c *echo.Context, action string) er
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	stageName := pathParamTrimmed(c, "stage")
 	switch action {
