@@ -111,6 +111,9 @@ func TestIndexerControllerListStages(t *testing.T) {
 	if len(payload.Items) != 1 || payload.Items[0].StageName != "inspect_archive" {
 		t.Fatalf("unexpected items payload: %s", rec.Body.String())
 	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
 }
 
 func TestIndexerControllerRunStageAccepted(t *testing.T) {
@@ -241,6 +244,9 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopePublic {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopePublic, got)
+	}
 
 	body := rec.Body.String()
 	for _, needle := range []string{
@@ -317,6 +323,9 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopePublic {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopePublic, got)
+	}
 	body := rec.Body.String()
 	for _, needle := range []string{`"release_id":"rel-1"`, `"guid":"guid-1"`, `"password_state":"passworded_known"`, `"file_name":"example.feature.1963.7z.001"`} {
 		if !strings.Contains(body, needle) {
@@ -338,6 +347,85 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 	} {
 		if strings.Contains(body, needle) {
 			t.Fatalf("did not expect %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerControllerGetBinaryMarksResponseAsInternalDebug(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/binaries/42", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/indexer/binaries/:id")
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: "42"}})
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			binary: &pgindex.IndexerBinaryDetail{
+				BinaryID:      42,
+				ReleaseID:     "rel-1",
+				ReleaseKey:    "debug-key",
+				BinaryKey:     "binary-key",
+				BinaryName:    "example.7z.001",
+				FileID:        7,
+				FileName:      "example.7z.001",
+				MatchStatus:   "matched",
+				PasswordState: "passworded_known",
+			},
+		},
+	}
+
+	if err := ctrl.GetBinary(c); err != nil {
+		t.Fatalf("GetBinary returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"release_key":"debug-key"`, `"binary_key":"binary-key"`, `"file_id":7`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerControllerGetFileMarksResponseAsInternalDebug(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/files/7", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/indexer/files/:id")
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: "7"}})
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			file: &pgindex.IndexerFileDetail{
+				FileID:          7,
+				ReleaseID:       "rel-1",
+				BinaryID:        42,
+				FileName:        "example.7z.001",
+				Subject:         "Example Subject",
+				MatchConfidence: 0.95,
+			},
+		},
+	}
+
+	if err := ctrl.GetFile(c); err != nil {
+		t.Fatalf("GetFile returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"file_id":7`, `"binary_id":42`, `"subject":"Example Subject"`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
 	}
 }

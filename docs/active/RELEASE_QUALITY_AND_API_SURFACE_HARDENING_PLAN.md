@@ -187,6 +187,12 @@ Use the current `/api/v1/indexer/releases` and `/api/v1/indexer/releases/:id` ro
 
 Do not create a second public namespace for the first release catalog surface.
 
+Current transport boundary:
+
+- public release routes send `X-Gonzb-Indexer-Contract-Scope: public`
+- overview, stage, run, binary, and file inspection routes send `X-Gonzb-Indexer-Contract-Scope: internal-debug`
+- this keeps the current namespace in place while making the contract boundary explicit for frontend and tooling work
+
 ### Keep These Internal / Debug-Oriented
 
 - `/api/v1/indexer/overview`

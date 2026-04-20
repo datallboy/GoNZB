@@ -13,6 +13,12 @@ type IndexerController struct {
 	Service indexerService
 }
 
+const (
+	indexerContractScopeHeader        = "X-Gonzb-Indexer-Contract-Scope"
+	indexerContractScopePublic        = "public"
+	indexerContractScopeInternalDebug = "internal-debug"
+)
+
 func NewIndexerController(appCtx *app.Context) *IndexerController {
 	return &IndexerController{
 		Service: newIndexerService(appCtx),
@@ -23,6 +29,7 @@ func (ctrl *IndexerController) GetOverview(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	overview, err := ctrl.Service.Overview(c.Request().Context())
 	if err != nil {
@@ -36,6 +43,7 @@ func (ctrl *IndexerController) ListStages(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	items, err := ctrl.Service.ListStages(c.Request().Context())
 	if err != nil {
@@ -52,6 +60,7 @@ func (ctrl *IndexerController) ListRuns(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	limit, _, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
 	if err != nil {
@@ -88,6 +97,7 @@ func (ctrl *IndexerController) ListReleases(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopePublic)
 
 	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
 	if err != nil {
@@ -113,6 +123,7 @@ func (ctrl *IndexerController) GetRelease(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopePublic)
 
 	releaseID := pathParamTrimmed(c, "id")
 	release, err := ctrl.Service.GetRelease(c.Request().Context(), releaseID)
@@ -130,6 +141,7 @@ func (ctrl *IndexerController) GetBinary(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	binaryID, err := parsePathInt64(c, "id")
 	if err != nil {
@@ -151,6 +163,7 @@ func (ctrl *IndexerController) GetFile(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
 	fileID, err := parsePathInt64(c, "id")
 	if err != nil {
@@ -218,4 +231,11 @@ func parsePathInt64(c *echo.Context, name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return n, nil
+}
+
+func setIndexerContractScope(c *echo.Context, scope string) {
+	if c == nil || c.Response() == nil {
+		return
+	}
+	c.Response().Header().Set(indexerContractScopeHeader, scope)
 }
