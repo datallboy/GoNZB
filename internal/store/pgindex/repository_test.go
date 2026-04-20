@@ -933,6 +933,68 @@ func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesPlaceholderTitles(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("unknownrelease%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "unknown-release"
+		in.SourceTitle = "unknown-release"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	if err != nil {
+		t.Fatalf("list public placeholder-title releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected placeholder-title release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public placeholder-title detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected placeholder-title detail to be hidden, got %+v", detail)
+	}
+}
+
+func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicpasswordunknown%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.PasswordState = "unknown"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	if err != nil {
+		t.Fatalf("list public releases with unstable password state: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one visible release, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ReleaseID != releaseID {
+		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
+	}
+	if items[0].PasswordState != "" {
+		t.Fatalf("expected unstable password state to be suppressed, got %+v", items[0])
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public release detail with unstable password state: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected visible detail for %s", releaseID)
+	}
+	if detail.Release.PasswordState != "" {
+		t.Fatalf("expected detail password state to be suppressed, got %+v", detail.Release)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 
