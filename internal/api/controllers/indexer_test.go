@@ -16,9 +16,9 @@ type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
-	releases     []pgindex.IndexerReleaseSummary
+	releases     []pgindex.PublicIndexerReleaseSummary
 	releaseTotal int
-	release      *pgindex.IndexerReleaseDetail
+	release      *pgindex.PublicIndexerReleaseDetail
 	binary       *pgindex.IndexerBinaryDetail
 	file         *pgindex.IndexerFileDetail
 	runErr       error
@@ -58,11 +58,11 @@ func (s *stubIndexerService) ResumeStage(ctx context.Context, stageName string) 
 	return &stage, nil
 }
 
-func (s *stubIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+func (s *stubIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	return s.releases, s.releaseTotal, nil
 }
 
-func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error) {
+func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
 }
 
@@ -208,7 +208,72 @@ func TestIndexerControllerGetBinaryRejectsInvalidID(t *testing.T) {
 	}
 }
 
-func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
+func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/releases?q=example&limit=10&offset=5", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerController{
+		Service: &stubIndexerService{
+			releaseTotal: 1,
+			releases: []pgindex.PublicIndexerReleaseSummary{{
+				ReleaseID:         "rel-1",
+				GUID:              "guid-1",
+				Title:             "Example Feature 1963 1080p BluRay x265-GROUP",
+				SizeBytes:         1_500_000_000,
+				FileCount:         3,
+				CompletionPct:     100,
+				HasPAR2:           true,
+				HasNFO:            true,
+				PasswordState:     "passworded_known",
+				AvailabilityScore: 100,
+				AvailabilityTier:  "excellent",
+				MediaQualityScore: 90,
+				MediaQualityTier:  "premium",
+			}},
+		},
+	}
+
+	if err := ctrl.ListReleases(c); err != nil {
+		t.Fatalf("ListReleases returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, needle := range []string{
+		`"count":1`,
+		`"limit":10`,
+		`"offset":5`,
+		`"query":"example"`,
+		`"release_id":"rel-1"`,
+		`"guid":"guid-1"`,
+		`"password_state":"passworded_known"`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+	for _, needle := range []string{
+		`"release_key"`,
+		`"matched_media_title"`,
+		`"tmdb_id"`,
+		`"external_media_type"`,
+		`"season_number"`,
+		`"predb_matches"`,
+		`"tmdb_matches"`,
+		`"newsgroups"`,
+		`"deobfuscated_title"`,
+	} {
+		if strings.Contains(body, needle) {
+			t.Fatalf("did not expect %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/indexer/releases/rel-1", nil)
 	rec := httptest.NewRecorder()
@@ -218,34 +283,29 @@ func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
 
 	ctrl := &IndexerController{
 		Service: &stubIndexerService{
-			release: &pgindex.IndexerReleaseDetail{
-				Release: pgindex.IndexerReleaseSummary{
-					ReleaseID:          "rel-1",
-					Title:              "Example Feature 1963 1080p BluRay x265-GROUP",
-					MatchedMediaTitle:  "Example Feature",
-					OriginalMediaTitle: "Example Feature",
-					TMDBID:             657,
-					TVDBID:             0,
-					ExternalMediaType:  "movie",
-					ExternalYear:       1963,
-					SeasonNumber:       0,
-					EpisodeNumber:      0,
+			release: &pgindex.PublicIndexerReleaseDetail{
+				Release: pgindex.PublicIndexerReleaseSummary{
+					ReleaseID:         "rel-1",
+					GUID:              "guid-1",
+					Title:             "Example Feature 1963 1080p BluRay x265-GROUP",
+					SizeBytes:         1_500_000_000,
+					FileCount:         3,
+					CompletionPct:     100,
+					HasPAR2:           true,
+					HasNFO:            true,
+					PasswordState:     "passworded_known",
+					AvailabilityScore: 100,
+					AvailabilityTier:  "excellent",
+					MediaQualityScore: 90,
+					MediaQualityTier:  "premium",
 				},
-				PredbMatches: []pgindex.IndexerPredbMatchSummary{{
-					EntryID:    99,
-					Title:      "Example.Feature.1963.1080p.BluRay.x265-GROUP",
-					Category:   "MOVIE-HD-X265",
-					Source:     "predb.ovh",
-					Confidence: 0.91,
-					Chosen:     true,
-				}},
-				TMDBMatches: []pgindex.IndexerExternalMatchSummary{{
-					Source:     "tmdb",
-					ExternalID: 657,
-					MediaType:  "movie",
-					Title:      "Example Feature",
-					Year:       1963,
-					Chosen:     true,
+				Files: []pgindex.PublicIndexerReleaseFileSummary{{
+					FileName:      "example.feature.1963.7z.001",
+					SizeBytes:     500,
+					FileIndex:     1,
+					ArticleCount:  20,
+					TotalParts:    20,
+					ObservedParts: 20,
 				}},
 			},
 		},
@@ -258,17 +318,26 @@ func TestIndexerControllerGetReleaseIncludesEnrichmentFields(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{
-		`"matched_media_title":"Example Feature"`,
-		`"tmdb_id":657`,
-		`"external_media_type":"movie"`,
-		`"season_number":0`,
-		`"episode_number":0`,
-		`"predb_matches":[`,
-		`"tmdb_matches":[`,
-	} {
+	for _, needle := range []string{`"release_id":"rel-1"`, `"guid":"guid-1"`, `"password_state":"passworded_known"`, `"file_name":"example.feature.1963.7z.001"`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+	for _, needle := range []string{
+		`"release_key"`,
+		`"matched_media_title"`,
+		`"tmdb_id"`,
+		`"external_media_type"`,
+		`"season_number"`,
+		`"predb_matches"`,
+		`"tmdb_matches"`,
+		`"newsgroups"`,
+		`"file_id"`,
+		`"binary_id"`,
+		`"subject"`,
+	} {
+		if strings.Contains(body, needle) {
+			t.Fatalf("did not expect %s in response, got %s", needle, body)
 		}
 	}
 }

@@ -809,6 +809,130 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 }
 
+func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicvisible%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.PasswordState = "passworded_known"
+	})
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.7z.001", token),
+			SizeBytes: 700,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.par2", token),
+			SizeBytes: 128,
+			FileIndex: 2,
+			IsPars:    true,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	if err != nil {
+		t.Fatalf("list public indexer releases: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one visible release, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ReleaseID != releaseID {
+		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
+	}
+	if items[0].PasswordState != "passworded_known" {
+		t.Fatalf("expected stable password state, got %+v", items[0])
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public indexer release detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected detail for %s", releaseID)
+	}
+	if detail.Release.ReleaseID != releaseID || detail.Release.Title != record.Title {
+		t.Fatalf("unexpected public detail release payload: %+v", detail.Release)
+	}
+	if len(detail.Files) != 2 {
+		t.Fatalf("expected 2 public files, got %d", len(detail.Files))
+	}
+	if detail.Files[0].FileName == "" || detail.Files[0].SizeBytes <= 0 {
+		t.Fatalf("expected stable file summary payload, got %+v", detail.Files[0])
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("weakfragment%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.FileCount = 1
+		in.ExpectedFileCount = 86
+		in.CompletionPct = 2.33
+		in.MatchConfidence = 0.60
+		in.IdentityStatus = "unknown"
+		in.AvailabilityScore = 9.25
+		in.AvailabilityTier = "poor"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	if err != nil {
+		t.Fatalf("list public weak fragment releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected weak fragment release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public weak fragment detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected weak fragment detail to be hidden, got %+v", detail)
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("seedfilter%d", time.Now().UnixNano())
+	visibleID, _ := seedVisibilityTestRelease(t, store, token, nil)
+	hiddenID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.GroupName = fmt.Sprintf("seed.group.%s", token)
+		in.Title = fmt.Sprintf("Seed Release %s 2026 1080p BluRay x265-GRP", token)
+		in.SourceTitle = strings.ReplaceAll(in.Title, " ", ".")
+		in.SearchTitle = strings.ToLower(in.Title)
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	if err != nil {
+		t.Fatalf("list public releases with seed row: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected only one visible release, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ReleaseID != visibleID {
+		t.Fatalf("expected visible release %s, got %+v", visibleID, items[0])
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, hiddenID)
+	if err != nil {
+		t.Fatalf("get public hidden seed detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected hidden seed detail to be suppressed, got %+v", detail)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -857,6 +981,53 @@ func findStageState(t *testing.T, store *Store, stageName string) IndexerStageSt
 
 func uniqueTestStageName(suffix string) string {
 	return fmt.Sprintf("test_stage_%s_%d", suffix, time.Now().UnixNano())
+}
+
+func seedVisibilityTestRelease(t *testing.T, store *Store, token string, mutate func(*ReleaseRecord)) (string, ReleaseRecord) {
+	t.Helper()
+
+	now := time.Now().UTC()
+	record := ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              fmt.Sprintf("public-release-key-%s", token),
+		GroupName:               fmt.Sprintf("alt.binaries.public.%s", token),
+		Title:                   fmt.Sprintf("Public Visible %s 2026 1080p BluRay x265-GRP", token),
+		SourceTitle:             fmt.Sprintf("Public.Visible.%s.2026.1080p.BluRay.x265-GRP", token),
+		SearchTitle:             strings.ToLower(fmt.Sprintf("public visible %s 2026 1080p bluray x265 grp", token)),
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  "poster-public",
+		SizeBytes:               1_500_000_000,
+		PostedAt:                &now,
+		FileCount:               2,
+		ExpectedFileCount:       2,
+		ParFileCount:            1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		PasswordState:           "unknown",
+		HasPAR2:                 true,
+		HasNFO:                  true,
+		ArchiveCount:            1,
+		VideoCount:              1,
+		AudioCount:              1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	}
+	if mutate != nil {
+		mutate(&record)
+	}
+
+	releaseID, err := store.UpsertRelease(context.Background(), record)
+	if err != nil {
+		t.Fatalf("seed visibility test release: %v", err)
+	}
+
+	return releaseID, record
 }
 
 func seedTestRelease(t *testing.T, store *Store, suffix string) string {
