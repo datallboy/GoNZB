@@ -22,8 +22,8 @@ type indexerService interface {
 	RunStage(ctx context.Context, stageName string) error
 	PauseStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ResumeStage(ctx context.Context, stageName string) (*indexerStageView, error)
-	ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error)
-	GetRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
+	ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error)
+	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 }
@@ -187,18 +187,18 @@ func (s *runtimeIndexerService) ResumeStage(ctx context.Context, stageName strin
 	return s.getStage(ctx, string(stage))
 }
 
-func (s *runtimeIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+func (s *runtimeIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, errIndexerUnavailable
 	}
-	return s.store.ListIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
+	return s.store.ListPublicIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
 }
 
-func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error) {
+func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
-	return s.store.GetIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
+	return s.store.GetPublicIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
 }
 
 func (s *runtimeIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {

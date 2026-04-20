@@ -74,6 +74,18 @@ The exact threshold values should be chosen in implementation, but the policy bo
 - suppress rows that are too fragmentary or too weak to represent a stable release object
 - allow internal/debug surfaces to continue inspecting those rows if needed
 
+Current hardened implementation for public `/api/v1/indexer/releases` list/detail/search:
+
+- require non-empty `search_title`
+- reject placeholder titles where trimmed lowercase `title` is `unknown-release`
+- require `match_confidence >= 0.55`
+- require `completion_pct >= 50`
+- require `identity_status` in `identified` or `probable`
+- require either:
+  - `expected_file_count <= 1`
+  - or `file_count >= 2`
+- suppress rows where `search_title` or `group_name` matches seed/test-style naming
+
 ### How Should Short Or Opaque Release/Source/Family Keys Be Treated?
 
 They stay internal.
@@ -112,6 +124,25 @@ The first public-facing release contract should be intentionally small.
 - stable password/encryption state only if already trustworthy
 - stable readiness/quality summary fields that do not expose enrichment internals
 
+Current hardened list/search DTO:
+
+- `release_id`
+- `guid`
+- `title`
+- `posted_at`
+- `size_bytes`
+- `file_count`
+- `completion_pct`
+- `has_par2`
+- `has_nfo`
+- `password_state`
+  - only `not_passworded`, `passworded_known`, and `passworded_unknown` are emitted
+  - raw `unknown` and other unstable values are suppressed from the public payload
+- `availability_score`
+- `availability_tier`
+- `media_quality_score`
+- `media_quality_tier`
+
 ### Stable For Initial Detail
 
 - everything from list/search that remains relevant
@@ -119,8 +150,19 @@ The first public-facing release contract should be intentionally small.
   - file name
   - size
   - file index when meaningful
-  - basic posted-at and completeness signals if those are already stable
+- basic posted-at and completeness signals if those are already stable
 - high-level release status summaries that are already trustworthy
+
+Current hardened detail-only file summary DTO:
+
+- `file_name`
+- `size_bytes`
+- `file_index`
+- `is_pars`
+- `posted_at`
+- `article_count`
+- `total_parts`
+- `observed_parts`
 
 ### Internal / Debug-Only For Initial Product Phase
 
