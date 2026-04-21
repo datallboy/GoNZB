@@ -1115,6 +1115,132 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 	}
 }
 
+func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFamilies(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.expected.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	makeCompleteBinary := func(family string, expected int) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			FileFamilyKey:     family + "::file",
+			FamilyKind:        "readable_title",
+			IsMainPayload:     true,
+			ReleaseKey:        family,
+			ReleaseName:       family,
+			BinaryKey:         fmt.Sprintf("%s::%d", family, time.Now().UnixNano()),
+			BinaryName:        family + ".mkv",
+			FileName:          family + ".mkv",
+			ExpectedFileCount: expected,
+			TotalParts:        10,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts, total_bytes = 12345, updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update binary %s stats: %v", family, err)
+		}
+		return binaryID
+	}
+
+	withExpected := fmt.Sprintf("queue-expected-%d", time.Now().UnixNano())
+	withoutExpected := fmt.Sprintf("queue-no-expected-%d", time.Now().UnixNano())
+	withExpectedBinaryID := makeCompleteBinary(withExpected, 3)
+	withoutExpectedBinaryID := makeCompleteBinary(withoutExpected, 0)
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE release_stage_dirty_families
+		SET updated_at = NOW() - INTERVAL '2 minutes'
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, withExpected, withoutExpected,
+	); err != nil {
+		t.Fatalf("align queue row ages: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 2)
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != withExpected {
+		t.Fatalf("expected expected-file-count family %q first, got %q", withExpected, candidates[0].ReleaseFamilyKey)
+	}
+	if candidates[1].ReleaseFamilyKey != withoutExpected {
+		t.Fatalf("expected no-expected-file-count family %q second, got %q", withoutExpected, candidates[1].ReleaseFamilyKey)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id IN ($1, $2)`, withExpectedBinaryID, withoutExpectedBinaryID); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, withExpected, withoutExpected,
+	); err != nil {
+		t.Fatalf("cleanup dirty families: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.stale.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	staleFamily := fmt.Sprintf("queue-stale-%d", time.Now().UnixNano())
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_stage_dirty_families (provider_id, newsgroup_id, key_kind, family_key, updated_at)
+		VALUES (1, $1, 'release_family', $2, NOW() - INTERVAL '5 minutes')`, newsgroupID, staleFamily,
+	); err != nil {
+		t.Fatalf("insert stale cleanup family: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1)
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != staleFamily {
+		t.Fatalf("expected stale cleanup family %q, got %q", staleFamily, candidates[0].ReleaseFamilyKey)
+	}
+	if candidates[0].BinaryCount != 0 {
+		t.Fatalf("expected zero-binary stale cleanup candidate, got binary_count=%d", candidates[0].BinaryCount)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, staleFamily,
+	); err != nil {
+		t.Fatalf("cleanup dirty family: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
 func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinaries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

@@ -160,6 +160,13 @@ Expected behavior:
 
 Keep the dirty-family queue, but make selection explicitly favor formable families.
 
+Status:
+
+- completed on 2026-04-21
+- release candidate ordering now prefers formable families by `complete_binary_count DESC`, then expected-file-count evidence, then queue age
+- zero-binary stale-cleanup families remain eligible while fragment-only families stay out of the normal release candidate batch
+- validated with repository coverage for complete-vs-fragment priority, expected-file-count preference, zero-binary stale-cleanup eligibility, and release-related Go test passes
+
 Candidate window behavior:
 
 - scan a larger queue window than the final batch size
