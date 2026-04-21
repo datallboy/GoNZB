@@ -23,13 +23,14 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 	case "enrich_predb", "enrich_predb_scene_name_recovery":
 		where = `(
 			title_source = 'source'
+			OR title_source = ''
 			OR deobfuscated_title = ''
+			OR LOWER(BTRIM(COALESCE(title, ''))) = 'unknown-release'
 		) AND (
 			matched_media_title <> ''
-			OR (
-				title_source <> 'source'
-				AND deobfuscated_title <> ''
-			)
+			OR BTRIM(COALESCE(deobfuscated_title, '')) <> ''
+			OR BTRIM(COALESCE(title, '')) <> ''
+			OR BTRIM(COALESCE(source_title, '')) <> ''
 		)`
 	case "enrich_predb_metadata_only_fallback":
 		where = `(

@@ -202,6 +202,12 @@ func (s *Service) RunSceneNameRecoveryOnce(ctx context.Context) error {
 		}
 		applied, err := s.sceneNameRecoveryCandidate(ctx, candidate)
 		if err != nil {
+			if isRecoverablePredbSearchError(err) {
+				if s.log != nil {
+					s.log.Warn("enrich_predb scene-name-recovery: release_id=%s recoverable_error=%v", candidate.ReleaseID, err)
+				}
+				break
+			}
 			return fmt.Errorf("enrich predb scene-name-recovery release %s: %w", candidate.ReleaseID, err)
 		}
 		if applied {
@@ -662,6 +668,31 @@ func shouldApplyPredbTitle(candidate pgindex.ReleaseEnrichmentCandidate, best Ma
 		return false
 	}
 	return true
+}
+
+func isRecoverablePredbSearchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "status 429"):
+		return true
+	case strings.Contains(text, "too many requests"):
+		return true
+	case strings.Contains(text, "timeout"):
+		return true
+	case strings.Contains(text, "i/o timeout"):
+		return true
+	case strings.Contains(text, "connection reset by peer"):
+		return true
+	case strings.Contains(text, "broken pipe"):
+		return true
+	case strings.Contains(text, "unexpected eof"):
+		return true
+	default:
+		return false
+	}
 }
 
 type searchProviderChain struct {

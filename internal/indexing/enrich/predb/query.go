@@ -16,6 +16,7 @@ var (
 	predbQualityRE       = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p|remux|bluray|bdrip|webrip|web[- ]?dl|web|hdtv|x265|h265|hevc|av1|x264|h264|xvid|truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
 	predbSepRE           = regexp.MustCompile(`[._/\\]+`)
 	predbNonWordRE       = regexp.MustCompile(`[^a-z0-9 ]+`)
+	predbLongOpaqueRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 )
 
 type MetadataFallbackQuery struct {
@@ -40,14 +41,21 @@ func deriveQuery(candidate pgindex.ReleaseEnrichmentCandidate) (Query, bool) {
 	switch {
 	case strings.TrimSpace(candidate.MatchedMediaTitle) != "":
 		base = strings.TrimSpace(candidate.MatchedMediaTitle)
-	case strings.TrimSpace(candidate.DeobfuscatedTitle) != "" && candidate.TitleSource != "source":
+	case usablePredbBaseTitle(candidate.DeobfuscatedTitle):
 		base = strings.TrimSpace(candidate.DeobfuscatedTitle)
+	case usablePredbBaseTitle(candidate.Title):
+		base = strings.TrimSpace(candidate.Title)
+	case usablePredbBaseTitle(candidate.SourceTitle):
+		base = strings.TrimSpace(candidate.SourceTitle)
 	default:
 		return Query{}, false
 	}
 
 	title, year, isTV, season, episode := parseQueryTokens(base)
 	if title == "" {
+		return Query{}, false
+	}
+	if !usablePredbParsedTitle(title) {
 		return Query{}, false
 	}
 
@@ -122,6 +130,33 @@ func normalizeQueryTitle(v string) string {
 	v = strings.ReplaceAll(v, ".", " ")
 	v = strings.Join(strings.Fields(v), " ")
 	return strings.TrimSpace(v)
+}
+
+func usablePredbBaseTitle(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	if strings.EqualFold(v, "unknown-release") {
+		return false
+	}
+	title, _, _, _, _ := parseQueryTokens(v)
+	return usablePredbParsedTitle(title)
+}
+
+func usablePredbParsedTitle(v string) bool {
+	normalized := normalizedTitle(v)
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, " ") {
+		return true
+	}
+	condensed := strings.ReplaceAll(normalized, " ", "")
+	if predbLongOpaqueRE.MatchString(condensed) {
+		return false
+	}
+	return true
 }
 
 func normalizedTitle(v string) string {

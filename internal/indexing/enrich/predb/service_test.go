@@ -2,6 +2,7 @@ package predb
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -64,11 +65,15 @@ func (f *fakeRepo) ApplyReleasePredbUpdate(_ context.Context, in pgindex.Release
 
 type fakeProvider struct {
 	matches []Match
+	err     error
 }
 
 func (f fakeProvider) ProviderName() string { return "predb.club" }
 
 func (f fakeProvider) Search(context.Context, Query) ([]Match, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	return append([]Match(nil), f.matches...), nil
 }
 
@@ -149,6 +154,32 @@ func TestRunOnceAppliesPredbTitleAsFallback(t *testing.T) {
 	}
 	if update.DeobfuscatedTitle != "Example.Feature.1963.1080p.BluRay.x265-GROUP" {
 		t.Fatalf("unexpected release title: %+v", update)
+	}
+}
+
+func TestRunOnceSkipsRecoverablePredbRateLimit(t *testing.T) {
+	repo := &fakeRepo{
+		candidates: []pgindex.ReleaseEnrichmentCandidate{{
+			ReleaseID:         "rel-1",
+			Title:             "unknown-release",
+			SourceTitle:       "unknown-release",
+			TitleSource:       "source",
+			MatchedMediaTitle: "Example Feature",
+			ExternalYear:      1963,
+		}},
+	}
+	svc := &Service{
+		repo:           repo,
+		log:            fakeLogger{},
+		opts:           DefaultOptions(Options{}),
+		searchProvider: fakeProvider{err: fmt.Errorf("predb.club returned status 429")},
+	}
+
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+	if len(repo.updates) != 0 {
+		t.Fatalf("expected no updates during rate limit, got %d", len(repo.updates))
 	}
 }
 
