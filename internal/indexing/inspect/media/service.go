@@ -140,7 +140,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if err == nil {
 			probeMode = "ffprobe_direct"
 			materializedBytes += materialized.BytesWritten
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(ctx, s.runner, s.opts.FFProbePath, materialized.OutputPath)
+			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
+			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(probeCtx, s.runner, s.opts.FFProbePath, materialized.OutputPath)
+			cancel()
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
 				ReleaseID:    candidate.ReleaseID,
@@ -154,7 +156,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
 					"probe_mode":    "ffprobe_direct",
-					"ffprobe_error": errorString(probeErr),
+					"ffprobe_error_detail": errorString(probeErr),
 				},
 			}}
 			if ffprobeResult != nil {
@@ -255,7 +257,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				},
 			}}
 
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(ctx, s.runner, s.opts.FFProbePath, extractedPath)
+			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
+			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(probeCtx, s.runner, s.opts.FFProbePath, extractedPath)
+			cancel()
 			if ffprobeResult != nil {
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
@@ -356,10 +360,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["subtitle_languages"] = subtitles
 	}
 	if ffprobeError != "" {
-		summary["ffprobe_error"] = ffprobeError
+		summary["ffprobe_error_detail"] = ffprobeError
+		summary["probe_skip_reason"] = "ffprobe_failed"
 	}
 	if archiveExtractError != "" {
-		summary["archive_extract_error"] = archiveExtractError
+		summary["archive_extract_error_detail"] = archiveExtractError
+		summary["probe_skip_reason"] = "archive_extract_failed"
 	}
 	if mediaEntry != "" {
 		summary["archive_entry"] = mediaEntry

@@ -5,13 +5,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 var (
 	splitSevenZipRE = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
 	splitZipRE      = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	rarPartRE       = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	rarPartNumRE    = regexp.MustCompile(`(?i)\.part(\d+)\.rar$`)
+	rarVolNumRE     = regexp.MustCompile(`(?i)\.r(\d{2,3})$`)
 )
 
 func IsArchiveFile(fileName string) bool {
@@ -67,6 +72,116 @@ func ArchiveProbePath(fileName string) string {
 		return family + ".archive"
 	}
 	return family
+}
+
+func ArchiveFamilyFiles(candidateFile string, files []pgindex.CatalogReleaseFile) []pgindex.CatalogReleaseFile {
+	target := ArchiveFamilyKey(candidateFile)
+	if target == "" {
+		target = strings.ToLower(strings.TrimSpace(candidateFile))
+	}
+
+	out := make([]pgindex.CatalogReleaseFile, 0, len(files))
+	for _, file := range files {
+		if file.IsPars || !IsArchiveFile(file.FileName) {
+			continue
+		}
+		if ArchiveFamilyKey(file.FileName) != target {
+			continue
+		}
+		out = append(out, file)
+	}
+	if len(out) > 1 {
+		sortArchiveFamilyFiles(out)
+		return out
+	}
+
+	// Obfuscated split-RAR posts often randomize the stem per volume, so filename-family
+	// matching alone treats every partNN.rar as its own archive. When the release clearly
+	// contains a contiguous split-RAR set, group those volumes together at the release level.
+	if fallback := obfuscatedSplitRARFiles(files); len(fallback) > 0 && obfuscatedSplitRARCandidate(candidateFile, fallback) {
+		sortArchiveFamilyFiles(fallback)
+		return fallback
+	}
+
+	sortArchiveFamilyFiles(out)
+	return out
+}
+
+func sortArchiveFamilyFiles(files []pgindex.CatalogReleaseFile) {
+	sort.SliceStable(files, func(i, j int) bool {
+		if files[i].FileIndex != files[j].FileIndex {
+			return files[i].FileIndex < files[j].FileIndex
+		}
+		return strings.ToLower(files[i].FileName) < strings.ToLower(files[j].FileName)
+	})
+}
+
+func obfuscatedSplitRARFiles(files []pgindex.CatalogReleaseFile) []pgindex.CatalogReleaseFile {
+	partFiles := make([]pgindex.CatalogReleaseFile, 0, len(files))
+	seenParts := map[int]struct{}{}
+	maxPart := 0
+	for _, file := range files {
+		if file.IsPars {
+			continue
+		}
+		partNum, ok := rarPartNumber(file.FileName)
+		if !ok {
+			continue
+		}
+		partFiles = append(partFiles, file)
+		seenParts[partNum] = struct{}{}
+		if partNum > maxPart {
+			maxPart = partNum
+		}
+	}
+	if len(partFiles) < 3 {
+		return nil
+	}
+	if _, ok := seenParts[1]; !ok {
+		return nil
+	}
+	// Require a mostly contiguous sequence so we do not accidentally merge unrelated
+	// archives that merely happen to use partNN naming.
+	missing := 0
+	for n := 1; n <= maxPart; n++ {
+		if _, ok := seenParts[n]; !ok {
+			missing++
+		}
+	}
+	if missing > maxPart/10 {
+		return nil
+	}
+	return append([]pgindex.CatalogReleaseFile(nil), partFiles...)
+}
+
+func obfuscatedSplitRARCandidate(candidateFile string, family []pgindex.CatalogReleaseFile) bool {
+	if len(family) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(candidateFile))
+	if _, ok := rarPartNumber(lower); ok {
+		return true
+	}
+	// Allow a plain .rar candidate to collapse into the same split set when the release
+	// clearly has a part01/partNN sequence; service-level dedupe will still prefer part01.
+	return strings.HasSuffix(lower, ".rar")
+}
+
+func rarPartNumber(fileName string) (int, bool) {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if matches := rarPartNumRE.FindStringSubmatch(lower); len(matches) == 2 {
+		value, err := strconv.Atoi(matches[1])
+		if err == nil && value > 0 {
+			return value, true
+		}
+	}
+	if matches := rarVolNumRE.FindStringSubmatch(lower); len(matches) == 2 {
+		value, err := strconv.Atoi(matches[1])
+		if err == nil {
+			return value + 2, true
+		}
+	}
+	return 0, false
 }
 
 func ArchiveEntryNamesFromSummary(raw json.RawMessage) []string {

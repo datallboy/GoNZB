@@ -3,6 +3,7 @@ package inspect
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,17 @@ type MaterializedBinary struct {
 	ExactSize    int64
 	Signature    string
 	MIMEType     string
+}
+
+type BinaryPrefixSample struct {
+	File       pgindex.CatalogReleaseFile
+	Groups     []string
+	Prefix     []byte
+	Signature  string
+	MIMEType   string
+	BytesRead  int64
+	ExactSize  int64
+	OutputName string
 }
 
 var tokenSplitRE = regexp.MustCompile(`[^a-z0-9._-]+`)
@@ -109,6 +121,46 @@ func MaterializeBinaryToWorkspace(ctx context.Context, repo CatalogReader, fetch
 	}, nil
 }
 
+func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, candidate pgindex.BinaryInspectionCandidate, maxBytes int64) (*BinaryPrefixSample, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("catalog repo is required")
+	}
+	if fetcher == nil {
+		return nil, fmt.Errorf("article fetcher is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	file, refs, groups, err := loadBinaryMaterializationInputs(ctx, repo, candidate)
+	if err != nil {
+		return nil, err
+	}
+	article, err := fetchDecodedArticle(ctx, fetcher, groups, refs[0].MessageID)
+	if err != nil {
+		return nil, err
+	}
+
+	prefix := append([]byte(nil), article.Body...)
+	if maxBytes > 0 && int64(len(prefix)) > maxBytes {
+		prefix = prefix[:maxBytes]
+	}
+	if int64(len(prefix)) > 4096 {
+		prefix = prefix[:4096]
+	}
+	sig := DetectSignature(prefix, file.FileName)
+	return &BinaryPrefixSample{
+		File:       file,
+		Groups:     groups,
+		Prefix:     prefix,
+		Signature:  sig,
+		MIMEType:   DetectMIMEType(prefix, file.FileName),
+		BytesRead:  int64(len(prefix)),
+		ExactSize:  file.SizeBytes,
+		OutputName: file.FileName,
+	}, nil
+}
+
 func loadBinaryMaterializationInputs(ctx context.Context, repo CatalogReader, candidate pgindex.BinaryInspectionCandidate) (pgindex.CatalogReleaseFile, []pgindex.CatalogArticleRef, []string, error) {
 	files, err := repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
 	if err != nil {
@@ -162,6 +214,27 @@ func DetectSignature(data []byte, fileName string) string {
 	if len(data) >= 4 && string(data[:4]) == "PK\x03\x04" {
 		return "zip"
 	}
+	if len(data) >= 4 && data[0] == 0x1a && data[1] == 0x45 && data[2] == 0xdf && data[3] == 0xa3 {
+		return "matroska"
+	}
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		return "mp4"
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "AVI " {
+		return "avi"
+	}
+	if len(data) >= 4 && string(data[:4]) == "fLaC" {
+		return "flac"
+	}
+	if len(data) >= 3 && string(data[:3]) == "ID3" {
+		return "mp3"
+	}
+	if len(data) >= 2 && data[0] == 0xff && (data[1]&0xe0) == 0xe0 {
+		return "mp3"
+	}
+	if looksTextPrefix(data) {
+		return "text"
+	}
 	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
 	switch ext {
 	case ".nfo":
@@ -205,6 +278,38 @@ func DetectMIMEType(data []byte, fileName string) string {
 		}
 		return "application/octet-stream"
 	}
+}
+
+func looksTextPrefix(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	checked := data
+	if len(checked) > 512 {
+		checked = checked[:512]
+	}
+	printable := 0
+	for _, b := range checked {
+		switch {
+		case b == '\n' || b == '\r' || b == '\t':
+			printable++
+		case b >= 32 && b <= 126:
+			printable++
+		}
+	}
+	return len(checked) >= 32 && printable*100/len(checked) >= 92
+}
+
+func readPrefix(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 4096
+	}
+	buf := make([]byte, maxBytes)
+	n, err := reader.Read(buf)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return append([]byte(nil), buf[:n]...), nil
 }
 
 func ExtractTextTokens(text string) []string {

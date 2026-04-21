@@ -66,6 +66,34 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 	}
 }
 
+func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeArchiveRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{
+			{BinaryID: 41, ReleaseID: "rel-archive", FileName: "random.part01.rar", SourceUpdatedAt: &now},
+			{BinaryID: 42, ReleaseID: "rel-archive", FileName: "other.part02.rar", SourceUpdatedAt: &now},
+			{BinaryID: 43, ReleaseID: "rel-archive", FileName: "third.part03.rar", SourceUpdatedAt: &now},
+		},
+		files: []pgindex.CatalogReleaseFile{
+			{ID: 501, BinaryID: 41, FileName: "random.part01.rar", FileIndex: 1, SizeBytes: 2048},
+			{ID: 502, BinaryID: 42, FileName: "other.part02.rar", FileIndex: 2, SizeBytes: 2048},
+			{ID: 503, BinaryID: 43, FileName: "third.part03.rar", FileIndex: 3, SizeBytes: 2048},
+		},
+	}
+
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one deduped archive inspection, got %d", len(repo.completed))
+	}
+	if repo.completed[0].BinaryID != 41 {
+		t.Fatalf("expected part01 representative to win, got %+v", repo.completed[0])
+	}
+}
+
 type fakeArchiveRepository struct {
 	candidates         []pgindex.BinaryInspectionCandidate
 	files              []pgindex.CatalogReleaseFile
