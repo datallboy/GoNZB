@@ -1028,6 +1028,93 @@ func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	}
 }
 
+func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.queue.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	makeBinary := func(family string, expected, totalParts, observedParts int) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			FileFamilyKey:     family + "::file",
+			FamilyKind:        "readable_title",
+			IsMainPayload:     true,
+			ReleaseKey:        family,
+			ReleaseName:       family,
+			BinaryKey:         fmt.Sprintf("%s::%d", family, time.Now().UnixNano()),
+			BinaryName:        family + ".mkv",
+			FileName:          family + ".mkv",
+			ExpectedFileCount: expected,
+			TotalParts:        totalParts,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = $2, total_bytes = 12345, updated_at = NOW()
+			WHERE id = $1`, binaryID, observedParts,
+		); err != nil {
+			t.Fatalf("update binary %s stats: %v", family, err)
+		}
+		return binaryID
+	}
+
+	incompleteFamily := fmt.Sprintf("queue-incomplete-%d", time.Now().UnixNano())
+	completeFamily := fmt.Sprintf("queue-complete-%d", time.Now().UnixNano())
+	incompleteBinaryID := makeBinary(incompleteFamily, 1, 10, 0)
+	completeBinaryID := makeBinary(completeFamily, 1, 10, 10)
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE release_stage_dirty_families
+		SET updated_at = NOW() - INTERVAL '2 minutes'
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, incompleteFamily,
+	); err != nil {
+		t.Fatalf("age incomplete queue row: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE release_stage_dirty_families
+		SET updated_at = NOW() - INTERVAL '1 minute'
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, completeFamily,
+	); err != nil {
+		t.Fatalf("age complete queue row: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1)
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != completeFamily {
+		t.Fatalf("expected complete family %q, got %q", completeFamily, candidates[0].ReleaseFamilyKey)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id IN ($1, $2)`, incompleteBinaryID, completeBinaryID); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, incompleteFamily, completeFamily,
+	); err != nil {
+		t.Fatalf("cleanup dirty families: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

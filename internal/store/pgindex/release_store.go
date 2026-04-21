@@ -145,33 +145,82 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
+		WITH queue_window AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				updated_at
+			FROM release_stage_dirty_families
+			ORDER BY updated_at, family_key
+			LIMIT ($1 * 10)
+		),
+		candidate_stats AS (
+			SELECT
+				q.provider_id,
+				q.newsgroup_id,
+				q.key_kind,
+				q.family_key,
+				q.updated_at,
+				COALESCE(MAX(b.source_release_key), '') AS source_release_key,
+				COALESCE(MAX(b.release_key), '') AS release_key,
+				COALESCE(MAX(b.release_name), '') AS release_name,
+				MIN(b.posted_at) AS posted_at,
+				COUNT(b.id)::INTEGER AS binary_count,
+				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
+				COALESCE(SUM(
+					CASE
+						WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
+						ELSE 0
+					END
+				), 0)::INTEGER AS complete_binary_count
+			FROM queue_window q
+			LEFT JOIN binaries b
+			  ON b.provider_id = q.provider_id
+			 AND b.newsgroup_id = q.newsgroup_id
+			 AND (
+				(q.key_kind = 'release_family' AND b.release_family_key = q.family_key)
+				OR (
+					q.key_kind = 'base_stem'
+					AND b.expected_file_count > 1
+					AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+					AND LOWER(BTRIM(b.base_stem)) = q.family_key
+				)
+			 )
+			GROUP BY q.provider_id, q.newsgroup_id, q.key_kind, q.family_key, q.updated_at
+		),
+		next_queue AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				updated_at,
+				source_release_key,
+				release_key,
+				release_name,
+				posted_at,
+				binary_count,
+				total_bytes
+			FROM candidate_stats
+			WHERE binary_count = 0 OR complete_binary_count > 0
+			ORDER BY updated_at, family_key
+			LIMIT $1
+		)
 		SELECT
 			q.provider_id,
 			q.newsgroup_id,
 			q.key_kind,
-			COALESCE(MAX(b.source_release_key), '') AS source_release_key,
+			q.source_release_key,
 			q.family_key,
-			COALESCE(MAX(b.release_key), '') AS release_key,
-			COALESCE(MAX(b.release_name), '') AS release_name,
-			MIN(b.posted_at) AS posted_at,
-			COUNT(b.id)::INTEGER AS binary_count,
-			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
-		FROM release_stage_dirty_families q
-		LEFT JOIN binaries b
-		  ON b.provider_id = q.provider_id
-		 AND b.newsgroup_id = q.newsgroup_id
-		 AND (
-			(q.key_kind = 'release_family' AND b.release_family_key = q.family_key)
-			OR (
-				q.key_kind = 'base_stem'
-				AND b.expected_file_count > 1
-				AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-				AND LOWER(BTRIM(b.base_stem)) = q.family_key
-			)
-		 )
-		GROUP BY q.provider_id, q.newsgroup_id, q.key_kind, q.family_key, q.updated_at
-		ORDER BY q.updated_at, q.family_key
-		LIMIT $1`, limit)
+			q.release_key,
+			q.release_name,
+			q.posted_at,
+			q.binary_count,
+			q.total_bytes
+		FROM next_queue q
+		ORDER BY q.updated_at, q.family_key`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
