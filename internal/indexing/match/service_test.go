@@ -108,6 +108,33 @@ func TestMatchUsesStructuredOverviewEvidence(t *testing.T) {
 	}
 }
 
+func TestMatchUsesStructuredFileCountersWhenSubjectIsOpaque(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<structured-counters@host.example>",
+		Subject:   `opaque post`,
+		RawOverview: map[string]any{
+			"name":       "episode.7z.001",
+			"part":       2,
+			"total":      220,
+			"size":       int64(157286400),
+			"file_index": 1,
+			"file_total": 10,
+		},
+	})
+
+	if got.FileName != "episode.7z.001" {
+		t.Fatalf("expected file name from structured data, got %q", got.FileName)
+	}
+	if got.FileIndex != 1 || got.ExpectedFileCount != 10 {
+		t.Fatalf("expected structured file counters 1/10, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+	if got.PartNumber != 2 || got.TotalParts != 220 {
+		t.Fatalf("expected structured part counters 2/220, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+}
+
 func TestMatchUsesYEncStructuredNameForObfuscatedMultipartFiles(t *testing.T) {
 	svc := NewService()
 	postedAt := time.Date(2026, 4, 20, 15, 0, 0, 0, time.UTC)

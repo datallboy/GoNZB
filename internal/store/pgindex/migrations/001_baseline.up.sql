@@ -24,8 +24,15 @@ SET default_table_access_method = heap;
 CREATE TABLE public.article_header_ingest_payloads (
     article_header_id bigint NOT NULL,
     subject text DEFAULT ''::text NOT NULL,
+    poster_id bigint,
     poster text DEFAULT ''::text NOT NULL,
     xref text DEFAULT ''::text NOT NULL,
+    subject_file_name text DEFAULT ''::text NOT NULL,
+    subject_file_index integer DEFAULT 0 NOT NULL,
+    subject_file_total integer DEFAULT 0 NOT NULL,
+    yenc_part_number integer DEFAULT 0 NOT NULL,
+    yenc_total_parts integer DEFAULT 0 NOT NULL,
+    yenc_file_size bigint DEFAULT 0 NOT NULL,
     raw_overview_json jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1748,6 +1755,14 @@ CREATE INDEX idx_scrape_runs_provider_id_started_at ON public.scrape_runs USING 
 
 ALTER TABLE ONLY public.article_header_ingest_payloads
     ADD CONSTRAINT article_header_ingest_payloads_article_header_id_fkey FOREIGN KEY (article_header_id) REFERENCES public.article_headers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: article_header_ingest_payloads article_header_ingest_payloads_poster_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.article_header_ingest_payloads
+    ADD CONSTRAINT article_header_ingest_payloads_poster_id_fkey FOREIGN KEY (poster_id) REFERENCES public.posters(id) ON DELETE SET NULL;
 
 
 --

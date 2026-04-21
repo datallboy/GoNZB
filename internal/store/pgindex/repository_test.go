@@ -835,6 +835,52 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 		t.Fatalf("expected 2 stored article headers, got %d", len(articles))
 	}
 
+	var (
+		payloadPosterID   int64
+		payloadPosterText string
+		subjectFileName   string
+		subjectFileIndex  int
+		subjectFileTotal  int
+		yencPartNumber    int
+		yencTotalParts    int
+		yencFileSize      int64
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			COALESCE(poster_id, 0),
+			poster,
+			subject_file_name,
+			subject_file_index,
+			subject_file_total,
+			yenc_part_number,
+			yenc_total_parts,
+			yenc_file_size
+		FROM article_header_ingest_payloads
+		WHERE article_header_id = $1`, articles[0].id).Scan(
+		&payloadPosterID,
+		&payloadPosterText,
+		&subjectFileName,
+		&subjectFileIndex,
+		&subjectFileTotal,
+		&yencPartNumber,
+		&yencTotalParts,
+		&yencFileSize,
+	); err != nil {
+		t.Fatalf("query ingest payload: %v", err)
+	}
+	if payloadPosterID != posterID {
+		t.Fatalf("expected poster_id %d, got %d", posterID, payloadPosterID)
+	}
+	if payloadPosterText != "" {
+		t.Fatalf("expected payload poster text to be normalized away, got %q", payloadPosterText)
+	}
+	if subjectFileName != "test.7z.001" || subjectFileIndex != 1 || subjectFileTotal != 2 {
+		t.Fatalf("unexpected parsed file info: name=%q index=%d total=%d", subjectFileName, subjectFileIndex, subjectFileTotal)
+	}
+	if yencPartNumber != 1 || yencTotalParts != 20 || yencFileSize != 0 {
+		t.Fatalf("unexpected parsed yenc info: part=%d total=%d size=%d", yencPartNumber, yencTotalParts, yencFileSize)
+	}
+
 	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
 		ProviderID:        1,
 		NewsgroupID:       newsgroupID,
@@ -1602,49 +1648,49 @@ func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
 	}
 
 	releaseOne, err := store.UpsertRelease(ctx, ReleaseRecord{
-		ProviderID:              1,
-		ReleaseKey:              fmt.Sprintf("releasefiles-one-%d", now.UnixNano()),
-		GroupName:               groupOne,
-		Title:                   "Release Files One",
-		SourceTitle:             "Release.Files.One",
-		TitleSource:             "source",
-		SearchTitle:             "release files one",
-		Category:                "usenet",
-		Classification:          "video",
-		Poster:                  "poster-a",
-		PostedAt:                &now,
-		FileCount:               1,
-		ExpectedFileCount:       1,
-		CompletionPct:           100,
-		MatchConfidence:         0.9,
-		IdentityStatus:          "identified",
-		AvailabilityScore:       100,
-		AvailabilityTier:        "excellent",
-		MetadataUpdatedAt:       &now,
+		ProviderID:        1,
+		ReleaseKey:        fmt.Sprintf("releasefiles-one-%d", now.UnixNano()),
+		GroupName:         groupOne,
+		Title:             "Release Files One",
+		SourceTitle:       "Release.Files.One",
+		TitleSource:       "source",
+		SearchTitle:       "release files one",
+		Category:          "usenet",
+		Classification:    "video",
+		Poster:            "poster-a",
+		PostedAt:          &now,
+		FileCount:         1,
+		ExpectedFileCount: 1,
+		CompletionPct:     100,
+		MatchConfidence:   0.9,
+		IdentityStatus:    "identified",
+		AvailabilityScore: 100,
+		AvailabilityTier:  "excellent",
+		MetadataUpdatedAt: &now,
 	})
 	if err != nil {
 		t.Fatalf("upsert release one: %v", err)
 	}
 	releaseTwo, err := store.UpsertRelease(ctx, ReleaseRecord{
-		ProviderID:              1,
-		ReleaseKey:              fmt.Sprintf("releasefiles-two-%d", now.UnixNano()),
-		GroupName:               groupTwo,
-		Title:                   "Release Files Two",
-		SourceTitle:             "Release.Files.Two",
-		TitleSource:             "source",
-		SearchTitle:             "release files two",
-		Category:                "usenet",
-		Classification:          "video",
-		Poster:                  "poster-a",
-		PostedAt:                &now,
-		FileCount:               1,
-		ExpectedFileCount:       1,
-		CompletionPct:           100,
-		MatchConfidence:         0.9,
-		IdentityStatus:          "identified",
-		AvailabilityScore:       100,
-		AvailabilityTier:        "excellent",
-		MetadataUpdatedAt:       &now,
+		ProviderID:        1,
+		ReleaseKey:        fmt.Sprintf("releasefiles-two-%d", now.UnixNano()),
+		GroupName:         groupTwo,
+		Title:             "Release Files Two",
+		SourceTitle:       "Release.Files.Two",
+		TitleSource:       "source",
+		SearchTitle:       "release files two",
+		Category:          "usenet",
+		Classification:    "video",
+		Poster:            "poster-a",
+		PostedAt:          &now,
+		FileCount:         1,
+		ExpectedFileCount: 1,
+		CompletionPct:     100,
+		MatchConfidence:   0.9,
+		IdentityStatus:    "identified",
+		AvailabilityScore: 100,
+		AvailabilityTier:  "excellent",
+		MetadataUpdatedAt: &now,
 	})
 	if err != nil {
 		t.Fatalf("upsert release two: %v", err)
