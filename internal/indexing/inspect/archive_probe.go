@@ -143,29 +143,7 @@ func PrepareArchiveProbe(ctx context.Context, workspace *Workspace, repo Catalog
 }
 
 func archiveFamilyFiles(candidateFile string, files []pgindex.CatalogReleaseFile) []pgindex.CatalogReleaseFile {
-	target := ArchiveFamilyKey(candidateFile)
-	if target == "" {
-		target = strings.ToLower(strings.TrimSpace(candidateFile))
-	}
-
-	out := make([]pgindex.CatalogReleaseFile, 0, len(files))
-	for _, file := range files {
-		if file.IsPars || !IsArchiveFile(file.FileName) {
-			continue
-		}
-		if ArchiveFamilyKey(file.FileName) != target {
-			continue
-		}
-		out = append(out, file)
-	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].FileIndex != out[j].FileIndex {
-			return out[i].FileIndex < out[j].FileIndex
-		}
-		return strings.ToLower(out[i].FileName) < strings.ToLower(out[j].FileName)
-	})
-	return out
+	return ArchiveFamilyFiles(candidateFile, files)
 }
 
 func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, groups []string, family []pgindex.CatalogReleaseFile, probePath string, log logger, candidate pgindex.BinaryInspectionCandidate, opts Options) (int64, error) {

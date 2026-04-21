@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,6 +62,16 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		}
 		return nil
 	}
+	candidates, err = s.dedupeCandidates(ctx, candidates)
+	if err != nil {
+		return fmt.Errorf("dedupe inspect_archive candidates: %w", err)
+	}
+	if len(candidates) == 0 {
+		if s != nil && s.log != nil {
+			s.log.Debug("inspect_archive: no deduped inspection candidates available")
+		}
+		return nil
+	}
 
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
@@ -71,6 +82,74 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) dedupeCandidates(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {
+	if len(candidates) <= 1 {
+		return candidates, nil
+	}
+	filesByRelease := make(map[string][]pgindex.CatalogReleaseFile, len(candidates))
+	bestByGroup := make(map[string]pgindex.BinaryInspectionCandidate, len(candidates))
+
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		files, ok := filesByRelease[candidate.ReleaseID]
+		if !ok {
+			var err error
+			files, err = s.repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
+			if err != nil {
+				return nil, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)
+			}
+			filesByRelease[candidate.ReleaseID] = files
+		}
+		family := inspectpkg.ArchiveFamilyFiles(candidate.FileName, files)
+		groupKey := candidate.ReleaseID + "|" + strings.ToLower(strings.TrimSpace(candidate.FileName))
+		if len(family) > 0 {
+			groupKey = candidate.ReleaseID + "|" + strings.ToLower(strings.TrimSpace(family[0].FileName)) + fmt.Sprintf("|%d", len(family))
+		}
+		current, exists := bestByGroup[groupKey]
+		if !exists || archiveCandidatePriority(candidate.FileName) < archiveCandidatePriority(current.FileName) {
+			bestByGroup[groupKey] = candidate
+		}
+	}
+
+	out := make([]pgindex.BinaryInspectionCandidate, 0, len(bestByGroup))
+	for _, candidate := range bestByGroup {
+		out = append(out, candidate)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := time.Time{}
+		right := time.Time{}
+		if out[i].SourceUpdatedAt != nil {
+			left = out[i].SourceUpdatedAt.UTC()
+		}
+		if out[j].SourceUpdatedAt != nil {
+			right = out[j].SourceUpdatedAt.UTC()
+		}
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return out[i].BinaryID > out[j].BinaryID
+	})
+	return out, nil
+}
+
+func archiveCandidatePriority(fileName string) int {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	switch {
+	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+		return 0
+	case strings.HasSuffix(lower, ".7z.001"), strings.HasSuffix(lower, ".zip.001"):
+		return 0
+	case strings.HasSuffix(lower, ".r00"):
+		return 1
+	case strings.HasSuffix(lower, ".7z"), strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".rar"):
+		return 2
+	default:
+		return 3
+	}
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
@@ -106,6 +185,19 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	probe, err := inspectpkg.PrepareArchiveProbe(ctx, workspace, s.repo, s.fetcher, s.runner, s.log, s.opts, candidate)
 	if err != nil {
+		if isRecoverableArchiveInspectionError(err) {
+			_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+				StageName:       stageName,
+				BinaryID:        candidate.BinaryID,
+				ReleaseID:       candidate.ReleaseID,
+				ErrorText:       err.Error(),
+				SourceUpdatedAt: candidate.SourceUpdatedAt,
+			})
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_archive: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
+			}
+			return nil
+		}
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -123,6 +215,19 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				probe.MaterializedBytes,
 			)
 		}
+	}
+	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" && isRecoverableArchiveInspectionError(fmt.Errorf("%s", probe.ProbeError)) {
+		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			ErrorText:       strings.TrimSpace(probe.ProbeError),
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+		})
+		if s != nil && s.log != nil {
+			s.log.Warn("inspect_archive: transient probe failure binary_id=%d release_id=%s err=%s", candidate.BinaryID, candidate.ReleaseID, strings.TrimSpace(probe.ProbeError))
+		}
+		return nil
 	}
 	artifactRows := []pgindex.BinaryInspectionArtifactRecord{{
 		BinaryID:     candidate.BinaryID,
@@ -197,12 +302,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["archive_entries"] = probe.EntryNames
 		summary["family_files"] = probe.FamilyFileNames
 		if probe.ProbeError != "" {
-			if skipReason := archiveProbeSkipReason(probe.ProbeError); skipReason != "" {
-				summary["probe_skip_reason"] = skipReason
-				summary["probe_error_detail"] = probe.ProbeError
-			} else {
-				summary["probe_error"] = probe.ProbeError
+			skipReason := archiveProbeSkipReason(probe.ProbeError)
+			if skipReason == "" {
+				skipReason = "not_archive_or_unsupported"
 			}
+			summary["probe_skip_reason"] = skipReason
+			summary["probe_error_detail"] = probe.ProbeError
 		}
 		materializedBytes += probe.MaterializedBytes
 	}
@@ -230,6 +335,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			len(probe.EntryNames),
 		)
 	}
+	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" {
+		return nil
+	}
 
 	archiveCount := 1
 	passworded := encrypted
@@ -251,6 +359,21 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		MediaTags:         tags,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
 	})
+}
+
+func isRecoverableArchiveInspectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable")
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

@@ -103,6 +103,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       err.Error(),
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
+		if isRecoverablePAR2InspectionError(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_par2: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
+			}
+			return nil
+		}
 		return fmt.Errorf("materialize par2 binary: %w", err)
 	}
 
@@ -188,4 +194,20 @@ func ptrTime(v time.Time) *time.Time { return &v }
 func parseInt(v string) int {
 	n := inspectpkg.ParseInt64(v)
 	return int(n)
+}
+
+func isRecoverablePAR2InspectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "checksum mismatch") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable")
 }

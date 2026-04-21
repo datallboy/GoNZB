@@ -49,6 +49,7 @@ type Options struct {
 
 func NewService(log logger, runners map[string]Runner) *Service {
 	ordered := []string{
+		string(supervisor.StageInspectDiscovery),
 		string(supervisor.StageInspectPAR2),
 		string(supervisor.StageInspectNFO),
 		string(supervisor.StageInspectArchive),

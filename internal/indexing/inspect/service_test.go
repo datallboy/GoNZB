@@ -16,6 +16,10 @@ import (
 func TestServiceRunOnceHonorsInspectOrder(t *testing.T) {
 	var order []string
 	svc := NewService(nil, map[string]Runner{
+		"inspect_discovery": runnerFunc(func(context.Context) error {
+			order = append(order, "inspect_discovery")
+			return nil
+		}),
 		"inspect_archive": runnerFunc(func(context.Context) error {
 			order = append(order, "inspect_archive")
 			return nil
@@ -42,7 +46,7 @@ func TestServiceRunOnceHonorsInspectOrder(t *testing.T) {
 		t.Fatalf("run once: %v", err)
 	}
 
-	want := []string{"inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media"}
+	want := []string{"inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("expected order %v, got %v", want, order)
 	}
@@ -124,6 +128,23 @@ func TestIsArchiveRepresentativeUsesFirstSplitVolume(t *testing.T) {
 		if got := IsArchiveRepresentative(fileName); got != want {
 			t.Fatalf("expected IsArchiveRepresentative(%q)=%v, got %v", fileName, want, got)
 		}
+	}
+}
+
+func TestArchiveFamilyFilesFallsBackToObfuscatedSplitRARSequence(t *testing.T) {
+	files := []pgindex.CatalogReleaseFile{
+		{FileName: "abc.part01.rar", FileIndex: 1},
+		{FileName: "def.part02.rar", FileIndex: 2},
+		{FileName: "ghi.part03.rar", FileIndex: 3},
+		{FileName: "jkl.part04.rar", FileIndex: 4},
+	}
+
+	got := ArchiveFamilyFiles("def.part02.rar", files)
+	if len(got) != 4 {
+		t.Fatalf("expected obfuscated split-rar grouping to return 4 files, got %d", len(got))
+	}
+	if got[0].FileName != "abc.part01.rar" || got[3].FileName != "jkl.part04.rar" {
+		t.Fatalf("expected sorted split-rar family, got %+v", got)
 	}
 }
 

@@ -66,7 +66,7 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 		  AND is_dir = FALSE
 		  AND (
 			media_type IN ('video', 'audio')
-			OR lower(entry_name) ~ '\\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
+			OR lower(entry_name) ~ '\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
 		  )`,
 		"archive_entry", 0.92); err != nil {
 		return nil, fmt.Errorf("list archive entry title candidates: %w", err)
@@ -628,6 +628,26 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 		return nil, err
 	}
 
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate
+	if stageName == "inspect_media" {
+		rerunPredicate += `
+			OR (
+				abi.updated_at IS NOT NULL AND (
+					bi.id IS NULL OR
+					abi.updated_at > bi.updated_at
+				)
+			)`
+	}
+
 	query := `
 		SELECT
 			$1,
@@ -661,13 +681,138 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 			AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
-			bi.id IS NULL OR
-			bi.status = 'failed' OR
-			b.updated_at > bi.updated_at OR
-			COALESCE(bi.summary_json->>'probe_error', '') <> ''
-		  )
+			` + rerunPredicate + `
+		  )`
+	if stageName == "inspect_discovery" {
+		query = `
+			SELECT *
+			FROM (
+				SELECT DISTINCT ON (r.release_id)
+					$1 AS stage_name,
+					b.id AS binary_id,
+					r.release_id,
+					r.title,
+					r.source_title,
+					r.deobfuscated_title,
+					r.group_name,
+					COALESCE(rf.file_name, b.file_name, '') AS file_name,
+					b.binary_name,
+					b.release_name,
+					COALESCE(r.poster, '') AS poster,
+					b.posted_at,
+					b.total_bytes,
+					b.total_parts,
+					b.match_confidence,
+					b.updated_at AS source_updated_at,
+					COALESCE(bi.status, '') AS current_status,
+					bi.updated_at AS current_updated_at,
+					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
+				FROM binaries b
+				JOIN release_files rf ON rf.binary_id = b.id
+				JOIN releases r ON r.release_id = rf.release_id
+				LEFT JOIN binary_inspections bi
+					ON bi.stage_name = $1
+					AND bi.binary_id = b.id
+				LEFT JOIN binary_inspections abi
+					ON abi.stage_name = 'inspect_archive'
+					AND abi.binary_id = b.id
+				WHERE ` + filter + `
+				  AND (
+					` + rerunPredicate + `
+				  )
+				ORDER BY r.release_id, COALESCE(rf.file_index, b.file_index, 0), b.updated_at DESC, b.id
+			) candidates
+			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
+			LIMIT $2`
+	} else if stageName == "inspect_archive" {
+		query = `
+			SELECT *
+			FROM (
+				SELECT DISTINCT ON (
+					r.release_id,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+						ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+					END
+				)
+					$1 AS stage_name,
+					b.id AS binary_id,
+					r.release_id,
+					r.title,
+					r.source_title,
+					r.deobfuscated_title,
+					r.group_name,
+					COALESCE(rf.file_name, b.file_name, '') AS file_name,
+					b.binary_name,
+					b.release_name,
+					COALESCE(r.poster, '') AS poster,
+					b.posted_at,
+					b.total_bytes,
+					b.total_parts,
+					b.match_confidence,
+					b.updated_at AS source_updated_at,
+					COALESCE(bi.status, '') AS current_status,
+					bi.updated_at AS current_updated_at,
+					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
+				FROM binaries b
+				JOIN release_files rf ON rf.binary_id = b.id
+				JOIN releases r ON r.release_id = rf.release_id
+				LEFT JOIN binary_inspections bi
+					ON bi.stage_name = $1
+					AND bi.binary_id = b.id
+				LEFT JOIN binary_inspections abi
+					ON abi.stage_name = 'inspect_archive'
+					AND abi.binary_id = b.id
+				WHERE ` + filter + `
+				  AND (
+					bi.id IS NULL OR
+					bi.status = 'failed' OR
+					b.updated_at > bi.updated_at OR
+					` + errorRerunPredicate + `
+				  )
+				ORDER BY
+					r.release_id,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+						ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+					END,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' THEN 1
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' THEN 1
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' THEN 1
+						ELSE 2
+					END,
+					COALESCE(NULLIF(rf.file_index, 0), NULLIF(b.file_index, 0), 2147483647),
+					b.updated_at DESC,
+					b.id
+			) candidates
+			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
+			LIMIT $2`
+	} else {
+		query += `
 		ORDER BY r.updated_at DESC, b.updated_at DESC, b.id
 		LIMIT $2`
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, stageName, limit)
 	if err != nil {
@@ -740,10 +885,7 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	if sourceUpdatedAt != nil {
 		sourceUpdated = sourceUpdatedAt.UTC()
 	}
-	var release any
-	if strings.TrimSpace(releaseID) != "" {
-		release = strings.TrimSpace(releaseID)
-	}
+	releaseID = strings.TrimSpace(releaseID)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO binary_inspections (
@@ -760,9 +902,35 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			source_updated_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,'running',NOW(),NULL,'',0,'{}'::jsonb,'{}'::jsonb,$4,NOW())
+		VALUES (
+			$1,
+			$2,
+			COALESCE(
+				CASE
+					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+					THEN $3
+					ELSE NULL
+				END,
+				(
+					SELECT rf.release_id
+					FROM release_files rf
+					WHERE rf.binary_id = $2
+					ORDER BY rf.release_id
+					LIMIT 1
+				)
+			),
+			'running',
+			NOW(),
+			NULL,
+			'',
+			0,
+			'{}'::jsonb,
+			'{}'::jsonb,
+			$4,
+			NOW()
+		)
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = EXCLUDED.release_id,
+		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
 		    started_at = NOW(),
 		    finished_at = NULL,
@@ -774,7 +942,7 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 		    updated_at = NOW()`,
 		stageName,
 		binaryID,
-		release,
+		releaseID,
 		sourceUpdated,
 	)
 	if err != nil {
@@ -1588,6 +1756,7 @@ func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionR
 	if err != nil {
 		return fmt.Errorf("marshal tool provenance for %s/%d: %w", in.StageName, in.BinaryID, err)
 	}
+	status, in.ErrorText = normalizeBinaryInspectionTerminalState(in.StageName, status, in.ErrorText, in.Summary)
 	summaryJSON, err := json.Marshal(sanitizeStringMap(in.Summary))
 	if err != nil {
 		return fmt.Errorf("marshal inspection summary for %s/%d: %w", in.StageName, in.BinaryID, err)
@@ -1608,7 +1777,33 @@ func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionR
 			source_updated_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,NOW(),NOW(),$5,$6,$7,$8,$9,NOW())
+		VALUES (
+			$1,
+			$2,
+			COALESCE(
+				CASE
+					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+					THEN $3
+					ELSE NULL
+				END,
+				(
+					SELECT rf.release_id
+					FROM release_files rf
+					WHERE rf.binary_id = $2
+					ORDER BY rf.release_id
+					LIMIT 1
+				)
+			),
+			$4,
+			NOW(),
+			NOW(),
+			$5,
+			$6,
+			$7,
+			$8,
+			$9,
+			NOW()
+		)
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = EXCLUDED.status,
@@ -1636,8 +1831,72 @@ func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionR
 	return nil
 }
 
+func normalizeBinaryInspectionTerminalState(stageName, status, errorText string, summary map[string]any) (string, string) {
+	status = strings.TrimSpace(status)
+	errorText = strings.TrimSpace(errorText)
+	if status != "completed" {
+		return status, errorText
+	}
+	if !inspectionStageSupportsErrorFailure(stageName) {
+		return status, errorText
+	}
+	for _, key := range []string{"probe_error", "ffprobe_error", "extract_error", "archive_extract_error"} {
+		if msg := inspectionSummaryMessage(summary, key); msg != "" {
+			if errorText == "" {
+				errorText = msg
+			}
+			return "failed", errorText
+		}
+	}
+	if errorText != "" {
+		return "failed", errorText
+	}
+	return status, errorText
+}
+
+func inspectionStageSupportsErrorFailure(stageName string) bool {
+	switch strings.TrimSpace(stageName) {
+	case "inspect_archive", "inspect_media", "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_password":
+		return true
+	default:
+		return false
+	}
+}
+
+func inspectionSummaryMessage(summary map[string]any, key string) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	raw, ok := summary[strings.TrimSpace(key)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func isRecoverableInspectionError(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable")
+}
+
 func inspectCandidateFilter(stageName string) (string, error) {
 	switch stageName {
+	case "inspect_discovery":
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.bin' AND
+		COALESCE(b.recovered_extension, '') = '' AND
+		(b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`, nil
 	case "inspect_par2":
 		return "rf.is_pars = TRUE", nil
 	case "inspect_nfo":
@@ -1650,9 +1909,14 @@ func inspectCandidateFilter(stageName string) (string, error) {
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+			(
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+			)
 		)`, nil
 	case "inspect_password":
 		return `r.encrypted = TRUE AND
@@ -1684,9 +1948,14 @@ func inspectCandidateFilter(stageName string) (string, error) {
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+					)
 				)
 			)
 		)`, nil
