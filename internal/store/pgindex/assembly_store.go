@@ -95,21 +95,38 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 					WHEN $1::integer <= 0 THEN 0
 					WHEN (($1::integer * 7) / 10) > 0 THEN (($1::integer * 7) / 10)
 					ELSE 1
-				END AS lane_a_limit
+				END AS lane_a_limit,
+				GREATEST($1::integer * 50, $1::integer) AS pending_window_limit
 		),
-		lane_a AS (
+		recent_pending AS MATERIALIZED (
 			SELECT
 				ah.id,
 				ah.provider_id,
 				ah.newsgroup_id,
-				ng.group_name,
 				ah.article_number,
 				ah.message_id,
-				p.subject,
-				COALESCE(po.poster_name, p.poster, '') AS poster,
 				ah.date_utc,
 				ah.bytes,
-				ah.lines,
+				ah.lines
+			FROM article_headers ah
+			CROSS JOIN limits
+			WHERE ah.assembled_at IS NULL
+			ORDER BY ah.id DESC
+			LIMIT (SELECT pending_window_limit FROM limits)
+		),
+		lane_a AS (
+			SELECT
+				rp.id,
+				rp.provider_id,
+				rp.newsgroup_id,
+				ng.group_name,
+				rp.article_number,
+				rp.message_id,
+				p.subject,
+				COALESCE(po.poster_name, p.poster, '') AS poster,
+				rp.date_utc,
+				rp.bytes,
+				rp.lines,
 				p.xref,
 				COALESCE(p.poster_id, 0) AS poster_id,
 				COALESCE(p.subject_file_name, '') AS subject_file_name,
@@ -121,36 +138,53 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				TRUE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
 				0 AS lane_rank
-			FROM article_headers ah
-			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			LEFT JOIN posters po ON po.id = p.poster_id
-			CROSS JOIN limits
-			WHERE ah.assembled_at IS NULL
-			  AND NULLIF(BTRIM(p.subject_file_name), '') IS NOT NULL
-			  AND EXISTS (
+			FROM recent_pending rp
+			JOIN LATERAL (
+				SELECT
+					p.article_header_id,
+					p.subject,
+					p.poster,
+					p.xref,
+					p.poster_id,
+					p.subject_file_name,
+					p.subject_file_index,
+					p.subject_file_total,
+					p.yenc_part_number,
+					p.yenc_total_parts,
+					p.yenc_file_size,
+					p.raw_overview_json
+				FROM article_header_ingest_payloads p
+				WHERE p.article_header_id = rp.id
+				  AND NULLIF(BTRIM(p.subject_file_name), '') IS NOT NULL
+			) p ON TRUE
+			JOIN LATERAL (
 				SELECT 1
 				FROM binaries b
-				WHERE b.provider_id = ah.provider_id
-				  AND b.newsgroup_id = ah.newsgroup_id
+				WHERE b.provider_id = rp.provider_id
+				  AND b.newsgroup_id = rp.newsgroup_id
+				  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
 				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
-			)
-			ORDER BY ah.id DESC
+				LIMIT 1
+			) matched_binary ON TRUE
+			JOIN newsgroups ng ON ng.id = rp.newsgroup_id
+			LEFT JOIN posters po ON po.id = p.poster_id
+			CROSS JOIN limits
+			ORDER BY rp.id DESC
 			LIMIT (SELECT lane_a_limit FROM limits)
 		),
 		lane_b AS (
 			SELECT
-				ah.id,
-				ah.provider_id,
-				ah.newsgroup_id,
+				rp.id,
+				rp.provider_id,
+				rp.newsgroup_id,
 				ng.group_name,
-				ah.article_number,
-				ah.message_id,
+				rp.article_number,
+				rp.message_id,
 				p.subject,
 				COALESCE(po.poster_name, p.poster, '') AS poster,
-				ah.date_utc,
-				ah.bytes,
-				ah.lines,
+				rp.date_utc,
+				rp.bytes,
+				rp.lines,
 				p.xref,
 				COALESCE(p.poster_id, 0) AS poster_id,
 				COALESCE(p.subject_file_name, '') AS subject_file_name,
@@ -162,18 +196,17 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				FALSE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
 				1 AS lane_rank
-			FROM article_headers ah
-			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+			FROM recent_pending rp
+			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id
+			JOIN newsgroups ng ON ng.id = rp.newsgroup_id
 			LEFT JOIN posters po ON po.id = p.poster_id
 			CROSS JOIN limits
-			WHERE ah.assembled_at IS NULL
-			  AND NOT EXISTS (
+			WHERE NOT EXISTS (
 				SELECT 1
 				FROM lane_a la
-				WHERE la.id = ah.id
+				WHERE la.id = rp.id
 			)
-			ORDER BY ah.id DESC
+			ORDER BY rp.id DESC
 			LIMIT GREATEST(
 				(SELECT total_limit FROM limits) - (SELECT COUNT(*) FROM lane_a),
 				0

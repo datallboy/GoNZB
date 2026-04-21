@@ -289,6 +289,88 @@ Add reusable queries to docs for:
 - no release created from a family with zero complete binaries
 - no regression in obfuscated multipart grouping quality
 
+## Runtime Validation Findings
+
+Live validation on 2026-04-21 found that correctness changes 1 through 5 were not yet sufficient to satisfy the exit criteria in production-like conditions.
+
+Observed behavior during controlled `--once` validation:
+
+- `pending_headers` remained at `1,605,290` during the observation window
+- `dirty_families` remained at `93,824`
+- `complete_binaries` remained at `2,824`
+- `incomplete_binaries` remained at `57,047`
+- `releases` remained at `132`
+- current-code `assemble --once` and `release --once` runs did not complete promptly enough to demonstrate healthy churn
+
+Query investigation results:
+
+- the main bottleneck is repository query cost before the service loops do meaningful work
+- assemble is currently dominated by `ListUnassembledArticleHeaders(limit)`
+- release is currently dominated by `ListReleaseCandidates(limit)`
+- this is primarily a query-shape and supporting-index problem, not yet evidence of NNTP fetch cost or release clustering cost dominating the normal pass
+
+### Follow-on Query Fixes
+
+This section was the active follow-on work needed after the first live validation pass. The query and runtime fixes below were completed on 2026-04-21 and should be treated as the baseline for future validation work.
+
+#### 6. Assemble selector query support and shape cleanup
+
+Status:
+
+- completed on 2026-04-21
+- added schema support in migration `005_indexer_refinement_query_support.up.sql`
+- lane A now starts from a bounded `recent_pending` window on `article_headers` and does point lookups into payload and binary identity instead of broad merge/hash joins
+- live validation with `assemble.batch_size=250` completed repeatedly in about `3.3s` to `3.4s` per pass instead of hanging in candidate selection
+- two consecutive live passes moved `pending_headers` from `1,605,290` to `1,604,790`
+- those same passes selected `lane_a_selected=175` and `lane_b_selected=75` each time and refreshed `3` then `4` binaries respectively
+
+Required changes:
+
+- add a supporting index for structured ingest name lookup on `article_header_ingest_payloads`
+- add a normalized file-identity lookup index on `binaries`
+- reshape lane A so it starts from `article_headers` pending rows and does point lookups into payload and binary identity instead of broad merge/hash joins
+
+Expected behavior:
+
+- assemble candidate selection should return promptly for small and medium batches
+- lane A should become cheap enough to validate with repeated live `--once` runs
+- operator `pending_headers` and lane selection counters should start moving during validation windows
+
+#### 7. Release selector query split for index usage
+
+Status:
+
+- completed on 2026-04-21
+- split `release_family` and `base_stem` lookup paths into separate lateral aggregate branches so Postgres could use the family-specific indexes
+- added `idx_binaries_base_stem_family_lookup` and aligned the query predicate to the partial-index condition
+- store connections now open through parsed `pgx` config with PostgreSQL `jit=off` for this workload because JIT startup cost was dominating one-shot release passes after the query rewrite
+- live validation showed that the old `queue_window = batch_size * 10` sample was still too narrow: the oldest `2,000` dirty families were all fragment-only, while the oldest `20,000` contained actionable complete families
+- the selector now samples a broader capped window before ranking so actionable families can be surfaced ahead of fragment-only cooldown work
+- post-fix live release passes completed successfully instead of hanging:
+  - first two passes cooled down `200` fragment-only families each and reduced `dirty_families` from `93,824` to `93,424`
+  - a later pass with the broader queue window reported `candidate_families=200 formed=8 cooled_down_fragment_only_families=191 skipped_confidence=2`
+  - during that pass `releases` increased from `132` to `137` and `dirty_families` fell further to `93,224`
+
+Required changes:
+
+- split release candidate stats into separate `release_family` and `base_stem` branches
+- let the `release_family` branch use `idx_binaries_release_family_key`
+- add a simpler `base_stem` lookup index for the `expected_file_count > 1` branch
+- avoid the single `OR` join path in the release candidate query
+
+Expected behavior:
+
+- `release --once` should finish promptly for small and medium batches
+- dirty-family queue sampling should become cheap enough for repeated validation runs
+- the queue should start demonstrating actionable churn instead of long-running selector time
+
+### Current Post-Fix Interpretation
+
+- the original live hang was primarily a repository SQL and PostgreSQL execution-planning problem, not evidence that NNTP yEnc recovery or release clustering were the main bottlenecks
+- assemble is now visibly churning and prioritizing existing-binary improvement work
+- release is now visibly processing queue work again, including both fragment-family cooldown and actionable release formation
+- the front of the dirty queue is still heavily fragment-only, so more live soak is still needed before the overall refinement loop can be signed off against the full exit criteria
+
 ## Test Plan
 
 - repository test for prioritized assemble selection:
