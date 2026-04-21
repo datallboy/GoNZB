@@ -258,6 +258,74 @@ func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
 	}
 }
 
+func TestRunOnceCoolsDownFragmentOnlyFamilyAndAcksDirtyCandidate(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			KeyKind:          "release_family",
+			ReleaseFamilyKey: "fragment-family",
+			ReleaseKey:       "fragment-family",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"fragment-family": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "fragment-family",
+					ReleaseKey:       "fragment-family",
+					FileName:         "fragment-a.rar",
+					BinaryName:       "fragment-a.rar",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       10,
+					ObservedParts:    4,
+					TotalBytes:       1000,
+					MatchConfidence:  0.90,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         2,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "fragment-family",
+					ReleaseKey:       "fragment-family",
+					FileName:         "fragment-b.rar",
+					BinaryName:       "fragment-b.rar",
+					PostedAt:         ptrTime(baseTime.Add(time.Minute)),
+					TotalParts:       12,
+					ObservedParts:    6,
+					TotalBytes:       1000,
+					MatchConfidence:  0.90,
+					IsMainPayload:    true,
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected no persisted releases for fragment-only family, got %d", len(repo.upsertedReleases))
+	}
+	if len(repo.deletedStaleCalls) != 1 {
+		t.Fatalf("expected one stale delete call for cooldown, got %d", len(repo.deletedStaleCalls))
+	}
+	if repo.deletedStaleCalls[0].releaseKey != "fragment-family" {
+		t.Fatalf("expected stale delete for fragment-family, got %q", repo.deletedStaleCalls[0].releaseKey)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected cooled-down family to be acked once, got %d", len(repo.ackedCandidates))
+	}
+	if repo.ackedCandidates[0].familyKey != "fragment-family" {
+		t.Fatalf("expected ack for fragment-family, got %q", repo.ackedCandidates[0].familyKey)
+	}
+}
+
 func TestRunOnceSkipsWeakContextualObfuscatedClusterWithoutExpectedFileCountByDefault(t *testing.T) {
 	baseTime := time.Date(2026, 4, 21, 1, 30, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1438,12 +1506,20 @@ type fakeReleaseRepository struct {
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
 	deletedStaleCalls                  []staleDeleteCall
+	ackedCandidates                    []ackedReleaseCandidate
 }
 
 type staleDeleteCall struct {
 	providerID     int64
 	releaseKey     string
 	keepGroupNames []string
+}
+
+type ackedReleaseCandidate struct {
+	providerID  int64
+	newsgroupID int64
+	keyKind     string
+	familyKey   string
 }
 
 func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
@@ -1511,7 +1587,13 @@ func (f *fakeReleaseRepository) UpsertNZBCache(context.Context, string, string, 
 	return nil
 }
 
-func (f *fakeReleaseRepository) AckReleaseCandidate(context.Context, int64, int64, string, string) error {
+func (f *fakeReleaseRepository) AckReleaseCandidate(_ context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error {
+	f.ackedCandidates = append(f.ackedCandidates, ackedReleaseCandidate{
+		providerID:  providerID,
+		newsgroupID: newsgroupID,
+		keyKind:     keyKind,
+		familyKey:   familyKey,
+	})
 	return nil
 }
 

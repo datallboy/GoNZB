@@ -114,6 +114,9 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 	}
 
 	formed := 0
+	candidateFamiliesInspected := 0
+	cooledDownFragmentOnly := 0
+	staleCleanupOnly := 0
 	skippedFragments := 0
 	skippedConfidence := 0
 	skippedCompletion := 0
@@ -121,19 +124,25 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		count, fragmentSkips, confidenceSkips, completionSkips, err := s.formCandidate(ctx, candidate)
+		candidateFamiliesInspected++
+		outcome, err := s.formCandidate(ctx, candidate)
 		if err != nil {
 			return fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
 		}
-		formed += count
-		skippedFragments += fragmentSkips
-		skippedConfidence += confidenceSkips
-		skippedCompletion += completionSkips
+		formed += outcome.formed
+		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
+		staleCleanupOnly += outcome.staleCleanupOnly
+		skippedFragments += outcome.skippedFragments
+		skippedConfidence += outcome.skippedConfidence
+		skippedCompletion += outcome.skippedCompletion
 	}
 
 	s.log.Info(
-		"release: formed=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
+		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
+		candidateFamiliesInspected,
 		formed,
+		cooledDownFragmentOnly,
+		staleCleanupOnly,
 		skippedFragments,
 		skippedConfidence,
 		skippedCompletion,
@@ -145,92 +154,110 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 	return nil
 }
 
-func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate) (int, int, int, int, error) {
+type candidateOutcome struct {
+	formed                 int
+	cooledDownFragmentOnly int
+	staleCleanupOnly       int
+	skippedFragments       int
+	skippedConfidence      int
+	skippedCompletion      int
+}
+
+func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate) (candidateOutcome, error) {
 	familyKey := candidateFamilyKey(candidate)
 	if familyKey == "" {
-		return 0, 0, 0, 0, fmt.Errorf("release family key is required")
+		return candidateOutcome{}, fmt.Errorf("release family key is required")
 	}
 
 	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey)
 	if err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("list binaries for release candidate: %w", err)
+		return candidateOutcome{}, fmt.Errorf("list binaries for release candidate: %w", err)
 	}
 	if len(binaries) == 0 {
 		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
-			return 0, 0, 0, 0, fmt.Errorf("delete empty stale releases: %w", err)
+			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
 		}
 		if candidate.KeyKind != "" {
 			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
-				return 0, 0, 0, 0, fmt.Errorf("ack empty release candidate: %w", err)
+				return candidateOutcome{}, fmt.Errorf("ack empty release candidate: %w", err)
 			}
 		}
-		return 0, 0, 0, 0, nil
+		return candidateOutcome{staleCleanupOnly: 1}, nil
+	}
+
+	if countCompleteBinaries(binaries) == 0 {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
+		}
+		if candidate.KeyKind != "" {
+			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+				return candidateOutcome{}, fmt.Errorf("ack cooled-down fragment-only candidate: %w", err)
+			}
+		}
+		return candidateOutcome{cooledDownFragmentOnly: 1}, nil
 	}
 
 	clusters := clusterBinaries(candidate, binaries)
 	keepGroupNames := make([]string, 0, len(clusters))
-	formed := 0
-	skippedFragments := 0
-	skippedConfidence := 0
-	skippedCompletion := 0
+	outcome := candidateOutcome{}
 
 	for _, cluster := range clusters {
 		if err := ctx.Err(); err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, err
+			return outcome, err
 		}
 
 		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
 		if err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
+			return outcome, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
 		}
 
 		record := buildReleaseRecord(candidate, cluster, titleCandidates)
 		if !shouldPersistCluster(cluster, record, s.opts) {
-			skippedFragments++
+			outcome.skippedFragments++
 			continue
 		}
 		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
-			skippedConfidence++
+			outcome.skippedConfidence++
 			continue
 		}
 		if record.CompletionPct < s.opts.ReleaseMinCompletion {
-			skippedCompletion++
+			outcome.skippedCompletion++
 			continue
 		}
 
 		files, err := s.buildReleaseFiles(ctx, cluster)
 		if err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("build release files for %s: %w", record.GroupName, err)
+			return outcome, fmt.Errorf("build release files for %s: %w", record.GroupName, err)
 		}
 
 		releaseID, err := s.repo.UpsertRelease(ctx, record)
 		if err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("upsert release %s: %w", record.GroupName, err)
+			return outcome, fmt.Errorf("upsert release %s: %w", record.GroupName, err)
 		}
 		if err := s.repo.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("replace release files for %s: %w", releaseID, err)
+			return outcome, fmt.Errorf("replace release files for %s: %w", releaseID, err)
 		}
 		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{candidate.NewsgroupID}); err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
+			return outcome, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
 		}
 		if err := s.repo.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("upsert nzb cache for %s: %w", releaseID, err)
+			return outcome, fmt.Errorf("upsert nzb cache for %s: %w", releaseID, err)
 		}
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)
-		formed++
+		outcome.formed++
 	}
 
 	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
-		return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
+		return outcome, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
 	}
 	if candidate.KeyKind != "" {
 		if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
-			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
+			return outcome, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
 		}
 	}
 
-	return formed, skippedFragments, skippedConfidence, skippedCompletion, nil
+	return outcome, nil
 }
 
 func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
@@ -262,6 +289,16 @@ func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, 
 		return false
 	}
 	return true
+}
+
+func countCompleteBinaries(binaries []pgindex.BinarySummary) int {
+	count := 0
+	for _, binary := range binaries {
+		if binary.TotalParts > 0 && binary.ObservedParts == binary.TotalParts {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster) ([]pgindex.ReleaseFileRecord, error) {
