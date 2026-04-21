@@ -1090,15 +1090,18 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 		t.Fatalf("age complete queue row: %v", err)
 	}
 
-	candidates, err := store.ListReleaseCandidates(ctx, 1)
+	candidates, err := store.ListReleaseCandidates(ctx, 2)
 	if err != nil {
 		t.Fatalf("list release candidates: %v", err)
 	}
-	if len(candidates) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
 	}
 	if candidates[0].ReleaseFamilyKey != completeFamily {
 		t.Fatalf("expected complete family %q, got %q", completeFamily, candidates[0].ReleaseFamilyKey)
+	}
+	if candidates[1].ReleaseFamilyKey != incompleteFamily {
+		t.Fatalf("expected fragment-only family %q second for cooldown, got %q", incompleteFamily, candidates[1].ReleaseFamilyKey)
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id IN ($1, $2)`, incompleteBinaryID, completeBinaryID); err != nil {
@@ -1238,6 +1241,118 @@ func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.requeue.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 4, 21, 18, 0, 0, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 100,
+			MessageID:     fmt.Sprintf("<requeue-%d@test>", time.Now().UnixNano()),
+			Subject:       `Requeue Test [1/1] - "requeue.test.r00" yEnc (1/10)`,
+			Poster:        "poster-requeue@example.com",
+			DateUTC:       &now,
+			Bytes:         500,
+			Lines:         10,
+		},
+	}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+
+	var articleHeaderID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		ORDER BY id DESC
+		LIMIT 1`, newsgroupID,
+	).Scan(&articleHeaderID); err != nil {
+		t.Fatalf("query article header: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		SourceReleaseKey: "requeue-family",
+		ReleaseFamilyKey: "requeue-family",
+		FileFamilyKey:    "requeue-family::file",
+		FamilyKind:       "readable_title",
+		IsMainPayload:    true,
+		ReleaseKey:       "requeue-family",
+		ReleaseName:      "Requeue Family",
+		BinaryKey:        fmt.Sprintf("requeue-family::%d", time.Now().UnixNano()),
+		BinaryName:       "requeue.test.r00",
+		FileName:         "requeue.test.r00",
+		TotalParts:       10,
+		MatchConfidence:  0.95,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+		BinaryID:        binaryID,
+		ArticleHeaderID: articleHeaderID,
+		MessageID:       fmt.Sprintf("<requeue-part-%d@test>", time.Now().UnixNano()),
+		PartNumber:      1,
+		TotalParts:      10,
+		SegmentBytes:    500,
+		FileName:        "requeue.test.r00",
+	}); err != nil {
+		t.Fatalf("upsert binary part: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'`, newsgroupID,
+	); err != nil {
+		t.Fatalf("ack dirty family row: %v", err)
+	}
+
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats: %v", err)
+	}
+
+	var dirtyCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_stage_dirty_families
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'requeue-family'`, newsgroupID,
+	).Scan(&dirtyCount); err != nil {
+		t.Fatalf("query requeued dirty family: %v", err)
+	}
+	if dirtyCount != 1 {
+		t.Fatalf("expected family to be requeued after refresh, got %d rows", dirtyCount)
 	}
 }
 

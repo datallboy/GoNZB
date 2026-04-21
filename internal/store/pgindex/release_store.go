@@ -212,11 +212,11 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				complete_binary_count,
 				has_expected_file_count
 			FROM candidate_stats
-			WHERE binary_count = 0 OR complete_binary_count > 0
 			ORDER BY
 				CASE
+					WHEN complete_binary_count > 0 THEN 0
 					WHEN binary_count = 0 THEN 1
-					ELSE 0
+					ELSE 2
 				END ASC,
 				complete_binary_count DESC,
 				has_expected_file_count DESC,

@@ -194,6 +194,14 @@ Expected behavior:
 
 This is the key release behavior change for this phase.
 
+Status:
+
+- completed on 2026-04-21
+- release now cools down dirty families that still have binaries but zero complete binaries by deleting any stale releases and acking the dirty row without attempting normal persistence
+- fragment-only families remain visible at lower queue priority so normal release passes can cool them down after actionable work
+- release stage logging now reports `cooled_down_fragment_only_families`, and binary progress refresh continues to requeue families through existing dirty-family insertion paths
+- validated with release service coverage for cooldown ack behavior, repository coverage for fragment-only tail selection and post-ack requeue, and release-related Go test passes
+
 Cooldown rule:
 
 - if a dirty family resolves to:
