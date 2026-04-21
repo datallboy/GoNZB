@@ -39,12 +39,17 @@ func RunIndexerInspectScheduler(ctx context.Context, appCtx *app.Context) error 
 	return runIndexerStages(
 		ctx,
 		appCtx,
+		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,
 		supervisor.StageInspectArchive,
 		supervisor.StageInspectPassword,
 		supervisor.StageInspectMedia,
 	)
+}
+
+func RunIndexerInspectDiscoveryScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectDiscovery)
 }
 
 func RunIndexerInspectPAR2Scheduler(ctx context.Context, appCtx *app.Context) error {

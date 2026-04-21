@@ -30,6 +30,7 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			IntervalMinutes:  func() *float64 { v := 10.0; return &v }(),
 			MinConfidence:    &high,
 			MinCompletionPct: func() *float64 { v := 34.0; return &v }(),
+			RequireExpectedFileCountForContextualObfuscated: func() *bool { v := false; return &v }(),
 		},
 		Inspect: config.IndexingInspectConfig{
 			WorkDir:         "/tmp/inspect",
@@ -82,7 +83,7 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	if runtime.ScrapeLatest.Enabled {
 		t.Fatalf("expected scrape_latest to be disabled")
 	}
-	if runtime.Release.MinConfidence != high || runtime.Release.MinCompletionPct != 34 {
+	if runtime.Release.MinConfidence != high || runtime.Release.MinCompletionPct != 34 || runtime.Release.RequireExpectedFileCountForContextualObfuscated {
 		t.Fatalf("unexpected release config: %+v", runtime.Release)
 	}
 	if runtime.ScrapeLatest.IntervalMinutes != interval || runtime.ScrapeLatest.BatchSize != batch {

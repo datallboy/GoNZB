@@ -120,6 +120,22 @@ func (r *Runner) ExecuteIndexerInspect(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerInspectDiscovery(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if !once {
+		if err := wiring.RunIndexerInspectDiscoveryScheduler(ctx, appCtx); err != nil {
+			appCtx.Logger.Fatal("indexer inspect discovery scheduler failed: %v", err)
+		}
+		return
+	}
+	if err := appCtx.UsenetIndexer.InspectDiscoveryOnce(ctx); err != nil {
+		appCtx.Logger.Fatal("indexer inspect discovery --once failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer inspect discovery --once completed")
+}
+
 func (r *Runner) ExecuteIndexerInspectPAR2(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

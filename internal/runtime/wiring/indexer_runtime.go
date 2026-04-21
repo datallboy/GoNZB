@@ -13,10 +13,12 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/enrich/tmdb"
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/archive"
+	"github.com/datallboy/gonzb/internal/indexing/inspect/discovery"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/media"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/nfo"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/par2"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/password"
+	"github.com/datallboy/gonzb/internal/indexing/maintenance"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/indexing/release"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
@@ -33,25 +35,29 @@ type usenetIndexerRuntime struct {
 }
 
 type usenetIndexerConfig struct {
-	Newsgroups           []string
-	ScrapeServer         *config.ServerConfig
-	ReleaseMinConfidence float64
-	ReleaseMinCompletion float64
-	Match                match.Options
-	Inspect              inspectpkg.Options
-	EnrichPreDB          predb.Options
-	EnrichTMDB           tmdb.Options
-	ScrapeLatest         indexerStageConfig
-	ScrapeBackfill       indexerStageConfig
-	Assemble             indexerStageConfig
-	ReleaseStage         indexerStageConfig
-	InspectPAR2          indexerStageConfig
-	InspectNFO           indexerStageConfig
-	InspectArchive       indexerStageConfig
-	InspectPassword      indexerStageConfig
-	InspectMedia         indexerStageConfig
-	EnrichPreDBStage     indexerStageConfig
-	EnrichTMDBStage      indexerStageConfig
+	Newsgroups                                      []string
+	BackfillUntilDateByGroup                        map[string]time.Time
+	ScrapeServer                                    *config.ServerConfig
+	ReleaseMinConfidence                            float64
+	ReleaseMinCompletion                            float64
+	RequireExpectedFileCountForContextualObfuscated bool
+	Match                                           match.Options
+	Inspect                                         inspectpkg.Options
+	EnrichPreDB                                     predb.Options
+	EnrichTMDB                                      tmdb.Options
+	ScrapeLatest                                    indexerStageConfig
+	ScrapeBackfill                                  indexerStageConfig
+	Assemble                                        indexerStageConfig
+	ReleaseStage                                    indexerStageConfig
+	InspectDiscovery                                indexerStageConfig
+	InspectPAR2                                     indexerStageConfig
+	InspectNFO                                      indexerStageConfig
+	InspectArchive                                  indexerStageConfig
+	InspectPassword                                 indexerStageConfig
+	InspectMedia                                    indexerStageConfig
+	EnrichPreDBStage                                indexerStageConfig
+	EnrichTMDBStage                                 indexerStageConfig
+	MaintenanceStage                                indexerStageConfig
 }
 
 type indexerStageConfig struct {
@@ -103,8 +109,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			scrapeAdapter,
 			appCtx.Logger,
 			scrape.Options{
-				Newsgroups: runtimeCfg.Newsgroups,
-				BatchSize:  int64(runtimeCfg.ScrapeLatest.BatchSize),
+				Newsgroups:               runtimeCfg.Newsgroups,
+				BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
+				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			},
 		)
 		scrapeBackfillSvc = scrape.NewService(
@@ -112,8 +119,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			scrapeAdapter,
 			appCtx.Logger,
 			scrape.Options{
-				Newsgroups: runtimeCfg.Newsgroups,
-				BatchSize:  int64(runtimeCfg.ScrapeBackfill.BatchSize),
+				Newsgroups:               runtimeCfg.Newsgroups,
+				BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
+				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			},
 		)
 		scrapeProvider = provider
@@ -124,6 +132,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	assembleSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
+		inspectFetcher,
 		appCtx.Logger,
 		assemble.Options{
 			BatchSize: runtimeCfg.Assemble.BatchSize,
@@ -137,10 +146,13 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:            runtimeCfg.ReleaseStage.BatchSize,
 			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
 			ReleaseMinCompletion: runtimeCfg.ReleaseMinCompletion,
+			RequireExpectedFileCountForContextualObfuscated:    runtimeCfg.RequireExpectedFileCountForContextualObfuscated,
+			RequireExpectedFileCountForContextualObfuscatedSet: true,
 		},
 	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
+	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
 	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPAR2.BatchSize))
 	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
 	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectArchive.BatchSize))
@@ -148,6 +160,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectMedia.BatchSize))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
+	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
@@ -192,6 +205,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ReleaseStage.Backoff,
 			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
 				return releaseSvc.RunOnce(ctx)
+			}),
+		},
+		{
+			Name:        supervisor.StageInspectDiscovery,
+			Interval:    runtimeCfg.InspectDiscovery.Interval,
+			Enabled:     runtimeCfg.InspectDiscovery.Enabled,
+			BatchSize:   runtimeCfg.InspectDiscovery.BatchSize,
+			Concurrency: runtimeCfg.InspectDiscovery.Concurrency,
+			Backoff:     runtimeCfg.InspectDiscovery.Backoff,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return inspectDiscoverySvc.RunOnce(ctx)
 			}),
 		},
 		{
@@ -271,6 +295,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return enrichTMDBSvc.RunOnce(ctx)
 			}),
 		},
+		{
+			Name:        supervisor.StageMaintenance,
+			Interval:    runtimeCfg.MaintenanceStage.Interval,
+			Enabled:     runtimeCfg.MaintenanceStage.Enabled,
+			BatchSize:   runtimeCfg.MaintenanceStage.BatchSize,
+			Concurrency: runtimeCfg.MaintenanceStage.Concurrency,
+			Backoff:     runtimeCfg.MaintenanceStage.Backoff,
+			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
+				return maintenanceSvc.RunOnce(ctx)
+			}),
+		},
 	}, supervisor.Options{
 		Tracker: appCtx.PGIndexStore,
 		Owner:   stageOwner,
@@ -301,11 +336,21 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	}
 
 	indexingCfg := app.IndexingRuntimeFromConfig(cfg.Indexing)
+	backfillCutoffs := map[string]time.Time{}
+	for group, rawDate := range cfg.Indexing.BackfillUntilDateByGroup {
+		parsed, err := time.Parse("2006-01-02", rawDate)
+		if err != nil {
+			return usenetIndexerConfig{}, fmt.Errorf("parse indexing.backfill_until_date_by_group[%s]: %w", group, err)
+		}
+		backfillCutoffs[group] = parsed.UTC()
+	}
 
 	out := usenetIndexerConfig{
-		Newsgroups:           append([]string(nil), indexingCfg.Newsgroups...),
-		ReleaseMinConfidence: indexingCfg.Release.MinConfidence,
-		ReleaseMinCompletion: indexingCfg.Release.MinCompletionPct,
+		Newsgroups:               append([]string(nil), indexingCfg.Newsgroups...),
+		BackfillUntilDateByGroup: backfillCutoffs,
+		ReleaseMinConfidence:     indexingCfg.Release.MinConfidence,
+		ReleaseMinCompletion:     indexingCfg.Release.MinCompletionPct,
+		RequireExpectedFileCountForContextualObfuscated: indexingCfg.Release.RequireExpectedFileCountForContextualObfuscated,
 		Match: match.Options{
 			HighConfidenceThreshold:     indexingCfg.Match.HighConfidenceThreshold,
 			ProbableConfidenceThreshold: indexingCfg.Match.ProbableConfidenceThreshold,
@@ -352,6 +397,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			Concurrency:     indexingCfg.Release.Concurrency,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
+		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectArchive),
 		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
 		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),
 		InspectArchive:   newIndexerStageConfig(indexingCfg.InspectArchive),
@@ -359,6 +405,13 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		InspectMedia:     newIndexerStageConfig(indexingCfg.InspectMedia),
 		EnrichPreDBStage: newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
 		EnrichTMDBStage:  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
+		MaintenanceStage: indexerStageConfig{
+			Enabled:     true,
+			Interval:    6 * time.Hour,
+			BatchSize:   0,
+			Concurrency: 1,
+			Backoff:     0,
+		},
 	}
 
 	if len(cfg.Servers) > 0 {

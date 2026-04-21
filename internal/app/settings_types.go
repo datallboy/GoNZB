@@ -51,13 +51,14 @@ type IndexingStageRuntimeSettings struct {
 }
 
 type IndexingReleaseRuntimeSettings struct {
-	Enabled          bool    `json:"enabled,omitempty"`
-	IntervalMinutes  float64 `json:"interval_minutes,omitempty"`
-	BatchSize        int     `json:"batch_size,omitempty"`
-	Concurrency      int     `json:"concurrency,omitempty"`
-	BackoffSeconds   int     `json:"backoff_seconds,omitempty"`
-	MinConfidence    float64 `json:"min_confidence,omitempty"`
-	MinCompletionPct float64 `json:"min_completion_pct,omitempty"`
+	Enabled                                         bool    `json:"enabled,omitempty"`
+	IntervalMinutes                                 float64 `json:"interval_minutes,omitempty"`
+	BatchSize                                       int     `json:"batch_size,omitempty"`
+	Concurrency                                     int     `json:"concurrency,omitempty"`
+	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
+	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
+	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
+	RequireExpectedFileCountForContextualObfuscated bool    `json:"require_expected_file_count_for_contextual_obfuscated,omitempty"`
 }
 
 type IndexingMatchRuntimeSettings struct {

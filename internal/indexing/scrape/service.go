@@ -29,6 +29,8 @@ type repository interface {
 	UpsertLatestCheckpoint(ctx context.Context, providerID, newsgroupID, lastArticleNumber int64) error
 	GetBackfillCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error)
 	UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error
+	GetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64) (*pgindex.BackfillCheckpointState, error)
+	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
 }
@@ -57,8 +59,9 @@ type OverviewHeader struct {
 }
 
 type Options struct {
-	Newsgroups []string
-	BatchSize  int64
+	Newsgroups               []string
+	BatchSize                int64
+	BackfillUntilDateByGroup map[string]time.Time
 }
 
 type Service struct {
@@ -206,7 +209,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 			to = stats.High
 		}
 
-		inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to)
+		_, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to)
 		if err != nil {
 			return err
 		}
@@ -246,6 +249,31 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		return fmt.Errorf("get backfill checkpoint %s: %w", group, err)
 	}
 
+	cutoffDate, hasCutoff := s.opts.BackfillUntilDateByGroup[group]
+	state, err := s.repo.GetBackfillCheckpointState(ctx, providerID, newsgroupID)
+	if err != nil {
+		return fmt.Errorf("get backfill checkpoint state %s: %w", group, err)
+	}
+	if hasCutoff {
+		cutoff := cutoffDate.UTC()
+		if state == nil || state.UntilDate == nil || !state.UntilDate.Equal(cutoff) {
+			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, &cutoff, false, ""); err != nil {
+				return fmt.Errorf("set backfill cutoff state %s: %w", group, err)
+			}
+			state = &pgindex.BackfillCheckpointState{
+				ArticleNumber: backfillCursor,
+				UntilDate:     &cutoff,
+			}
+		} else if state.CutoffReached {
+			s.log.Debug("scrape backfill: group %s already reached cutoff %s", group, cutoff.Format("2006-01-02"))
+			return nil
+		}
+	} else if state != nil && (state.UntilDate != nil || state.CutoffReached || strings.TrimSpace(state.StoppedReason) != "") {
+		if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, nil, false, ""); err != nil {
+			return fmt.Errorf("clear backfill cutoff state %s: %w", group, err)
+		}
+	}
+
 	// first backfill starts just behind the latest frontier if present,
 	// otherwise it starts from the current group head.
 	end := backfillCursor
@@ -272,9 +300,29 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 
 	s.log.Info("scrape backfill: group=%s start=%d end=%d low=%d batch=%d", group, start, end, stats.Low, s.opts.BatchSize)
 
-	inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end)
+	headers, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end)
 	if err != nil {
 		return err
+	}
+
+	if hasCutoff {
+		var oldest *time.Time
+		for _, header := range headers {
+			if header.DateUTC == nil {
+				continue
+			}
+			t := header.DateUTC.UTC()
+			if oldest == nil || t.Before(*oldest) {
+				oldest = &t
+			}
+		}
+		if oldest != nil && !oldest.After(cutoffDate.UTC()) {
+			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, ptrTime(cutoffDate.UTC()), true, "until_date_reached"); err != nil {
+				return fmt.Errorf("mark backfill cutoff reached %s: %w", group, err)
+			}
+			s.log.Info("scrape backfill: group=%s reached cutoff=%s oldest=%s inserted=%d", group, cutoffDate.UTC().Format(time.RFC3339), oldest.Format(time.RFC3339), inserted)
+			return nil
+		}
 	}
 
 	nextCursor := start - 1
@@ -290,10 +338,10 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	return nil
 }
 
-func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64) (int64, error) {
+func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64) ([]pgindex.ArticleHeader, int64, error) {
 	rows, err := s.provider.XOver(ctx, group, from, to)
 	if err != nil {
-		return 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
+		return nil, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
 	}
 
 	headers := make([]pgindex.ArticleHeader, 0, len(rows))
@@ -328,10 +376,15 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 
 	inserted, err := s.repo.InsertArticleHeaders(ctx, providerID, newsgroupID, headers)
 	if err != nil {
-		return 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
+		return nil, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
 	}
 
-	return inserted, nil
+	return headers, inserted, nil
+}
+
+func ptrTime(v time.Time) *time.Time {
+	t := v.UTC()
+	return &t
 }
 
 func sanitizeScrapeUTF8(s string) string {
