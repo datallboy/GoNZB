@@ -1215,7 +1215,7 @@ func TestBuildReleaseRecordLeavesDeobfuscatedTitleEmptyForObfuscatedSource(t *te
 	}
 }
 
-func TestBuildReleaseRecordKeepsReadableSourceWithoutDeobfuscation(t *testing.T) {
+func TestBuildReleaseRecordPopulatesDeobfuscatedTitleForReadableSource(t *testing.T) {
 	cluster := releaseCluster{
 		MatchConfidence: 0.92,
 		Binaries: []pgindex.BinarySummary{
@@ -1241,8 +1241,8 @@ func TestBuildReleaseRecordKeepsReadableSourceWithoutDeobfuscation(t *testing.T)
 		ReleaseName: "Show.S01E01.1080p.WEB-DL.x265",
 	}, cluster, nil)
 
-	if record.DeobfuscatedTitle != "" {
-		t.Fatalf("expected empty deobfuscated title for already-readable source, got %q", record.DeobfuscatedTitle)
+	if record.DeobfuscatedTitle != "Show.S01E01.1080p.WEB-DL.x265" {
+		t.Fatalf("expected deobfuscated title for readable source, got %q", record.DeobfuscatedTitle)
 	}
 	if record.Title != "Show S01E01 1080p WEB-DL x265" {
 		t.Fatalf("expected humanized display title, got %q", record.Title)
