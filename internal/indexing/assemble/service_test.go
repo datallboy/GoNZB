@@ -144,6 +144,66 @@ func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) 
 	}
 }
 
+func TestRunOnceSkipsYEncRecoveryWhenStructuredIdentityAlreadyMatchesExistingBinary(t *testing.T) {
+	postedAt := time.Date(2026, 4, 21, 16, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:                              31,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   2001,
+				MessageID:                       "<stable@test.example>",
+				Subject:                         `Stable Release [1/2] - "stable.release.r00" yEnc (7/20)`,
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           8192,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:2001`,
+				FileName:                        "stable.release.r00",
+				FileTotal:                       2,
+				YEncPart:                        7,
+				YEncTotal:                       20,
+				StructuredIdentityBinaryMatched: true,
+				RawOverview: map[string]any{
+					"name":  "stable.release.r00",
+					"part":  7,
+					"total": 20,
+				},
+			},
+		},
+	}
+	matcher := &fakeMatcher{
+		result: match.Result{
+			SourceReleaseKey: "stable-release",
+			ReleaseFamilyKey: "stable-release",
+			ReleaseKey:       "stable-release",
+			BinaryName:       "stable.release.r00",
+			BinaryKey:        "stable-release::stable.release.r00",
+			FileName:         "stable.release.r00",
+			PartNumber:       7,
+			TotalParts:       20,
+			MatchConfidence:  0.92,
+			MatchStatus:      "matched",
+		},
+	}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<stable@test.example>": "=ybegin part=7 total=20 line=128 size=1234 name=stable.release.r00\r\n=ypart begin=1 end=2\r\n",
+		},
+	}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if fetcher.calls != 0 {
+		t.Fatalf("expected yEnc recovery fetch to be skipped, got %d calls", fetcher.calls)
+	}
+}
+
 type fakeRepository struct {
 	headers          []pgindex.AssemblyCandidate
 	upsertedBinaries []pgindex.BinaryRecord
@@ -217,6 +277,20 @@ type fakeArticleFetcher struct {
 }
 
 func (f fakeArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (io.Reader, error) {
+	value, ok := f.payloads[msgID]
+	if !ok {
+		return nil, fmt.Errorf("missing payload for %s", msgID)
+	}
+	return strings.NewReader(value), nil
+}
+
+type countingArticleFetcher struct {
+	payloads map[string]string
+	calls    int
+}
+
+func (f *countingArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (io.Reader, error) {
+	f.calls++
 	value, ok := f.payloads[msgID]
 	if !ok {
 		return nil, fmt.Errorf("missing payload for %s", msgID)

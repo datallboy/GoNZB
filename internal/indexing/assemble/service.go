@@ -40,6 +40,13 @@ type Options struct {
 	BatchSize int
 }
 
+type recoveryCounters struct {
+	attempts      int
+	successes     int
+	noops         int
+	fetchFailures int
+}
+
 type Service struct {
 	repo    repository
 	matcher subjectMatcher
@@ -82,6 +89,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 	refreshed := make(map[int64]struct{}, len(headers))
 	assembledCount := 0
+	recovery := recoveryCounters{}
 
 	for _, header := range headers {
 		if err := ctx.Err(); err != nil {
@@ -101,12 +109,19 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		}
 		matched := s.matcher.Match(candidate)
 		if s.shouldAttemptYEncRecovery(header, matched) {
-			rematched, recovered, err := s.rematchFromYEncHeader(ctx, header, candidate)
+			recovery.attempts++
+			rematched, result, err := s.rematchFromYEncHeader(ctx, header, candidate)
 			if err != nil {
 				return fmt.Errorf("recover yenc metadata for article %d: %w", header.ID, err)
 			}
-			if recovered {
+			if result.fetchFailed {
+				recovery.fetchFailures++
+			}
+			if result.recovered {
+				recovery.successes++
 				matched = rematched
+			} else {
+				recovery.noops++
 			}
 		}
 
@@ -170,10 +185,14 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 
 	s.log.Info(
-		"assemble: processed_headers=%d binaries_refreshed=%d batch_size=%d",
+		"assemble: processed_headers=%d binaries_refreshed=%d batch_size=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
 		assembledCount,
 		len(refreshed),
 		s.opts.BatchSize,
+		recovery.attempts,
+		recovery.successes,
+		recovery.noops,
+		recovery.fetchFailures,
 	)
 
 	return nil
@@ -184,6 +203,9 @@ func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, ma
 		return false
 	}
 	if header.MessageID == "" {
+		return false
+	}
+	if hasSufficientStructuredIdentity(header) && header.StructuredIdentityBinaryMatched && hasStableMultipartMatch(matched) {
 		return false
 	}
 	if matched.MatchConfidence >= 0.85 && matched.TotalParts > 1 && matched.FileName != "" && !strings.HasSuffix(strings.ToLower(matched.FileName), ".bin") {
@@ -197,15 +219,20 @@ func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, ma
 	return opaqueSubject || opaqueFile || matched.TotalParts <= 1
 }
 
-func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.AssemblyCandidate, candidate match.Candidate) (match.Result, bool, error) {
+type recoveryAttemptResult struct {
+	recovered   bool
+	fetchFailed bool
+}
+
+func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.AssemblyCandidate, candidate match.Candidate) (match.Result, recoveryAttemptResult, error) {
 	groups := assemblyFetchGroups(header)
 	if len(groups) == 0 {
-		return match.Result{}, false, nil
+		return match.Result{}, recoveryAttemptResult{}, nil
 	}
 
 	reader, err := s.fetcher.Fetch(ctx, header.MessageID, groups)
 	if err != nil {
-		return match.Result{}, false, nil
+		return match.Result{}, recoveryAttemptResult{fetchFailed: true}, nil
 	}
 	if closer, ok := reader.(io.Closer); ok {
 		defer closer.Close()
@@ -213,10 +240,10 @@ func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.Asse
 
 	yh, err := nzb.ReadYencHeader(reader)
 	if err != nil {
-		return match.Result{}, false, nil
+		return match.Result{}, recoveryAttemptResult{}, nil
 	}
 	if strings.TrimSpace(yh.FileName) == "" {
-		return match.Result{}, false, nil
+		return match.Result{}, recoveryAttemptResult{}, nil
 	}
 
 	enrichedRaw := cloneRawOverview(candidate.RawOverview)
@@ -234,9 +261,28 @@ func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.Asse
 	candidate.RawOverview = enrichedRaw
 	rematched := s.matcher.Match(candidate)
 	if rematched.FileName == "" || strings.HasSuffix(strings.ToLower(rematched.FileName), ".bin") {
-		return match.Result{}, false, nil
+		return match.Result{}, recoveryAttemptResult{}, nil
 	}
-	return rematched, true, nil
+	return rematched, recoveryAttemptResult{recovered: true}, nil
+}
+
+func hasSufficientStructuredIdentity(header pgindex.AssemblyCandidate) bool {
+	fileName := strings.TrimSpace(header.FileName)
+	if fileName == "" {
+		return false
+	}
+	return header.FileTotal > 1 || header.YEncTotal > 1
+}
+
+func hasStableMultipartMatch(matched match.Result) bool {
+	fileName := strings.ToLower(strings.TrimSpace(matched.FileName))
+	if matched.TotalParts <= 1 || fileName == "" {
+		return false
+	}
+	if strings.HasSuffix(fileName, ".bin") {
+		return false
+	}
+	return matched.BinaryName == matched.FileName
 }
 
 func cloneRawOverview(in map[string]any) map[string]any {
