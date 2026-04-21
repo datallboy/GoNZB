@@ -301,18 +301,32 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["probe_path"] = probe.ProbePath
 		summary["archive_entries"] = probe.EntryNames
 		summary["family_files"] = probe.FamilyFileNames
-		if probe.ProbeError != "" {
-			skipReason := archiveProbeSkipReason(probe.ProbeError)
-			if skipReason == "" {
-				skipReason = "not_archive_or_unsupported"
-			}
-			summary["probe_skip_reason"] = skipReason
-			summary["probe_error_detail"] = probe.ProbeError
-		}
 		materializedBytes += probe.MaterializedBytes
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" {
+		if isRecoverableArchiveInspectionError(fmt.Errorf("%s", probe.ProbeError)) {
+			summary["probe_error"] = probe.ProbeError
+			return s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+				StageName:         stageName,
+				BinaryID:          candidate.BinaryID,
+				ReleaseID:         candidate.ReleaseID,
+				Status:            "failed",
+				ErrorText:         probe.ProbeError,
+				MaterializedBytes: materializedBytes,
+				ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
+				Summary:           summary,
+				SourceUpdatedAt:   candidate.SourceUpdatedAt,
+			})
+		}
+		skipReason := archiveProbeSkipReason(probe.ProbeError)
+		if skipReason == "" {
+			skipReason = "not_archive_or_unsupported"
+		}
+		summary["probe_skip_reason"] = skipReason
+		summary["probe_error_detail"] = probe.ProbeError
 	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
