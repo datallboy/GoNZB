@@ -24,6 +24,13 @@ type AssemblyCandidate struct {
 	Bytes         int64
 	Lines         int
 	Xref          string
+	PosterID      int64
+	FileName      string
+	FileIndex     int
+	FileTotal     int
+	YEncPart      int
+	YEncTotal     int
+	YEncFileSize  int64
 	RawOverview   map[string]any
 }
 
@@ -88,15 +95,23 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			ah.article_number,
 			ah.message_id,
 			p.subject,
-			p.poster,
+			COALESCE(po.poster_name, p.poster, ''),
 			ah.date_utc,
 			ah.bytes,
 			ah.lines,
 			p.xref,
+			COALESCE(p.poster_id, 0),
+			COALESCE(p.subject_file_name, ''),
+			COALESCE(p.subject_file_index, 0),
+			COALESCE(p.subject_file_total, 0),
+			COALESCE(p.yenc_part_number, 0),
+			COALESCE(p.yenc_total_parts, 0),
+			COALESCE(p.yenc_file_size, 0),
 			COALESCE(p.raw_overview_json::text, '')
 		FROM article_headers ah
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+		LEFT JOIN posters po ON po.id = p.poster_id
 		WHERE ah.assembled_at IS NULL
 		ORDER BY ah.id DESC
 		LIMIT $1`, limit)
@@ -126,6 +141,13 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			&item.Bytes,
 			&item.Lines,
 			&item.Xref,
+			&item.PosterID,
+			&item.FileName,
+			&item.FileIndex,
+			&item.FileTotal,
+			&item.YEncPart,
+			&item.YEncTotal,
+			&item.YEncFileSize,
 			&raw,
 		); err != nil {
 			return nil, fmt.Errorf("scan unassembled article header: %w", err)
@@ -138,6 +160,27 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 
 		if raw != "" {
 			_ = json.Unmarshal([]byte(raw), &item.RawOverview)
+		}
+		if item.RawOverview == nil {
+			item.RawOverview = make(map[string]any, 7)
+		}
+		if strings.TrimSpace(item.FileName) != "" {
+			item.RawOverview["name"] = item.FileName
+		}
+		if item.FileIndex > 0 {
+			item.RawOverview["file_index"] = item.FileIndex
+		}
+		if item.FileTotal > 0 {
+			item.RawOverview["file_total"] = item.FileTotal
+		}
+		if item.YEncPart > 0 {
+			item.RawOverview["part"] = item.YEncPart
+		}
+		if item.YEncTotal > 0 {
+			item.RawOverview["total"] = item.YEncTotal
+		}
+		if item.YEncFileSize > 0 {
+			item.RawOverview["size"] = item.YEncFileSize
 		}
 
 		out = append(out, item)

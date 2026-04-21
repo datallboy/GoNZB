@@ -693,21 +693,48 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		INSERT INTO article_header_ingest_payloads (
 			article_header_id,
 			subject,
+			poster_id,
 			poster,
 			xref,
+			subject_file_name,
+			subject_file_index,
+			subject_file_total,
+			yenc_part_number,
+			yenc_total_parts,
+			yenc_file_size,
 			raw_overview_json,
 			created_at
 		)
-		VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,NOW())
 		ON CONFLICT (article_header_id) DO UPDATE
 		SET subject = EXCLUDED.subject,
+		    poster_id = COALESCE(EXCLUDED.poster_id, article_header_ingest_payloads.poster_id),
 		    poster = EXCLUDED.poster,
 		    xref = EXCLUDED.xref,
+		    subject_file_name = EXCLUDED.subject_file_name,
+		    subject_file_index = EXCLUDED.subject_file_index,
+		    subject_file_total = EXCLUDED.subject_file_total,
+		    yenc_part_number = EXCLUDED.yenc_part_number,
+		    yenc_total_parts = EXCLUDED.yenc_total_parts,
+		    yenc_file_size = EXCLUDED.yenc_file_size,
 		    raw_overview_json = EXCLUDED.raw_overview_json`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare article_header_ingest_payloads insert: %w", err)
 	}
 	defer payloadStmt.Close()
+
+	posterStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO posters (poster_name)
+		VALUES ($1)
+		ON CONFLICT (poster_name) DO UPDATE
+		SET poster_name = EXCLUDED.poster_name
+		RETURNING id`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare posters insert: %w", err)
+	}
+	defer posterStmt.Close()
+
+	posterCache := make(map[string]int64, 64)
 
 	var inserted int64
 	for _, h := range headers {
@@ -719,6 +746,21 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		subject := sanitizeUTF8(h.Subject)
 		poster := sanitizeUTF8(h.Poster)
 		xref := sanitizeUTF8(h.Xref)
+		parsed := parseArticleIngestMetadata(subject)
+
+		var posterID any
+		if poster != "" {
+			if cachedID, ok := posterCache[poster]; ok {
+				posterID = cachedID
+			} else {
+				var id int64
+				if err := posterStmt.QueryRowContext(ctx, poster).Scan(&id); err != nil {
+					return inserted, fmt.Errorf("ensure poster %q during header insert: %w", poster, err)
+				}
+				posterCache[poster] = id
+				posterID = id
+			}
+		}
 
 		raw := "{}"
 		if len(h.RawOverview) > 0 {
@@ -754,12 +796,24 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			return inserted, fmt.Errorf("insert article header %d: no article header id returned", h.ArticleNumber)
 		}
 
+		payloadPoster := poster
+		if posterID != nil {
+			payloadPoster = ""
+		}
+
 		if _, err := payloadStmt.ExecContext(
 			ctx,
 			articleHeaderID,
 			subject,
-			poster,
+			posterID,
+			payloadPoster,
 			xref,
+			parsed.FileName,
+			parsed.FileIndex,
+			parsed.FileTotal,
+			parsed.YEncPart,
+			parsed.YEncTotalParts,
+			parsed.FileSize,
 			raw,
 		); err != nil {
 			return inserted, fmt.Errorf("insert article header payload %d: %w", h.ArticleNumber, err)

@@ -11,10 +11,12 @@ import (
 )
 
 type structuredData struct {
-	Name  string
-	Part  int
-	Total int
-	Size  int64
+	Name      string
+	Part      int
+	Total     int
+	Size      int64
+	FileIndex int
+	FileTotal int
 }
 
 type counterPair struct {
@@ -71,6 +73,12 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 	partNumber, totalParts := parsePartInfo(clean)
 	fileIndex, expectedFileCount := parseFileInfo(clean, partNumber, totalParts)
 	structured := parseStructuredData(clean, candidate.RawOverview)
+	if structured.FileIndex > 0 {
+		fileIndex = structured.FileIndex
+	}
+	if structured.FileTotal > expectedFileCount {
+		expectedFileCount = structured.FileTotal
+	}
 	if structured.Part > 0 {
 		partNumber = structured.Part
 	}
@@ -728,6 +736,8 @@ func parseStructuredData(subject string, raw map[string]any) structuredData {
 	out.Part = firstPositiveInt(extractRegexpInt(yencPartRE, subject), lookupInt(raw, "part"))
 	out.Total = firstPositiveInt(extractRegexpInt(yencTotalRE, subject), lookupInt(raw, "total"))
 	out.Size = firstPositiveInt64(extractRegexpInt64(yencSizeRE, subject), lookupInt64(raw, "size"), lookupInt64(raw, "bytes"))
+	out.FileIndex = lookupInt(raw, "file_index")
+	out.FileTotal = lookupInt(raw, "file_total")
 
 	if out.Name == "" {
 		out.Name = lookupString(raw, "name")

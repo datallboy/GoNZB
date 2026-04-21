@@ -110,9 +110,13 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			}
 		}
 
-		posterID, err := s.repo.EnsurePoster(ctx, header.Poster)
-		if err != nil {
-			return fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
+		posterID := header.PosterID
+		if posterID <= 0 {
+			var err error
+			posterID, err = s.repo.EnsurePoster(ctx, header.Poster)
+			if err != nil {
+				return fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
+			}
 		}
 
 		binaryID, err := s.repo.UpsertBinary(ctx, pgindex.BinaryRecord{
