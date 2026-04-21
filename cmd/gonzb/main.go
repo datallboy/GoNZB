@@ -111,6 +111,22 @@ var indexerPipelineCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenanceCmd = &cobra.Command{
+	Use:   "maintenance",
+	Short: "Run one indexer maintenance pass to clean stale runtime state and aged rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerMaintenance()
+	},
+}
+
+var indexerMaintenanceRepairRuntimeCmd = &cobra.Command{
+	Use:   "repair-runtime",
+	Short: "Repair stale indexer stage leases and running stage rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerRepairRuntime()
+	},
+}
+
 var indexerInspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Run indexer inspect submodules",
@@ -257,6 +273,8 @@ func init() {
 	indexerCmd.AddCommand(indexerAssembleCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
+	indexerCmd.AddCommand(indexerMaintenanceCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
 	indexerInspectCmd.AddCommand(indexerInspectPAR2Cmd)

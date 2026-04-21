@@ -338,6 +338,49 @@ func (r *Runner) ExecuteIndexerPipeline(once bool) {
 	appCtx.Logger.Info("indexer pipeline --once completed")
 }
 
+func (r *Runner) ExecuteIndexerMaintenance() {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer maintenance requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RunIndexerMaintenance(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_orphan_releases=%d",
+			out.AbandonedStageRuns,
+			out.ClearedStageLeases,
+			out.AbandonedScrapeRuns,
+			out.AbandonedBinaryInspections,
+			out.PurgedStageRuns,
+			out.PurgedScrapeRuns,
+			out.PurgedBinaryInspections,
+			out.PurgedHeaderPayloads,
+			out.PurgedOrphanReleases,
+		)
+	}
+	appCtx.Logger.Info("indexer maintenance completed")
+}
+
+func (r *Runner) ExecuteIndexerRepairRuntime() {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer maintenance requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RepairIndexerStageRuntime(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance repair-runtime failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer stage runtime repair: abandoned_runs=%d cleared_stale_leases=%d",
+			out.AbandonedRuns,
+			out.ClearedStaleLeases,
+		)
+	}
+	appCtx.Logger.Info("indexer maintenance repair-runtime completed")
+}
+
 func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {
 	appCtx := r.setupApp(context.Background())
 
@@ -357,6 +400,23 @@ func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context,
 				repair.ClearedStaleLeases,
 			)
 		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	return appCtx, ctx, func() {
+		stop()
+		appCtx.Close()
+	}
+}
+
+func (r *Runner) setupIndexerStoreCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {
+	appCtx := r.setupApp(context.Background())
+
+	if !appCtx.Config.Modules.UsenetIndexer.Enabled {
+		appCtx.Logger.Fatal("usenet_indexer module is disabled")
+	}
+	if appCtx.PGIndexStore == nil {
+		appCtx.Logger.Fatal("%s", notConfiguredMessage)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
