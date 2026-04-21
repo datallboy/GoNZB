@@ -169,6 +169,12 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				MIN(b.posted_at) AS posted_at,
 				COUNT(b.id)::INTEGER AS binary_count,
 				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
+				COALESCE(MAX(
+					CASE
+						WHEN b.expected_file_count > 0 THEN 1
+						ELSE 0
+					END
+				), 0)::INTEGER AS has_expected_file_count,
 				COALESCE(SUM(
 					CASE
 						WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
@@ -202,10 +208,20 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				release_name,
 				posted_at,
 				binary_count,
-				total_bytes
+				total_bytes,
+				complete_binary_count,
+				has_expected_file_count
 			FROM candidate_stats
 			WHERE binary_count = 0 OR complete_binary_count > 0
-			ORDER BY updated_at, family_key
+			ORDER BY
+				CASE
+					WHEN binary_count = 0 THEN 1
+					ELSE 0
+				END ASC,
+				complete_binary_count DESC,
+				has_expected_file_count DESC,
+				updated_at ASC,
+				family_key ASC
 			LIMIT $1
 		)
 		SELECT
@@ -220,7 +236,13 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			q.binary_count,
 			q.total_bytes
 		FROM next_queue q
-		ORDER BY q.updated_at, q.family_key`, limit)
+		ORDER BY
+			CASE
+				WHEN q.binary_count = 0 THEN 1
+				ELSE 0
+			END ASC,
+			q.updated_at ASC,
+			q.release_family_key ASC`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
