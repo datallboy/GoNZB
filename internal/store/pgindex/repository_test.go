@@ -1956,6 +1956,53 @@ func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
 	}
 }
 
+func TestRunIndexerMaintenancePurgesOrphanReleases(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:        1,
+		ReleaseKey:        fmt.Sprintf("orphan-release-%d", now.UnixNano()),
+		GroupName:         fmt.Sprintf("alt.test.orphan.release.%d", now.UnixNano()),
+		Title:             "Orphan Release Test",
+		SourceTitle:       "Orphan.Release.Test",
+		TitleSource:       "source",
+		SearchTitle:       "orphan release test",
+		Category:          "usenet",
+		Classification:    "video",
+		Poster:            "poster-orphan",
+		PostedAt:          &now,
+		FileCount:         1,
+		ExpectedFileCount: 1,
+		CompletionPct:     100,
+		MatchConfidence:   0.9,
+		IdentityStatus:    "identified",
+		AvailabilityScore: 100,
+		AvailabilityTier:  "excellent",
+		MetadataUpdatedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert orphan release: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil || out.PurgedOrphanReleases < 1 {
+		t.Fatalf("expected orphan release purge count, got %+v", out)
+	}
+
+	var count int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM releases WHERE release_id = $1`, releaseID).Scan(&count); err != nil {
+		t.Fatalf("count orphan release: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected orphan release to be purged, got %d rows", count)
+	}
+}
+
 func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
