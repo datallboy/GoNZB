@@ -27,12 +27,15 @@ type repository interface {
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 }
 
 type Options struct {
-	BatchSize            int
-	ReleaseMinConfidence float64
-	ReleaseMinCompletion float64
+	BatchSize                                          int
+	ReleaseMinConfidence                               float64
+	ReleaseMinCompletion                               float64
+	RequireExpectedFileCountForContextualObfuscated    bool
+	RequireExpectedFileCountForContextualObfuscatedSet bool
 }
 
 type Service struct {
@@ -50,6 +53,9 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 	if opts.ReleaseMinCompletion < 0 {
 		opts.ReleaseMinCompletion = 0
+	}
+	if !opts.RequireExpectedFileCountForContextualObfuscatedSet {
+		opts.RequireExpectedFileCountForContextualObfuscated = true
 	}
 
 	return &Service{
@@ -153,6 +159,11 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("delete empty stale releases: %w", err)
 		}
+		if candidate.KeyKind != "" {
+			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+				return 0, 0, 0, 0, fmt.Errorf("ack empty release candidate: %w", err)
+			}
+		}
 		return 0, 0, 0, 0, nil
 	}
 
@@ -174,7 +185,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		}
 
 		record := buildReleaseRecord(candidate, cluster, titleCandidates)
-		if !shouldPersistCluster(cluster) {
+		if !shouldPersistCluster(cluster, record, s.opts) {
 			skippedFragments++
 			continue
 		}
@@ -213,6 +224,11 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
 		return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
 	}
+	if candidate.KeyKind != "" {
+		if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+			return formed, skippedFragments, skippedConfidence, skippedCompletion, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
+		}
+	}
 
 	return formed, skippedFragments, skippedConfidence, skippedCompletion, nil
 }
@@ -227,13 +243,22 @@ func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
 	return strings.TrimSpace(candidate.ReleaseKey)
 }
 
-func shouldPersistCluster(cluster releaseCluster) bool {
+func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) bool {
 	mainPayloadCount := countMainPayloadBinaries(cluster.Binaries)
 	if mainPayloadCount == 0 {
 		return false
 	}
 	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
 	if expectedFiles > 1 && mainPayloadCount < 2 {
+		return false
+	}
+	if opts.RequireExpectedFileCountForContextualObfuscated &&
+		expectedFiles <= 0 &&
+		clusterIsContextualObfuscated(cluster.Binaries) &&
+		!allowsStandaloneBinaryRelease(cluster.Binaries, record) {
+		return false
+	}
+	if mainPayloadCount == 1 && !allowsStandaloneBinaryRelease(cluster.Binaries, record) {
 		return false
 	}
 	return true

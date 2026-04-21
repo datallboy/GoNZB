@@ -856,6 +856,94 @@ func countMainPayloadBinaries(binaries []pgindex.BinarySummary) int {
 	return count
 }
 
+func clusterIsContextualObfuscated(binaries []pgindex.BinarySummary) bool {
+	mainPayloadCount := 0
+	contextualCount := 0
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		mainPayloadCount++
+		if strings.EqualFold(strings.TrimSpace(binary.FamilyKind), "contextual_obfuscated") {
+			contextualCount++
+		}
+	}
+	return mainPayloadCount > 0 && contextualCount == mainPayloadCount
+}
+
+func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgindex.ReleaseRecord) bool {
+	main := dominantMainPayloadBinary(binaries)
+	if main == nil {
+		return false
+	}
+
+	if main.ExpectedFileCount == 1 {
+		return true
+	}
+	if main.ExpectedFileCount > 1 {
+		return false
+	}
+	if record.TitleSource != "" && record.TitleSource != "source" && record.TitleConfidence >= 0.85 {
+		return true
+	}
+
+	name := strings.ToLower(strings.TrimSpace(pickFileName(*main)))
+	if name == "" || strings.HasSuffix(name, ".bin") {
+		return false
+	}
+	if isParFile(name) {
+		return false
+	}
+	if main.FileIndex > 1 {
+		return false
+	}
+	if clamp01(main.MatchConfidence) < 0.85 {
+		return false
+	}
+	if isArchiveFile(name) {
+		return true
+	}
+
+	readable := looksReadableReleaseTitle(main.ReleaseName) ||
+		looksReadableReleaseTitle(main.BinaryName) ||
+		looksReadableReleaseTitle(main.FileName) ||
+		looksReadableReleaseTitle(record.SourceTitle) ||
+		looksReadableReleaseTitle(record.Title) ||
+		looksReadableReleaseTitle(humanizeTitle(normalizeStem(main.FileName)))
+	if !readable {
+		return false
+	}
+
+	return isVideoFile(name) || isAudioFile(name)
+}
+
+func dominantMainPayloadBinary(binaries []pgindex.BinarySummary) *pgindex.BinarySummary {
+	var best *pgindex.BinarySummary
+	for idx := range binaries {
+		binary := &binaries[idx]
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		if best == nil || prefersStandaloneBinaryCandidate(*binary, *best) {
+			best = binary
+		}
+	}
+	return best
+}
+
+func prefersStandaloneBinaryCandidate(candidate, current pgindex.BinarySummary) bool {
+	if candidate.ObservedParts != current.ObservedParts {
+		return candidate.ObservedParts > current.ObservedParts
+	}
+	if candidate.TotalBytes != current.TotalBytes {
+		return candidate.TotalBytes > current.TotalBytes
+	}
+	if candidate.MatchConfidence != current.MatchConfidence {
+		return candidate.MatchConfidence > current.MatchConfidence
+	}
+	return candidate.BinaryID < current.BinaryID
+}
+
 func clusterObservedFileCount(binaries []pgindex.BinarySummary) int {
 	if len(binaries) == 0 {
 		return 0

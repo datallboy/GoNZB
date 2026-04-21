@@ -19,13 +19,19 @@ type YencDecoder struct {
 	escaped     bool // State: was the previous byte '='?
 	hash        hash.Hash32
 	expectedCRC uint32
+	PartNumber  int
+	TotalParts  int
 	PartOffset  int64
 	FileSize    int64
+	FileName    string
 }
 
 type YencHeader struct {
+	PartNumber int
+	TotalParts int
 	PartOffset int64
 	FileSize   int64
+	FileName   string
 }
 
 func NewYencDecoder(r io.Reader) *YencDecoder {
@@ -157,32 +163,56 @@ func (d *YencDecoder) Verify() error {
 }
 
 func (d *YencDecoder) parseYbegin(line string) {
-	header := YencHeader{PartOffset: d.PartOffset, FileSize: d.FileSize}
+	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, FileSize: d.FileSize, FileName: d.FileName}
 	parseYbeginLine(line, &header)
+	d.PartNumber = header.PartNumber
+	d.TotalParts = header.TotalParts
 	d.PartOffset = header.PartOffset
 	d.FileSize = header.FileSize
+	d.FileName = header.FileName
 }
 
 func parseYbeginLine(line string, header *YencHeader) {
 	parts := strings.Fields(line)
 	for _, part := range parts {
+		if strings.HasPrefix(part, "part=") {
+			val := strings.TrimPrefix(part, "part=")
+			if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+				header.PartNumber = parsed
+			}
+			continue
+		}
+		if strings.HasPrefix(part, "total=") {
+			val := strings.TrimPrefix(part, "total=")
+			if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+				header.TotalParts = parsed
+			}
+			continue
+		}
 		if strings.HasPrefix(part, "size=") {
 			val := strings.TrimPrefix(part, "size=")
 			size, err := strconv.ParseInt(val, 10, 64)
 			if err == nil {
 				header.FileSize = size
 			}
+			continue
+		}
+		if strings.HasPrefix(part, "name=") {
+			header.FileName = strings.TrimSpace(strings.TrimPrefix(part, "name="))
 		}
 	}
 }
 
 func (d *YencDecoder) handlePotentialPartHeader() error {
-	header := YencHeader{PartOffset: d.PartOffset, FileSize: d.FileSize}
+	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, FileSize: d.FileSize, FileName: d.FileName}
 	if err := readPotentialPartHeader(d.scanner, &header); err != nil {
 		return err
 	}
+	d.PartNumber = header.PartNumber
+	d.TotalParts = header.TotalParts
 	d.PartOffset = header.PartOffset
 	d.FileSize = header.FileSize
+	d.FileName = header.FileName
 	return nil
 }
 

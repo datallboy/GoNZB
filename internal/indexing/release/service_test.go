@@ -72,7 +72,7 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 		},
 	}
 
-	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55, RequireExpectedFileCountForContextualObfuscated: true})
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
@@ -258,6 +258,167 @@ func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsWeakContextualObfuscatedClusterWithoutExpectedFileCountByDefault(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 1, 30, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "contextual-family",
+			ReleaseKey:       "contextual-family",
+			ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"contextual-family": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "contextual-family",
+					ReleaseKey:       "contextual-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "opaque-a.bin",
+					BinaryName:       "opaque-a.bin",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       740_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         2,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "contextual-family",
+					ReleaseKey:       "contextual-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "opaque-b.bin",
+					BinaryName:       "opaque-b.bin",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime.Add(2 * time.Minute)),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       741_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         3,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "contextual-family",
+					ReleaseKey:       "contextual-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "opaque-c.bin",
+					BinaryName:       "opaque-c.bin",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime.Add(4 * time.Minute)),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       742_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+			3: {{ArticleHeaderID: 103, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    true,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected weak contextual_obfuscated cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+}
+
+func TestRunOnceCanAllowWeakContextualObfuscatedClusterWhenPolicyDisabled(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 1, 30, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "contextual-family",
+			ReleaseKey:       "contextual-family",
+			ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"contextual-family": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "contextual-family",
+					ReleaseKey:       "contextual-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "opaque-a.bin",
+					BinaryName:       "opaque-a.bin",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       740_000,
+					MatchConfidence:  0.75,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         2,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "contextual-family",
+					ReleaseKey:       "contextual-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "opaque-b.bin",
+					BinaryName:       "opaque-b.bin",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime.Add(2 * time.Minute)),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       741_000,
+					MatchConfidence:  0.75,
+					IsMainPayload:    true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    false,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected contextual_obfuscated cluster to form when policy is disabled, got %d releases", len(repo.upsertedReleases))
+	}
+}
+
 func TestRunOnceUsesReleaseFamilyKeyForCandidateWork(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{{
@@ -370,6 +531,94 @@ func TestRunOnceSkipsFragmentaryMultiFileClustersUntilMultipleMainFilesExist(t *
 	}
 	if len(repo.deletedStaleCalls) != 1 {
 		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	}
+}
+
+func TestRunOnceSkipsOpaqueStandaloneBinaryWithoutExplicitSingleFileEvidence(t *testing.T) {
+	baseTime := time.Date(2026, 4, 20, 18, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "opaque-standalone-family",
+			ReleaseKey:       "opaque-standalone-family",
+			ReleaseName:      "ZxZzCeWW8ECJExG13i891fyVBUCommbINJNQNqdTam9KYctnYSWQI7Q1JXWeOPwA",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"opaque-standalone-family": {{
+				BinaryID:         1,
+				ProviderID:       1,
+				NewsgroupID:      2,
+				ReleaseFamilyKey: "opaque-standalone-family",
+				ReleaseKey:       "opaque-standalone-family",
+				ReleaseName:      "ZxZzCeWW8ECJExG13i891fyVBUCommbINJNQNqdTam9KYctnYSWQI7Q1JXWeOPwA",
+				FileName:         "opaque.bin",
+				BinaryName:       "opaque.bin",
+				Poster:           "poster-a",
+				PostedAt:         ptrTime(baseTime),
+				TotalParts:       807,
+				ObservedParts:    99,
+				TotalBytes:       73_290_042,
+				MatchConfidence:  0.96,
+				IsMainPayload:    true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 156}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected opaque standalone binary to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+}
+
+func TestRunOnceAllowsReadableStandaloneMediaWithoutExplicitFileCounter(t *testing.T) {
+	baseTime := time.Date(2026, 4, 20, 18, 5, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "readable-standalone-family",
+			ReleaseKey:       "readable-standalone-family",
+			ReleaseName:      "Show.S01E01.1080p.WEB-DL.x265",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"readable-standalone-family": {{
+				BinaryID:         1,
+				ProviderID:       1,
+				NewsgroupID:      2,
+				ReleaseFamilyKey: "readable-standalone-family",
+				ReleaseKey:       "readable-standalone-family",
+				ReleaseName:      "Show.S01E01.1080p.WEB-DL.x265",
+				FileName:         "show.s01e01.1080p.web-dl.x265.mkv",
+				BinaryName:       "show.s01e01.1080p.web-dl.x265.mkv",
+				Poster:           "poster-a",
+				PostedAt:         ptrTime(baseTime),
+				TotalParts:       120,
+				ObservedParts:    120,
+				TotalBytes:       1_500_000_000,
+				MatchConfidence:  0.96,
+				IsMainPayload:    true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 201, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected readable standalone media release to persist, got %d", len(repo.upsertedReleases))
 	}
 }
 
@@ -1259,6 +1508,10 @@ func (f *fakeReleaseRepository) ReplaceReleaseNewsgroups(context.Context, string
 
 func (f *fakeReleaseRepository) UpsertNZBCache(context.Context, string, string, string, string) error {
 	f.nzbCalls++
+	return nil
+}
+
+func (f *fakeReleaseRepository) AckReleaseCandidate(context.Context, int64, int64, string, string) error {
 	return nil
 }
 
