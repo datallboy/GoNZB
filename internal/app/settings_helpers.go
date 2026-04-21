@@ -70,6 +70,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
 		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
 		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
+		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
 	}
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
@@ -198,6 +199,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			BackoffSeconds:   intPtr(indexing.Release.BackoffSeconds),
 			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
 			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
+			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
 		}
 		effective.Indexing.Match = config.IndexingMatchConfig{
 			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),

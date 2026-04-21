@@ -269,6 +269,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageScrapeBackfill),
 	string(supervisor.StageAssemble),
 	string(supervisor.StageRelease),
+	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
 	string(supervisor.StageInspectNFO),
 	string(supervisor.StageInspectArchive),
@@ -276,6 +277,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageInspectMedia),
 	string(supervisor.StageEnrichPreDB),
 	string(supervisor.StageEnrichTMDB),
+	string(supervisor.StageMaintenance),
 }
 
 func parseIndexerStage(stageName string) (supervisor.StageName, error) {

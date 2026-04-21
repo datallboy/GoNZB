@@ -60,6 +60,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		BackoffSeconds:   &backoff,
 		MinConfidence:    &matchHigh,
 		MinCompletionPct: func() *float64 { v := 25.0; return &v }(),
+		RequireExpectedFileCountForContextualObfuscated: func() *bool { v := true; return &v }(),
 	}
 	cfg.Indexing.InspectMedia = config.IndexingStageConfig{
 		Enabled:   &enabled,
@@ -111,8 +112,8 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
 	}
-	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 {
-		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion)
+	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || !got.RequireExpectedFileCountForContextualObfuscated {
+		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.RequireExpectedFileCountForContextualObfuscated)
 	}
 	if got.InspectMedia.BatchSize != batch {
 		t.Fatalf("expected inspect_media batch size %d, got %+v", batch, got.InspectMedia)

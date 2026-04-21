@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -70,20 +71,21 @@ type APIConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups      []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
-	ScrapeLatest    IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill  IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble        IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
-	Release         IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
-	Match           IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
-	Inspect         IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
-	InspectPAR2     IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO      IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive  IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia    IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB     IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB      IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups               []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest             IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill           IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	Assemble                 IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
+	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
+	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
+	InspectPAR2              IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO               IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive           IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword          IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia             IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB              IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB               IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -101,13 +103,14 @@ type IndexingMatchConfig struct {
 }
 
 type IndexingReleaseConfig struct {
-	Enabled          *bool    `mapstructure:"enabled" yaml:"enabled"`
-	IntervalMinutes  *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
-	BatchSize        *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency      *int     `mapstructure:"concurrency" yaml:"concurrency"`
-	BackoffSeconds   *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
-	MinConfidence    *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
-	MinCompletionPct *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
+	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency                                     *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
+	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
+	RequireExpectedFileCountForContextualObfuscated *bool    `mapstructure:"require_expected_file_count_for_contextual_obfuscated" yaml:"require_expected_file_count_for_contextual_obfuscated"`
 }
 
 type IndexingInspectConfig struct {
@@ -204,6 +207,7 @@ func Load(path string) (*Config, error) {
 
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
+	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
 	v.SetDefault("indexing.scrape_latest.enabled", true)
 	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
@@ -226,6 +230,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
+	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
@@ -335,6 +340,17 @@ func (c *Config) validate() error {
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
+	}
+	for group, rawDate := range c.Indexing.BackfillUntilDateByGroup {
+		if strings.TrimSpace(group) == "" {
+			return errors.New("indexing.backfill_until_date_by_group keys must not be blank")
+		}
+		if strings.TrimSpace(rawDate) == "" {
+			return fmt.Errorf("indexing.backfill_until_date_by_group[%s] must not be blank", group)
+		}
+		if _, err := time.Parse("2006-01-02", strings.TrimSpace(rawDate)); err != nil {
+			return fmt.Errorf("indexing.backfill_until_date_by_group[%s] must be in YYYY-MM-DD format: %w", group, err)
+		}
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_backfill", c.Indexing.ScrapeBackfill); err != nil {
 		return err

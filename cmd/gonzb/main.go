@@ -119,6 +119,14 @@ var indexerInspectCmd = &cobra.Command{
 	},
 }
 
+var indexerInspectDiscoveryCmd = &cobra.Command{
+	Use:   "discovery",
+	Short: "Run the opaque-file discovery inspection submodule once",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerInspectDiscovery(inspectOnce)
+	},
+}
+
 var indexerInspectPAR2Cmd = &cobra.Command{
 	Use:   "par2",
 	Short: "Run the PAR2 inspection submodule once",
@@ -229,6 +237,7 @@ func init() {
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
+	indexerInspectDiscoveryCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one discovery inspection pass and exit")
 	indexerInspectPAR2Cmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one PAR2 inspection pass and exit")
 	indexerInspectNFOCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one NFO inspection pass and exit")
 	indexerInspectArchiveCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one archive inspection pass and exit")
@@ -249,6 +258,7 @@ func init() {
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
+	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
 	indexerInspectCmd.AddCommand(indexerInspectPAR2Cmd)
 	indexerInspectCmd.AddCommand(indexerInspectNFOCmd)
 	indexerInspectCmd.AddCommand(indexerInspectArchiveCmd)

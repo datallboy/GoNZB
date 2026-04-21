@@ -90,12 +90,17 @@ func (s *Service) AssembleOnce(ctx context.Context) error {
 func (s *Service) InspectOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
+		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,
 		supervisor.StageInspectArchive,
 		supervisor.StageInspectPassword,
 		supervisor.StageInspectMedia,
 	)
+}
+
+func (s *Service) InspectDiscoveryOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageInspectDiscovery)
 }
 
 func (s *Service) InspectPAR2Once(ctx context.Context) error {
