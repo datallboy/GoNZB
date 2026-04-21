@@ -137,6 +137,16 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 				TRUE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
+				CASE
+					WHEN matched_binary.total_parts > 0 AND matched_binary.observed_parts < matched_binary.total_parts AND matched_binary.is_main_payload THEN 0
+					WHEN matched_binary.total_parts > 0 AND matched_binary.observed_parts < matched_binary.total_parts THEN 1
+					ELSE 2
+				END AS binary_priority_rank,
+				CASE
+					WHEN matched_binary.total_parts > 0 THEN matched_binary.observed_parts::DOUBLE PRECISION / matched_binary.total_parts::DOUBLE PRECISION
+					ELSE 0
+				END AS binary_completion_ratio,
+				matched_binary.observed_parts AS matched_observed_parts,
 				0 AS lane_rank
 			FROM recent_pending rp
 			JOIN LATERAL (
@@ -158,18 +168,37 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				  AND NULLIF(BTRIM(p.subject_file_name), '') IS NOT NULL
 			) p ON TRUE
 			JOIN LATERAL (
-				SELECT 1
+				SELECT
+					b.observed_parts,
+					b.total_parts,
+					b.is_main_payload
 				FROM binaries b
 				WHERE b.provider_id = rp.provider_id
 				  AND b.newsgroup_id = rp.newsgroup_id
 				  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
 				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
+				ORDER BY
+					CASE
+						WHEN b.total_parts > 0 AND b.observed_parts < b.total_parts AND b.is_main_payload THEN 0
+						WHEN b.total_parts > 0 AND b.observed_parts < b.total_parts THEN 1
+						ELSE 2
+					END ASC,
+					CASE
+						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+						ELSE 0
+					END DESC,
+					b.observed_parts DESC,
+					b.id DESC
 				LIMIT 1
 			) matched_binary ON TRUE
 			JOIN newsgroups ng ON ng.id = rp.newsgroup_id
 			LEFT JOIN posters po ON po.id = p.poster_id
 			CROSS JOIN limits
-			ORDER BY rp.id DESC
+			ORDER BY
+				binary_priority_rank ASC,
+				binary_completion_ratio DESC,
+				matched_observed_parts DESC,
+				rp.id DESC
 			LIMIT (SELECT lane_a_limit FROM limits)
 		),
 		lane_b AS (
@@ -195,6 +224,9 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 				FALSE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
+				9 AS binary_priority_rank,
+				0::DOUBLE PRECISION AS binary_completion_ratio,
+				0 AS matched_observed_parts,
 				1 AS lane_rank
 			FROM recent_pending rp
 			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id

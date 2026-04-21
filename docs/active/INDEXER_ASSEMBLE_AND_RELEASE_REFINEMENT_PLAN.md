@@ -371,6 +371,37 @@ Expected behavior:
 - release is now visibly processing queue work again, including both fragment-family cooldown and actionable release formation
 - the front of the dirty queue is still heavily fragment-only, so more live soak is still needed before the overall refinement loop can be signed off against the full exit criteria
 
+#### 8. Assemble completion-first prioritization for partial payload binaries
+
+Status:
+
+- in progress on 2026-04-21
+- live data shows the current partial-binary backlog is mostly named main-payload work, not anonymous `.bin` junk
+- snapshot during validation:
+  - about `57k` partial binaries overall
+  - about `56.9k` marked `is_main_payload = true`
+  - essentially `0` active `.bin`-named partials in the current backlog sample
+  - releases currently include a small but real pool in the `70%` to `99%` completion range
+
+Problem:
+
+- the current lane-A assemble prioritization already prefers headers that match an existing binary, but it does not explicitly prefer binaries that are close to completion
+- this leaves near-finished payload binaries competing with very low-progress matches, which slows down release readiness and keeps partially-complete releases hot longer than necessary
+
+Refinement direction:
+
+- within lane A, prefer matched binaries with:
+  - `observed_parts < total_parts`
+  - main payloads before auxiliary files
+  - higher completion ratio before lower completion ratio
+- continue allowing fresh work through lane B so new releases do not starve
+
+Expected behavior:
+
+- binaries already at `70%` to `95%` completion should finish sooner when matching headers are present
+- release-actionable families should surface faster
+- partially-complete releases should either reach `100%` sooner or cool down cleanly instead of lingering mid-completion
+
 ## Test Plan
 
 - repository test for prioritized assemble selection:

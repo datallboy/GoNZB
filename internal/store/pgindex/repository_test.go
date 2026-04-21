@@ -1459,6 +1459,181 @@ func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinarie
 	}
 }
 
+func TestListUnassembledArticleHeadersPrefersNearCompleteMainPayloadMatches(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.assemble.completion.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-completion-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	nearCompleteFile := "release.good.part09.rar"
+	lowProgressFile := "release.good.part10.rar"
+	completeAuxFile := "release.sample.nfo"
+	baseFamily := fmt.Sprintf("completion-priority-%d", time.Now().UnixNano())
+
+	nearCompleteID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseFamily + "-near",
+		ReleaseFamilyKey:  baseFamily + "-near",
+		FileFamilyKey:     baseFamily + "-near::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "release.good",
+		IsMainPayload:     true,
+		ReleaseKey:        baseFamily + "-near",
+		ReleaseName:       "Near Complete Release",
+		BinaryKey:         baseFamily + "-near::binary",
+		BinaryName:        nearCompleteFile,
+		FileName:          nearCompleteFile,
+		FileIndex:         9,
+		ExpectedFileCount: 10,
+		TotalParts:        20,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert near-complete binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 18 WHERE id = $1`, nearCompleteID); err != nil {
+		t.Fatalf("seed near-complete observed parts: %v", err)
+	}
+
+	lowProgressID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseFamily + "-low",
+		ReleaseFamilyKey:  baseFamily + "-low",
+		FileFamilyKey:     baseFamily + "-low::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "release.good",
+		IsMainPayload:     true,
+		ReleaseKey:        baseFamily + "-low",
+		ReleaseName:       "Low Progress Release",
+		BinaryKey:         baseFamily + "-low::binary",
+		BinaryName:        lowProgressFile,
+		FileName:          lowProgressFile,
+		FileIndex:         10,
+		ExpectedFileCount: 10,
+		TotalParts:        20,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert low-progress binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 3 WHERE id = $1`, lowProgressID); err != nil {
+		t.Fatalf("seed low-progress observed parts: %v", err)
+	}
+
+	completeAuxID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseFamily + "-aux",
+		ReleaseFamilyKey:  baseFamily + "-aux",
+		FileFamilyKey:     baseFamily + "-aux::file",
+		FamilyKind:        "auxiliary",
+		BaseStem:          "release.good",
+		IsAuxiliary:       true,
+		ReleaseKey:        baseFamily + "-aux",
+		ReleaseName:       "Complete Auxiliary Release",
+		BinaryKey:         baseFamily + "-aux::binary",
+		BinaryName:        completeAuxFile,
+		FileName:          completeAuxFile,
+		FileIndex:         0,
+		ExpectedFileCount: 1,
+		TotalParts:        5,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert complete auxiliary binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = total_parts WHERE id = $1`, completeAuxID); err != nil {
+		t.Fatalf("seed complete auxiliary observed parts: %v", err)
+	}
+
+	baseTime := time.Date(2026, 4, 21, 13, 0, 0, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 201,
+			MessageID:     fmt.Sprintf("<near-complete-%d@test>", time.Now().UnixNano()),
+			Subject:       `Near Complete [9/10] - "release.good.part09.rar" yEnc (19/20)`,
+			Poster:        posterName,
+			DateUTC:       &baseTime,
+			Bytes:         4096,
+			Lines:         40,
+		},
+		{
+			ArticleNumber: 202,
+			MessageID:     fmt.Sprintf("<low-progress-%d@test>", time.Now().UnixNano()),
+			Subject:       `Low Progress [10/10] - "release.good.part10.rar" yEnc (4/20)`,
+			Poster:        posterName,
+			DateUTC:       func() *time.Time { t := baseTime.Add(time.Minute); return &t }(),
+			Bytes:         4096,
+			Lines:         40,
+		},
+		{
+			ArticleNumber: 203,
+			MessageID:     fmt.Sprintf("<complete-aux-%d@test>", time.Now().UnixNano()),
+			Subject:       `Complete Aux [1/1] - "release.sample.nfo" yEnc (5/5)`,
+			Poster:        posterName,
+			DateUTC:       func() *time.Time { t := baseTime.Add(2 * time.Minute); return &t }(),
+			Bytes:         512,
+			Lines:         5,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	got, err := store.ListUnassembledArticleHeaders(ctx, 3)
+	if err != nil {
+		t.Fatalf("list unassembled article headers: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(got))
+	}
+	if got[0].FileName != nearCompleteFile {
+		t.Fatalf("expected near-complete main payload first, got %q", got[0].FileName)
+	}
+	if got[1].FileName != lowProgressFile {
+		t.Fatalf("expected lower-progress main payload second, got %q", got[1].FileName)
+	}
+	if got[2].FileName != completeAuxFile {
+		t.Fatalf("expected already-complete auxiliary match after incomplete payloads, got %q", got[2].FileName)
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
