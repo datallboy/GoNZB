@@ -2,6 +2,7 @@ package pgindex
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -454,6 +455,93 @@ func TestUpsertReleaseReplacesAvailabilityScoreOnLaterWorseSnapshot(t *testing.T
 	}
 }
 
+func TestUpsertReleasePreservesInspectionDerivedTitleAgainstLaterSourceSnapshot(t *testing.T) {
+	store := openTestStore(t)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	releaseKey := fmt.Sprintf("test-release-title-preserve-%d", now.UnixNano())
+	groupName := fmt.Sprintf("alt.binaries.titlepreserve.%d", now.UnixNano())
+
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              releaseKey,
+		GroupName:               groupName,
+		Title:                   "Kevin S01E06 Fourth of July 720p AMZN WEB-DL DDP5 1 H 264 playWEB",
+		SourceTitle:             "iwYYd3MaV3XRQddVFk7krGVUf38ZGhbn.7z",
+		DeobfuscatedTitle:       "Kevin.S01E06.Fourth.of.July.720p.AMZN.WEB-DL.DDP5.1.H.264-playWEB",
+		TitleSource:             "archive_entry",
+		TitleConfidence:         0.92,
+		SearchTitle:             "kevin s01e06 fourth of july 720p amzn web dl ddp5 1 h 264 playweb",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		SizeBytes:               1000,
+		PostedAt:                &now,
+		FileCount:               4,
+		ExpectedFileCount:       4,
+		CompletionPct:           100,
+		MatchConfidence:         0.90,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		VideoCount:              1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("seed release: %v", err)
+	}
+
+	if _, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              releaseKey,
+		GroupName:               groupName,
+		Title:                   "iwYYd3MaV3XRQddVFk7krGVUf38ZGhbn 7z",
+		SourceTitle:             "iwYYd3MaV3XRQddVFk7krGVUf38ZGhbn.7z",
+		DeobfuscatedTitle:       "",
+		TitleSource:             "source",
+		TitleConfidence:         0.30,
+		SearchTitle:             "iwyyd3mav3xrqddvfk7krgvuf38zghbn 7z",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		SizeBytes:               1000,
+		PostedAt:                &now,
+		FileCount:               4,
+		ExpectedFileCount:       4,
+		CompletionPct:           100,
+		MatchConfidence:         0.90,
+		IdentityStatus:          "probable",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 88,
+		MetadataUpdatedAt:       &now,
+	}); err != nil {
+		t.Fatalf("upsert later source-only snapshot: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.TitleSource != "archive_entry" {
+		t.Fatalf("expected title_source archive_entry to be preserved, got %q", release.Release.TitleSource)
+	}
+	if release.Release.Title != "Kevin S01E06 Fourth of July 720p AMZN WEB-DL DDP5 1 H 264 playWEB" {
+		t.Fatalf("expected inspection-derived title to be preserved, got %q", release.Release.Title)
+	}
+	if release.Release.DeobfuscatedTitle != "Kevin.S01E06.Fourth.of.July.720p.AMZN.WEB-DL.DDP5.1.H.264-playWEB" {
+		t.Fatalf("expected deobfuscated title to be preserved, got %q", release.Release.DeobfuscatedTitle)
+	}
+}
+
 func TestUpsertReleaseNormalizesBlankFamilyIdentity(t *testing.T) {
 	store := openTestStore(t)
 
@@ -756,7 +844,6 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 		FileFamilyKey:     "test-file-family",
 		FamilyKind:        "archive_stem",
 		BaseStem:          "test",
-		PostingBucket:     "20260416-1",
 		IsMainPayload:     true,
 		ReleaseKey:        "test-release-family",
 		ReleaseName:       "Test Release",
@@ -806,6 +893,817 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 	if firstArticleNumber != 101 || lastArticleNumber != 102 {
 		t.Fatalf("expected article number range 101-102, got %d-%d", firstArticleNumber, lastArticleNumber)
+	}
+
+	var dirtyCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_stage_dirty_families
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'test-release-family'`, newsgroupID,
+	).Scan(&dirtyCount); err != nil {
+		t.Fatalf("query release dirty queue: %v", err)
+	}
+	if dirtyCount != 1 {
+		t.Fatalf("expected refreshed binary stats to requeue release family once, got %d rows", dirtyCount)
+	}
+}
+
+func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "inspect-missing-release-source",
+		ReleaseFamilyKey: "inspect-missing-release-family",
+		FileFamilyKey:    "inspect-missing-release-file",
+		FamilyKind:       "archive_stem",
+		IsMainPayload:    true,
+		ReleaseKey:       "inspect-missing-release-family",
+		ReleaseName:      "Inspect Missing Release",
+		BinaryKey:        fmt.Sprintf("inspect-missing-release::%d", time.Now().UnixNano()),
+		BinaryName:       "inspect-missing-release.bin",
+		FileName:         "inspect-missing-release.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.90,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.StartBinaryInspection(ctx, "inspect_discovery", binaryID, "missing-release-id", nil); err != nil {
+		t.Fatalf("start binary inspection with missing release id: %v", err)
+	}
+
+	var releaseID sql.NullString
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT release_id
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_discovery' AND binary_id = $1`, binaryID,
+	).Scan(&releaseID); err != nil {
+		t.Fatalf("query binary inspection row: %v", err)
+	}
+	if releaseID.Valid {
+		t.Fatalf("expected missing release id to be normalized to NULL, got %q", releaseID.String)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM binary_inspections
+		WHERE stage_name = 'inspect_discovery' AND binary_id = $1`, binaryID,
+	); err != nil {
+		t.Fatalf("cleanup binary inspection row: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+		t.Fatalf("cleanup poster: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-archive-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-dedupe-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Dedupe Test",
+		SourceTitle:             "Archive.Dedupe.Test",
+		SearchTitle:             "archive dedupe test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               4,
+		ExpectedFileCount:       4,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	fileNames := []string{
+		"archive.test.part01.rar",
+		"archive.test.part38.rar",
+		"archive.test.part39.rar",
+		"archive.test.part40.rar",
+	}
+	releaseFiles := make([]ReleaseFileRecord, 0, len(fileNames))
+	for idx, name := range fileNames {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			PosterID:          posterID,
+			SourceReleaseKey:  baseKey,
+			ReleaseFamilyKey:  baseKey,
+			FileFamilyKey:     baseKey + "::archive",
+			FamilyKind:        "archive_stem",
+			BaseStem:          "archive.test",
+			IsMainPayload:     true,
+			ReleaseKey:        baseKey,
+			ReleaseName:       "Archive Dedupe Test",
+			BinaryKey:         fmt.Sprintf("%s::%d", baseKey, idx+1),
+			BinaryName:        name,
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: len(fileNames),
+			TotalParts:        1,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", name, err)
+		}
+		releaseFiles = append(releaseFiles, ReleaseFileRecord{
+			BinaryID:  binaryID,
+			FileName:  name,
+			SizeBytes: 716800,
+			FileIndex: idx + 1,
+		})
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, releaseFiles); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+
+	filtered := make([]BinaryInspectionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ReleaseID == releaseID {
+			filtered = append(filtered, candidate)
+		}
+	}
+
+	if len(filtered) != 1 {
+		t.Fatalf("expected one archive candidate for release family, got %d: %+v", len(filtered), filtered)
+	}
+	if filtered[0].FileName != "archive.test.part01.rar" {
+		t.Fatalf("expected representative archive candidate part01.rar, got %+v", filtered[0])
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDetailsUntilSourceChanges(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.retry.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-archive-retry-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-retry-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Retry Test",
+		SourceTitle:             "Archive.Retry.Test",
+		SearchTitle:             "archive retry test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "archive.retry",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Archive Retry Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "archive.retry.part01.rar",
+		FileName:          "archive.retry.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "archive.retry.part01.rar",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"probe_error_detail": "Cannot open the file as archive", "probe_skip_reason": "not_archive_or_unsupported"},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete binary inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("expected completed probe-error-detail archive candidate to be skipped until source changes, got %+v", candidate)
+		}
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedProbeErrorRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.retryrow.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-retryrow-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-retryrow-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Retry Row Test",
+		SourceTitle:             "Archive.Retry.Row.Test",
+		SearchTitle:             "archive retry row test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "archive.retry.row",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Archive Retry Row Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "archive.retry.row.7z.001",
+		FileName:          "archive.retry.row.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "archive.retry.row.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, started_at, finished_at, error_text, materialized_bytes, tool_provenance_json, summary_json, updated_at)
+		VALUES ('inspect_archive', $1, $2, 'completed', NOW(), NOW(), '', 0, '{}'::jsonb, jsonb_build_object('probe_error', 'fetch article <x@y>: write tcp 1.2.3.4:123->5.6.7.8:563: write: broken pipe'), NOW())
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET status = EXCLUDED.status,
+		    summary_json = EXCLUDED.summary_json,
+		    updated_at = NOW()`, binaryID, releaseID); err != nil {
+		t.Fatalf("seed invalid completed probe_error row: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected invalid completed probe_error row to be retried")
+	}
+}
+
+func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.recoverable.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-recoverable-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-recoverable-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Recoverable Test",
+		SourceTitle:             "Archive.Recoverable.Test",
+		SearchTitle:             "archive recoverable test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "archive.recoverable",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Archive Recoverable Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "archive.recoverable.7z.001",
+		FileName:          "archive.recoverable.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "archive.recoverable.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	errMsg := "fetch article <abc@example>: write tcp 10.0.0.1:1234->1.2.3.4:563: write: broken pipe"
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"probe_error": errMsg},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete binary inspection: %v", err)
+	}
+
+	var status, errorText string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status, error_text
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_archive' AND binary_id = $1`, binaryID,
+	).Scan(&status, &errorText); err != nil {
+		t.Fatalf("query inspection row: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("expected status failed, got %q", status)
+	}
+	if errorText != errMsg {
+		t.Fatalf("expected error_text to be preserved, got %q", errorText)
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionRefresh(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.media.retry.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-media-retry-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("media-rerun-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Media Archive Retry Test",
+		SourceTitle:             "Media.Archive.Retry.Test",
+		SearchTitle:             "media archive retry test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "media.retry",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Media Archive Retry Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "media.retry.7z.001",
+		FileName:          "media.retry.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "media.retry.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	mediaUpdatedAt := now.Add(-2 * time.Hour)
+	archiveUpdatedAt := now
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_media",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"file_extension": ".001", "probe_mode": "heuristic"},
+		SourceUpdatedAt: &mediaUpdatedAt,
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binary_inspections SET updated_at = $2 WHERE stage_name = 'inspect_media' AND binary_id = $1`, binaryID, mediaUpdatedAt); err != nil {
+		t.Fatalf("rewind media updated_at: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"archive_entries": []any{"Example.Release.2026/Example.Release.2026.mkv"}},
+		SourceUpdatedAt: &archiveUpdatedAt,
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binary_inspections SET updated_at = $2 WHERE stage_name = 'inspect_archive' AND binary_id = $1`, binaryID, archiveUpdatedAt); err != nil {
+		t.Fatalf("set archive updated_at: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected inspect_media candidate to rerun after fresher archive inspection")
+	}
+}
+
+func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       2,
+		ReleaseKey:        "title.archive.release",
+		ReleaseFamilyKey:  "title.archive.release",
+		BinaryName:        "opaque.7z.001",
+		FileName:          "opaque.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_archive",
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		Status:    "completed",
+		Summary: map[string]any{
+			"archive_entries": []any{
+				"Show.Name.S01E01.1080p.WEB.H264-GROUP/Show.Name.S01E01.1080p.WEB.H264-GROUP.mkv",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseTitleCandidates(ctx, []int64{binaryID})
+	if err != nil {
+		t.Fatalf("list release title candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.Source == "archive_entry" && strings.Contains(candidate.Value, ".mkv") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected archive media entry candidate, got %#v", candidates)
+	}
+}
+
+func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	groupOne := fmt.Sprintf("alt.test.releasefiles.one.%d", now.UnixNano())
+	groupTwo := fmt.Sprintf("alt.test.releasefiles.two.%d", now.UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupOne)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-releasefiles-%d@example.com", now.UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	releaseOne, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              fmt.Sprintf("releasefiles-one-%d", now.UnixNano()),
+		GroupName:               groupOne,
+		Title:                   "Release Files One",
+		SourceTitle:             "Release.Files.One",
+		TitleSource:             "source",
+		SearchTitle:             "release files one",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  "poster-a",
+		PostedAt:                &now,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.9,
+		IdentityStatus:          "identified",
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release one: %v", err)
+	}
+	releaseTwo, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		ReleaseKey:              fmt.Sprintf("releasefiles-two-%d", now.UnixNano()),
+		GroupName:               groupTwo,
+		Title:                   "Release Files Two",
+		SourceTitle:             "Release.Files.Two",
+		TitleSource:             "source",
+		SearchTitle:             "release files two",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  "poster-a",
+		PostedAt:                &now,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.9,
+		IdentityStatus:          "identified",
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release two: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  "releasefiles",
+		ReleaseFamilyKey:  "releasefiles",
+		FileFamilyKey:     "releasefiles::binary",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "releasefiles",
+		IsMainPayload:     true,
+		ReleaseKey:        "releasefiles",
+		ReleaseName:       "Release Files",
+		BinaryKey:         "releasefiles::binary",
+		BinaryName:        "releasefiles.part01.rar",
+		FileName:          "releasefiles.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseOne, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "releasefiles.part01.rar",
+		SizeBytes: 1234,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release one files: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseTwo, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "releasefiles.part01.rar",
+		SizeBytes: 1234,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release two files: %v", err)
+	}
+
+	var countOne, countTwo int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_files WHERE release_id = $1`, releaseOne).Scan(&countOne); err != nil {
+		t.Fatalf("count release one files: %v", err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_files WHERE release_id = $1`, releaseTwo).Scan(&countTwo); err != nil {
+		t.Fatalf("count release two files: %v", err)
+	}
+	if countOne != 0 {
+		t.Fatalf("expected stale binary link to be evicted from first release, got %d rows", countOne)
+	}
+	if countTwo != 1 {
+		t.Fatalf("expected second release to retain binary link, got %d rows", countTwo)
 	}
 }
 
@@ -1000,7 +1898,7 @@ func openTestStore(t *testing.T) *Store {
 
 	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
 	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
+		t.Skip("set GONZB_TEST_PG_DSN to run pgindex integration tests without touching the dev database")
 	}
 
 	store, err := NewStore(dsn)
