@@ -1219,6 +1219,7 @@ func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, i
 		result.Title = sourceDisplay
 		result.TitleSource = "source"
 		if looksReadableReleaseTitle(result.Title) {
+			result.DeobfuscatedTitle = releaseTitleStyle(sourceTitle)
 			result.TitleConfidence = 0.55
 		} else {
 			result.TitleConfidence = 0.30
