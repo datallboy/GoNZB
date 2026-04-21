@@ -124,6 +124,13 @@ Expected behavior:
 
 Keep yEnc fallback, but narrow when it runs.
 
+Status:
+
+- completed on 2026-04-21
+- yEnc fetch recovery now skips stable multipart headers that already have structured file identity and an existing-binary match
+- assemble stage logging now emits `assemble_recovery_attempts`, `assemble_recovery_successes`, `assemble_recovery_noops`, and `assemble_recovery_fetch_failures`
+- validated with assemble service coverage for both skip and opaque multipart recovery paths plus assemble/release-related Go test passes
+
 Do not fetch article bodies for yEnc recovery when:
 
 - structured ingest metadata already gives a stable file identity, and

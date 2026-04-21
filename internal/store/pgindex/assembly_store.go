@@ -12,26 +12,27 @@ import (
 
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
-	ID            int64
-	ProviderID    int64
-	NewsgroupID   int64
-	NewsgroupName string
-	ArticleNumber int64
-	MessageID     string
-	Subject       string
-	Poster        string
-	DateUTC       *time.Time
-	Bytes         int64
-	Lines         int
-	Xref          string
-	PosterID      int64
-	FileName      string
-	FileIndex     int
-	FileTotal     int
-	YEncPart      int
-	YEncTotal     int
-	YEncFileSize  int64
-	RawOverview   map[string]any
+	ID                              int64
+	ProviderID                      int64
+	NewsgroupID                     int64
+	NewsgroupName                   string
+	ArticleNumber                   int64
+	MessageID                       string
+	Subject                         string
+	Poster                          string
+	DateUTC                         *time.Time
+	Bytes                           int64
+	Lines                           int
+	Xref                            string
+	PosterID                        int64
+	FileName                        string
+	FileIndex                       int
+	FileTotal                       int
+	YEncPart                        int
+	YEncTotal                       int
+	YEncFileSize                    int64
+	StructuredIdentityBinaryMatched bool
+	RawOverview                     map[string]any
 }
 
 // binary upsert input for assembly service.
@@ -117,6 +118,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
 				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+				TRUE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
 				0 AS lane_rank
 			FROM article_headers ah
@@ -157,6 +159,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
 				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+				FALSE AS structured_identity_binary_matched,
 				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
 				1 AS lane_rank
 			FROM article_headers ah
@@ -196,6 +199,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			yenc_part_number,
 			yenc_total_parts,
 			yenc_file_size,
+			structured_identity_binary_matched,
 			raw_overview
 		FROM (
 			SELECT * FROM lane_a
@@ -236,6 +240,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			&item.YEncPart,
 			&item.YEncTotal,
 			&item.YEncFileSize,
+			&item.StructuredIdentityBinaryMatched,
 			&raw,
 		); err != nil {
 			return nil, fmt.Errorf("scan unassembled article header: %w", err)
