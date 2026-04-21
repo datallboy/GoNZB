@@ -210,9 +210,9 @@ Storage:
 
 - PostgreSQL catalog/index state
 
-Quick terminology reference:
+Indexer engineering reference:
 
-- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the short explanation of how `article_headers`, `binaries`, `release_files`, and `releases` relate to each other
+- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage indexer pipeline, core tables, release/inspect/enrich update flow, and current rough edges around file-name recovery and inspection coverage
 
 Runtime notes:
 

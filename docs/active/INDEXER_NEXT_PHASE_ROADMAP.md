@@ -1,10 +1,10 @@
 # Indexer Next Phase Roadmap
 
-Snapshot date: 2026-04-17
+Snapshot date: 2026-04-20
 
-This is the active roadmap for the next indexer phase after the completed 2026 stabilization work.
+This is the roadmap and sequencing reference for the next indexer era.
 
-Use this as the top-level execution guide for what comes next and in what order.
+Use this together with `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`.
 
 Completed baseline:
 
@@ -27,6 +27,8 @@ That work made the indexer backend trustworthy enough to continue, but it did no
 
 The next phase exists to avoid freezing current internal/debug shapes into long-lived API and UI contracts.
 
+Since the original Phase 1 and Phase 2 execution work is complete, the active short-term focus is now a stabilization and cleanup pass before Phase 3 starts.
+
 ## Current Baseline
 
 The following should be treated as complete unless a new issue is discovered:
@@ -48,26 +50,18 @@ Current realities that matter for sequencing:
 
 ## Phase Sequence
 
-### Phase 1: Indexer Normalization And Storage Plan
+### Current Stabilization Phase
 
 Purpose:
 
-- do the practical storage, identity, and repository-surface cleanup that is worth doing before API/UI work hardens current shapes
+- finish the storage/query/runtime cleanup that remains after completed Phase 1 and Phase 2 work
+- reduce DB/write pressure and stale operational data before API/UI expansion resumes
 
-Primary document:
+Primary documents:
 
-- `docs/active/INDEXER_NORMALIZATION_AND_STORAGE_PLAN.md`
-
-### Phase 2: Release Quality And API Surface Hardening Plan
-
-Purpose:
-
-- define the minimum stable release semantics for the first public-facing API/UI work
-- suppress weak rows and keep unstable fields internal
-
-Primary document:
-
-- `docs/active/RELEASE_QUALITY_AND_API_SURFACE_HARDENING_PLAN.md`
+- `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`
+- `docs/active/INDEXER_HEADER_STORAGE_AND_RETENTION_PLAN.md`
+- `docs/active/INDEXER_QUERY_AND_RUNTIME_CLEANUP_PLAN.md`
 
 ### Phase 3: Indexer API And Web UI Expansion Plan
 
@@ -124,21 +118,11 @@ Phase 3 should not:
 
 ## Go / No-Go Gates
 
-Do not start Phase 2 until:
-
-- Phase 1 has classified the major normalization/storage candidates as:
-  - worth doing now before API/UI
-  - worth deferring until after API/UI
-  - not worth doing right now
-- selected Phase 1 storage and repository-boundary work is complete or intentionally cut
-- no unresolved decision remains about `raw_overview_json`, title provenance storage, `release_file_articles`, or legacy `release_key` compatibility
-
 Do not start Phase 3 until:
 
-- Phase 2 has defined the minimum stable release contract field-by-field
-- Phase 2 has decided release visibility and suppression rules for weak fragmentary rows
-- Phase 2 has decided how synthetic seed/test rows are excluded from public surfaces
-- Phase 2 has clearly named which fields stay internal/debug-only
+- the current stabilization docs are complete and signed off
+- the DB cleanup, header retention, and maintenance changes are implemented and validated
+- backfill-until-date behavior is working and restart-safe
 
 ## Working Assumptions For This Next Phase
 
