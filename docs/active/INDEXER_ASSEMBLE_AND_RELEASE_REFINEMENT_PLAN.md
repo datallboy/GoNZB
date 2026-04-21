@@ -238,6 +238,14 @@ Expected behavior:
 
 Add clearer stage-level diagnostics.
 
+Status:
+
+- completed on 2026-04-21
+- assemble stage logging now reports `pending_headers`, `lane_a_selected`, `lane_b_selected`, `processed_headers`, `binaries_refreshed`, and yEnc recovery counters
+- release stage logging now reports `candidate_families`, `formed`, `cooled_down_fragment_only_families`, `stale_cleanup_only_families`, `skipped_fragments`, `skipped_confidence`, and `skipped_completion`
+- `docs/INDEXER_TEST_QUERIES.md` now includes reusable operator queries for pending assembly summary, why a header is still unassembled, why a family is still dirty but unformed, and whether a family is fragment-only or release-actionable
+- validated with assemble/release/store/runtime Go test passes after the observability changes
+
 Assemble logging/counters:
 
 - pending headers count

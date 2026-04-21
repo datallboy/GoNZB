@@ -79,6 +79,46 @@ gonzb --config config.yaml indexer assemble
 gonzb --config config.yaml indexer release
 ```
 
+Recent assemble and release stage runs:
+
+```sql
+select
+  id,
+  stage_name,
+  trigger_kind,
+  status,
+  started_at,
+  finished_at,
+  error_text
+from indexer_stage_runs
+where stage_name in ('assemble', 'release')
+order by id desc
+limit 50;
+```
+
+Pending assembly summary:
+
+```sql
+select
+  count(*) as pending_headers,
+  count(*) filter (
+    where nullif(btrim(p.subject_file_name), '') is not null
+  ) as structured_identity_headers,
+  count(*) filter (
+    where nullif(btrim(p.subject_file_name), '') is not null
+      and exists (
+        select 1
+        from binaries b
+        where b.provider_id = ah.provider_id
+          and b.newsgroup_id = ah.newsgroup_id
+          and lower(btrim(coalesce(nullif(b.file_name, ''), nullif(b.binary_name, '')))) = lower(btrim(p.subject_file_name))
+      )
+  ) as lane_a_progress_headers
+from article_headers ah
+join article_header_ingest_payloads p on p.article_header_id = ah.id
+where ah.assembled_at is null;
+```
+
 To suppress tiny partial releases while you are trying to get one inspectable result, set:
 
 ```yaml
@@ -150,6 +190,102 @@ from releases
 group by release_key
 having count(*) > 1
 order by formed_release_groups desc, release_key;
+```
+
+Why a header is still unassembled:
+
+```sql
+select
+  ah.id,
+  ng.group_name,
+  ah.article_number,
+  ah.message_id,
+  p.subject,
+  p.subject_file_name,
+  p.subject_file_index,
+  p.subject_file_total,
+  p.yenc_part_number,
+  p.yenc_total_parts,
+  exists (
+    select 1
+    from binaries b
+    where b.provider_id = ah.provider_id
+      and b.newsgroup_id = ah.newsgroup_id
+      and lower(btrim(coalesce(nullif(b.file_name, ''), nullif(b.binary_name, '')))) = lower(btrim(p.subject_file_name))
+  ) as matches_existing_binary_by_structured_identity
+from article_headers ah
+join article_header_ingest_payloads p on p.article_header_id = ah.id
+join newsgroups ng on ng.id = ah.newsgroup_id
+where ah.assembled_at is null
+order by ah.id desc
+limit 100;
+```
+
+Why a family is still dirty but unformed:
+
+```sql
+with family_stats as (
+  select
+    q.provider_id,
+    q.newsgroup_id,
+    q.key_kind,
+    q.family_key,
+    q.updated_at,
+    count(b.id)::integer as binary_count,
+    count(*) filter (
+      where b.total_parts > 0 and b.observed_parts = b.total_parts
+    )::integer as complete_binary_count,
+    max(case when b.expected_file_count > 0 then 1 else 0 end)::integer as has_expected_file_count
+  from release_stage_dirty_families q
+  left join binaries b
+    on b.provider_id = q.provider_id
+   and b.newsgroup_id = q.newsgroup_id
+   and (
+     (q.key_kind = 'release_family' and b.release_family_key = q.family_key)
+     or (
+       q.key_kind = 'base_stem'
+       and b.expected_file_count > 1
+       and nullif(btrim(b.base_stem), '') is not null
+       and lower(btrim(b.base_stem)) = q.family_key
+     )
+   )
+  group by q.provider_id, q.newsgroup_id, q.key_kind, q.family_key, q.updated_at
+)
+select
+  fs.*,
+  case
+    when fs.binary_count = 0 then 'stale_cleanup_only'
+    when fs.complete_binary_count = 0 then 'fragment_only_cooldown'
+    when fs.has_expected_file_count = 0 then 'formable_without_expected_file_count_evidence'
+    else 'formable'
+  end as release_actionability
+from family_stats fs
+order by fs.updated_at asc, fs.family_key asc
+limit 100;
+```
+
+Whether a family is fragment-only or actually release-actionable:
+
+```sql
+select
+  b.provider_id,
+  b.newsgroup_id,
+  b.release_family_key,
+  count(*) as binary_count,
+  count(*) filter (
+    where b.total_parts > 0 and b.observed_parts = b.total_parts
+  ) as complete_binary_count,
+  max(b.expected_file_count) as max_expected_file_count,
+  min(b.posted_at) as first_posted_at,
+  max(b.posted_at) as last_posted_at,
+  case
+    when count(*) filter (where b.total_parts > 0 and b.observed_parts = b.total_parts) = 0 then 'fragment_only'
+    else 'release_actionable'
+  end as family_state
+from binaries b
+group by b.provider_id, b.newsgroup_id, b.release_family_key
+order by last_posted_at desc nulls last, b.release_family_key
+limit 100;
 ```
 
 ## Inspect Family
