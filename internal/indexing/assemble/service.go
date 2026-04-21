@@ -20,6 +20,7 @@ type logger interface {
 
 // local interface only, scoped to assembly service.
 type repository interface {
+	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
@@ -78,18 +79,31 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("assembly matcher is required")
 	}
 
+	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
+	if err != nil {
+		return fmt.Errorf("count unassembled article headers: %w", err)
+	}
+
 	headers, err := s.repo.ListUnassembledArticleHeaders(ctx, s.opts.BatchSize)
 	if err != nil {
 		return fmt.Errorf("list unassembled article headers: %w", err)
 	}
 	if len(headers) == 0 {
-		s.log.Debug("assemble: no unassembled article headers found")
+		s.log.Debug("assemble: no unassembled article headers found pending_headers=%d", pendingCount)
 		return nil
 	}
 
 	refreshed := make(map[int64]struct{}, len(headers))
 	assembledCount := 0
+	laneASelected := 0
 	recovery := recoveryCounters{}
+
+	for _, header := range headers {
+		if header.StructuredIdentityBinaryMatched {
+			laneASelected++
+		}
+	}
+	laneBSelected := len(headers) - laneASelected
 
 	for _, header := range headers {
 		if err := ctx.Err(); err != nil {
@@ -185,7 +199,10 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 
 	s.log.Info(
-		"assemble: processed_headers=%d binaries_refreshed=%d batch_size=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
+		"assemble: pending_headers=%d lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
+		pendingCount,
+		laneASelected,
+		laneBSelected,
 		assembledCount,
 		len(refreshed),
 		s.opts.BatchSize,

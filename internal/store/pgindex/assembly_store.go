@@ -286,6 +286,18 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 	return out, nil
 }
 
+func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_headers
+		WHERE assembled_at IS NULL`,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count unassembled article headers: %w", err)
+	}
+	return count, nil
+}
+
 // CHANGED: normalize posters into a dimension table.
 func (s *Store) EnsurePoster(ctx context.Context, posterName string) (int64, error) {
 	posterName = strings.TrimSpace(posterName)
