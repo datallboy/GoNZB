@@ -726,6 +726,17 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
 			LIMIT $2`
 	} else if stageName == "inspect_archive" {
+		representativePredicate := `
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$'
+					) OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip'`
 		query = `
 			SELECT *
 			FROM (
@@ -773,6 +784,7 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 					ON abi.stage_name = 'inspect_archive'
 					AND abi.binary_id = b.id
 				WHERE ` + filter + `
+				  AND (` + representativePredicate + `)
 				  AND (
 					bi.id IS NULL OR
 					bi.status = 'failed' OR

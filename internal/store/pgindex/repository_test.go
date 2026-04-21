@@ -1139,6 +1139,122 @@ func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *t
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRARVolumes(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.nofallthrough.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-archive-nofallthrough-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-nofallthrough-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive No Fallthrough Test",
+		SourceTitle:             "Archive.No.Fallthrough.Test",
+		SearchTitle:             "archive no fallthrough test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               3,
+		ExpectedFileCount:       3,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	fileNames := []string{
+		"archive.fallthrough.part01.rar",
+		"archive.fallthrough.part02.rar",
+		"archive.fallthrough.part03.rar",
+	}
+	releaseFiles := make([]ReleaseFileRecord, 0, len(fileNames))
+	var representativeBinaryID int64
+	for idx, name := range fileNames {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			PosterID:          posterID,
+			SourceReleaseKey:  baseKey,
+			ReleaseFamilyKey:  baseKey,
+			FileFamilyKey:     baseKey + "::archive",
+			FamilyKind:        "archive_stem",
+			BaseStem:          "archive.fallthrough",
+			IsMainPayload:     true,
+			ReleaseKey:        baseKey,
+			ReleaseName:       "Archive No Fallthrough Test",
+			BinaryKey:         fmt.Sprintf("%s::%d", baseKey, idx+1),
+			BinaryName:        name,
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: len(fileNames),
+			TotalParts:        1,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", name, err)
+		}
+		if idx == 0 {
+			representativeBinaryID = binaryID
+		}
+		releaseFiles = append(releaseFiles, ReleaseFileRecord{
+			BinaryID:  binaryID,
+			FileName:  name,
+			SizeBytes: 716800,
+			FileIndex: idx + 1,
+		})
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, releaseFiles); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        representativeBinaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"archive": true},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete representative inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.ReleaseID == releaseID {
+			t.Fatalf("expected later archive volumes to stay excluded after part01 completion, got %+v", candidate)
+		}
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDetailsUntilSourceChanges(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
