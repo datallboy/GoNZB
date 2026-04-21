@@ -1115,6 +1115,109 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 	}
 }
 
+func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinaries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.assemble.priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-priority-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	progressFile := "priority.release.part01.rar"
+	progressFamily := fmt.Sprintf("priority-family-%d", time.Now().UnixNano())
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  progressFamily,
+		ReleaseFamilyKey:  progressFamily,
+		FileFamilyKey:     progressFamily + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "priority.release",
+		IsMainPayload:     true,
+		ReleaseKey:        progressFamily,
+		ReleaseName:       "Priority Release",
+		BinaryKey:         fmt.Sprintf("%s::existing", progressFamily),
+		BinaryName:        progressFile,
+		FileName:          progressFile,
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        20,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}); err != nil {
+		t.Fatalf("upsert seed binary: %v", err)
+	}
+
+	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 101,
+			MessageID:     fmt.Sprintf("<priority-progress-%d@test>", time.Now().UnixNano()),
+			Subject:       `Priority Release [1/2] - "priority.release.part01.rar" yEnc (11/20)`,
+			Poster:        posterName,
+			DateUTC:       &baseTime,
+			Bytes:         2048,
+			Lines:         20,
+		},
+		{
+			ArticleNumber: 102,
+			MessageID:     fmt.Sprintf("<priority-fresh-%d@test>", time.Now().UnixNano()),
+			Subject:       `Fresh Release [1/1] - "fresh.release.r00" yEnc (1/10)`,
+			Poster:        posterName,
+			DateUTC:       func() *time.Time { t := baseTime.Add(time.Minute); return &t }(),
+			Bytes:         1024,
+			Lines:         10,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	got, err := store.ListUnassembledArticleHeaders(ctx, 2)
+	if err != nil {
+		t.Fatalf("list unassembled article headers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(got))
+	}
+	if got[0].FileName != progressFile {
+		t.Fatalf("expected progress-improving header first, got %q", got[0].FileName)
+	}
+	if got[1].FileName != "fresh.release.r00" {
+		t.Fatalf("expected fresh header second, got %q", got[1].FileName)
+	}
+	if got[0].ID >= got[1].ID {
+		t.Fatalf("expected prioritized lane to override raw newest-first ordering, got ids %d then %d", got[0].ID, got[1].ID)
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

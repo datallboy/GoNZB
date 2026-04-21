@@ -87,34 +87,122 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
+		WITH limits AS (
+			SELECT
+				$1::integer AS total_limit,
+				CASE
+					WHEN $1::integer <= 0 THEN 0
+					WHEN (($1::integer * 7) / 10) > 0 THEN (($1::integer * 7) / 10)
+					ELSE 1
+				END AS lane_a_limit
+		),
+		lane_a AS (
+			SELECT
+				ah.id,
+				ah.provider_id,
+				ah.newsgroup_id,
+				ng.group_name,
+				ah.article_number,
+				ah.message_id,
+				p.subject,
+				COALESCE(po.poster_name, p.poster, '') AS poster,
+				ah.date_utc,
+				ah.bytes,
+				ah.lines,
+				p.xref,
+				COALESCE(p.poster_id, 0) AS poster_id,
+				COALESCE(p.subject_file_name, '') AS subject_file_name,
+				COALESCE(p.subject_file_index, 0) AS subject_file_index,
+				COALESCE(p.subject_file_total, 0) AS subject_file_total,
+				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
+				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
+				0 AS lane_rank
+			FROM article_headers ah
+			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+			LEFT JOIN posters po ON po.id = p.poster_id
+			CROSS JOIN limits
+			WHERE ah.assembled_at IS NULL
+			  AND NULLIF(BTRIM(p.subject_file_name), '') IS NOT NULL
+			  AND EXISTS (
+				SELECT 1
+				FROM binaries b
+				WHERE b.provider_id = ah.provider_id
+				  AND b.newsgroup_id = ah.newsgroup_id
+				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
+			)
+			ORDER BY ah.id DESC
+			LIMIT (SELECT lane_a_limit FROM limits)
+		),
+		lane_b AS (
+			SELECT
+				ah.id,
+				ah.provider_id,
+				ah.newsgroup_id,
+				ng.group_name,
+				ah.article_number,
+				ah.message_id,
+				p.subject,
+				COALESCE(po.poster_name, p.poster, '') AS poster,
+				ah.date_utc,
+				ah.bytes,
+				ah.lines,
+				p.xref,
+				COALESCE(p.poster_id, 0) AS poster_id,
+				COALESCE(p.subject_file_name, '') AS subject_file_name,
+				COALESCE(p.subject_file_index, 0) AS subject_file_index,
+				COALESCE(p.subject_file_total, 0) AS subject_file_total,
+				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
+				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
+				1 AS lane_rank
+			FROM article_headers ah
+			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+			LEFT JOIN posters po ON po.id = p.poster_id
+			CROSS JOIN limits
+			WHERE ah.assembled_at IS NULL
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM lane_a la
+				WHERE la.id = ah.id
+			)
+			ORDER BY ah.id DESC
+			LIMIT GREATEST(
+				(SELECT total_limit FROM limits) - (SELECT COUNT(*) FROM lane_a),
+				0
+			)
+		)
 		SELECT
-			ah.id,
-			ah.provider_id,
-			ah.newsgroup_id,
-			ng.group_name,
-			ah.article_number,
-			ah.message_id,
-			p.subject,
-			COALESCE(po.poster_name, p.poster, ''),
-			ah.date_utc,
-			ah.bytes,
-			ah.lines,
-			p.xref,
-			COALESCE(p.poster_id, 0),
-			COALESCE(p.subject_file_name, ''),
-			COALESCE(p.subject_file_index, 0),
-			COALESCE(p.subject_file_total, 0),
-			COALESCE(p.yenc_part_number, 0),
-			COALESCE(p.yenc_total_parts, 0),
-			COALESCE(p.yenc_file_size, 0),
-			COALESCE(p.raw_overview_json::text, '')
-		FROM article_headers ah
-		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN posters po ON po.id = p.poster_id
-		WHERE ah.assembled_at IS NULL
-		ORDER BY ah.id DESC
-		LIMIT $1`, limit)
+			id,
+			provider_id,
+			newsgroup_id,
+			group_name,
+			article_number,
+			message_id,
+			subject,
+			poster,
+			date_utc,
+			bytes,
+			lines,
+			xref,
+			poster_id,
+			subject_file_name,
+			subject_file_index,
+			subject_file_total,
+			yenc_part_number,
+			yenc_total_parts,
+			yenc_file_size,
+			raw_overview
+		FROM (
+			SELECT * FROM lane_a
+			UNION ALL
+			SELECT * FROM lane_b
+		) candidates
+		ORDER BY lane_rank ASC, id DESC`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list unassembled article headers: %w", err)
 	}
