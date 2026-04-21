@@ -1,16 +1,20 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-04-20
+Snapshot date: 2026-04-21
 
-This file exists to keep the indexer docs organized while the indexer is in a feature-freeze stabilization and cleanup phase ahead of v1-facing work.
+This file exists to keep the indexer docs organized while the indexer is between the completed stabilization pass and the deferred Phase 3 API/UI work.
 
 We currently have several planning/reference documents. This file defines which ones are active execution guides, which ones were completed and archived, and which ones are design or reference material.
 
 ## Current Status
 
 - Phase 1 and Phase 2 of the next-phase docs are complete
-- the current active execution focus is a dedicated stabilization, schema-cleanup, and maintenance pass
-- Phase 3 API/UI work remains deferred until this stabilization pass is complete
+- the stabilization/schema/runtime pass is mostly complete and has been moved to completed-history docs
+- the current active execution focus is a bounded refinement loop around:
+  - assemble backlog reduction
+  - release candidate prioritization
+  - throughput and query efficiency for partially completed records
+- Phase 3 API/UI work remains deferred until this refinement loop is complete
 
 ## Current Active Docs
 
@@ -19,32 +23,17 @@ We currently have several planning/reference documents. This file defines which 
 Use for:
 
 - the top-level sequence for the next indexer era
-- the handoff from completed stabilization into the next feature phase
+- the handoff from completed stabilization into the current refinement loop and then the next feature phase
 - phase boundaries and go/no-go rules between phases
 
-### `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`
+### `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
 
 Use for:
 
-- the top-level execution plan for the current stabilization pass
-- measured storage/query baseline and acceptance criteria
-- migration/reset strategy and rollout order
-
-### `docs/active/INDEXER_HEADER_STORAGE_AND_RETENTION_PLAN.md`
-
-Use for:
-
-- raw-header schema cleanup
-- payload split, retention, and backfill-until-date behavior
-- article-header index decisions and poster-map removal
-
-### `docs/active/INDEXER_QUERY_AND_RUNTIME_CLEANUP_PLAN.md`
-
-Use for:
-
-- assembly/release hot query cleanup
-- dirty-family queue behavior
-- stale operational data maintenance and purge policy
+- the current active backlog
+- assemble backlog reduction and prioritization strategy
+- release throughput and dirty-family backlog refinement
+- the exit criteria before Phase 3 starts
 
 ### `docs/active/INDEXER_API_AND_WEB_UI_EXPANSION_PLAN.md`
 
@@ -63,6 +52,30 @@ Use for:
 - the completed stabilization backlog
 - the validation history and sign-off for that phase
 - the final checklist of what was done and why
+
+### `docs/archive/completed/indexer/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`
+
+Use for:
+
+- the completed top-level stabilization execution plan
+- measured storage/query baseline and acceptance criteria from that phase
+- migration/reset strategy and rollout order that were implemented
+
+### `docs/archive/completed/indexer/INDEXER_HEADER_STORAGE_AND_RETENTION_PLAN.md`
+
+Use for:
+
+- the completed raw-header storage cleanup plan
+- payload split, retention, and backfill-until-date design history
+- article-header index decisions and poster-map removal history
+
+### `docs/archive/completed/indexer/INDEXER_QUERY_AND_RUNTIME_CLEANUP_PLAN.md`
+
+Use for:
+
+- the completed assembly/release hot-query cleanup plan
+- dirty-family queue baseline design
+- stale operational data maintenance and purge policy history
 
 ### `docs/archive/completed/indexer/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
 
@@ -140,8 +153,9 @@ Do not let this drive schema expansion before the stabilization docs say the fou
 ## Guideline Rules
 
 1. Do not treat the completed docs under `docs/archive/completed/indexer/` as an active backlog.
-2. Start current indexer work from `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`, then use the header-storage and query/runtime cleanup docs for subsystem details.
-3. Treat Phase 1 and Phase 2 docs as completed/archive material, not the active backlog.
-4. Do not begin API/UI expansion work until the current stabilization docs say the feature freeze is complete.
-5. Keep milestone docs as context, not as the active source of truth for current execution.
-6. Avoid creating new plan docs unless they clearly define the next bounded phase of work.
+2. Start current indexer work from `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`.
+3. Use the archived stabilization docs for reference/history, not as the active backlog.
+4. Treat Phase 1 and Phase 2 docs as completed/archive material, not the active backlog.
+5. Do not begin API/UI expansion work until the current refinement doc says the backlog and throughput work is complete.
+6. Keep milestone docs as context, not as the active source of truth for current execution.
+7. Avoid creating new plan docs unless they clearly define the next bounded phase of work.

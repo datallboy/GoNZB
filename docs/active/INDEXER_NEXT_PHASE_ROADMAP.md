@@ -1,10 +1,10 @@
 # Indexer Next Phase Roadmap
 
-Snapshot date: 2026-04-20
+Snapshot date: 2026-04-21
 
 This is the roadmap and sequencing reference for the next indexer era.
 
-Use this together with `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`.
+Use this together with `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`.
 
 Completed baseline:
 
@@ -21,13 +21,15 @@ Current reference docs:
 
 ## Why A New Phase Exists
 
-The stabilization phase is complete and remains signed off.
+The stabilization phase is mostly complete and remains signed off at the schema/runtime level.
 
-That work made the indexer backend trustworthy enough to continue, but it did not make the current storage shape, release contract, or API/UI surface ready to harden directly into product-facing behavior.
+That work made the indexer backend much safer, but live operation still shows a refinement need before Phase 3:
 
-The next phase exists to avoid freezing current internal/debug shapes into long-lived API and UI contracts.
+- assemble backlog is still large
+- release queue throughput is too often dominated by fragment-only families
+- the next bottleneck is prioritization and throughput, not core schema safety
 
-Since the original Phase 1 and Phase 2 execution work is complete, the active short-term focus is now a stabilization and cleanup pass before Phase 3 starts.
+So the active short-term focus is now a bounded refinement loop before Phase 3 starts.
 
 ## Current Baseline
 
@@ -50,18 +52,18 @@ Current realities that matter for sequencing:
 
 ## Phase Sequence
 
-### Current Stabilization Phase
+### Current Assemble/Release Refinement Phase
 
 Purpose:
 
-- finish the storage/query/runtime cleanup that remains after completed Phase 1 and Phase 2 work
-- reduce DB/write pressure and stale operational data before API/UI expansion resumes
+- improve assemble backlog burn-down and release throughput after the completed stabilization pass
+- prioritize work that improves partially completed binaries and formable release families
+- finish the last performance/ordering loop before API/UI expansion resumes
 
 Primary documents:
 
-- `docs/active/INDEXER_DB_STABILIZATION_PHASE_PLAN.md`
-- `docs/active/INDEXER_HEADER_STORAGE_AND_RETENTION_PLAN.md`
-- `docs/active/INDEXER_QUERY_AND_RUNTIME_CLEANUP_PLAN.md`
+- `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+- `docs/active/INDEXER_FOUNDATION_DOCS.md`
 
 ### Phase 3: Indexer API And Web UI Expansion Plan
 
@@ -120,9 +122,10 @@ Phase 3 should not:
 
 Do not start Phase 3 until:
 
-- the current stabilization docs are complete and signed off
-- the DB cleanup, header retention, and maintenance changes are implemented and validated
-- backfill-until-date behavior is working and restart-safe
+- the current refinement doc is complete and signed off
+- assemble backlog behavior is under control
+- release candidate throughput is no longer dominated by fragment-only queue churn
+- the completed stabilization changes remain healthy under live validation
 
 ## Working Assumptions For This Next Phase
 

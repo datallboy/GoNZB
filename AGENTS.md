@@ -9,21 +9,16 @@ Codex may edit code directly in this repository. Unless the user says otherwise,
 3. Keep responses concise and practical.
 4. Avoid unrelated cleanup unless it is required to complete the task safely.
 5. If the user references a markdown file in this repo or in the session, treat that markdown as the primary scope and source of direction for the task.
-6. For current indexer foundation, hardening, or API/UI expansion work, prefer the active docs in `docs/active/` before archived planning docs.
+6. For current indexer foundation, hardening, refinement, or API/UI expansion work, prefer the active docs in `docs/active/` before archived planning docs.
+7. Prefer incremental, trackable changes that can be committed in reviewable chunks instead of letting large, mixed, uncommitted diffs accumulate.
 
 ## Active Docs Priority
-- `docs/active/INDEXER_NEXT_PHASE_ROADMAP.md`
-  - top-level sequence and phase gates for the next indexer era
-- `docs/active/INDEXER_NORMALIZATION_AND_STORAGE_PLAN.md`
-  - Phase 1 execution plan for normalization, storage, and repository-boundary cleanup
-- `docs/active/RELEASE_QUALITY_AND_API_SURFACE_HARDENING_PLAN.md`
-  - Phase 2 execution plan for stable release-contract hardening
-- `docs/active/INDEXER_API_AND_WEB_UI_EXPANSION_PLAN.md`
-  - Phase 3 execution plan for the first user-facing indexer API and web UI work
-- `docs/active/INDEXER_FOUNDATION_DOCS.md`
-  - docs map describing which docs are active, reference, or archived
+- Start with `docs/active/INDEXER_FOUNDATION_DOCS.md`.
+  - It defines which docs in `docs/active/` are the current execution guides and which docs are now historical or reference-only.
+- Then use the most relevant active plan(s) in `docs/active/` for the current phase.
+  - Example categories include roadmap, refinement/stabilization, and API/UI expansion.
 
-When working on indexer foundation tasks, use these active docs as the default source of truth unless the user explicitly redirects you elsewhere.
+When working on indexer foundation tasks, use the active docs in `docs/active/` as the default source of truth unless the user explicitly redirects you elsewhere.
 
 For completed stabilization history, release-formation baseline, or prior schema-target decisions, use:
 
