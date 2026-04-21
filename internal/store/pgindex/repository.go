@@ -25,6 +25,13 @@ type ArticleHeader struct {
 	RawOverview   map[string]any
 }
 
+type BackfillCheckpointState struct {
+	ArticleNumber int64
+	UntilDate     *time.Time
+	CutoffReached bool
+	StoppedReason string
+}
+
 func firstNonBlank(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -67,6 +74,15 @@ type BinaryInspectionRecord struct {
 	ToolProvenance    map[string]any
 	Summary           map[string]any
 	SourceUpdatedAt   *time.Time
+}
+
+type BinaryRecoveryRecord struct {
+	BinaryID     int64
+	Kind         string
+	Extension    string
+	Source       string
+	Confidence   float64
+	Canonicalize bool
 }
 
 type BinaryInspectionArtifactRecord struct {
@@ -519,6 +535,85 @@ func (s *Store) GetBackfillCheckpoint(ctx context.Context, providerID, newsgroup
 	return backfillArticleNumber, nil
 }
 
+func (s *Store) GetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64) (*BackfillCheckpointState, error) {
+	if providerID <= 0 {
+		return nil, fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return nil, fmt.Errorf("newsgroup id is required")
+	}
+
+	var (
+		item      BackfillCheckpointState
+		untilDate sql.NullTime
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			backfill_article_number,
+			backfill_until_date,
+			backfill_cutoff_reached,
+			backfill_stopped_reason
+		FROM scrape_checkpoints
+		WHERE provider_id = $1 AND newsgroup_id = $2`,
+		providerID, newsgroupID,
+	).Scan(&item.ArticleNumber, &untilDate, &item.CutoffReached, &item.StoppedReason)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get backfill checkpoint state p=%d g=%d: %w", providerID, newsgroupID, err)
+	}
+	if untilDate.Valid {
+		t := untilDate.Time.UTC()
+		item.UntilDate = &t
+	}
+	return &item, nil
+}
+
+func (s *Store) SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error {
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+
+	var until any
+	if untilDate != nil {
+		until = untilDate.UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO scrape_checkpoints (
+			provider_id,
+			newsgroup_id,
+			last_article_number,
+			backfill_article_number,
+			backfill_until_date,
+			backfill_cutoff_reached,
+			backfill_stopped_reason,
+			updated_at
+		)
+		VALUES ($1, $2, 0, 0, $3, $4, $5, NOW())
+		ON CONFLICT (provider_id, newsgroup_id)
+		DO UPDATE SET
+			backfill_until_date = EXCLUDED.backfill_until_date,
+			backfill_cutoff_reached = EXCLUDED.backfill_cutoff_reached,
+			backfill_stopped_reason = EXCLUDED.backfill_stopped_reason,
+			updated_at = NOW()`,
+		providerID,
+		newsgroupID,
+		until,
+		cutoffReached,
+		strings.TrimSpace(stoppedReason),
+	)
+	if err != nil {
+		return fmt.Errorf("set backfill checkpoint state p=%d g=%d: %w", providerID, newsgroupID, err)
+	}
+
+	return nil
+}
+
 // persist backward/historical scrape cursor independently of latest cursor.
 func (s *Store) UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error {
 	if providerID <= 0 {
@@ -553,8 +648,7 @@ func (s *Store) UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgr
 	return nil
 }
 
-// InsertArticleHeaders inserts header rows with ingest constraints enforced by DB.
-// Returns number of inserted rows (conflicts are ignored via DO NOTHING).
+// InsertArticleHeaders inserts header rows plus transient ingest payload side rows.
 func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []ArticleHeader) (int64, error) {
 	if providerID <= 0 || newsgroupID <= 0 {
 		return 0, fmt.Errorf("provider id and newsgroup id are required")
@@ -569,27 +663,51 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO article_headers (
-			provider_id,
-			newsgroup_id,
-			article_number,
-			message_id,
-			subject,
-			poster,
-			date_utc,
-			bytes,
-			lines,
-			xref,
-			raw_overview_json,
-			scraped_at
+	headerStmt, err := tx.PrepareContext(ctx, `
+		WITH inserted AS (
+			INSERT INTO article_headers (
+				provider_id,
+				newsgroup_id,
+				article_number,
+				message_id,
+				date_utc,
+				bytes,
+				lines,
+				scraped_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+			ON CONFLICT DO NOTHING
+			RETURNING id
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,NOW())
-		ON CONFLICT DO NOTHING`)
+		SELECT COALESCE(
+			(SELECT id FROM inserted),
+			(SELECT id FROM article_headers WHERE newsgroup_id = $2 AND article_number = $3),
+			(SELECT id FROM article_headers WHERE newsgroup_id = $2 AND message_id = $4)
+		)`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare article_headers insert: %w", err)
 	}
-	defer stmt.Close()
+	defer headerStmt.Close()
+
+	payloadStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO article_header_ingest_payloads (
+			article_header_id,
+			subject,
+			poster,
+			xref,
+			raw_overview_json,
+			created_at
+		)
+		VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
+		ON CONFLICT (article_header_id) DO UPDATE
+		SET subject = EXCLUDED.subject,
+		    poster = EXCLUDED.poster,
+		    xref = EXCLUDED.xref,
+		    raw_overview_json = EXCLUDED.raw_overview_json`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare article_header_ingest_payloads insert: %w", err)
+	}
+	defer payloadStmt.Close()
 
 	var inserted int64
 	for _, h := range headers {
@@ -619,28 +737,35 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			date = nil
 		}
 
-		res, execErr := stmt.ExecContext(
+		var articleHeaderID int64
+		if err := headerStmt.QueryRowContext(
 			ctx,
 			providerID,
 			newsgroupID,
 			h.ArticleNumber,
 			msgID,
-			subject,
-			poster,
 			date,
 			h.Bytes,
 			h.Lines,
-			xref,
-			raw,
-		)
-		if execErr != nil {
-			return inserted, fmt.Errorf("insert article header %d: %w", h.ArticleNumber, execErr)
+		).Scan(&articleHeaderID); err != nil {
+			return inserted, fmt.Errorf("insert article header %d: %w", h.ArticleNumber, err)
+		}
+		if articleHeaderID <= 0 {
+			return inserted, fmt.Errorf("insert article header %d: no article header id returned", h.ArticleNumber)
 		}
 
-		affected, affErr := res.RowsAffected()
-		if affErr == nil {
-			inserted += affected
+		if _, err := payloadStmt.ExecContext(
+			ctx,
+			articleHeaderID,
+			subject,
+			poster,
+			xref,
+			raw,
+		); err != nil {
+			return inserted, fmt.Errorf("insert article header payload %d: %w", h.ArticleNumber, err)
 		}
+
+		inserted++
 	}
 
 	if err := tx.Commit(); err != nil {
