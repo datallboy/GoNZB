@@ -15,6 +15,7 @@ type AssemblyCandidate struct {
 	ID            int64
 	ProviderID    int64
 	NewsgroupID   int64
+	NewsgroupName string
 	ArticleNumber int64
 	MessageID     string
 	Subject       string
@@ -36,7 +37,6 @@ type BinaryRecord struct {
 	FileFamilyKey     string
 	FamilyKind        string
 	BaseStem          string
-	PostingBucket     string
 	IsAuxiliary       bool
 	IsMainPayload     bool
 	ReleaseKey        string
@@ -84,24 +84,21 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			ah.id,
 			ah.provider_id,
 			ah.newsgroup_id,
+			ng.group_name,
 			ah.article_number,
 			ah.message_id,
-			ah.subject,
-			COALESCE(p.poster_name, ah.poster),
+			p.subject,
+			p.poster,
 			ah.date_utc,
 			ah.bytes,
 			ah.lines,
-			ah.xref,
-			COALESCE(ah.raw_overview_json::text, '')
+			p.xref,
+			COALESCE(p.raw_overview_json::text, '')
 		FROM article_headers ah
-		LEFT JOIN article_poster_map apm ON apm.article_header_id = ah.id
-		LEFT JOIN posters p ON p.id = apm.poster_id
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM binary_parts bp
-			WHERE bp.article_header_id = ah.id
-		)
-		ORDER BY ah.newsgroup_id, ah.article_number
+		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+		WHERE ah.assembled_at IS NULL
+		ORDER BY ah.id DESC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list unassembled article headers: %w", err)
@@ -120,6 +117,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			&item.ID,
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.NewsgroupName,
 			&item.ArticleNumber,
 			&item.MessageID,
 			&item.Subject,
@@ -175,26 +173,6 @@ func (s *Store) EnsurePoster(ctx context.Context, posterName string) (int64, err
 	return id, nil
 }
 
-// CHANGED: map article header -> poster id for later enrichment/debugging.
-func (s *Store) LinkArticlePoster(ctx context.Context, articleHeaderID, posterID int64) error {
-	if articleHeaderID <= 0 || posterID <= 0 {
-		return nil
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO article_poster_map (article_header_id, poster_id)
-		VALUES ($1, $2)
-		ON CONFLICT (article_header_id) DO UPDATE
-		SET poster_id = EXCLUDED.poster_id`,
-		articleHeaderID, posterID,
-	)
-	if err != nil {
-		return fmt.Errorf("link article %d to poster %d: %w", articleHeaderID, posterID, err)
-	}
-
-	return nil
-}
-
 // CHANGED: create/update a binary grouping row.
 func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error) {
 	if in.ProviderID <= 0 || in.NewsgroupID <= 0 {
@@ -247,7 +225,6 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			file_family_key,
 			family_kind,
 			base_stem,
-			posting_bucket,
 			is_auxiliary,
 			is_main_payload,
 			release_key,
@@ -264,7 +241,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
 		    source_release_key = EXCLUDED.source_release_key,
@@ -272,7 +249,6 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		    file_family_key = EXCLUDED.file_family_key,
 		    family_kind = EXCLUDED.family_kind,
 		    base_stem = EXCLUDED.base_stem,
-		    posting_bucket = EXCLUDED.posting_bucket,
 		    is_auxiliary = EXCLUDED.is_auxiliary,
 		    is_main_payload = EXCLUDED.is_main_payload,
 		    release_key = EXCLUDED.release_key,
@@ -305,7 +281,6 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		strings.TrimSpace(in.FileFamilyKey),
 		strings.TrimSpace(in.FamilyKind),
 		strings.TrimSpace(in.BaseStem),
-		strings.TrimSpace(in.PostingBucket),
 		in.IsAuxiliary,
 		in.IsMainPayload,
 		in.ReleaseKey,
@@ -327,6 +302,15 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 
 	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON); err != nil {
 		return 0, err
+	}
+
+	if err := markReleaseFamilyDirty(ctx, tx, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey); err != nil {
+		return 0, err
+	}
+	if in.ExpectedFileCount > 1 {
+		if err := markReleaseFamilyDirty(ctx, tx, in.ProviderID, in.NewsgroupID, "base_stem", strings.ToLower(strings.TrimSpace(in.BaseStem))); err != nil {
+			return 0, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -372,6 +356,37 @@ func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int6
 	return nil
 }
 
+func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, keyKind, familyKey string) error {
+	if tx == nil {
+		return fmt.Errorf("release dirty queue tx is required")
+	}
+	familyKey = strings.TrimSpace(familyKey)
+	if providerID <= 0 || newsgroupID <= 0 || familyKey == "" {
+		return nil
+	}
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO release_stage_dirty_families (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,NOW())
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET updated_at = NOW()`,
+		providerID,
+		newsgroupID,
+		strings.TrimSpace(keyKind),
+		familyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", providerID, newsgroupID, keyKind, familyKey, err)
+	}
+	return nil
+}
+
 // CHANGED: add/update one binary part row.
 func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error {
 	if in.BinaryID <= 0 || in.ArticleHeaderID <= 0 {
@@ -412,6 +427,13 @@ func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error
 		return fmt.Errorf("upsert binary part binary=%d part=%d: %w", in.BinaryID, in.PartNumber, err)
 	}
 
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE article_headers
+		SET assembled_at = COALESCE(assembled_at, NOW())
+		WHERE id = $1`, in.ArticleHeaderID); err != nil {
+		return fmt.Errorf("mark article header %d assembled: %w", in.ArticleHeaderID, err)
+	}
+
 	return nil
 }
 
@@ -421,15 +443,21 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 		return fmt.Errorf("binary id is required")
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE binaries b
-		SET observed_parts = agg.observed_parts,
-		    total_bytes = agg.total_bytes,
-		    first_article_number = agg.first_article_number,
-		    last_article_number = agg.last_article_number,
-		    posted_at = COALESCE(agg.posted_at, b.posted_at),
-		    updated_at = NOW()
-		FROM (
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin refresh binary stats tx %d: %w", binaryID, err)
+	}
+	defer rollbackTx(tx)
+
+	var (
+		providerID        int64
+		newsgroupID       int64
+		releaseFamilyKey  string
+		baseStem          string
+		expectedFileCount int
+	)
+	err = tx.QueryRowContext(ctx, `
+		WITH agg AS (
 			SELECT
 				bp.binary_id,
 				COUNT(*)::INTEGER AS observed_parts,
@@ -441,10 +469,45 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 			JOIN article_headers ah ON ah.id = bp.article_header_id
 			WHERE bp.binary_id = $1
 			GROUP BY bp.binary_id
-		) agg
-		WHERE b.id = agg.binary_id`, binaryID)
+		)
+		UPDATE binaries b
+		SET observed_parts = agg.observed_parts,
+		    total_bytes = agg.total_bytes,
+		    first_article_number = agg.first_article_number,
+		    last_article_number = agg.last_article_number,
+		    posted_at = COALESCE(agg.posted_at, b.posted_at),
+		    updated_at = NOW()
+		FROM agg
+		WHERE b.id = agg.binary_id
+		RETURNING
+			b.provider_id,
+			b.newsgroup_id,
+			b.release_family_key,
+			b.base_stem,
+			b.expected_file_count`,
+		binaryID,
+	).Scan(
+		&providerID,
+		&newsgroupID,
+		&releaseFamilyKey,
+		&baseStem,
+		&expectedFileCount,
+	)
 	if err != nil {
 		return fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
+	}
+
+	if err := markReleaseFamilyDirty(ctx, tx, providerID, newsgroupID, "release_family", releaseFamilyKey); err != nil {
+		return err
+	}
+	if expectedFileCount > 1 {
+		if err := markReleaseFamilyDirty(ctx, tx, providerID, newsgroupID, "base_stem", strings.ToLower(strings.TrimSpace(baseStem))); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit refresh binary stats tx %d: %w", binaryID, err)
 	}
 
 	return nil

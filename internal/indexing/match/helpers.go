@@ -344,7 +344,6 @@ func (s *matchState) finalize(opts Options) Result {
 		"release_family_key":    releaseFamilyKey,
 		"family_kind":           familyKind,
 		"base_stem":             baseStem,
-		"posting_bucket":        derivePostingWindow(s.candidate.PostedAt),
 		"short_circuited_after": s.shortCircuitedAfter,
 	}
 	if s.fallbackUsed {
@@ -364,7 +363,6 @@ func (s *matchState) finalize(opts Options) Result {
 		FileFamilyKey:     fileFamilyKey,
 		FamilyKind:        familyKind,
 		BaseStem:          baseStem,
-		PostingBucket:     derivePostingWindow(s.candidate.PostedAt),
 		IsAuxiliary:       isAuxiliary,
 		IsMainPayload:     isMainPayload,
 		ReleaseName:       releaseName,
@@ -465,6 +463,9 @@ func (s *matchState) smallIndexedArchiveStemReleaseKey(explicitFileName string) 
 }
 
 func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileName string) bool {
+	if s.structured.Total > 1 && isOpaqueReleaseIdentityCandidate(releaseName, explicitFileName) {
+		return true
+	}
 	if s.fileIndex <= 0 || s.expectedFileCount <= 1 {
 		return false
 	}
@@ -488,6 +489,27 @@ func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileN
 		}
 	}
 	return true
+}
+
+func isOpaqueReleaseIdentityCandidate(values ...string) bool {
+	found := false
+	for _, value := range values {
+		key := canonicalReleaseKey(value)
+		if key == "" {
+			continue
+		}
+		found = true
+		fields := strings.Fields(key)
+		if len(fields) == 0 || len(fields) > 2 {
+			return false
+		}
+		for _, field := range fields {
+			if !opaqueTokenRE.MatchString(field) {
+				return false
+			}
+		}
+	}
+	return found
 }
 
 func canonicalReleaseKey(value string) string {

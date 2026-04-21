@@ -108,6 +108,53 @@ func TestMatchUsesStructuredOverviewEvidence(t *testing.T) {
 	}
 }
 
+func TestMatchUsesYEncStructuredNameForObfuscatedMultipartFiles(t *testing.T) {
+	svc := NewService()
+	postedAt := time.Date(2026, 4, 20, 15, 0, 0, 0, time.UTC)
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 1907917006,
+		MessageID:     "<opaque-a@host.example>",
+		Subject:       `ZxZzCeWW8ECJExG13i891fyVBUCommbINJNQNqdTam9KYctnYSWQI7Q1JXWeOPwA`,
+		Poster:        `Poster <poster@example.com>`,
+		PostedAt:      &postedAt,
+		Xref:          `alt.binaries.test:1907917006`,
+		RawOverview: map[string]any{
+			"name":  "kuqn1sj0tdehymt5l4ba7u",
+			"part":  156,
+			"total": 807,
+			"size":  577954475,
+		},
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 1907917007,
+		MessageID:     "<opaque-b@host.example>",
+		Subject:       `2SyfBuDdgET6VKdhFnWPdQcQfHIzOdmE2qRrhv43KiKF1YJWfRVJMCFVJcsYV9ue`,
+		Poster:        `Poster <poster@example.com>`,
+		PostedAt:      &postedAt,
+		Xref:          `alt.binaries.test:1907917007`,
+		RawOverview: map[string]any{
+			"name":  "kuqn1sj0tdehymt5l4ba7u",
+			"part":  157,
+			"total": 807,
+			"size":  577954475,
+		},
+	})
+
+	if first.FileName != "kuqn1sj0tdehymt5l4ba7u" || second.FileName != "kuqn1sj0tdehymt5l4ba7u" {
+		t.Fatalf("expected yEnc name to become file name, got %q / %q", first.FileName, second.FileName)
+	}
+	if first.BinaryKey != second.BinaryKey {
+		t.Fatalf("expected same binary key for same yEnc file, got %q vs %q", first.BinaryKey, second.BinaryKey)
+	}
+	if first.PartNumber != 156 || second.PartNumber != 157 {
+		t.Fatalf("expected structured part numbers, got %d / %d", first.PartNumber, second.PartNumber)
+	}
+	if first.TotalParts != 807 || second.TotalParts != 807 {
+		t.Fatalf("expected structured total parts 807, got %d / %d", first.TotalParts, second.TotalParts)
+	}
+}
+
 func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
 	svc := NewService()
 

@@ -20,7 +20,6 @@ type Result struct {
 	FileFamilyKey     string
 	FamilyKind        string
 	BaseStem          string
-	PostingBucket     string
 	IsAuxiliary       bool
 	IsMainPayload     bool
 	ReleaseName       string

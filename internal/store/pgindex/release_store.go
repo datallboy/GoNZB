@@ -21,7 +21,6 @@ type BinarySummary struct {
 	FileFamilyKey      string
 	FamilyKind         string
 	BaseStem           string
-	PostingBucket      string
 	IsAuxiliary        bool
 	IsMainPayload      bool
 	ReleaseKey         string
@@ -46,6 +45,7 @@ type BinarySummary struct {
 type ReleaseCandidate struct {
 	ProviderID       int64
 	NewsgroupID      int64
+	KeyKind          string
 	SourceReleaseKey string
 	ReleaseFamilyKey string
 	ReleaseKey       string
@@ -145,45 +145,32 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH candidate_binaries AS (
-			SELECT
-				b.*,
-				CASE
-					WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-					 AND b.expected_file_count > 1
-					 AND COUNT(*) OVER (
-						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), b.expected_file_count
-					 ) > 1
-					THEN LOWER(BTRIM(b.base_stem))
-					ELSE b.release_family_key
-				END AS effective_release_family_key
-			FROM binaries b
-		)
 		SELECT
-			b.provider_id,
-			b.newsgroup_id,
-			MAX(b.source_release_key) AS source_release_key,
-			b.effective_release_family_key,
-			MAX(b.release_key) AS release_key,
-			MAX(b.release_name) AS release_name,
+			q.provider_id,
+			q.newsgroup_id,
+			q.key_kind,
+			COALESCE(MAX(b.source_release_key), '') AS source_release_key,
+			q.family_key,
+			COALESCE(MAX(b.release_key), '') AS release_key,
+			COALESCE(MAX(b.release_name), '') AS release_name,
 			MIN(b.posted_at) AS posted_at,
-			COUNT(*)::INTEGER AS binary_count,
+			COUNT(b.id)::INTEGER AS binary_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
-		FROM candidate_binaries b
-		LEFT JOIN (
-			SELECT provider_id, release_family_key, MAX(updated_at) AS updated_at
-			FROM releases
-			GROUP BY provider_id, release_family_key
-		) r
-			ON r.provider_id = b.provider_id
-			AND r.release_family_key = b.effective_release_family_key
-		GROUP BY b.provider_id, b.newsgroup_id, b.effective_release_family_key, r.updated_at
-		HAVING (r.updated_at IS NULL OR MAX(b.updated_at) > r.updated_at)
-		   AND (
-			COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
-			OR COALESCE(MAX(b.expected_file_count), 0) <= 1
-		   )
-		ORDER BY MIN(b.posted_at) NULLS LAST, b.effective_release_family_key
+		FROM release_stage_dirty_families q
+		LEFT JOIN binaries b
+		  ON b.provider_id = q.provider_id
+		 AND b.newsgroup_id = q.newsgroup_id
+		 AND (
+			(q.key_kind = 'release_family' AND b.release_family_key = q.family_key)
+			OR (
+				q.key_kind = 'base_stem'
+				AND b.expected_file_count > 1
+				AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+				AND LOWER(BTRIM(b.base_stem)) = q.family_key
+			)
+		 )
+		GROUP BY q.provider_id, q.newsgroup_id, q.key_kind, q.family_key, q.updated_at
+		ORDER BY q.updated_at, q.family_key
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
@@ -198,6 +185,7 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		if err := rows.Scan(
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.KeyKind,
 			&item.SourceReleaseKey,
 			&item.ReleaseFamilyKey,
 			&item.ReleaseKey,
@@ -344,7 +332,6 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.file_family_key,
 			b.family_kind,
 			b.base_stem,
-			b.posting_bucket,
 			b.is_auxiliary,
 			b.is_main_payload,
 			b.release_key,
@@ -395,7 +382,6 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			&item.FileFamilyKey,
 			&item.FamilyKind,
 			&item.BaseStem,
-			&item.PostingBucket,
 			&item.IsAuxiliary,
 			&item.IsMainPayload,
 			&item.ReleaseKey,
@@ -431,6 +417,36 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	}
 
 	return out, nil
+}
+
+func (s *Store) AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error {
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+	keyKind = strings.TrimSpace(keyKind)
+	familyKey = strings.TrimSpace(familyKey)
+	if keyKind == "" || familyKey == "" {
+		return fmt.Errorf("key kind and family key are required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families
+		WHERE provider_id = $1
+		  AND newsgroup_id = $2
+		  AND key_kind = $3
+		  AND family_key = $4`,
+		providerID,
+		newsgroupID,
+		keyKind,
+		familyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("ack release candidate provider=%d group=%d key_kind=%s family=%q: %w", providerID, newsgroupID, keyKind, familyKey, err)
+	}
+	return nil
 }
 
 // CHANGED: fetch article ids/part numbers for one binary to build release_file_articles.
@@ -566,16 +582,46 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    source_release_key = EXCLUDED.source_release_key,
 		    release_family_key = EXCLUDED.release_family_key,
 		    release_key = EXCLUDED.release_key,
-		    title = EXCLUDED.title,
+		    title = CASE
+		    	WHEN releases.title_source <> ''
+		    	 AND releases.title_source <> 'source'
+		    	 AND (EXCLUDED.title_source = '' OR EXCLUDED.title_source = 'source')
+		    	THEN releases.title
+		    	ELSE EXCLUDED.title
+		    END,
 		    source_title = EXCLUDED.source_title,
-		    deobfuscated_title = EXCLUDED.deobfuscated_title,
+		    deobfuscated_title = CASE
+		    	WHEN releases.title_source <> ''
+		    	 AND releases.title_source <> 'source'
+		    	 AND (EXCLUDED.title_source = '' OR EXCLUDED.title_source = 'source')
+		    	THEN releases.deobfuscated_title
+		    	ELSE EXCLUDED.deobfuscated_title
+		    END,
 		    matched_media_title = CASE
 		    	WHEN EXCLUDED.matched_media_title <> '' THEN EXCLUDED.matched_media_title
 		    	ELSE releases.matched_media_title
 		    END,
-		    title_source = EXCLUDED.title_source,
-		    title_confidence = EXCLUDED.title_confidence,
-		    search_title = EXCLUDED.search_title,
+		    title_source = CASE
+		    	WHEN releases.title_source <> ''
+		    	 AND releases.title_source <> 'source'
+		    	 AND (EXCLUDED.title_source = '' OR EXCLUDED.title_source = 'source')
+		    	THEN releases.title_source
+		    	ELSE EXCLUDED.title_source
+		    END,
+		    title_confidence = CASE
+		    	WHEN releases.title_source <> ''
+		    	 AND releases.title_source <> 'source'
+		    	 AND (EXCLUDED.title_source = '' OR EXCLUDED.title_source = 'source')
+		    	THEN releases.title_confidence
+		    	ELSE EXCLUDED.title_confidence
+		    END,
+		    search_title = CASE
+		    	WHEN releases.title_source <> ''
+		    	 AND releases.title_source <> 'source'
+		    	 AND (EXCLUDED.title_source = '' OR EXCLUDED.title_source = 'source')
+		    	THEN releases.search_title
+		    	ELSE EXCLUDED.search_title
+		    END,
 		    category = EXCLUDED.category,
 		    classification = EXCLUDED.classification,
 		    poster = EXCLUDED.poster,
@@ -769,6 +815,45 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		DELETE FROM release_files
 		WHERE release_id = $1`, releaseID); err != nil {
 		return fmt.Errorf("delete release_files for %s: %w", releaseID, err)
+	}
+
+	binaryIDs := make([]int64, 0, len(files))
+	seenBinaryIDs := make(map[int64]struct{}, len(files))
+	for _, f := range files {
+		if f.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seenBinaryIDs[f.BinaryID]; ok {
+			continue
+		}
+		seenBinaryIDs[f.BinaryID] = struct{}{}
+		binaryIDs = append(binaryIDs, f.BinaryID)
+	}
+	if len(binaryIDs) > 0 {
+		args := make([]any, 0, len(binaryIDs)+1)
+		args = append(args, releaseID)
+		placeholders := make([]string, 0, len(binaryIDs))
+		for idx, binaryID := range binaryIDs {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", idx+2))
+			args = append(args, binaryID)
+		}
+		filter := strings.Join(placeholders, ",")
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM release_file_articles
+			WHERE release_file_id IN (
+				SELECT id
+				FROM release_files
+				WHERE release_id <> $1
+				  AND binary_id IN (`+filter+`)
+			)`, args...); err != nil {
+			return fmt.Errorf("delete stale cross-release file articles for %s: %w", releaseID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM release_files
+			WHERE release_id <> $1
+			  AND binary_id IN (`+filter+`)`, args...); err != nil {
+			return fmt.Errorf("delete stale cross-release files for %s: %w", releaseID, err)
+		}
 	}
 
 	for _, f := range files {
