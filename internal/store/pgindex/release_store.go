@@ -242,7 +242,7 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				ELSE 0
 			END ASC,
 			q.updated_at ASC,
-			q.release_family_key ASC`, limit)
+			q.family_key ASC`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
