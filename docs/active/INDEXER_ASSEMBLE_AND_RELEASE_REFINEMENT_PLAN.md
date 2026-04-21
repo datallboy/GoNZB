@@ -72,6 +72,12 @@ The refinement phase should explicitly prioritize the first case.
 
 Replace the current single-lane pending-header query with a two-lane selection strategy.
 
+Status:
+
+- completed on 2026-04-21
+- implemented as a deterministic two-lane merged batch in `ListUnassembledArticleHeaders(limit)`
+- validated with repository ordering coverage plus assemble/release-related Go test passes
+
 Lane A: progress-improving headers
 
 - source rows:
