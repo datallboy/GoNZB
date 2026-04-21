@@ -6,14 +6,15 @@ import (
 )
 
 type IndexerMaintenanceResult struct {
-	AbandonedStageRuns        int64
-	ClearedStageLeases        int64
-	AbandonedScrapeRuns       int64
+	AbandonedStageRuns         int64
+	ClearedStageLeases         int64
+	AbandonedScrapeRuns        int64
 	AbandonedBinaryInspections int64
-	PurgedStageRuns           int64
-	PurgedScrapeRuns          int64
-	PurgedBinaryInspections   int64
-	PurgedHeaderPayloads      int64
+	PurgedStageRuns            int64
+	PurgedScrapeRuns           int64
+	PurgedBinaryInspections    int64
+	PurgedHeaderPayloads       int64
+	PurgedOrphanReleases       int64
 }
 
 func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceResult, error) {
@@ -121,6 +122,18 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		return nil, fmt.Errorf("purge old article header payloads: %w", err)
 	} else if result.PurgedHeaderPayloads, err = res.RowsAffected(); err != nil {
 		return nil, fmt.Errorf("purge old article header payloads rows affected: %w", err)
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM releases r
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM release_files rf
+			WHERE rf.release_id = r.release_id
+		)`); err != nil {
+		return nil, fmt.Errorf("purge orphan releases: %w", err)
+	} else if result.PurgedOrphanReleases, err = res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("purge orphan releases rows affected: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

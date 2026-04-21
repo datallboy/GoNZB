@@ -38,7 +38,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 	if s.log != nil && out != nil {
 		s.log.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_orphan_releases=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -47,6 +47,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			out.PurgedScrapeRuns,
 			out.PurgedBinaryInspections,
 			out.PurgedHeaderPayloads,
+			out.PurgedOrphanReleases,
 		)
 	}
 	return nil
