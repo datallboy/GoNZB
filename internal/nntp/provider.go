@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -57,6 +59,8 @@ func (c *nntpConn) Close() error {
 type nntpProvider struct {
 	conf config.ServerConfig
 	pool chan *nntpConn
+	mu   sync.RWMutex
+	done bool
 }
 
 func NewNNTPProvider(c config.ServerConfig) Provider {
@@ -88,52 +92,30 @@ func (p *nntpProvider) Priority() int { return p.conf.Priority }
 func (p *nntpProvider) MaxConnection() int { return p.conf.MaxConnection }
 
 func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
-	conn, err := p.getConn()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(groups) > 0 {
-		if _, err := conn.tp.Cmd("GROUP %s", groups[0]); err != nil {
-			p.returnConn(conn)
-			return nil, err
-		}
-		if _, _, err := conn.tp.ReadCodeLine(211); err != nil {
-			p.returnConn(conn)
-			return nil, err
-		}
-	}
-
 	formattedID := strings.TrimSpace(msgID)
 	if !strings.HasPrefix(formattedID, "<") {
 		formattedID = "<" + formattedID + ">"
 	}
 
-	// The BODY command tells the server to stream the article content
-	if _, err := conn.tp.Cmd("BODY %s", formattedID); err != nil {
-		p.returnConn(conn)
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		conn, err := p.getConn()
+		if err != nil {
+			return nil, err
+		}
+
+		reader, retry, err := p.fetchWithConn(ctx, conn, formattedID, groups)
+		if err == nil {
+			return reader, nil
+		}
+		lastErr = err
+		if retry && attempt == 0 {
+			continue
+		}
 		return nil, err
 	}
 
-	// Expecting 222 Body follows
-	code, msg, err := conn.tp.ReadCodeLine(222)
-	if err != nil {
-		if code == 430 || strings.Contains(strings.ToLower(msg), "no such article") {
-			// If not found, we recycle the connection (it's still healthy)
-			p.returnConn(conn)
-			return nil, ErrArticleNotFound
-		}
-		conn.Close()
-		return nil, fmt.Errorf("NNTP error %d: %s", code, msg)
-	}
-
-	// DotReader handles the NNTP "dot-stuffing" (terminating the stream with .\r\n)
-	return &pooledReader{
-		Reader: conn.tp.DotReader(),
-		conn:   conn,
-		p:      p,
-		ctx:    ctx,
-	}, nil
+	return nil, lastErr
 }
 
 // GroupStats issues GROUP and parses high/low/count.
@@ -337,8 +319,18 @@ func parseNNTPDate(s string) *time.Time {
 }
 
 func (p *nntpProvider) getConn() (*nntpConn, error) {
+	p.mu.RLock()
+	done := p.done
+	p.mu.RUnlock()
+	if done {
+		return nil, fmt.Errorf("provider %s is closed", p.conf.ID)
+	}
+
 	select {
 	case conn := <-p.pool:
+		if conn == nil {
+			return p.dial()
+		}
 		return conn, nil
 	default:
 		return p.dial()
@@ -346,23 +338,119 @@ func (p *nntpProvider) getConn() (*nntpConn, error) {
 }
 
 func (p *nntpProvider) returnConn(conn *nntpConn) {
+	if conn == nil {
+		return
+	}
+
+	p.mu.RLock()
+	done := p.done
+	p.mu.RUnlock()
+	if done {
+		p.closeConn(conn)
+		return
+	}
+
 	select {
 	case p.pool <- conn:
 		// Successfully returned to pool
 	default:
-		// Pool is full, close it
-		conn.tp.Cmd("QUIT")
-		conn.Close()
+		p.closeConn(conn)
 	}
 }
 
 func (p *nntpProvider) Close() error {
-	close(p.pool)
-	for conn := range p.pool {
-		conn.tp.Cmd("QUIT")
-		conn.Close()
+	p.mu.Lock()
+	if p.done {
+		p.mu.Unlock()
+		return nil
 	}
-	return nil
+	p.done = true
+	p.mu.Unlock()
+
+	for {
+		select {
+		case conn := <-p.pool:
+			if conn != nil {
+				p.closeConn(conn)
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func (p *nntpProvider) closeConn(conn *nntpConn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.Close()
+}
+
+func (p *nntpProvider) fetchWithConn(ctx context.Context, conn *nntpConn, formattedID string, groups []string) (io.Reader, bool, error) {
+	if len(groups) > 0 {
+		if _, err := conn.tp.Cmd("GROUP %s", groups[0]); err != nil {
+			conn.Close()
+			return nil, isRecoverableConnError(err), err
+		}
+		if _, _, err := conn.tp.ReadCodeLine(211); err != nil {
+			conn.Close()
+			return nil, isRecoverableConnError(err), err
+		}
+	}
+
+	if _, err := conn.tp.Cmd("BODY %s", formattedID); err != nil {
+		conn.Close()
+		return nil, isRecoverableConnError(err), err
+	}
+
+	code, msg, err := conn.tp.ReadCodeLine(222)
+	if err != nil {
+		if code == 430 || strings.Contains(strings.ToLower(msg), "no such article") {
+			p.returnConn(conn)
+			return nil, false, ErrArticleNotFound
+		}
+		conn.Close()
+		if isRecoverableConnError(err) {
+			return nil, true, err
+		}
+		return nil, false, fmt.Errorf("NNTP error %d: %s", code, msg)
+	}
+
+	return &pooledReader{
+		Reader: conn.tp.DotReader(),
+		conn:   conn,
+		p:      p,
+		ctx:    ctx,
+	}, false, nil
+}
+
+func isRecoverableConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	text := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"broken pipe",
+		"connection reset",
+		"connection refused",
+		"unexpected eof",
+		"timeout",
+		"i/o timeout",
+		"tls:",
+	} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *nntpProvider) dial() (*nntpConn, error) {
@@ -504,7 +592,7 @@ func (pr *pooledReader) Close() error {
 	pr.conn.raw.SetReadDeadline(time.Time{})
 
 	if err != nil {
-		pr.conn.tp.Close()
+		pr.conn.Close()
 		return nil
 	}
 
