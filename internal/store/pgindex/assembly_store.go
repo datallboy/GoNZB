@@ -87,46 +87,273 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 		limit = 1000
 	}
 
+	laneALimit := 1
+	if limit > 1 {
+		laneALimit = (limit * 7) / 10
+		if laneALimit <= 0 {
+			laneALimit = 1
+		}
+	}
+
+	priorityBinaryWindow := laneALimit
+	if priorityBinaryWindow < 1000 {
+		priorityBinaryWindow = 1000
+	}
+	if priorityBinaryWindow > 2000 {
+		priorityBinaryWindow = 2000
+	}
+
+	priorityBinaries, err := s.listPriorityAssemblyBinaries(ctx, priorityBinaryWindow)
+	if err != nil {
+		return nil, err
+	}
+
+	type laneABucket struct {
+		headers []AssemblyCandidate
+	}
+
+	buckets := make([]laneABucket, 0, len(priorityBinaries))
+	bucketHeaderCount := 0
+	for start := 0; start < len(priorityBinaries) && bucketHeaderCount < laneALimit; start += 20 {
+		end := start + 20
+		if end > len(priorityBinaries) {
+			end = len(priorityBinaries)
+		}
+
+		batchMatches, err := s.listPendingHeadersForProgressBinaries(ctx, priorityBinaries[start:end])
+		if err != nil {
+			return nil, err
+		}
+
+		for _, matches := range batchMatches {
+			if len(matches) == 0 {
+				continue
+			}
+			buckets = append(buckets, laneABucket{headers: matches})
+			bucketHeaderCount += len(matches)
+			if bucketHeaderCount >= laneALimit {
+				break
+			}
+		}
+	}
+
+	out := make([]AssemblyCandidate, 0, limit)
+	selectedIDs := make(map[int64]struct{}, limit)
+	for offset := 0; len(out) < laneALimit; offset++ {
+		progressed := false
+		for _, bucket := range buckets {
+			if offset >= len(bucket.headers) {
+				continue
+			}
+			candidate := bucket.headers[offset]
+			if _, exists := selectedIDs[candidate.ID]; exists {
+				continue
+			}
+			selectedIDs[candidate.ID] = struct{}{}
+			out = append(out, candidate)
+			progressed = true
+			if len(out) >= laneALimit {
+				break
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+
+	remaining := limit - len(out)
+	if remaining <= 0 {
+		return out, nil
+	}
+
+	recentWindow := remaining * 20
+	if recentWindow < remaining {
+		recentWindow = remaining
+	}
+
+	recentHeaders, err := s.listRecentUnassembledHeaders(ctx, recentWindow)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range recentHeaders {
+		if len(out) >= limit {
+			break
+		}
+		if _, exists := selectedIDs[candidate.ID]; exists {
+			continue
+		}
+		selectedIDs[candidate.ID] = struct{}{}
+		out = append(out, candidate)
+	}
+
+	return out, nil
+}
+
+type assemblyProgressBinary struct {
+	BinaryID           int64
+	ProviderID         int64
+	NewsgroupID        int64
+	NormalizedFileName string
+	MissingParts       int
+}
+
+func (s *Store) listPriorityAssemblyBinaries(ctx context.Context, limit int) ([]assemblyProgressBinary, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH limits AS (
+		WITH ranked AS (
 			SELECT
-				$1::integer AS total_limit,
+				b.id AS binary_id,
+				b.provider_id,
+				b.newsgroup_id,
+				LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) AS normalized_file_name,
+				b.is_main_payload,
+				b.observed_parts,
 				CASE
-					WHEN $1::integer <= 0 THEN 0
-					WHEN (($1::integer * 7) / 10) > 0 THEN (($1::integer * 7) / 10)
-					ELSE 1
-				END AS lane_a_limit,
-				GREATEST($1::integer * 50, $1::integer) AS pending_window_limit
-		),
-		recent_pending AS MATERIALIZED (
+					WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+					ELSE 0
+				END AS completion_ratio,
+				GREATEST(b.total_parts - b.observed_parts, 0) AS missing_parts,
+				ROW_NUMBER() OVER (
+					PARTITION BY
+						b.provider_id,
+						b.newsgroup_id,
+						LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))))
+					ORDER BY
+						CASE
+							WHEN b.is_main_payload THEN 0
+							ELSE 1
+						END ASC,
+						CASE
+							WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+							ELSE 0
+						END DESC,
+						b.observed_parts DESC,
+						b.id DESC
+				) AS file_rank
+			FROM binaries b
+			WHERE b.total_parts > 0
+			  AND b.observed_parts < b.total_parts
+			  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+		)
+		SELECT
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			normalized_file_name,
+			missing_parts
+		FROM ranked
+		WHERE file_rank = 1
+		ORDER BY
+			CASE
+				WHEN is_main_payload THEN 0
+				ELSE 1
+			END ASC,
+			completion_ratio DESC,
+			observed_parts DESC,
+			binary_id DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list priority assembly binaries: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]assemblyProgressBinary, 0, limit)
+	for rows.Next() {
+		var item assemblyProgressBinary
+		if err := rows.Scan(
+			&item.BinaryID,
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.NormalizedFileName,
+			&item.MissingParts,
+		); err != nil {
+			return nil, fmt.Errorf("scan priority assembly binary: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate priority assembly binaries: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binaries []assemblyProgressBinary) ([][]AssemblyCandidate, error) {
+	if len(binaries) == 0 {
+		return nil, nil
+	}
+
+	args := make([]any, 0, len(binaries)*6)
+	values := make([]string, 0, len(binaries))
+	for i, binary := range binaries {
+		perBinaryLimit := binary.MissingParts
+		switch {
+		case perBinaryLimit <= 0:
+			perBinaryLimit = 1
+		case perBinaryLimit > 1:
+			perBinaryLimit = 1
+		}
+
+		base := (i * 6) + 1
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::bigint,$%d::text,$%d::integer,$%d::integer)", base, base+1, base+2, base+3, base+4, base+5))
+		args = append(
+			args,
+			binary.BinaryID,
+			binary.ProviderID,
+			binary.NewsgroupID,
+			binary.NormalizedFileName,
+			perBinaryLimit,
+			i,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		WITH requested_binaries (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			normalized_file_name,
+			per_binary_limit,
+			binary_rank
+		) AS (
+			VALUES %s
+		)
+		SELECT
+			rb.binary_id,
+			matches.id,
+			matches.provider_id,
+			matches.newsgroup_id,
+			matches.group_name,
+			matches.article_number,
+			matches.message_id,
+			matches.subject,
+			matches.poster,
+			matches.date_utc,
+			matches.bytes,
+			matches.lines,
+			matches.xref,
+			matches.poster_id,
+			matches.subject_file_name,
+			matches.subject_file_index,
+			matches.subject_file_total,
+			matches.yenc_part_number,
+			matches.yenc_total_parts,
+			matches.yenc_file_size,
+			matches.structured_identity_binary_matched,
+			matches.raw_overview
+		FROM requested_binaries rb
+		JOIN LATERAL (
 			SELECT
 				ah.id,
 				ah.provider_id,
 				ah.newsgroup_id,
+				ng.group_name,
 				ah.article_number,
 				ah.message_id,
-				ah.date_utc,
-				ah.bytes,
-				ah.lines
-			FROM article_headers ah
-			CROSS JOIN limits
-			WHERE ah.assembled_at IS NULL
-			ORDER BY ah.id DESC
-			LIMIT (SELECT pending_window_limit FROM limits)
-		),
-		lane_a AS (
-			SELECT
-				rp.id,
-				rp.provider_id,
-				rp.newsgroup_id,
-				ng.group_name,
-				rp.article_number,
-				rp.message_id,
 				p.subject,
 				COALESCE(po.poster_name, p.poster, '') AS poster,
-				rp.date_utc,
-				rp.bytes,
-				rp.lines,
+				ah.date_utc,
+				ah.bytes,
+				ah.lines,
 				p.xref,
 				COALESCE(p.poster_id, 0) AS poster_id,
 				COALESCE(p.subject_file_name, '') AS subject_file_name,
@@ -136,219 +363,177 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 				TRUE AS structured_identity_binary_matched,
-				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
-				CASE
-					WHEN matched_binary.total_parts > 0 AND matched_binary.observed_parts < matched_binary.total_parts AND matched_binary.is_main_payload THEN 0
-					WHEN matched_binary.total_parts > 0 AND matched_binary.observed_parts < matched_binary.total_parts THEN 1
-					ELSE 2
-				END AS binary_priority_rank,
-				CASE
-					WHEN matched_binary.total_parts > 0 THEN matched_binary.observed_parts::DOUBLE PRECISION / matched_binary.total_parts::DOUBLE PRECISION
-					ELSE 0
-				END AS binary_completion_ratio,
-				matched_binary.observed_parts AS matched_observed_parts,
-				0 AS lane_rank
-			FROM recent_pending rp
-			JOIN LATERAL (
-				SELECT
-					p.article_header_id,
-					p.subject,
-					p.poster,
-					p.xref,
-					p.poster_id,
-					p.subject_file_name,
-					p.subject_file_index,
-					p.subject_file_total,
-					p.yenc_part_number,
-					p.yenc_total_parts,
-					p.yenc_file_size,
-					p.raw_overview_json
-				FROM article_header_ingest_payloads p
-				WHERE p.article_header_id = rp.id
-				  AND NULLIF(BTRIM(p.subject_file_name), '') IS NOT NULL
-			) p ON TRUE
-			JOIN LATERAL (
-				SELECT
-					b.observed_parts,
-					b.total_parts,
-					b.is_main_payload
-				FROM binaries b
-				WHERE b.provider_id = rp.provider_id
-				  AND b.newsgroup_id = rp.newsgroup_id
-				  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
-				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
-				ORDER BY
-					CASE
-						WHEN b.total_parts > 0 AND b.observed_parts < b.total_parts AND b.is_main_payload THEN 0
-						WHEN b.total_parts > 0 AND b.observed_parts < b.total_parts THEN 1
-						ELSE 2
-					END ASC,
-					CASE
-						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
-						ELSE 0
-					END DESC,
-					b.observed_parts DESC,
-					b.id DESC
-				LIMIT 1
-			) matched_binary ON TRUE
-			JOIN newsgroups ng ON ng.id = rp.newsgroup_id
+				COALESCE(p.raw_overview_json::text, '') AS raw_overview
+			FROM article_header_ingest_payloads p
+			JOIN article_headers ah
+			  ON ah.id = p.article_header_id
+			 AND ah.provider_id = rb.provider_id
+			 AND ah.newsgroup_id = rb.newsgroup_id
+			 AND ah.assembled_at IS NULL
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 			LEFT JOIN posters po ON po.id = p.poster_id
-			CROSS JOIN limits
-			ORDER BY
-				binary_priority_rank ASC,
-				binary_completion_ratio DESC,
-				matched_observed_parts DESC,
-				rp.id DESC
-			LIMIT (SELECT lane_a_limit FROM limits)
-		),
-		lane_b AS (
-			SELECT
-				rp.id,
-				rp.provider_id,
-				rp.newsgroup_id,
-				ng.group_name,
-				rp.article_number,
-				rp.message_id,
-				p.subject,
-				COALESCE(po.poster_name, p.poster, '') AS poster,
-				rp.date_utc,
-				rp.bytes,
-				rp.lines,
-				p.xref,
-				COALESCE(p.poster_id, 0) AS poster_id,
-				COALESCE(p.subject_file_name, '') AS subject_file_name,
-				COALESCE(p.subject_file_index, 0) AS subject_file_index,
-				COALESCE(p.subject_file_total, 0) AS subject_file_total,
-				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
-				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-				FALSE AS structured_identity_binary_matched,
-				COALESCE(p.raw_overview_json::text, '') AS raw_overview,
-				9 AS binary_priority_rank,
-				0::DOUBLE PRECISION AS binary_completion_ratio,
-				0 AS matched_observed_parts,
-				1 AS lane_rank
-			FROM recent_pending rp
-			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id
-			JOIN newsgroups ng ON ng.id = rp.newsgroup_id
-			LEFT JOIN posters po ON po.id = p.poster_id
-			CROSS JOIN limits
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM lane_a la
-				WHERE la.id = rp.id
-			)
-			ORDER BY rp.id DESC
-			LIMIT GREATEST(
-				(SELECT total_limit FROM limits) - (SELECT COUNT(*) FROM lane_a),
-				0
-			)
-		)
-		SELECT
-			id,
-			provider_id,
-			newsgroup_id,
-			group_name,
-			article_number,
-			message_id,
-			subject,
-			poster,
-			date_utc,
-			bytes,
-			lines,
-			xref,
-			poster_id,
-			subject_file_name,
-			subject_file_index,
-			subject_file_total,
-			yenc_part_number,
-			yenc_total_parts,
-			yenc_file_size,
-			structured_identity_binary_matched,
-			raw_overview
-		FROM (
-			SELECT * FROM lane_a
-			UNION ALL
-			SELECT * FROM lane_b
-		) candidates
-		ORDER BY lane_rank ASC, id DESC`, limit)
+			WHERE BTRIM(p.subject_file_name) <> ''
+			  AND LOWER(BTRIM(p.subject_file_name)) = rb.normalized_file_name
+			ORDER BY p.article_header_id DESC
+			LIMIT rb.per_binary_limit
+		) matches ON TRUE
+		ORDER BY rb.binary_rank ASC, matches.id DESC`, strings.Join(values, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list unassembled article headers: %w", err)
+		return nil, fmt.Errorf("list pending headers for progress binaries: %w", err)
+	}
+	defer rows.Close()
+
+	grouped := make(map[int64][]AssemblyCandidate, len(binaries))
+	for rows.Next() {
+		var binaryID int64
+		item, err := scanAssemblyCandidateWithBinaryID(rows, &binaryID)
+		if err != nil {
+			return nil, err
+		}
+		grouped[binaryID] = append(grouped[binaryID], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending headers for progress binaries: %w", err)
+	}
+
+	out := make([][]AssemblyCandidate, 0, len(binaries))
+	for _, binary := range binaries {
+		out = append(out, grouped[binary.BinaryID])
+	}
+	return out, nil
+}
+
+func (s *Store) listRecentUnassembledHeaders(ctx context.Context, limit int) ([]AssemblyCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ah.id,
+			ah.provider_id,
+			ah.newsgroup_id,
+			ng.group_name,
+			ah.article_number,
+			ah.message_id,
+			p.subject,
+			COALESCE(po.poster_name, p.poster, '') AS poster,
+			ah.date_utc,
+			ah.bytes,
+			ah.lines,
+			p.xref,
+			COALESCE(p.poster_id, 0) AS poster_id,
+			COALESCE(p.subject_file_name, '') AS subject_file_name,
+			COALESCE(p.subject_file_index, 0) AS subject_file_index,
+			COALESCE(p.subject_file_total, 0) AS subject_file_total,
+			COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+			COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
+			COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+			FALSE AS structured_identity_binary_matched,
+			COALESCE(p.raw_overview_json::text, '') AS raw_overview
+		FROM article_headers ah
+		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+		LEFT JOIN posters po ON po.id = p.poster_id
+		WHERE ah.assembled_at IS NULL
+		ORDER BY ah.id DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent unassembled headers: %w", err)
 	}
 	defer rows.Close()
 
 	out := make([]AssemblyCandidate, 0, limit)
 	for rows.Next() {
-		var (
-			item AssemblyCandidate
-			date sql.NullTime
-			raw  string
-		)
-
-		if err := rows.Scan(
-			&item.ID,
-			&item.ProviderID,
-			&item.NewsgroupID,
-			&item.NewsgroupName,
-			&item.ArticleNumber,
-			&item.MessageID,
-			&item.Subject,
-			&item.Poster,
-			&date,
-			&item.Bytes,
-			&item.Lines,
-			&item.Xref,
-			&item.PosterID,
-			&item.FileName,
-			&item.FileIndex,
-			&item.FileTotal,
-			&item.YEncPart,
-			&item.YEncTotal,
-			&item.YEncFileSize,
-			&item.StructuredIdentityBinaryMatched,
-			&raw,
-		); err != nil {
-			return nil, fmt.Errorf("scan unassembled article header: %w", err)
+		item, err := scanAssemblyCandidate(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		if date.Valid {
-			t := date.Time.UTC()
-			item.DateUTC = &t
-		}
-
-		if raw != "" {
-			_ = json.Unmarshal([]byte(raw), &item.RawOverview)
-		}
-		if item.RawOverview == nil {
-			item.RawOverview = make(map[string]any, 7)
-		}
-		if strings.TrimSpace(item.FileName) != "" {
-			item.RawOverview["name"] = item.FileName
-		}
-		if item.FileIndex > 0 {
-			item.RawOverview["file_index"] = item.FileIndex
-		}
-		if item.FileTotal > 0 {
-			item.RawOverview["file_total"] = item.FileTotal
-		}
-		if item.YEncPart > 0 {
-			item.RawOverview["part"] = item.YEncPart
-		}
-		if item.YEncTotal > 0 {
-			item.RawOverview["total"] = item.YEncTotal
-		}
-		if item.YEncFileSize > 0 {
-			item.RawOverview["size"] = item.YEncFileSize
-		}
-
 		out = append(out, item)
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate unassembled article headers: %w", err)
+		return nil, fmt.Errorf("iterate recent unassembled headers: %w", err)
 	}
 
 	return out, nil
+}
+
+func scanAssemblyCandidate(scanner interface {
+	Scan(dest ...any) error
+}) (AssemblyCandidate, error) {
+	return scanAssemblyCandidateWithBinaryID(scanner, nil)
+}
+
+func scanAssemblyCandidateWithBinaryID(scanner interface {
+	Scan(dest ...any) error
+}, binaryID *int64) (AssemblyCandidate, error) {
+	var (
+		item AssemblyCandidate
+		date sql.NullTime
+		raw  string
+	)
+
+	dest := make([]any, 0, 22)
+	if binaryID != nil {
+		dest = append(dest, binaryID)
+	}
+	dest = append(dest,
+		&item.ID,
+		&item.ProviderID,
+		&item.NewsgroupID,
+		&item.NewsgroupName,
+		&item.ArticleNumber,
+		&item.MessageID,
+		&item.Subject,
+		&item.Poster,
+		&date,
+		&item.Bytes,
+		&item.Lines,
+		&item.Xref,
+		&item.PosterID,
+		&item.FileName,
+		&item.FileIndex,
+		&item.FileTotal,
+		&item.YEncPart,
+		&item.YEncTotal,
+		&item.YEncFileSize,
+		&item.StructuredIdentityBinaryMatched,
+		&raw,
+	)
+
+	if err := scanner.Scan(dest...); err != nil {
+		return AssemblyCandidate{}, fmt.Errorf("scan unassembled article header: %w", err)
+	}
+
+	if date.Valid {
+		t := date.Time.UTC()
+		item.DateUTC = &t
+	}
+
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &item.RawOverview)
+	}
+	if item.RawOverview == nil {
+		item.RawOverview = make(map[string]any, 7)
+	}
+	if strings.TrimSpace(item.FileName) != "" {
+		item.RawOverview["name"] = item.FileName
+	}
+	if item.FileIndex > 0 {
+		item.RawOverview["file_index"] = item.FileIndex
+	}
+	if item.FileTotal > 0 {
+		item.RawOverview["file_total"] = item.FileTotal
+	}
+	if item.YEncPart > 0 {
+		item.RawOverview["part"] = item.YEncPart
+	}
+	if item.YEncTotal > 0 {
+		item.RawOverview["total"] = item.YEncTotal
+	}
+	if item.YEncFileSize > 0 {
+		item.RawOverview["size"] = item.YEncFileSize
+	}
+
+	return item, nil
 }
 
 func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, error) {

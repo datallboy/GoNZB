@@ -324,22 +324,90 @@ WorkStream 1 completion note:
 
 The current recent-header-first lane A helped query cost, but it is still not the best throughput policy for backlog burn-down.
 
+Live validation after WorkStream 1 showed that the completion-first idea is directionally correct, but trying to express the whole split path through one blended selector makes the lane-A query too unstable and too expensive on real backlog data.
+
+Status:
+
+- WorkStream 2 completed and signed off on `2026-04-22`
+
 Next direction:
 
-- make the progress-improving assemble lane start from incomplete binaries, not only from recent pending headers
-- rank candidate binaries by:
-  - incomplete before complete
+- keep the split policy:
+  - lane A = completion-first progress work
+  - lane B = smaller fresh-work lane
+- do not make operators run separate commands for A and B
+- stop trying to make one large SQL selector own both policies at once
+- instead, implement two separate internal repository paths:
+  - `ListProgressAssemblyHeaders(limit int)`
+  - `ListRecentUnassembledHeaders(limit int, excludeIDs...)`
+- make lane A start from incomplete binaries, not from a recent pending-header window
+- rank lane-A candidate binaries by:
   - main payload before auxiliary
   - higher completion ratio before lower
   - higher observed-part count before lower
-- fetch matching unassembled headers for those binaries by structured file identity
-- keep a smaller fresh-work lane so new releases do not starve entirely
+  - newer binary id last as a tiebreak only
+- keep lane A tightly bounded:
+  - small ranked binary candidate set
+  - at most `1` pending header per priority binary per pass unless later measurement justifies more
+  - merge and dedupe in memory after the two repository calls
+- keep lane B simple:
+  - recent unassembled headers by id desc
+  - fill the remainder of the batch after lane A
+
+Implementation guidance:
+
+- treat lane A and lane B as separate internal code paths in the assemble service
+- prefer simple bounded queries over one clever multi-CTE query
+- if lane A still stays too expensive after the split-query refactor, escalate to persisted progress state instead of continuing SQL guesswork:
+  - a small progress queue or side table keyed by incomplete binary identity
+  - or lightweight persisted fields that say pending matching headers exist for that binary
 
 Expected result:
 
 - more of each assemble pass should complete or materially improve known binaries
 - near-complete releases should move to `100%` faster when the missing headers already exist in the DB
 - the `90%` to `99%` pool should shrink through actual completion rather than just queue churn
+- lane A should become operationally understandable and cheap enough to validate repeatedly
+
+Validation direction:
+
+- compare repeated `assemble --once` runs after the split-query refactor
+- verify that `lane_a_selected` is regularly non-zero when matching progress work exists
+- verify that lane A no longer dominates stage runtime just by selecting work
+- verify that lane B still keeps fresh arrivals moving when lane A has little to do
+- if lane A remains structurally expensive, stop tuning the selector in place and move directly to persisted progress state as the next WorkStream 2 implementation step
+
+WorkStream 2 completion note:
+
+- the assemble selector now uses separate internal paths:
+  - a binary-ranked lane A that starts from incomplete binaries
+  - a recent-header lane B that fills the remainder
+- lane-A binary ranking remains bounded and binary-driven:
+  - main payload before auxiliary
+  - higher completion ratio before lower
+  - higher observed parts before lower
+  - only `1` pending header per priority binary per pass
+- the lane-A pending-header lookup was rewritten to match the existing structured-name payload index directly instead of scanning the payload table backward by primary key
+- the ranked binary candidate window was widened from an ineffective top `20` slice to a bounded `1000` to `2000` window so actionable progress binaries are actually reached on the live backlog
+- live database validation before sign-off showed:
+  - `783` incomplete binaries currently had pending matching headers
+  - the first actionable progress binary appeared at rank `32`
+  - actionable progress binaries within the ranked window:
+    - `16` within top `50`
+    - `54` within top `200`
+    - `500` within top `1000`
+    - `629` within top `2000`
+- isolated manual `assemble --once` reruns after runtime repair completed normally and kept lane A active:
+  - run 1: `14.65s`, `lane_a_selected=0`, `lane_b_selected=2500`
+  - run 2 after widening the ranked window: `17.35s`, `lane_a_selected=614`, `lane_b_selected=1886`
+  - run 3: `16.11s`, `lane_a_selected=597`, `lane_b_selected=1903`
+  - run 4: `15.30s`, `lane_a_selected=578`, `lane_b_selected=1922`
+- backlog movement during the validated reruns:
+  - pending headers fell from `735861` to `725861`
+- current interpretation after sign-off:
+  - lane A is now operationally understandable and cheap enough to validate repeatedly
+  - the remaining primary structural cost center is release-family readiness work in WorkStream 3
+  - persisted lane-A progress state is not required at this time
 
 ### 3. Release family readiness summary state
 
@@ -401,7 +469,7 @@ Operator loop:
 ## Immediate Action Order
 
 1. completed on `2026-04-22`: PostgreSQL/runtime tuning baseline plus fresh `VACUUM ANALYZE` on the hot tables
-2. next: rework assemble lane A into a binary-driven completion lane while preserving a smaller fresh-work lane
+2. completed on `2026-04-22`: assemble lane A reworked into a bounded binary-driven completion lane with a separate fresh-work lane and live exit validation
 3. next: add release family summary state and switch `ListReleaseCandidates` to summary-backed selection
 4. next: rerun live validation and update the refinement plan status based on measured churn
 
