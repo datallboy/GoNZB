@@ -96,6 +96,25 @@ order by id desc
 limit 50;
 ```
 
+Recent assemble and release throughput summary:
+
+- Use this to compare elapsed time and stage output over a bounded recent validation window.
+
+```sql
+select
+  id,
+  stage_name,
+  status,
+  started_at,
+  finished_at,
+  round(extract(epoch from (finished_at - started_at))::numeric, 2) as elapsed_seconds
+from indexer_stage_runs
+where stage_name in ('assemble', 'release')
+  and finished_at is not null
+order by id desc
+limit 20;
+```
+
 Pending assembly summary:
 
 ```sql
@@ -262,6 +281,38 @@ select
 from family_stats fs
 order by fs.updated_at asc, fs.family_key asc
 limit 100;
+```
+
+Dirty-family readiness bucket summary from summary-backed state:
+
+- Use this after WorkStream 3 to confirm the live dirty queue is mostly actionable work instead of fragment churn.
+
+```sql
+with queue_window as (
+  select
+    provider_id,
+    newsgroup_id,
+    key_kind,
+    family_key,
+    updated_at
+  from release_stage_dirty_families
+  order by updated_at asc, family_key asc
+  limit 2000
+)
+select
+  q.key_kind,
+  coalesce(s.readiness_bucket, 'stale_cleanup_only') as readiness_bucket,
+  count(*) as families,
+  min(q.updated_at) as oldest_dirty_at,
+  max(q.updated_at) as newest_dirty_at
+from queue_window q
+left join release_family_readiness_summaries s
+  on s.provider_id = q.provider_id
+ and s.newsgroup_id = q.newsgroup_id
+ and s.key_kind = q.key_kind
+ and s.family_key = q.family_key
+group by q.key_kind, coalesce(s.readiness_bucket, 'stale_cleanup_only')
+order by q.key_kind, readiness_bucket;
 ```
 
 Whether a family is fragment-only or actually release-actionable:

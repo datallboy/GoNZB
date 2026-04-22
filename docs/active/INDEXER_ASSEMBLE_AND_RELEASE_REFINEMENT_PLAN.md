@@ -8,7 +8,7 @@ Update on 2026-04-22:
 
 - this document remains active as the baseline refinement record
 - the current day-to-day execution plan has moved to `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
-- do not archive this refinement plan yet; the exit criteria at the end of this document have not been signed off from live validation
+- live validation sign-off was completed later on `2026-04-22`; keep this document as the baseline record until the active-doc transition is performed
 
 The storage, schema, and runtime-stability pass is mostly complete. The current bottleneck has shifted to throughput and work ordering:
 
@@ -377,11 +377,43 @@ Expected behavior:
 - release is now visibly processing queue work again, including both fragment-family cooldown and actionable release formation
 - the front of the dirty queue is still heavily fragment-only, so more live soak is still needed before the overall refinement loop can be signed off against the full exit criteria
 
+## Live Sign-Off Update On 2026-04-22
+
+Follow-on validation recorded in `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` now satisfies the live refinement sign-off requirement for this plan.
+
+Sign-off evidence:
+
+- repeated live `assemble --once` passes completed in about `21s` to `25s` at `batch_size=2500`
+- those assemble passes consistently kept lane A active:
+  - `lane_a_selected=410`
+  - `lane_a_selected=399`
+  - `lane_a_selected=399`
+- repeated live `release --once` passes completed in about `84s` to `94s`
+- those release passes consistently formed releases from actionable families:
+  - `formed=137`
+  - `formed=136`
+  - `formed=137`
+- fragment-only cooldown no longer dominated the release loop:
+  - `cooled_down_fragment_only_families=43`
+  - `cooled_down_fragment_only_families=42`
+  - `cooled_down_fragment_only_families=42`
+- bounded validation-window backlog movement was real:
+  - pending headers moved from `640932` to `633432`
+  - complete binaries moved from `7386` to `7418`
+  - dirty families drained back to `0`
+- no live evidence suggested a return of the prior junk standalone-binary regression
+
+Current conclusion:
+
+- the refinement loop goals for assemble prioritization, release queue quality, and runtime viability are now met
+- remaining near-complete release follow-up should be treated as a narrower inspection and catalog-quality task, not as a blocker on this refinement loop
+- this document can now be treated as signed off for its Phase 3 gate criteria once the active-doc transition is performed
+
 #### 8. Assemble completion-first prioritization for partial payload binaries
 
 Status:
 
-- in progress on 2026-04-21
+- completed by the 2026-04-22 backlog burn-down validation pass
 - live data shows the current partial-binary backlog is mostly named main-payload work, not anonymous `.bin` junk
 - snapshot during validation:
   - about `57k` partial binaries overall

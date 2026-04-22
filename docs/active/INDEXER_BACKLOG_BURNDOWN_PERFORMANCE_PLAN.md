@@ -641,6 +641,20 @@ WorkStream 3 exit criteria:
 
 This plan assumes active validation while performance changes land.
 
+Status:
+
+- WorkStream 4 completed and signed off on `2026-04-22`
+- this workstream is responsible for converting the prior selector and queue changes into:
+  - measurable operator evidence
+  - backlog-burn-down checkpoints
+  - a go or no-go call on the remaining refinement-phase exit criteria
+
+WorkStream 4 objective:
+
+- prove that the combined WorkStream 1 through 3 changes produce sustained backlog movement rather than one-off anecdotal wins
+- validate queue quality using the current live DB state, not just repository tests or isolated `EXPLAIN`
+- document whether the broader refinement loop is now ready for sign-off or still needs more soak
+
 Operator loop:
 
 - validate repeated `assemble --once` and `release --once` runs instead of relying on single-pass anecdotes
@@ -656,12 +670,114 @@ Operator loop:
   - pending matching headers
   - stale or partially unlinked release materialization
 
+Execution approach:
+
+- capture a before-state at the start of the validation window:
+  - pending headers
+  - lane-A-actionable pending headers
+  - near-complete release count
+  - dirty-family count and readiness-bucket composition
+- run a bounded repeated operator loop:
+  - `assemble --once`
+  - `release --once`
+  - repeat enough times to observe whether throughput and queue behavior remain stable after the first drain
+- capture after-state and compare:
+  - pending-header delta
+  - near-complete-release delta
+  - dirty-queue delta
+  - release pass outcomes:
+    - formed
+    - cooled-down fragment-only families
+    - stale-cleanup-only families
+- use the current stage logs as the authoritative runtime evidence for:
+  - lane A versus lane B selection
+  - processed headers
+  - binaries refreshed
+  - release candidate counts
+  - formed release counts
+
+What this workstream must answer:
+
+- is the assemble backlog still moving down after the earlier targeted fixes, not just during a single cherry-picked pass
+- is lane A still materially active when pending matching headers exist
+- do release passes still spend most of their effort on actionable work instead of fragment churn
+- is the near-complete release pool shrinking, stabilizing, or merely cycling
+- can the active refinement loop now be signed off with honest evidence
+
+Documentation changes expected from this workstream:
+
+- record a concrete before/after snapshot and repeated-run evidence directly in this plan
+- update `docs/INDEXER_TEST_QUERIES.md` if any operator queries are still missing for:
+  - backlog rate checks
+  - summary-backed dirty-queue composition
+  - near-complete release follow-up
+- update the baseline refinement plan if the broader phase exit criteria are now met
+
+Exit criteria for WorkStream 4:
+
+- repeated live `assemble --once` and `release --once` passes are recorded with timing and outcome evidence
+- the active plan contains before/after backlog snapshots and queue-quality interpretation
+- refinement-phase exit criteria are explicitly evaluated against the live evidence
+- the next action is unambiguous:
+  - either refinement is signed off
+  - or the remaining blocker is named and bounded
+
+WorkStream 4 completion note:
+
+- before-state at the start of the bounded validation window:
+  - pending headers: `640932`
+  - lane-A-actionable pending headers: `71849`
+  - near-complete releases (`90%` to `99%`): `92`
+  - dirty families: `0`
+  - complete binaries: `7386`
+  - incomplete binaries: `63506`
+- bounded live soak executed on `2026-04-22`:
+  - assemble passes:
+    - `19:45:20` to `19:45:43`: `22s`, `lane_a_selected=410`, `lane_b_selected=2090`, `processed_headers=2500`, `binaries_refreshed=422`
+    - `19:47:37` to `19:48:02`: `25s`, `lane_a_selected=399`, `lane_b_selected=2101`, `processed_headers=2500`, `binaries_refreshed=411`
+    - `19:49:30` to `19:49:51`: `21s`, `lane_a_selected=399`, `lane_b_selected=2101`, `processed_headers=2500`, `binaries_refreshed=410`
+  - release passes:
+    - `19:46:03` to `19:47:36`: `94s`, `candidate_families=161`, `formed=137`, `cooled_down_fragment_only_families=43`, `stale_cleanup_only_families=0`
+    - `19:48:03` to `19:49:27`: `84s`, `candidate_families=157`, `formed=136`, `cooled_down_fragment_only_families=42`, `stale_cleanup_only_families=0`
+    - `19:49:52` to `19:51:21`: `88s`, `candidate_families=158`, `formed=137`, `cooled_down_fragment_only_families=42`, `stale_cleanup_only_families=0`
+- measured throughput across the bounded soak:
+  - assemble average runtime: `22.67s`
+  - assemble throughput: about `6618` headers/minute
+  - binary refresh throughput: about `1097` binaries/minute
+  - release average runtime: `88.67s`
+  - formed-release throughput across the three release passes: about `5549` releases/hour
+- after-state at the end of the bounded validation window:
+  - pending headers: `633432`
+  - pending-header delta: `-7500`
+  - lane-A-actionable pending headers: `70119`
+  - near-complete releases (`90%` to `99%`): `93`
+  - dirty families: `0`
+  - complete binaries: `7418`
+  - incomplete binaries: `63505`
+  - formed releases currently at `100%` completion: `223`
+- operator interpretation after sign-off:
+  - assemble backlog is moving down at a sustained rate under repeated live one-shot passes
+  - lane A remains materially active and continues to consume progress-improving work while tens of thousands of matching pending headers still exist
+  - release passes are consistently spending most of their effort on actionable work:
+    - `136` to `137` formed releases per pass
+    - `42` to `43` fragment-only cooldowns per pass
+    - dirty families drained back to `0` after the bounded soak
+  - fragment-only queue churn is no longer dominating normal release runs
+  - the near-complete release pool did not shrink during this short validation window:
+    - `92` to `93`
+  - that near-complete pool now looks more like a follow-up inspection and catalog-quality task than a throughput or queue-policy blocker
+- result of the WorkStream 4 decision point:
+  - the refinement-phase exit criteria from `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md` are now satisfied from live validation
+  - no new selector or queue-policy blocker was discovered during the bounded soak
+  - follow-up work, if any, should target near-complete release inspection rather than reopening the completed throughput workstreams
+
 ## Immediate Action Order
 
 1. completed on `2026-04-22`: PostgreSQL/runtime tuning baseline plus fresh `VACUUM ANALYZE` on the hot tables
 2. completed on `2026-04-22`: assemble lane A reworked into a bounded binary-driven completion lane with a separate fresh-work lane and live exit validation
 3. completed on `2026-04-22`: added release family summary state and switched `ListReleaseCandidates` to summary-backed selection
-4. next: rerun broader live validation and update the refinement plan status based on measured churn
+4. completed on `2026-04-22`: reran broader live validation and updated the refinement plan status based on measured churn
+5. next: decide whether near-complete release follow-up belongs in a narrow inspection-quality plan or can be deferred behind the next active phase
 
 ## Relationship To Other Docs
 
