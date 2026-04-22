@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+const (
+	assembleLaneARatioNumerator   = 7
+	assembleLaneARatioDenominator = 10
+	assemblePriorityBinaryMinScan = 1000
+	assemblePriorityBinaryMaxScan = 2000
+	assemblePriorityBinaryBatch   = 20
+)
+
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
 	ID                              int64
@@ -89,18 +97,18 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 
 	laneALimit := 1
 	if limit > 1 {
-		laneALimit = (limit * 7) / 10
+		laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
 		if laneALimit <= 0 {
 			laneALimit = 1
 		}
 	}
 
 	priorityBinaryWindow := laneALimit
-	if priorityBinaryWindow < 1000 {
-		priorityBinaryWindow = 1000
+	if priorityBinaryWindow < assemblePriorityBinaryMinScan {
+		priorityBinaryWindow = assemblePriorityBinaryMinScan
 	}
-	if priorityBinaryWindow > 2000 {
-		priorityBinaryWindow = 2000
+	if priorityBinaryWindow > assemblePriorityBinaryMaxScan {
+		priorityBinaryWindow = assemblePriorityBinaryMaxScan
 	}
 
 	priorityBinaries, err := s.listPriorityAssemblyBinaries(ctx, priorityBinaryWindow)
@@ -114,8 +122,8 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 
 	buckets := make([]laneABucket, 0, len(priorityBinaries))
 	bucketHeaderCount := 0
-	for start := 0; start < len(priorityBinaries) && bucketHeaderCount < laneALimit; start += 20 {
-		end := start + 20
+	for start := 0; start < len(priorityBinaries) && bucketHeaderCount < laneALimit; start += assemblePriorityBinaryBatch {
+		end := start + assemblePriorityBinaryBatch
 		if end > len(priorityBinaries) {
 			end = len(priorityBinaries)
 		}
