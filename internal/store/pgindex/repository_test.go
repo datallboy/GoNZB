@@ -1356,6 +1356,305 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	}
 }
 
+func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.refresh.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	family := fmt.Sprintf("summary-refresh-family-%d", time.Now().UnixNano())
+	baseStem := fmt.Sprintf("summary.refresh.%d", time.Now().UnixNano())
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  family,
+		ReleaseFamilyKey:  family,
+		FileFamilyKey:     family + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          baseStem,
+		IsMainPayload:     true,
+		ReleaseKey:        family,
+		ReleaseName:       "Summary Refresh Family",
+		BinaryKey:         fmt.Sprintf("%s::%d", family, time.Now().UnixNano()),
+		BinaryName:        "summary.refresh.r00",
+		FileName:          "summary.refresh.r00",
+		ExpectedFileCount: 3,
+		TotalParts:        3,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	now := time.Date(2026, 4, 22, 19, 0, 0, 0, time.UTC)
+	headers := []ArticleHeader{
+		{
+			ArticleNumber: 201,
+			MessageID:     fmt.Sprintf("<summary-refresh-1-%d@test>", time.Now().UnixNano()),
+			Subject:       `Summary Refresh [1/1] - "summary.refresh.r00" yEnc (1/3)`,
+			Poster:        "poster-summary-refresh@example.com",
+			DateUTC:       &now,
+			Bytes:         600,
+			Lines:         10,
+		},
+		{
+			ArticleNumber: 202,
+			MessageID:     fmt.Sprintf("<summary-refresh-2-%d@test>", time.Now().UnixNano()),
+			Subject:       `Summary Refresh [1/1] - "summary.refresh.r00" yEnc (2/3)`,
+			Poster:        "poster-summary-refresh@example.com",
+			DateUTC:       &now,
+			Bytes:         700,
+			Lines:         11,
+		},
+		{
+			ArticleNumber: 203,
+			MessageID:     fmt.Sprintf("<summary-refresh-3-%d@test>", time.Now().UnixNano()),
+			Subject:       `Summary Refresh [1/1] - "summary.refresh.r00" yEnc (3/3)`,
+			Poster:        "poster-summary-refresh@example.com",
+			DateUTC:       &now,
+			Bytes:         800,
+			Lines:         12,
+		},
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, headers); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		ORDER BY article_number`, newsgroupID,
+	)
+	if err != nil {
+		t.Fatalf("query article headers: %v", err)
+	}
+	defer rows.Close()
+
+	partNumber := 1
+	for rows.Next() {
+		var articleHeaderID int64
+		if err := rows.Scan(&articleHeaderID); err != nil {
+			t.Fatalf("scan article header id: %v", err)
+		}
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleHeaderID,
+			MessageID:       fmt.Sprintf("<summary-refresh-part-%d@test>", partNumber),
+			PartNumber:      partNumber,
+			TotalParts:      3,
+			SegmentBytes:    int64(500 + partNumber),
+			FileName:        "summary.refresh.r00",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", partNumber, err)
+		}
+		partNumber++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate article header ids: %v", err)
+	}
+
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats: %v", err)
+	}
+
+	for _, keyKind := range []string{"release_family", "base_stem"} {
+		var (
+			binaryCount           int
+			completeBinaryCount   int
+			incompleteBinaryCount int
+			hasExpectedFileCount  bool
+			readinessBucket       string
+		)
+		familyKey := family
+		if keyKind == "base_stem" {
+			familyKey = strings.ToLower(baseStem)
+		}
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT
+				binary_count,
+				complete_binary_count,
+				incomplete_binary_count,
+				has_expected_file_count,
+				readiness_bucket
+			FROM release_family_readiness_summaries
+			WHERE provider_id = 1
+			  AND newsgroup_id = $1
+			  AND key_kind = $2
+			  AND family_key = $3`,
+			newsgroupID,
+			keyKind,
+			familyKey,
+		).Scan(
+			&binaryCount,
+			&completeBinaryCount,
+			&incompleteBinaryCount,
+			&hasExpectedFileCount,
+			&readinessBucket,
+		); err != nil {
+			t.Fatalf("query summary row for %s: %v", keyKind, err)
+		}
+		if binaryCount != 1 || completeBinaryCount != 1 || incompleteBinaryCount != 0 {
+			t.Fatalf("unexpected summary counts for %s: binary=%d complete=%d incomplete=%d", keyKind, binaryCount, completeBinaryCount, incompleteBinaryCount)
+		}
+		if !hasExpectedFileCount {
+			t.Fatalf("expected expected-file-count evidence for %s summary", keyKind)
+		}
+		if readinessBucket != releaseReadinessActionable {
+			t.Fatalf("expected actionable readiness for %s summary, got %q", keyKind, readinessBucket)
+		}
+	}
+}
+
+func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.move.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	oldFamily := fmt.Sprintf("summary-move-old-%d", time.Now().UnixNano())
+	newFamily := fmt.Sprintf("summary-move-new-%d", time.Now().UnixNano())
+	oldBaseStem := fmt.Sprintf("summary.move.old.%d", time.Now().UnixNano())
+	newBaseStem := fmt.Sprintf("summary.move.new.%d", time.Now().UnixNano())
+	binaryKey := fmt.Sprintf("summary-move::%d", time.Now().UnixNano())
+
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  oldFamily,
+		ReleaseFamilyKey:  oldFamily,
+		FileFamilyKey:     oldFamily + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          oldBaseStem,
+		IsMainPayload:     true,
+		ReleaseKey:        oldFamily,
+		ReleaseName:       "Summary Move Old",
+		BinaryKey:         binaryKey,
+		BinaryName:        "summary.move.r00",
+		FileName:          "summary.move.r00",
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}); err != nil {
+		t.Fatalf("upsert binary in old family: %v", err)
+	}
+
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  newFamily,
+		ReleaseFamilyKey:  newFamily,
+		FileFamilyKey:     newFamily + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          newBaseStem,
+		IsMainPayload:     true,
+		ReleaseKey:        newFamily,
+		ReleaseName:       "Summary Move New",
+		BinaryKey:         binaryKey,
+		BinaryName:        "summary.move.r00",
+		FileName:          "summary.move.r00",
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.99,
+		MatchStatus:       "matched",
+	}); err != nil {
+		t.Fatalf("upsert binary in new family: %v", err)
+	}
+
+	for _, row := range []struct {
+		keyKind   string
+		familyKey string
+		wantCount int
+	}{
+		{keyKind: "release_family", familyKey: oldFamily, wantCount: 0},
+		{keyKind: "base_stem", familyKey: strings.ToLower(oldBaseStem), wantCount: 0},
+		{keyKind: "release_family", familyKey: newFamily, wantCount: 1},
+		{keyKind: "base_stem", familyKey: strings.ToLower(newBaseStem), wantCount: 1},
+	} {
+		var count int
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM release_family_readiness_summaries
+			WHERE provider_id = 1
+			  AND newsgroup_id = $1
+			  AND key_kind = $2
+			  AND family_key = $3`,
+			newsgroupID,
+			row.keyKind,
+			row.familyKey,
+		).Scan(&count); err != nil {
+			t.Fatalf("query summary count for %s/%s: %v", row.keyKind, row.familyKey, err)
+		}
+		if count != row.wantCount {
+			t.Fatalf("expected %d summary rows for %s/%s, got %d", row.wantCount, row.keyKind, row.familyKey, count)
+		}
+	}
+
+	for _, row := range []struct {
+		keyKind   string
+		familyKey string
+	}{
+		{keyKind: "release_family", familyKey: oldFamily},
+		{keyKind: "base_stem", familyKey: strings.ToLower(oldBaseStem)},
+		{keyKind: "release_family", familyKey: newFamily},
+		{keyKind: "base_stem", familyKey: strings.ToLower(newBaseStem)},
+	} {
+		var count int
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM release_stage_dirty_families
+			WHERE provider_id = 1
+			  AND newsgroup_id = $1
+			  AND key_kind = $2
+			  AND family_key = $3`,
+			newsgroupID,
+			row.keyKind,
+			row.familyKey,
+		).Scan(&count); err != nil {
+			t.Fatalf("query dirty queue count for %s/%s: %v", row.keyKind, row.familyKey, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected dirty queue row for %s/%s after family move, got %d", row.keyKind, row.familyKey, count)
+		}
+	}
+}
+
 func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinaries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

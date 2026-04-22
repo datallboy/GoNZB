@@ -444,39 +444,198 @@ WorkStream 2 completion note:
 
 The current release selector still recomputes family readiness from `binaries` across a large dirty queue. That is now the main structural cost center.
 
-Next direction:
+Status:
 
-- add a new incremental family-readiness summary table keyed by:
+- WorkStream 3 completed and signed off on `2026-04-22`
+- current live queue snapshot before summary-state landing:
+  - dirty families total: `112`
+  - `release_family`: `63`
+  - `base_stem`: `49`
+  - actionable families in a representative queue window: `91`
+  - fragment-only families in the same window: `21`
+  - zero-binary stale-cleanup rows in that window: `0`
+- interpretation:
+  - the release queue is no longer obviously blocked by sheer queue width on the dev system
+  - the remaining avoidable cost is repeated per-family aggregation from `binaries`
+  - we should move that work to incremental write-time maintenance before relying on more runtime tuning
+
+WorkStream 3 completion note:
+
+- landed implementation:
+  - added `release_family_readiness_summaries` as a release-family summary-state table
+  - backfilled summary rows for existing `release_family` and `base_stem` keys during schema migration
+  - moved `ListReleaseCandidates` from per-family lateral aggregate scans over `binaries` to dirty-queue plus keyed summary lookups
+  - refreshed summary state transactionally from:
+    - `UpsertBinary`
+    - `RefreshBinaryStats`
+  - when a binary identity moves families, refresh now covers:
+    - old `release_family`
+    - new `release_family`
+    - old `base_stem` when applicable
+    - new `base_stem` when applicable
+  - runtime schema support was advanced from `5` to `6` so the new migration is accepted during startup validation
+- repository validation completed:
+  - `go test ./internal/store/pgindex ./internal/indexing/release`
+  - targeted coverage now includes:
+    - summary-row refresh after `RefreshBinaryStats`
+    - old/new summary cleanup when a binary moves family identity
+    - preserved queue ordering for:
+      - complete versus fragment-only families
+      - expected-file-count evidence
+      - zero-binary stale cleanup candidates
+- live schema and DB validation after landing:
+  - `module_schema_version.pgindex = 6`
+  - summary rows materialized successfully:
+    - total rows: `123627`
+    - `release_family`: `61884`
+    - `base_stem`: `61743`
+  - summary bucket distribution immediately after backfill:
+    - `release_family actionable = 485`
+    - `release_family fragment_only = 61399`
+    - `base_stem actionable = 406`
+    - `base_stem fragment_only = 61337`
+  - representative dirty-queue join before the validated release pass:
+    - `release_family actionable = 33`
+    - `release_family fragment_only = 13`
+    - `base_stem actionable = 29`
+    - `base_stem fragment_only = 8`
+  - `EXPLAIN` on the summary-backed selector showed:
+    - bounded scan of `release_stage_dirty_families`
+    - indexed lookup on `release_family_readiness_summaries`
+    - no repeated per-family aggregate over `binaries`
+- live operator validation:
+  - `2026-04-22 19:38:18`: `gonzb --config config.yaml indexer release --once` completed normally
+  - release stage logged:
+    - `candidate_families=112`
+    - `formed=99`
+    - `cooled_down_fragment_only_families=21`
+    - `stale_cleanup_only_families=0`
+    - `skipped_fragments=4`
+  - post-run dirty queue state:
+    - dirty families total: `0`
+    - `release_family`: `0`
+    - `base_stem`: `0`
+- current interpretation after sign-off:
+  - release selection is now driven by dirty rows plus precomputed readiness summary state instead of repeated family aggregation work
+  - release-stage behavior remained consistent with the prior queue policy:
+    - actionable families formed releases
+    - fragment-only families cooled down
+    - no stale-cleanup regression was observed
+  - WorkStream 3 removed the primary remaining structural selector cost center identified after WorkStream 2
+
+WorkStream 3 objective:
+
+- make release candidate selection proportional to dirty-queue width plus a single keyed summary lookup
+- preserve current release safety behavior and candidate ordering semantics while removing repeated lateral aggregate scans
+- keep stale cleanup and fragment cooldown visible without letting them dominate normal actionable passes
+
+Summary-state design to land:
+
+- add a family-readiness summary table keyed by:
   - `provider_id`
   - `newsgroup_id`
   - `key_kind`
   - `family_key`
-- store enough summary state to answer release-candidate ordering cheaply:
+- store enough materialized state to answer candidate ordering cheaply:
+  - `source_release_key`
+  - compatibility `release_key`
+  - representative `release_name`
   - `binary_count`
   - `complete_binary_count`
   - `incomplete_binary_count`
   - expected-file-count evidence present or absent
   - `total_bytes`
-  - representative source/release names
   - earliest posted-at value
-  - last-updated value
+  - summary `updated_at`
   - readiness bucket
-- maintain this state transactionally from binary update paths, especially:
+- readiness bucket definitions:
+  - `actionable`
+    - at least one complete binary exists for the family
+  - `fragment_only`
+    - one or more binaries exist but none are complete yet
+  - `stale_cleanup_only`
+    - no binary rows currently remain for the dirty family key
+
+Maintenance rules:
+
+- maintain summary state transactionally from the binary write paths that already control queue dirtiness:
   - `UpsertBinary`
   - `RefreshBinaryStats`
-- make `ListReleaseCandidates` read dirty rows plus summary state instead of aggregating from `binaries` for every sampled family
+- refresh both key shapes used by release selection:
+  - `release_family`
+  - `base_stem`
+- when a binary moves families because identity improves, refresh both:
+  - the old summary key
+  - the new summary key
+- continue to dirty-queue both old and new family keys when a move happens so stale cleanup and release reform stay correct
+- when a refreshed family no longer has any binaries, remove its summary row and let dirty-queue processing treat it as `stale_cleanup_only`
 
-Readiness buckets:
+Selector behavior to preserve:
 
-- `actionable`
-- `stale_cleanup_only`
-- `fragment_only`
+- `ListReleaseCandidates` should read:
+  - a bounded dirty-family queue window
+  - one keyed summary lookup per queued family
+- candidate ordering should remain intentionally biased:
+  - actionable families first
+  - then zero-binary stale-cleanup families
+  - then fragment-only cooldown rows
+- within actionable work, continue preferring:
+  - more complete binaries
+  - expected-file-count evidence
+  - oldest dirty rows first
+- do not change:
+  - release persistence thresholds
+  - fragment-only cooldown behavior
+  - stale release cleanup rules
+
+Backfill and migration scope:
+
+- add a schema migration that:
+  - creates the summary table
+  - seeds summary rows from existing `binaries`
+  - supports both `release_family` and `base_stem` key kinds
+- use grouped backfill SQL in the migration so the selector can switch to summary-backed reads immediately after migration
+- keep the new table small and replaceable:
+  - it is operational summary state, not new catalog identity
+
+Validation plan for this workstream:
+
+- repository-level validation:
+  - candidate ordering remains the same for:
+    - complete versus fragment-only families
+    - expected-file-count evidence tie-breaks
+    - zero-binary stale cleanup rows
+  - summary rows are created and refreshed from:
+    - `UpsertBinary`
+    - `RefreshBinaryStats`
+  - family-move cases refresh old and new summary keys safely
+- live DB validation after landing:
+  - compare `EXPLAIN (ANALYZE, BUFFERS)` for `ListReleaseCandidates` before and after
+  - confirm queue-window selection no longer performs repeated family aggregates from `binaries`
+  - query dirty rows joined to summary state and verify bucket distribution matches the prior aggregate-driven view
+- operator validation:
+  - rerun repeated `gonzb --config config.yaml indexer release --once`
+  - compare:
+    - candidate-family throughput
+    - formed-release totals
+    - cooled-down fragment-only family counts
+    - stale-cleanup-only family counts
+    - wall-clock runtime across several repeated release passes
 
 Expected result:
 
 - release selection cost becomes more proportional to queue rows than to repeated family aggregation work
 - actionable families surface more reliably even when the dirty queue is large
 - fragment-only cooldown remains intact without dominating normal release passes
+- summary maintenance overhead stays bounded and localized to already-hot binary update transactions
+
+WorkStream 3 exit criteria:
+
+- `ListReleaseCandidates` reads dirty rows plus summary rows rather than recomputing readiness from `binaries`
+- current repository tests covering queue ordering still pass, with new coverage for summary maintenance
+- live DB inspection confirms summary rows correctly represent actionable, fragment-only, and stale-cleanup outcomes
+- repeated `release --once` validation shows no behavioral regression in formed-release, fragment cooldown, or stale cleanup accounting
+- the remaining release-stage cost center is no longer repeated family aggregation work
 
 ### 4. Queue-quality validation and backlog burn-down operations
 
@@ -501,8 +660,8 @@ Operator loop:
 
 1. completed on `2026-04-22`: PostgreSQL/runtime tuning baseline plus fresh `VACUUM ANALYZE` on the hot tables
 2. completed on `2026-04-22`: assemble lane A reworked into a bounded binary-driven completion lane with a separate fresh-work lane and live exit validation
-3. next: add release family summary state and switch `ListReleaseCandidates` to summary-backed selection
-4. next: rerun live validation and update the refinement plan status based on measured churn
+3. completed on `2026-04-22`: added release family summary state and switched `ListReleaseCandidates` to summary-backed selection
+4. next: rerun broader live validation and update the refinement plan status based on measured churn
 
 ## Relationship To Other Docs
 
