@@ -620,6 +620,31 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	}
 	defer rollbackTx(tx)
 
+	var (
+		existingReleaseFamilyKey  string
+		existingBaseStem          string
+		existingExpectedFileCount int
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			release_family_key,
+			base_stem,
+			expected_file_count
+		FROM binaries
+		WHERE provider_id = $1
+		  AND newsgroup_id = $2
+		  AND binary_key = $3`,
+		in.ProviderID,
+		in.NewsgroupID,
+		in.BinaryKey,
+	).Scan(
+		&existingReleaseFamilyKey,
+		&existingBaseStem,
+		&existingExpectedFileCount,
+	); err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("lookup existing binary %q: %w", in.BinaryKey, err)
+	}
+
 	var id int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO binaries (
@@ -710,11 +735,22 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		return 0, err
 	}
 
-	if err := markReleaseFamilyDirty(ctx, tx, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey); err != nil {
-		return 0, err
+	summaryKeys := make([]releaseFamilySummaryKey, 0, 4)
+	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 4)
+	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", existingReleaseFamilyKey)
+	if existingExpectedFileCount > 1 {
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", existingBaseStem)
 	}
+	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey)
 	if in.ExpectedFileCount > 1 {
-		if err := markReleaseFamilyDirty(ctx, tx, in.ProviderID, in.NewsgroupID, "base_stem", strings.ToLower(strings.TrimSpace(in.BaseStem))); err != nil {
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
+	}
+
+	for _, key := range summaryKeys {
+		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+			return 0, err
+		}
+		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
 			return 0, err
 		}
 	}
@@ -903,11 +939,18 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 		return fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
 	}
 
-	if err := markReleaseFamilyDirty(ctx, tx, providerID, newsgroupID, "release_family", releaseFamilyKey); err != nil {
-		return err
-	}
+	summaryKeys := make([]releaseFamilySummaryKey, 0, 2)
+	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 2)
+	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
 	if expectedFileCount > 1 {
-		if err := markReleaseFamilyDirty(ctx, tx, providerID, newsgroupID, "base_stem", strings.ToLower(strings.TrimSpace(baseStem))); err != nil {
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+	}
+
+	for _, key := range summaryKeys {
+		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+			return err
+		}
+		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
 			return err
 		}
 	}

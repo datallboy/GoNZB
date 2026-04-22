@@ -144,7 +144,7 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		limit = 1000
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	query := fmt.Sprintf(`
 		WITH limits AS (
 			SELECT
 				$1::integer AS total_limit,
@@ -161,98 +161,28 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			ORDER BY updated_at, family_key
 			LIMIT (SELECT queue_window_limit FROM limits)
 		),
-		release_family_stats AS (
+		candidate_summaries AS (
 			SELECT
 				q.provider_id,
 				q.newsgroup_id,
 				q.key_kind,
 				q.family_key,
 				q.updated_at,
-				stats.source_release_key,
-				stats.release_key,
-				stats.release_name,
-				stats.posted_at,
-				stats.binary_count,
-				stats.total_bytes,
-				stats.has_expected_file_count,
-				stats.complete_binary_count
+				COALESCE(s.source_release_key, '') AS source_release_key,
+				COALESCE(s.release_key, '') AS release_key,
+				COALESCE(s.release_name, '') AS release_name,
+				s.earliest_posted_at AS posted_at,
+				COALESCE(s.binary_count, 0) AS binary_count,
+				COALESCE(s.total_bytes, 0)::BIGINT AS total_bytes,
+				COALESCE(s.has_expected_file_count, FALSE) AS has_expected_file_count,
+				COALESCE(s.complete_binary_count, 0) AS complete_binary_count,
+				COALESCE(s.readiness_bucket, '%s') AS readiness_bucket
 			FROM queue_window q
-			LEFT JOIN LATERAL (
-				SELECT
-					COALESCE(MAX(b.source_release_key), '') AS source_release_key,
-					COALESCE(MAX(b.release_key), '') AS release_key,
-					COALESCE(MAX(b.release_name), '') AS release_name,
-					MIN(b.posted_at) AS posted_at,
-					COUNT(b.id)::INTEGER AS binary_count,
-					COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-					COALESCE(MAX(
-						CASE
-							WHEN b.expected_file_count > 0 THEN 1
-							ELSE 0
-						END
-					), 0)::INTEGER AS has_expected_file_count,
-					COALESCE(SUM(
-						CASE
-							WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
-							ELSE 0
-						END
-					), 0)::INTEGER AS complete_binary_count
-				FROM binaries b
-				WHERE b.provider_id = q.provider_id
-				  AND b.newsgroup_id = q.newsgroup_id
-				  AND b.release_family_key = q.family_key
-			) stats ON TRUE
-			WHERE q.key_kind = 'release_family'
-		),
-		base_stem_stats AS (
-			SELECT
-				q.provider_id,
-				q.newsgroup_id,
-				q.key_kind,
-				q.family_key,
-				q.updated_at,
-				stats.source_release_key,
-				stats.release_key,
-				stats.release_name,
-				stats.posted_at,
-				stats.binary_count,
-				stats.total_bytes,
-				stats.has_expected_file_count,
-				stats.complete_binary_count
-			FROM queue_window q
-			LEFT JOIN LATERAL (
-				SELECT
-					COALESCE(MAX(b.source_release_key), '') AS source_release_key,
-					COALESCE(MAX(b.release_key), '') AS release_key,
-					COALESCE(MAX(b.release_name), '') AS release_name,
-					MIN(b.posted_at) AS posted_at,
-					COUNT(b.id)::INTEGER AS binary_count,
-					COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-					COALESCE(MAX(
-						CASE
-							WHEN b.expected_file_count > 0 THEN 1
-							ELSE 0
-						END
-					), 0)::INTEGER AS has_expected_file_count,
-					COALESCE(SUM(
-						CASE
-							WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
-							ELSE 0
-						END
-					), 0)::INTEGER AS complete_binary_count
-				FROM binaries b
-				WHERE b.provider_id = q.provider_id
-				  AND b.newsgroup_id = q.newsgroup_id
-				  AND b.expected_file_count > 1
-				  AND BTRIM(b.base_stem) <> ''
-				  AND LOWER(BTRIM(b.base_stem)) = q.family_key
-			) stats ON TRUE
-			WHERE q.key_kind = 'base_stem'
-		),
-		candidate_stats AS (
-			SELECT * FROM release_family_stats
-			UNION ALL
-			SELECT * FROM base_stem_stats
+			LEFT JOIN release_family_readiness_summaries s
+			  ON s.provider_id = q.provider_id
+			 AND s.newsgroup_id = q.newsgroup_id
+			 AND s.key_kind = q.key_kind
+			 AND s.family_key = q.family_key
 		),
 		next_queue AS (
 			SELECT
@@ -268,16 +198,20 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				binary_count,
 				total_bytes,
 				complete_binary_count,
-				has_expected_file_count
-			FROM candidate_stats
+				has_expected_file_count,
+				readiness_bucket
+			FROM candidate_summaries
 			ORDER BY
 				CASE
-					WHEN complete_binary_count > 0 THEN 0
-					WHEN binary_count = 0 THEN 1
+					WHEN readiness_bucket = '%s' THEN 0
+					WHEN readiness_bucket = '%s' THEN 1
 					ELSE 2
 				END ASC,
 				complete_binary_count DESC,
-				has_expected_file_count DESC,
+				CASE
+					WHEN has_expected_file_count THEN 1
+					ELSE 0
+				END DESC,
 				updated_at ASC,
 				family_key ASC
 			LIMIT (SELECT total_limit FROM limits)
@@ -296,11 +230,24 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		FROM next_queue q
 		ORDER BY
 			CASE
-				WHEN q.binary_count = 0 THEN 1
-				ELSE 0
+				WHEN q.readiness_bucket = '%s' THEN 0
+				WHEN q.readiness_bucket = '%s' THEN 1
+				ELSE 2
 			END ASC,
+			q.complete_binary_count DESC,
+			CASE
+				WHEN q.has_expected_file_count THEN 1
+				ELSE 0
+			END DESC,
 			q.updated_at ASC,
-			q.family_key ASC`, limit)
+			q.family_key ASC`,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessStaleCleanupOnly,
+	)
+	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
