@@ -288,6 +288,189 @@ order by last_posted_at desc nulls last, b.release_family_key
 limit 100;
 ```
 
+Near-complete releases that are still below `100%` completion:
+
+- Use this to find the small pool of releases that look close to done and are worth drilling into one by one.
+
+```sql
+select
+  r.release_id,
+  r.title,
+  round(r.completion_pct::numeric, 2) as completion_pct,
+  r.file_count,
+  r.expected_file_count,
+  r.updated_at,
+  r.release_family_key,
+  r.source_release_key
+from releases r
+where r.completion_pct >= 90
+  and r.completion_pct < 100
+order by r.completion_pct desc, r.updated_at desc;
+```
+
+Which files inside a near-complete release are still incomplete:
+
+- Use this to see whether the remaining gap is one bad binary, many lightly incomplete binaries, or mostly PAR2 sidecars.
+
+```sql
+with target_releases as (
+  select release_id, title, completion_pct
+  from releases
+  where completion_pct >= 90
+    and completion_pct < 100
+)
+select
+  tr.release_id,
+  tr.title,
+  rf.file_index,
+  rf.file_name,
+  b.id as binary_id,
+  b.is_main_payload,
+  b.observed_parts,
+  b.total_parts,
+  round(
+    case
+      when b.total_parts > 0
+        then (b.observed_parts::numeric / b.total_parts::numeric) * 100
+    end,
+    2
+  ) as binary_completion_pct,
+  greatest(b.total_parts - b.observed_parts, 0) as missing_parts,
+  b.updated_at
+from target_releases tr
+join release_files rf on rf.release_id = tr.release_id
+left join binaries b on b.id = rf.binary_id
+where b.id is not null
+  and b.total_parts > 0
+  and b.observed_parts < b.total_parts
+order by tr.completion_pct desc, tr.release_id, missing_parts desc, rf.file_index asc;
+```
+
+Whether an incomplete binary already has matching pending headers waiting for assemble:
+
+- If `pending_matching_headers` is close to `missing_parts`, assemble likely just has not consumed the remaining article headers yet.
+- If `pending_matching_headers` is `0`, the missing parts are probably not in the DB yet or were not matched into this binary.
+
+```sql
+with target_releases as (
+  select release_id, title, completion_pct
+  from releases
+  where completion_pct >= 90
+    and completion_pct < 100
+),
+incomplete_binaries as (
+  select
+    tr.release_id,
+    tr.title,
+    rf.file_name,
+    rf.file_index,
+    b.id as binary_id,
+    b.provider_id,
+    b.newsgroup_id,
+    greatest(b.total_parts - b.observed_parts, 0) as missing_parts
+  from target_releases tr
+  join release_files rf on rf.release_id = tr.release_id
+  join binaries b on b.id = rf.binary_id
+  where b.total_parts > 0
+    and b.observed_parts < b.total_parts
+)
+select
+  ib.release_id,
+  ib.title,
+  ib.file_index,
+  ib.file_name,
+  ib.missing_parts,
+  count(ah.id) filter (where ah.assembled_at is null) as pending_matching_headers,
+  count(ah.id) filter (where ah.assembled_at is not null) as assembled_matching_headers,
+  max(ah.id) filter (where ah.assembled_at is null) as newest_pending_header_id
+from incomplete_binaries ib
+left join article_header_ingest_payloads p
+  on lower(btrim(p.subject_file_name)) = lower(btrim(ib.file_name))
+left join article_headers ah
+  on ah.id = p.article_header_id
+ and ah.provider_id = ib.provider_id
+ and ah.newsgroup_id = ib.newsgroup_id
+group by ib.release_id, ib.title, ib.file_index, ib.file_name, ib.missing_parts
+order by ib.release_id, ib.missing_parts desc, ib.file_index asc;
+```
+
+Whether a near-complete release looks stale or partially unlinked:
+
+- `binaries_not_in_release_files > 0` means the family currently has binaries that are not represented in the formed release rows.
+- A release with no matching dirty-family row can also be a clue that the release row is stale rather than actively waiting in the queue.
+
+```sql
+with target_releases as (
+  select release_id, title, provider_id, release_family_key
+  from releases
+  where completion_pct >= 90
+    and completion_pct < 100
+),
+family_binaries as (
+  select
+    tr.release_id,
+    tr.title,
+    b.id as binary_id,
+    b.file_index,
+    b.file_name,
+    b.observed_parts,
+    b.total_parts
+  from target_releases tr
+  join release_newsgroups rng on rng.release_id = tr.release_id
+  join binaries b
+    on b.provider_id = tr.provider_id
+   and b.newsgroup_id = rng.newsgroup_id
+   and b.release_family_key = tr.release_family_key
+)
+select
+  fb.release_id,
+  fb.title,
+  count(*) as family_binary_rows,
+  count(*) filter (
+    where fb.total_parts > 0 and fb.observed_parts = fb.total_parts
+  ) as complete_rows,
+  count(*) filter (
+    where fb.total_parts > 0 and fb.observed_parts < fb.total_parts
+  ) as incomplete_rows,
+  count(*) filter (
+    where fb.binary_id not in (
+      select rf.binary_id
+      from release_files rf
+      where rf.binary_id is not null
+    )
+  ) as binaries_not_in_release_files
+from family_binaries fb
+group by fb.release_id, fb.title
+order by fb.release_id;
+```
+
+Whether a near-complete release family is still queued for release processing:
+
+- Use this after the stale/unlinked check to see whether the family is still hot in `release_stage_dirty_families` or whether it has fallen out of the queue.
+
+```sql
+with target_releases as (
+  select release_id, title, provider_id, release_family_key
+  from releases
+  where completion_pct >= 90
+    and completion_pct < 100
+)
+select
+  tr.release_id,
+  tr.title,
+  q.key_kind,
+  q.family_key,
+  q.updated_at
+from target_releases tr
+left join release_newsgroups rng on rng.release_id = tr.release_id
+left join release_stage_dirty_families q
+  on q.provider_id = tr.provider_id
+ and q.newsgroup_id = rng.newsgroup_id
+ and q.key_kind = 'release_family'
+ and q.family_key = tr.release_family_key
+order by tr.release_id, q.updated_at;
+```
+
 ## Inspect Family
 
 Run all inspect submodules together:

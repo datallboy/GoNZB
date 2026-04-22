@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-04-21
+Snapshot date: 2026-04-22
 
 This file exists to keep the indexer docs organized while the indexer is between the completed stabilization pass and the deferred Phase 3 API/UI work.
 
@@ -10,10 +10,10 @@ We currently have several planning/reference documents. This file defines which 
 
 - Phase 1 and Phase 2 of the next-phase docs are complete
 - the stabilization/schema/runtime pass is mostly complete and has been moved to completed-history docs
-- the current active execution focus is a bounded refinement loop around:
+- the current active execution focus is now the backlog burn-down performance pass that follows the initial refinement implementation:
   - assemble backlog reduction
-  - release candidate prioritization
-  - throughput and query efficiency for partially completed records
+  - release queue throughput and queue quality
+  - PostgreSQL, query, and selector efficiency for partially completed records
 - Phase 3 API/UI work remains deferred until this refinement loop is complete
 
 ## Current Active Docs
@@ -26,14 +26,22 @@ Use for:
 - the handoff from completed stabilization into the current refinement loop and then the next feature phase
 - phase boundaries and go/no-go rules between phases
 
-### `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+### `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
 
 Use for:
 
 - the current active backlog
-- assemble backlog reduction and prioritization strategy
-- release throughput and dirty-family backlog refinement
-- the exit criteria before Phase 3 starts
+- backlog burn-down performance work across assemble, release, and PostgreSQL
+- the current execution order for selector, queue, and runtime throughput work
+- the evidence needed before the refinement loop can be considered complete
+
+### `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+
+Use for:
+
+- the baseline refinement plan implemented on 2026-04-21
+- the already-landed assemble/release behavior changes that this new plan builds on
+- the original refinement-phase exit criteria that still need live sign-off
 
 ### `docs/active/INDEXER_API_AND_WEB_UI_EXPANSION_PLAN.md`
 
@@ -153,9 +161,9 @@ Do not let this drive schema expansion before the stabilization docs say the fou
 ## Guideline Rules
 
 1. Do not treat the completed docs under `docs/archive/completed/indexer/` as an active backlog.
-2. Start current indexer work from `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`.
+2. Start current indexer performance work from `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`.
 3. Use the archived stabilization docs for reference/history, not as the active backlog.
 4. Treat Phase 1 and Phase 2 docs as completed/archive material, not the active backlog.
-5. Do not begin API/UI expansion work until the current refinement doc says the backlog and throughput work is complete.
+5. Do not begin API/UI expansion work until the backlog burn-down performance plan and refinement exit criteria are signed off.
 6. Keep milestone docs as context, not as the active source of truth for current execution.
-7. Avoid creating new plan docs unless they clearly define the next bounded phase of work.
+7. The backlog burn-down performance plan is the current bounded execution doc for active indexer throughput work.

@@ -4,6 +4,12 @@ Snapshot date: 2026-04-21
 
 This is the current active execution plan for the post-stabilization refinement loop.
 
+Update on 2026-04-22:
+
+- this document remains active as the baseline refinement record
+- the current day-to-day execution plan has moved to `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
+- do not archive this refinement plan yet; the exit criteria at the end of this document have not been signed off from live validation
+
 The storage, schema, and runtime-stability pass is mostly complete. The current bottleneck has shifted to throughput and work ordering:
 
 - `article_headers` backlog is still large

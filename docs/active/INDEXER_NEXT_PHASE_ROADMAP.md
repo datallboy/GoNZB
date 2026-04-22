@@ -1,10 +1,10 @@
 # Indexer Next Phase Roadmap
 
-Snapshot date: 2026-04-21
+Snapshot date: 2026-04-22
 
 This is the roadmap and sequencing reference for the next indexer era.
 
-Use this together with `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`.
+Use this together with `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`.
 
 Completed baseline:
 
@@ -62,8 +62,9 @@ Purpose:
 
 Primary documents:
 
-- `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+- `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
 - `docs/active/INDEXER_FOUNDATION_DOCS.md`
+- `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
 
 ### Phase 3: Indexer API And Web UI Expansion Plan
 
@@ -122,6 +123,7 @@ Phase 3 should not:
 
 Do not start Phase 3 until:
 
+- the backlog burn-down performance plan is complete and signed off
 - the current refinement doc is complete and signed off
 - assemble backlog behavior is under control
 - release candidate throughput is no longer dominated by fragment-only queue churn
