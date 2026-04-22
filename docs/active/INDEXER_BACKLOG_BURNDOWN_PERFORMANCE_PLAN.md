@@ -66,6 +66,11 @@ Recent observations that matter for this plan:
 
 Treat the database as a local low-latency workload and tune it accordingly.
 
+Status:
+
+- initial WorkStream 1 baseline completed and signed off on `2026-04-22`
+- reference doc: `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+
 Planned tuning direction:
 
 - make `jit=off` explicit and observable for indexer DB sessions
@@ -83,6 +88,237 @@ Expected result:
 - more reliable query plans during live churn
 - less planner drift from stale statistics
 - better sustained performance under write-heavy indexer activity
+
+WorkStream 1 execution plan:
+
+- start by treating the current host as a developer workstation first, not as the production sizing target
+- keep production guidance SSD-first and RAM-positive, but make lower-end system guidance explicit so operators can still run the indexer safely with reduced expectations
+- separate:
+  - baseline measurement
+  - PostgreSQL settings changes
+  - table-specific maintenance policy
+  - runtime concurrency validation
+
+#### WorkStream 1a. Baseline and evidence capture
+
+Capture a before-state before changing settings.
+
+Record:
+
+- host profile:
+  - CPU core count
+  - total RAM
+  - whether storage is NVMe, SATA SSD, or HDD
+  - approximate free disk space
+- PostgreSQL runtime settings:
+  - `shared_buffers`
+  - `effective_cache_size`
+  - `work_mem`
+  - `maintenance_work_mem`
+  - `random_page_cost`
+  - `effective_io_concurrency`
+  - `track_io_timing`
+  - `jit`
+  - `default_statistics_target`
+- hot-table state:
+  - row counts for `article_headers`, `binaries`, and `release_stage_dirty_families`
+  - last analyze / vacuum timestamps from `pg_stat_user_tables`
+  - dead-tuple counts and autovacuum activity for those same tables
+- operator throughput:
+  - `assemble --once` runtime across several repeated passes
+  - `release --once` runtime across several repeated passes
+  - pending header count
+  - near-complete release count
+  - dirty-family composition
+
+Use:
+
+- `SHOW ALL` or focused `SHOW` commands for PostgreSQL settings
+- `EXPLAIN (ANALYZE, BUFFERS)` on the current assemble and release hot paths
+- `docs/INDEXER_TEST_QUERIES.md` for the release/backlog state queries already in active use
+- `VACUUM (ANALYZE)` only after the before-state is captured
+
+Success criteria for this baseline step:
+
+- we can compare before and after with more than one stage run
+- we know whether the bottleneck is plan quality, buffer churn, I/O latency, or queue-policy cost
+- we have enough evidence to avoid over-tuning the dev laptop for a workload that will later live on stronger hardware
+
+#### WorkStream 1b. Environment tiers and default tuning posture
+
+This plan should be documented and validated against three operating tiers.
+
+Tier 1: dev laptop
+
+- purpose:
+  - practical local development
+  - repeatable performance validation
+  - not full production throughput
+- hardware posture:
+  - SSD strongly preferred
+  - `16 GB` to `32 GB` RAM is comfortable
+  - `6` to `8+` CPU cores is enough for local indexing and inspection work
+  - preserve thermal and battery headroom instead of trying to saturate the machine
+- PostgreSQL starting posture:
+  - `shared_buffers`: start at `1 GB`, move toward `2 GB` only if the machine remains comfortable
+  - `effective_cache_size`: start around `25%` to `40%` of host RAM
+  - `work_mem`: start at `16 MB`
+  - `maintenance_work_mem`: start at `512 MB`
+  - `random_page_cost`: `1.1` to `1.5` on SSD/NVMe
+  - `effective_io_concurrency`: `64` for SATA SSD, `128` to `256` for NVMe
+  - `track_io_timing`: `on`
+  - `default_statistics_target`: `250`
+  - session `jit`: keep `off`
+- runtime posture:
+  - prefer steady single-instance validation over aggressive parallel stage scheduling
+  - keep enough RAM free for the OS page cache and normal desktop use
+
+Tier 2: lower-end self-hosted system
+
+- purpose:
+  - safe operation on constrained hardware without pretending it is production-grade
+- hardware posture:
+  - SSD is still the recommendation
+  - HDD should be treated as functional-but-degraded, not preferred
+  - `8 GB` RAM is the practical floor for a meaningful PostgreSQL-backed indexer workload
+  - `4` CPU cores is workable if expectations are modest
+- PostgreSQL starting posture:
+  - `shared_buffers`: `512 MB` to `1 GB`
+  - `effective_cache_size`: `2 GB` to `4 GB`
+  - `work_mem`: `8 MB` to `16 MB`
+  - `maintenance_work_mem`: `256 MB`
+  - `random_page_cost`: `1.25` to `1.75` on SSD, higher only if truly on HDD
+  - `effective_io_concurrency`: `32` to `64` on SSD, low values on HDD
+  - `track_io_timing`: `on`
+  - `default_statistics_target`: `100` to `250`
+  - session `jit`: keep `off`
+- operator expectation:
+  - slower backlog burn-down
+  - tighter disk-space monitoring
+  - more conservative release and inspect concurrency
+
+Tier 3: production server
+
+- purpose:
+  - sustained backlog burn-down and steady indexing throughput
+- hardware recommendation:
+  - NVMe or strong SSD storage
+  - plenty of free disk space for ongoing header, binary, and release churn
+  - `8+` real CPU cores
+  - `32 GB+` RAM
+  - enough spare capacity that autovacuum and analyze can keep up during active ingestion
+- PostgreSQL starting posture:
+  - `shared_buffers`: begin near `25%` of RAM and adjust with measurement
+  - `effective_cache_size`: begin near `50%` to `75%` of RAM depending on what else runs on the host
+  - `work_mem`: start at `16 MB` to `32 MB`
+  - `maintenance_work_mem`: `1 GB` or higher when memory headroom allows
+  - `random_page_cost`: `1.1`
+  - `effective_io_concurrency`: `128` to `256` on NVMe
+  - `track_io_timing`: `on`
+  - `default_statistics_target`: `250` or higher for hot selector tables if measurement justifies it
+  - session `jit`: keep `off`
+- operator expectation:
+  - this is the tier that should be used for final throughput sign-off
+  - dev-laptop numbers are useful for direction, but not the final ceiling
+
+#### WorkStream 1c. PostgreSQL settings changes to land first
+
+First-pass changes to apply before deeper code or schema work:
+
+- make session-level `jit=off` observable in operator notes and validation output
+  - the app already sets `jit=off` in the PostgreSQL connection runtime parameters for the indexer store
+  - this step is about documenting and verifying it, not rediscovering it later
+- raise cache-related settings away from stock conservative defaults
+- tune planner cost assumptions for SSD or NVMe
+- enable `track_io_timing`
+- raise statistics quality enough to stabilize selector plans during churn
+
+For the dev laptop baseline represented in this doc, the first pass should be:
+
+- `shared_buffers = 1GB`
+- `effective_cache_size = 8GB`
+- `work_mem = 16MB`
+- `maintenance_work_mem = 512MB`
+- `random_page_cost = 1.1`
+- `effective_io_concurrency = 64`
+- `track_io_timing = on`
+- `default_statistics_target = 250`
+
+Do not treat these values as universal defaults:
+
+- lower-end systems may need smaller cache and maintenance memory
+- larger production servers should be tuned upward from evidence, not copied from the laptop profile
+
+#### WorkStream 1d. Table-specific maintenance and statistics policy
+
+The hot tables in this phase need more aggressive maintenance than generic PostgreSQL defaults.
+
+Apply and validate tighter autovacuum/analyze behavior for:
+
+- `article_headers`
+- `binaries`
+- `release_stage_dirty_families`
+
+Starting policy direction:
+
+- lower `autovacuum_vacuum_scale_factor`
+- lower `autovacuum_analyze_scale_factor`
+- use higher per-table statistics targets on the selector-critical columns instead of only relying on the global default
+- run a fresh `VACUUM (ANALYZE)` on the hot tables immediately after the settings change so the first comparison is not distorted by stale stats
+
+Acceptance check:
+
+- the hot tables should show recent analyze activity during live indexing churn
+- dead tuples should not grow unchecked between repeated operator runs
+- release and assemble selectors should stop bouncing between obviously different plans for similar queue states
+
+#### WorkStream 1e. Runtime and concurrency posture
+
+This workstream is not only about PostgreSQL GUCs. We also need a stable runtime posture while testing.
+
+Validation posture:
+
+- compare repeated `assemble --once` runs instead of only one run after each DB change
+- compare repeated `release --once` runs under a dirty queue that is large enough to matter
+- do not stack aggressive background scrape, assemble, release, and inspect churn on the laptop while trying to learn which DB change helped
+- if runtime pool or stage concurrency becomes a visible bottleneck later, change it after the PostgreSQL baseline is measured, not before
+
+Operator note:
+
+- the goal for the laptop is a trustworthy tuning baseline
+- the goal for production is sustained throughput under continuous churn
+- those are related, but they should not be conflated
+
+#### WorkStream 1f. Deliverables for sign-off
+
+WorkStream 1 should produce:
+
+- a recorded before/after settings snapshot
+- a short operator tuning guide for:
+  - dev laptop
+  - lower-end self-hosted system
+  - production SSD/NVMe server
+- measured before/after `assemble --once` and `release --once` timing notes
+- fresh `VACUUM (ANALYZE)` confirmation on hot tables
+- confirmation that stats freshness and planner behavior improved before moving on to WorkStream 2
+
+WorkStream 1 completion note:
+
+- this baseline has now been completed for the current dev laptop
+- PostgreSQL defaults were replaced with a laptop-safe low-latency profile in `docker-compose.postgres.yml`
+- hot-table autovacuum and statistics settings were applied live to:
+  - `article_headers`
+  - `binaries`
+  - `release_stage_dirty_families`
+- a fresh `VACUUM (ANALYZE)` pass completed on the hot tables
+- before/after settings, stage timings, backlog snapshot, and `EXPLAIN (ANALYZE, BUFFERS)` observations were recorded in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- isolated manual reruns after clearing background schedulers produced a cleaner validation sample:
+  - `assemble --once` average `20.07s` across `3` runs
+  - `release --once` average `64.92s` across `3` runs
+- current interpretation after sign-off:
+  - PostgreSQL is no longer running on obviously conservative defaults for this workload
+  - release selection still has structural aggregation cost that belongs to WorkStream 3
+  - assemble selection still has structural pending-window cost that belongs to WorkStream 2
 
 ### 2. Assemble completion-first candidate selection
 
@@ -164,10 +400,10 @@ Operator loop:
 
 ## Immediate Action Order
 
-1. confirm and implement PostgreSQL/runtime tuning plus a fresh `VACUUM ANALYZE` pass on the hot tables
-2. rework assemble lane A into a binary-driven completion lane while preserving a smaller fresh-work lane
-3. add release family summary state and switch `ListReleaseCandidates` to summary-backed selection
-4. rerun live validation and update the refinement plan status based on measured churn
+1. completed on `2026-04-22`: PostgreSQL/runtime tuning baseline plus fresh `VACUUM ANALYZE` on the hot tables
+2. next: rework assemble lane A into a binary-driven completion lane while preserving a smaller fresh-work lane
+3. next: add release family summary state and switch `ListReleaseCandidates` to summary-backed selection
+4. next: rerun live validation and update the refinement plan status based on measured churn
 
 ## Relationship To Other Docs
 

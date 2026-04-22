@@ -138,6 +138,14 @@ Use for:
 - validation queries and run commands while executing the next phase
 - checking release visibility, catalog quality, and stage behavior after changes
 
+### `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+
+Use for:
+
+- the durable PostgreSQL/runtime tuning reference for the indexer
+- the current developer-laptop baseline and validation evidence
+- tiered operator guidance for dev, lower-end self-hosted, and production systems
+
 ## Broader Context Docs
 
 ### `docs/archive/INDEXER_BACKEND_MILESTONES.md`
