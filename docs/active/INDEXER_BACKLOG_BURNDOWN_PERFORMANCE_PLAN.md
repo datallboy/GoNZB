@@ -382,13 +382,27 @@ WorkStream 2 completion note:
 - the assemble selector now uses separate internal paths:
   - a binary-ranked lane A that starts from incomplete binaries
   - a recent-header lane B that fills the remainder
+- the selector tuning constants in `assembly_store.go` now have explicit meanings instead of inline magic numbers:
+  - `assembleLaneARatioNumerator` and `assembleLaneARatioDenominator`:
+    - target share of each assemble batch reserved for progress work
+    - current value is `7/10`, so lane A tries to fill about `70%` of the batch before lane B fills the rest
+  - `assemblePriorityBinaryMinScan`:
+    - minimum ranked incomplete-binary window to inspect for actionable progress work
+    - current value is `1000`
+  - `assemblePriorityBinaryMaxScan`:
+    - maximum ranked incomplete-binary window to inspect for actionable progress work
+    - current value is `2000`
+  - `assemblePriorityBinaryBatch`:
+    - number of ranked binaries fetched per lane-A lookup batch
+    - current value is `20`
 - lane-A binary ranking remains bounded and binary-driven:
   - main payload before auxiliary
   - higher completion ratio before lower
   - higher observed parts before lower
   - only `1` pending header per priority binary per pass
-- the lane-A pending-header lookup was rewritten to match the existing structured-name payload index directly instead of scanning the payload table backward by primary key
-- the ranked binary candidate window was widened from an ineffective top `20` slice to a bounded `1000` to `2000` window so actionable progress binaries are actually reached on the live backlog
+- lane A was improved in two concrete ways:
+  - the lane-A pending-header lookup was rewritten to match the existing structured-name payload index directly instead of scanning the payload table backward by primary key
+  - the ranked binary candidate window was widened from an ineffective top `20` slice to a bounded `1000` to `2000` window so actionable progress binaries are actually reached on the live backlog
 - live database validation before sign-off showed:
   - `783` incomplete binaries currently had pending matching headers
   - the first actionable progress binary appeared at rank `32`
@@ -402,8 +416,25 @@ WorkStream 2 completion note:
   - run 2 after widening the ranked window: `17.35s`, `lane_a_selected=614`, `lane_b_selected=1886`
   - run 3: `16.11s`, `lane_a_selected=597`, `lane_b_selected=1903`
   - run 4: `15.30s`, `lane_a_selected=578`, `lane_b_selected=1922`
+- later live production-like churn continued to confirm the same pattern in the operator log:
+  - `2026-04-22 16:42:42`: `lane_a_selected=566`, `lane_b_selected=1934`
+  - `2026-04-22 16:43:11`: `lane_a_selected=554`, `lane_b_selected=1946`
+  - `2026-04-22 16:43:26`: `lane_a_selected=529`, `lane_b_selected=1971`
+  - `2026-04-22 16:43:41`: `lane_a_selected=521`, `lane_b_selected=1979`
+  - `2026-04-22 16:43:47`: release stage logged `candidate_families=190 formed=149`
+  - `2026-04-22 16:45:29`: release stage logged `candidate_families=183 formed=150`
 - backlog movement during the validated reruns:
   - pending headers fell from `735861` to `725861`
+- current live backlog shape after the additional validated runs:
+  - pending headers: `699924`
+  - incomplete binaries with pending matching headers still available to lane A: `636`
+- operator interpretation:
+  - `lane_a_selected` counts headers chosen for progress-improving binary work, not releases formed
+  - lane A improves binary completion and release readiness indirectly; it is not currently instrumented as a per-release attribution metric
+  - the `149` and `150` formed-release runs are real release-stage totals observed shortly after repeated high lane-A assemble passes, but they cannot be claimed as lane-A-only output
+  - lane A is not expected to stay near `500` forever
+  - while there are still many incomplete binaries with pending matching headers, lane A should remain materially active
+  - as the stock of incomplete-but-actionable binaries is drained, lane A should trend downward and lane B should naturally take a larger share of the batch for fresh work
 - current interpretation after sign-off:
   - lane A is now operationally understandable and cheap enough to validate repeatedly
   - the remaining primary structural cost center is release-family readiness work in WorkStream 3
