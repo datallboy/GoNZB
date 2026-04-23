@@ -33,6 +33,10 @@ servers:
     tls: true
     max_connections: 20
     priority: 1 # Lower number = Higher priority
+    dial_timeout_seconds: 10
+    tcp_keepalive_seconds: 30
+    pool_idle_timeout_seconds: 120
+    pool_max_age_seconds: 900
   - id: "Backup"
     host: "news.backup.com"
     port: 563
@@ -41,6 +45,10 @@ servers:
     tls: true
     max_connections: 10
     priority: 2
+    dial_timeout_seconds: 10
+    tcp_keepalive_seconds: 30
+    pool_idle_timeout_seconds: 120
+    pool_max_age_seconds: 900
 
 # Newznab compatible indexers for searching
 indexers:

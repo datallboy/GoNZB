@@ -137,3 +137,28 @@ func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 		t.Fatalf("expected nested TVDB secrets to be redacted, got %+v", redacted.Indexing.EnrichTMDB)
 	}
 }
+
+func TestFromConfigMirrorsServerConnectionTuning(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{{
+			ID:                     "primary",
+			Host:                   "news.example.com",
+			Port:                   563,
+			MaxConnection:          20,
+			Priority:               1,
+			DialTimeoutSeconds:     11,
+			TCPKeepAliveSeconds:    31,
+			PoolIdleTimeoutSeconds: 121,
+			PoolMaxAgeSeconds:      901,
+		}},
+	}
+
+	runtime := FromConfig(cfg)
+	if len(runtime.Servers) != 1 {
+		t.Fatalf("expected one server, got %d", len(runtime.Servers))
+	}
+	got := runtime.Servers[0]
+	if got.DialTimeoutSeconds != 11 || got.TCPKeepAliveSeconds != 31 || got.PoolIdleTimeoutSeconds != 121 || got.PoolMaxAgeSeconds != 901 {
+		t.Fatalf("expected server tuning fields to round-trip, got %+v", got)
+	}
+}

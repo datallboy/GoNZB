@@ -18,14 +18,18 @@ type RuntimeSettingsPatch struct {
 }
 
 type ServerRuntimeSettings struct {
-	ID            string `json:"id"`
-	Host          string `json:"host"`
-	Port          int    `json:"port"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	TLS           bool   `json:"tls"`
-	MaxConnection int    `json:"max_connections"`
-	Priority      int    `json:"priority"`
+	ID                     string `json:"id"`
+	Host                   string `json:"host"`
+	Port                   int    `json:"port"`
+	Username               string `json:"username"`
+	Password               string `json:"password"`
+	TLS                    bool   `json:"tls"`
+	MaxConnection          int    `json:"max_connections"`
+	Priority               int    `json:"priority"`
+	DialTimeoutSeconds     int    `json:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int    `json:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int    `json:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int    `json:"pool_max_age_seconds"`
 }
 
 type IndexerRuntimeSettings struct {
