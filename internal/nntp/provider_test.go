@@ -1,6 +1,7 @@
 package nntp
 
 import (
+	"context"
 	"net"
 	"net/textproto"
 	"testing"
@@ -94,5 +95,112 @@ func TestIsRecoverableConnError(t *testing.T) {
 		if got := isRecoverableConnError(tc.err); got != tc.want {
 			t.Fatalf("%s: expected %v, got %v", tc.name, tc.want, got)
 		}
+	}
+}
+
+func TestGroupStatsWithConnClosesBrokenConnection(t *testing.T) {
+	client, server := net.Pipe()
+	server.Close()
+
+	p := &nntpProvider{
+		conf: config.ServerConfig{ID: "test", MaxConnection: 1},
+		pool: make(chan *nntpConn, 1),
+	}
+	conn := &nntpConn{
+		tp:  textproto.NewConn(client),
+		raw: client,
+	}
+
+	_, retry, err := p.groupStatsWithConn(conn, "alt.binaries.test")
+	if err == nil {
+		t.Fatal("expected group stats error")
+	}
+	if !retry {
+		t.Fatal("expected broken connection to be retryable")
+	}
+	if got := len(p.pool); got != 0 {
+		t.Fatalf("expected broken connection to stay out of pool, got %d", got)
+	}
+}
+
+func TestXOverWithConnClosesBrokenConnection(t *testing.T) {
+	client, server := net.Pipe()
+	server.Close()
+
+	p := &nntpProvider{
+		conf: config.ServerConfig{ID: "test", MaxConnection: 1},
+		pool: make(chan *nntpConn, 1),
+	}
+	conn := &nntpConn{
+		tp:  textproto.NewConn(client),
+		raw: client,
+	}
+
+	_, retry, err := p.xoverWithConn(context.Background(), conn, "alt.binaries.test", 1, 10)
+	if err == nil {
+		t.Fatal("expected xover error")
+	}
+	if !retry {
+		t.Fatal("expected broken connection to be retryable")
+	}
+	if got := len(p.pool); got != 0 {
+		t.Fatalf("expected broken connection to stay out of pool, got %d", got)
+	}
+}
+
+func TestReturnConnClosesConnectionPastMaxAge(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	p := &nntpProvider{
+		conf: config.ServerConfig{ID: "test", MaxConnection: 1, PoolMaxAgeSeconds: 1},
+		pool: make(chan *nntpConn, 1),
+	}
+	conn := &nntpConn{
+		tp:         textproto.NewConn(client),
+		raw:        client,
+		createdAt:  time.Now().Add(-2 * time.Second),
+		lastUsedAt: time.Now(),
+	}
+
+	p.returnConn(conn)
+
+	if got := len(p.pool); got != 0 {
+		t.Fatalf("expected aged connection to stay out of pool, got %d", got)
+	}
+}
+
+func TestGetConnDiscardsIdlePooledConnection(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	p := &nntpProvider{
+		conf: config.ServerConfig{
+			ID:                     "test",
+			Host:                   "127.0.0.1",
+			Port:                   563,
+			MaxConnection:          1,
+			PoolIdleTimeoutSeconds: 1,
+		},
+		pool: make(chan *nntpConn, 1),
+	}
+	stale := &nntpConn{
+		tp:         textproto.NewConn(client),
+		raw:        client,
+		createdAt:  time.Now().Add(-5 * time.Second),
+		lastUsedAt: time.Now().Add(-3 * time.Second),
+	}
+	p.pool <- stale
+
+	got, err := p.getConn()
+	if err == nil {
+		got.Close()
+		t.Fatal("expected dial failure after stale pooled connection was discarded")
+	}
+	if got != nil {
+		t.Fatalf("expected nil connection, got %+v", got)
+	}
+	if gotPool := len(p.pool); gotPool != 0 {
+		t.Fatalf("expected stale connection to be drained from pool, got %d", gotPool)
 	}
 }

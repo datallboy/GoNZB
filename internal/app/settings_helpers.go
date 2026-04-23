@@ -30,14 +30,18 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 
 	for _, s := range cfg.Servers {
 		out.Servers = append(out.Servers, ServerRuntimeSettings{
-			ID:            s.ID,
-			Host:          s.Host,
-			Port:          s.Port,
-			Username:      s.Username,
-			Password:      s.Password,
-			TLS:           s.TLS,
-			MaxConnection: s.MaxConnection,
-			Priority:      s.Priority,
+			ID:                     s.ID,
+			Host:                   s.Host,
+			Port:                   s.Port,
+			Username:               s.Username,
+			Password:               s.Password,
+			TLS:                    s.TLS,
+			MaxConnection:          s.MaxConnection,
+			Priority:               s.Priority,
+			DialTimeoutSeconds:     s.DialTimeoutSeconds,
+			TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
+			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
+			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
 		})
 	}
 
@@ -145,14 +149,18 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Servers = make([]config.ServerConfig, 0, len(runtime.Servers))
 		for _, s := range runtime.Servers {
 			effective.Servers = append(effective.Servers, config.ServerConfig{
-				ID:            strings.TrimSpace(s.ID),
-				Host:          strings.TrimSpace(s.Host),
-				Port:          s.Port,
-				Username:      s.Username,
-				Password:      s.Password,
-				TLS:           s.TLS,
-				MaxConnection: s.MaxConnection,
-				Priority:      s.Priority,
+				ID:                     strings.TrimSpace(s.ID),
+				Host:                   strings.TrimSpace(s.Host),
+				Port:                   s.Port,
+				Username:               s.Username,
+				Password:               s.Password,
+				TLS:                    s.TLS,
+				MaxConnection:          s.MaxConnection,
+				Priority:               s.Priority,
+				DialTimeoutSeconds:     s.DialTimeoutSeconds,
+				TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
+				PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
+				PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
 			})
 		}
 	}

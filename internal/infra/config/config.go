@@ -25,14 +25,18 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ID            string `mapstructure:"id" yaml:"id"`
-	Host          string `mapstructure:"host" yaml:"host"`
-	Port          int    `mapstructure:"port" yaml:"port"`
-	Username      string `mapstructure:"username" yaml:"username"`
-	Password      string `mapstructure:"password" yaml:"password"`
-	TLS           bool   `mapstructure:"tls" yaml:"tls"`
-	MaxConnection int    `mapstructure:"max_connections" yaml:"max_connections"`
-	Priority      int    `mapstructure:"priority" yaml:"priority"`
+	ID                     string `mapstructure:"id" yaml:"id"`
+	Host                   string `mapstructure:"host" yaml:"host"`
+	Port                   int    `mapstructure:"port" yaml:"port"`
+	Username               string `mapstructure:"username" yaml:"username"`
+	Password               string `mapstructure:"password" yaml:"password"`
+	TLS                    bool   `mapstructure:"tls" yaml:"tls"`
+	MaxConnection          int    `mapstructure:"max_connections" yaml:"max_connections"`
+	Priority               int    `mapstructure:"priority" yaml:"priority"`
+	DialTimeoutSeconds     int    `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int    `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int    `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int    `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
 }
 
 type IndexerConfig struct {
@@ -166,6 +170,15 @@ type ModulesConfig struct {
 type ModuleToggle struct {
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 }
+
+const (
+	defaultServerMaxConnections      = 10
+	defaultServerPriority            = 1
+	defaultServerDialTimeoutSeconds  = 10
+	defaultServerTCPKeepAliveSeconds = 30
+	defaultServerPoolIdleTimeoutSecs = 120
+	defaultServerPoolMaxAgeSeconds   = 900
+)
 
 func Load(path string) (*Config, error) {
 
@@ -502,10 +515,22 @@ func (c *Config) validate() error {
 				fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
 			}
 			if s.MaxConnection <= 0 {
-				c.Servers[i].MaxConnection = 10
+				c.Servers[i].MaxConnection = defaultServerMaxConnections
 			}
 			if s.Priority == 0 {
-				c.Servers[i].Priority = 1
+				c.Servers[i].Priority = defaultServerPriority
+			}
+			if s.DialTimeoutSeconds <= 0 {
+				c.Servers[i].DialTimeoutSeconds = defaultServerDialTimeoutSeconds
+			}
+			if s.TCPKeepAliveSeconds <= 0 {
+				c.Servers[i].TCPKeepAliveSeconds = defaultServerTCPKeepAliveSeconds
+			}
+			if s.PoolIdleTimeoutSeconds <= 0 {
+				c.Servers[i].PoolIdleTimeoutSeconds = defaultServerPoolIdleTimeoutSecs
+			}
+			if s.PoolMaxAgeSeconds <= 0 {
+				c.Servers[i].PoolMaxAgeSeconds = defaultServerPoolMaxAgeSeconds
 			}
 		}
 	}
