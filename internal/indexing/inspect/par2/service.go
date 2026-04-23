@@ -3,7 +3,6 @@ package par2
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -93,23 +92,28 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	defer workspace.Cleanup()
 
-	stagePath := filepath.Join(workspace.Dir, filepath.Base(candidate.FileName))
-	materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
+	sample, err := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, candidate, 4096)
 	if err != nil {
-		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
-			StageName:       stageName,
-			BinaryID:        candidate.BinaryID,
-			ReleaseID:       candidate.ReleaseID,
-			ErrorText:       err.Error(),
-			SourceUpdatedAt: candidate.SourceUpdatedAt,
-		})
 		if isRecoverablePAR2InspectionError(err) {
+			_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+				StageName:       stageName,
+				BinaryID:        candidate.BinaryID,
+				ReleaseID:       candidate.ReleaseID,
+				ErrorText:       err.Error(),
+				SourceUpdatedAt: candidate.SourceUpdatedAt,
+			})
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
 			}
 			return nil
 		}
-		return fmt.Errorf("materialize par2 binary: %w", err)
+		if err := s.completeSkippedInspection(ctx, candidate, workspace.ManifestPath, err); err != nil {
+			return err
+		}
+		if s != nil && s.log != nil {
+			s.log.Debug("inspect_par2: skipped binary_id=%d release_id=%s reason=%s", candidate.BinaryID, candidate.ReleaseID, par2ProbeSkipReason(err))
+		}
+		return nil
 	}
 
 	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(candidate.FileName)), ".par2")
@@ -123,21 +127,21 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		volumeNumber = parseInt(match[1])
 		recoveryBlocks = parseInt(match[2])
 	}
-	signatureOK := materialized.Signature == "par2"
+	signatureOK := sample.Signature == "par2"
 
 	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
 		BinaryID:     candidate.BinaryID,
 		ReleaseID:    candidate.ReleaseID,
 		StageName:    stageName,
-		ArtifactRole: "decoded_file",
-		ArtifactName: candidate.FileName,
-		ArtifactPath: materialized.OutputPath,
-		BytesTotal:   materialized.ExactSize,
-		MIMEType:     materialized.MIMEType,
-		Signature:    materialized.Signature,
+		ArtifactRole: "prefix_sample",
+		ArtifactName: sample.OutputName,
+		BytesTotal:   sample.BytesRead,
+		MIMEType:     sample.MIMEType,
+		Signature:    sample.Signature,
 		SourceKind:   "inspect_par2",
 		Metadata: map[string]any{
-			"yenc_file_size": materialized.ExactSize,
+			"bytes_sampled": sample.BytesRead,
+			"exact_size":    sample.ExactSize,
 		},
 	}}); err != nil {
 		return err
@@ -173,7 +177,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		BinaryID:          candidate.BinaryID,
 		ReleaseID:         candidate.ReleaseID,
 		Status:            "completed",
-		MaterializedBytes: workspace.MaterializedBytes + materialized.BytesWritten,
+		MaterializedBytes: workspace.MaterializedBytes + sample.BytesRead,
 		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
@@ -196,13 +200,59 @@ func parseInt(v string) int {
 	return int(n)
 }
 
+func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, manifestPath string, cause error) error {
+	stageName := string(supervisor.StageInspectPAR2)
+	summary := map[string]any{
+		"has_par2":           true,
+		"file_name":          candidate.FileName,
+		"probe_skip_reason":  par2ProbeSkipReason(cause),
+		"probe_error_detail": strings.TrimSpace(cause.Error()),
+	}
+	if strings.TrimSpace(manifestPath) != "" {
+		summary["workspace_path"] = manifestPath
+	}
+	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, nil); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, nil); err != nil {
+		return err
+	}
+	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+		StageName:       stageName,
+		BinaryID:        candidate.BinaryID,
+		ReleaseID:       candidate.ReleaseID,
+		Status:          "completed",
+		ToolProvenance:  inspectpkg.ToolProvenance(s.opts, stageName),
+		Summary:         summary,
+		SourceUpdatedAt: candidate.SourceUpdatedAt,
+	})
+}
+
+func par2ProbeSkipReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "has no file for binary"):
+		return "release_file_missing"
+	case strings.Contains(msg, "has no articles"):
+		return "article_refs_missing"
+	case strings.Contains(msg, "has no newsgroups"):
+		return "newsgroups_missing"
+	case strings.Contains(msg, "checksum mismatch"):
+		return "article_checksum_mismatch"
+	default:
+		return "prefix_sample_failed"
+	}
+}
+
 func isRecoverablePAR2InspectionError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "checksum mismatch") ||
-		strings.Contains(msg, "broken pipe") ||
+	return strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "i/o timeout") ||

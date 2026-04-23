@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	defaultArchiveMediaPrefixBytes int64 = 128 * 1024 * 1024
-	defaultArchiveMediaOutputBytes int64 = 128 * 1024 * 1024
+	defaultArchiveMediaPrefixBytes int64 = 64 * 1024 * 1024
+	defaultArchiveMediaOutputBytes int64 = 32 * 1024 * 1024
 	minArchiveMediaOutputBytes     int64 = 8 * 1024 * 1024
-	sampleArchiveMediaPrefixBytes  int64 = 32 * 1024 * 1024
-	sampleArchiveMediaOutputBytes  int64 = 32 * 1024 * 1024
+	sampleArchiveMediaPrefixBytes  int64 = 24 * 1024 * 1024
+	sampleArchiveMediaOutputBytes  int64 = 16 * 1024 * 1024
 )
 
 type ArchiveMediaMaterialization struct {
