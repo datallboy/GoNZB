@@ -101,3 +101,27 @@ limit 10;
 ```
 
 Expected post-change archive-backed media rows should be much lower than the earlier `~268 MB` materialization pattern.
+
+## Follow-up Hardening Pass
+
+Additional cleanup landed later on 2026-04-22 after the first tuning pass:
+
+- stopped persisting transient temp-workspace file paths from:
+  - `inspect_par2`
+  - `inspect_nfo`
+  - `inspect_archive`
+  - `inspect_password`
+  - `inspect_media`
+- removed now-misleading summary fields like `workspace_path` and `probe_path` from new inspection rows
+- scrubbed already-persisted transient paths from the live DB
+
+Live cleanup result:
+
+- `binary_inspection_artifacts` non-empty `artifact_path` rows for inspection stages: `0`
+- `binary_inspections.summary_json` rows containing `workspace_path`: `0`
+- `binary_inspections.summary_json` rows containing `probe_path`: `0`
+
+Reason for the cleanup:
+
+- those values referenced files under temp workspaces that are deleted during stage cleanup
+- keeping them in the read model would make Phase 3 API/UI surfaces appear to expose inspect artifacts that no longer exist
