@@ -235,14 +235,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		StageName:    stageName,
 		ArtifactRole: "archive_probe",
 		ArtifactName: candidate.FileName,
-		ArtifactPath: workspace.ManifestPath,
 		BytesTotal:   materializedBytesForProbe(workspace, probe),
 		MIMEType:     "application/x-archive-probe",
 		Signature:    "archive_probe",
 		SourceKind:   "inspect_archive",
 		Metadata: map[string]any{
 			"probe_strategy": probeStrategy(probe),
-			"probe_path":     probePath(probe),
 			"probe_error":    probeError(probe),
 		},
 	}}
@@ -293,12 +291,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"archive":             true,
 		"encrypted":           encrypted,
 		"candidate_passwords": passwords,
-		"workspace_path":      workspace.ManifestPath,
 	}
 	materializedBytes := workspace.MaterializedBytes
 	if probe != nil {
 		summary["probe_strategy"] = probe.Strategy
-		summary["probe_path"] = probe.ProbePath
 		summary["archive_entries"] = probe.EntryNames
 		summary["family_files"] = probe.FamilyFileNames
 		materializedBytes += probe.MaterializedBytes

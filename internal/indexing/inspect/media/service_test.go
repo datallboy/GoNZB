@@ -68,6 +68,18 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 	if len(repo.completed) != 1 || repo.completed[0].Summary["probe_mode"] != "ffprobe_direct" {
 		t.Fatalf("expected ffprobe_direct summary, got %+v", repo.completed)
 	}
+	if _, ok := repo.completed[0].Summary["workspace_path"]; ok {
+		t.Fatalf("expected no transient workspace_path in summary, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.artifacts) != 1 {
+		t.Fatalf("expected one artifact row, got %+v", repo.artifacts)
+	}
+	if repo.artifacts[0].ArtifactPath != "" {
+		t.Fatalf("expected no transient artifact path, got %+v", repo.artifacts[0])
+	}
+	if _, ok := repo.artifacts[0].Metadata["archive_path"]; ok {
+		t.Fatalf("expected no transient archive path in artifact metadata, got %+v", repo.artifacts[0].Metadata)
+	}
 }
 
 type fakeMediaRepository struct {

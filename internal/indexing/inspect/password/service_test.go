@@ -64,6 +64,12 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 	if len(repo.completedInspections) != 1 {
 		t.Fatalf("expected completed inspection, got %d", len(repo.completedInspections))
 	}
+	if len(repo.artifactRows) != 1 {
+		t.Fatalf("expected one artifact row, got %+v", repo.artifactRows)
+	}
+	if repo.artifactRows[0].ArtifactPath != "" {
+		t.Fatalf("expected no transient artifact path, got %+v", repo.artifactRows[0])
+	}
 }
 
 func TestRunOnceSkipsNonEncryptedArchiveCandidates(t *testing.T) {

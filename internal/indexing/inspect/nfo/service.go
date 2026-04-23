@@ -129,7 +129,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		StageName:    stageName,
 		ArtifactRole: "decoded_file",
 		ArtifactName: candidate.FileName,
-		ArtifactPath: materialized.OutputPath,
 		BytesTotal:   materialized.ExactSize,
 		MIMEType:     materialized.MIMEType,
 		Signature:    materialized.Signature,
@@ -160,7 +159,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"candidate_passwords": passwords,
 		"text_length":         len(textValue),
 		"signature":           materialized.Signature,
-		"workspace_path":      workspace.ManifestPath,
 	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,

@@ -63,6 +63,12 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if len(repo.artifacts) != 1 || repo.artifacts[0].ArtifactRole != "prefix_sample" {
 		t.Fatalf("expected one prefix sample artifact, got %+v", repo.artifacts)
 	}
+	if repo.artifacts[0].ArtifactPath != "" {
+		t.Fatalf("expected no transient artifact path, got %+v", repo.artifacts[0])
+	}
+	if _, ok := repo.completed[0].Summary["workspace_path"]; ok {
+		t.Fatalf("expected no transient workspace_path in summary, got %+v", repo.completed[0].Summary)
+	}
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
@@ -104,6 +110,9 @@ func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *tes
 	}
 	if summary["probe_error_detail"] == "" {
 		t.Fatalf("expected probe_error_detail, got %+v", summary)
+	}
+	if _, ok := summary["workspace_path"]; ok {
+		t.Fatalf("expected no transient workspace_path in skipped summary, got %+v", summary)
 	}
 }
 
