@@ -28,7 +28,7 @@ func NewManager(ctx *app.Context) (*Manager, error) {
 	var managed []*managedProvider
 
 	for _, cfg := range ctx.Config.Servers {
-		p := NewNNTPProvider(cfg)
+		p := NewNNTPProviderWithLogger(cfg, ctx.Logger)
 
 		ctx.Logger.Info("Validating provider: %s", p.ID())
 		if err := p.TestConnection(); err != nil {
