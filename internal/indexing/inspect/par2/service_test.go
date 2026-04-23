@@ -54,15 +54,65 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if len(repo.releaseUpdates) != 1 || !boolValuePAR2(repo.releaseUpdates[0].HasPAR2) {
 		t.Fatalf("expected has_par2 update, got %+v", repo.releaseUpdates)
 	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed inspection, got %+v", repo.completed)
+	}
+	if got := repo.completed[0].Summary["signature_ok"]; got != true {
+		t.Fatalf("expected signature_ok summary, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.artifacts) != 1 || repo.artifacts[0].ArtifactRole != "prefix_sample" {
+		t.Fatalf("expected one prefix sample artifact, got %+v", repo.artifacts)
+	}
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
 	}
 }
 
+func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakePAR2Repository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        72,
+			ReleaseID:       "rel-par2-missing",
+			FileName:        "missing.par2",
+			SourceUpdatedAt: &now,
+			TotalBytes:      8,
+		}},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		par2Fetcher{body: []byte("PAR2\x00P\x01\x02"), fileName: "missing.par2"},
+		testPAR2Logger{},
+		inspectpkg.Options{MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.failed) != 0 {
+		t.Fatalf("expected deterministic input to avoid failed status churn, got %+v", repo.failed)
+	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed inspection, got %+v", repo.completed)
+	}
+	summary := repo.completed[0].Summary
+	if summary["probe_skip_reason"] != "release_file_missing" {
+		t.Fatalf("expected release_file_missing skip, got %+v", summary)
+	}
+	if summary["probe_error_detail"] == "" {
+		t.Fatalf("expected probe_error_detail, got %+v", summary)
+	}
+}
+
 type fakePAR2Repository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile
+	completed      []pgindex.BinaryInspectionRecord
+	failed         []pgindex.BinaryInspectionRecord
+	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	par2Sets       []pgindex.BinaryPAR2SetRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
 }
@@ -75,15 +125,18 @@ func (f *fakePAR2Repository) StartBinaryInspection(context.Context, string, int6
 	return nil
 }
 
-func (f *fakePAR2Repository) CompleteBinaryInspection(context.Context, pgindex.BinaryInspectionRecord) error {
+func (f *fakePAR2Repository) CompleteBinaryInspection(_ context.Context, in pgindex.BinaryInspectionRecord) error {
+	f.completed = append(f.completed, in)
 	return nil
 }
 
-func (f *fakePAR2Repository) FailBinaryInspection(context.Context, pgindex.BinaryInspectionRecord) error {
+func (f *fakePAR2Repository) FailBinaryInspection(_ context.Context, in pgindex.BinaryInspectionRecord) error {
+	f.failed = append(f.failed, in)
 	return nil
 }
 
-func (f *fakePAR2Repository) ReplaceBinaryInspectionArtifacts(context.Context, string, int64, []pgindex.BinaryInspectionArtifactRecord) error {
+func (f *fakePAR2Repository) ReplaceBinaryInspectionArtifacts(_ context.Context, _ string, _ int64, rows []pgindex.BinaryInspectionArtifactRecord) error {
+	f.artifacts = append(f.artifacts, rows...)
 	return nil
 }
 
