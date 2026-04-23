@@ -41,6 +41,24 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 	if len(repo.archiveEntries) != 1 || len(repo.archiveEntries[0]) != 0 {
 		t.Fatalf("expected empty archive entry replacement, got %+v", repo.archiveEntries)
 	}
+	if len(repo.artifacts) != 1 || len(repo.artifacts[0]) != 1 {
+		t.Fatalf("expected one archive artifact row, got %+v", repo.artifacts)
+	}
+	if repo.artifacts[0][0].ArtifactPath != "" {
+		t.Fatalf("expected no transient artifact path, got %+v", repo.artifacts[0][0])
+	}
+	if _, ok := repo.artifacts[0][0].Metadata["probe_path"]; ok {
+		t.Fatalf("expected no transient probe_path in artifact metadata, got %+v", repo.artifacts[0][0].Metadata)
+	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed archive inspection, got %d", len(repo.completed))
+	}
+	if _, ok := repo.completed[0].Summary["workspace_path"]; ok {
+		t.Fatalf("expected no transient workspace_path in summary, got %+v", repo.completed[0].Summary)
+	}
+	if _, ok := repo.completed[0].Summary["probe_path"]; ok {
+		t.Fatalf("expected no transient probe_path in summary, got %+v", repo.completed[0].Summary)
+	}
 	if len(repo.releaseUpdates) != 1 {
 		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
 	}

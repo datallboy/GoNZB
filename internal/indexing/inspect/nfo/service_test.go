@@ -49,6 +49,15 @@ func TestRunOnceStoresTextEvidenceAndOnlySetsHasNFO(t *testing.T) {
 	if len(repo.passwordCandidates) != 1 || repo.passwordCandidates[0].PasswordValue != "swordfish" {
 		t.Fatalf("expected one nfo password candidate, got %+v", repo.passwordCandidates)
 	}
+	if len(repo.artifacts) != 1 || repo.artifacts[0].ArtifactPath != "" {
+		t.Fatalf("expected one artifact without transient path, got %+v", repo.artifacts)
+	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed inspection, got %+v", repo.completed)
+	}
+	if _, ok := repo.completed[0].Summary["workspace_path"]; ok {
+		t.Fatalf("expected no transient workspace_path in summary, got %+v", repo.completed[0].Summary)
+	}
 	if len(repo.releaseUpdates) != 1 {
 		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
 	}
@@ -65,6 +74,8 @@ func TestRunOnceStoresTextEvidenceAndOnlySetsHasNFO(t *testing.T) {
 type fakeNFORepository struct {
 	candidates         []pgindex.BinaryInspectionCandidate
 	files              []pgindex.CatalogReleaseFile
+	completed          []pgindex.BinaryInspectionRecord
+	artifacts          []pgindex.BinaryInspectionArtifactRecord
 	textEvidence       []pgindex.BinaryTextEvidenceRecord
 	passwordCandidates []pgindex.ReleasePasswordCandidateRecord
 	releaseUpdates     []pgindex.ReleaseInspectionUpdate
@@ -78,7 +89,8 @@ func (f *fakeNFORepository) StartBinaryInspection(context.Context, string, int64
 	return nil
 }
 
-func (f *fakeNFORepository) CompleteBinaryInspection(context.Context, pgindex.BinaryInspectionRecord) error {
+func (f *fakeNFORepository) CompleteBinaryInspection(_ context.Context, in pgindex.BinaryInspectionRecord) error {
+	f.completed = append(f.completed, in)
 	return nil
 }
 
@@ -86,7 +98,8 @@ func (f *fakeNFORepository) FailBinaryInspection(context.Context, pgindex.Binary
 	return nil
 }
 
-func (f *fakeNFORepository) ReplaceBinaryInspectionArtifacts(context.Context, string, int64, []pgindex.BinaryInspectionArtifactRecord) error {
+func (f *fakeNFORepository) ReplaceBinaryInspectionArtifacts(_ context.Context, _ string, _ int64, rows []pgindex.BinaryInspectionArtifactRecord) error {
+	f.artifacts = append(f.artifacts, rows...)
 	return nil
 }
 

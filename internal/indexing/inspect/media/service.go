@@ -149,13 +149,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				StageName:    stageName,
 				ArtifactRole: "decoded_file",
 				ArtifactName: candidate.FileName,
-				ArtifactPath: materialized.OutputPath,
 				BytesTotal:   materialized.ExactSize,
 				MIMEType:     materialized.MIMEType,
 				Signature:    materialized.Signature,
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
-					"probe_mode":    "ffprobe_direct",
+					"probe_mode":           "ffprobe_direct",
 					"ffprobe_error_detail": errorString(probeErr),
 				},
 			}}
@@ -243,14 +242,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				StageName:    stageName,
 				ArtifactRole: "archive_member_prefix",
 				ArtifactName: mediaEntry,
-				ArtifactPath: archiveMedia.OutputPath,
 				BytesTotal:   archiveMedia.ExtractedBytes,
 				MIMEType:     archiveMedia.MIMEType,
 				Signature:    archiveMedia.Signature,
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
 					"probe_mode":         "ffprobe_archive",
-					"archive_path":       archiveMedia.ArchivePath,
 					"archive_entry":      mediaEntry,
 					"extract_stderr":     archiveMedia.ExtractStderr,
 					"partial_extraction": archiveMedia.PartialExtraction,
@@ -351,7 +348,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"audio_codec":    audioCodec,
 		"file_extension": strings.ToLower(filepath.Ext(candidate.FileName)),
 		"probe_mode":     probeMode,
-		"workspace_path": workspace.ManifestPath,
 	}
 	if runtimeSeconds > 0 {
 		summary["runtime_seconds"] = runtimeSeconds

@@ -165,7 +165,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		StageName:    stageName,
 		ArtifactRole: "password_probe",
 		ArtifactName: candidate.FileName,
-		ArtifactPath: probe.ProbePath,
 		BytesTotal:   workspace.MaterializedBytes + probe.MaterializedBytes,
 		MIMEType:     "application/x-archive-probe",
 		Signature:    "password_probe",

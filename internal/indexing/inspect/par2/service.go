@@ -169,7 +169,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"set_name":        setName,
 		"signature_ok":    signatureOK,
 		"repairable_hint": true,
-		"workspace_path":  workspace.ManifestPath,
 	}
 
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -200,16 +199,13 @@ func parseInt(v string) int {
 	return int(n)
 }
 
-func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, manifestPath string, cause error) error {
+func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, _ string, cause error) error {
 	stageName := string(supervisor.StageInspectPAR2)
 	summary := map[string]any{
 		"has_par2":           true,
 		"file_name":          candidate.FileName,
 		"probe_skip_reason":  par2ProbeSkipReason(cause),
 		"probe_error_detail": strings.TrimSpace(cause.Error()),
-	}
-	if strings.TrimSpace(manifestPath) != "" {
-		summary["workspace_path"] = manifestPath
 	}
 	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, nil); err != nil {
 		return err
