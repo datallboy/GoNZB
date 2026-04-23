@@ -11,7 +11,7 @@ Use this plan as the day-to-day execution guide for:
 - PostgreSQL and runtime tuning for indexing throughput
 - schema and repository changes that reduce repeated selector work
 
-Use `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md` as the baseline history and completed-context reference for the refinement work already landed on 2026-04-21.
+Use `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md` as the baseline history and completed-context reference for the refinement work already landed on 2026-04-21.
 
 ## Why This Plan Exists
 
@@ -767,7 +767,7 @@ WorkStream 4 completion note:
     - `92` to `93`
   - that near-complete pool now looks more like a follow-up inspection and catalog-quality task than a throughput or queue-policy blocker
 - result of the WorkStream 4 decision point:
-  - the refinement-phase exit criteria from `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md` are now satisfied from live validation
+  - the refinement-phase exit criteria from `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md` are now satisfied from live validation
   - no new selector or queue-policy blocker was discovered during the bounded soak
   - follow-up work, if any, should target near-complete release inspection rather than reopening the completed throughput workstreams
 
@@ -785,7 +785,7 @@ WorkStream 4 completion note:
   - source of truth for which docs are active
 - `docs/active/INDEXER_NEXT_PHASE_ROADMAP.md`
   - top-level sequencing and Phase 3 gate
-- `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+- `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
   - baseline refinement history and previously landed work
 - `docs/INDEXER_TEST_QUERIES.md`
   - operator validation commands and DB inspection queries

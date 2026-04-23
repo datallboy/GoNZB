@@ -7,7 +7,7 @@ This is the current active execution plan for the post-stabilization refinement 
 Update on 2026-04-22:
 
 - this document remains active as the baseline refinement record
-- the current day-to-day execution plan has moved to `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
+- the current day-to-day execution plan moved to `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` before this refinement loop was signed off
 - live validation sign-off was completed later on `2026-04-22`; keep this document as the baseline record until the active-doc transition is performed
 
 The storage, schema, and runtime-stability pass is mostly complete. The current bottleneck has shifted to throughput and work ordering:
@@ -379,7 +379,7 @@ Expected behavior:
 
 ## Live Sign-Off Update On 2026-04-22
 
-Follow-on validation recorded in `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` now satisfies the live refinement sign-off requirement for this plan.
+Follow-on validation recorded in `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` now satisfies the live refinement sign-off requirement for this plan.
 
 Sign-off evidence:
 

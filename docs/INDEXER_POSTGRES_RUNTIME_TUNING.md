@@ -12,7 +12,7 @@ Use it for:
 - before/after baseline numbers for the current dev environment
 - tiered tuning guidance for lower-end and production systems
 
-Use `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` for the active execution order when the backlog burn-down plan is in play. This file is the durable tuning reference and measurement log for WorkStream 1 and later operator use.
+Use `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` for the completed execution history of the backlog burn-down pass. This file is the durable tuning reference and measurement log for WorkStream 1 and later operator use.
 
 ## Environment Snapshot
 

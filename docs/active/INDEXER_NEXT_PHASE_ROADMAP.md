@@ -4,7 +4,7 @@ Snapshot date: 2026-04-22
 
 This is the roadmap and sequencing reference for the next indexer era.
 
-Use this together with `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`.
+Use this together with `docs/active/INDEXER_API_AND_WEB_UI_EXPANSION_PLAN.md`.
 
 Completed baseline:
 
@@ -23,13 +23,13 @@ Current reference docs:
 
 The stabilization phase is mostly complete and remains signed off at the schema/runtime level.
 
-That work made the indexer backend much safer, but live operation still shows a refinement need before Phase 3:
+That work made the indexer backend much safer, and the follow-on refinement loop is now also signed off:
 
-- assemble backlog is still large
-- release queue throughput is too often dominated by fragment-only families
-- the next bottleneck is prioritization and throughput, not core schema safety
+- assemble backlog burn-down behavior was revalidated under repeated live `--once` passes
+- release queue throughput is no longer primarily dominated by fragment-only families
+- the Phase 3 gate was cleared by the completed refinement and backlog-performance sign-offs on `2026-04-22`
 
-So the active short-term focus is now a bounded refinement loop before Phase 3 starts.
+So the active short-term focus is now Phase 3 API/UI expansion.
 
 ## Current Baseline
 
@@ -52,7 +52,7 @@ Current realities that matter for sequencing:
 
 ## Phase Sequence
 
-### Current Assemble/Release Refinement Phase
+### Completed Assemble/Release Refinement Phase
 
 Purpose:
 
@@ -62,9 +62,9 @@ Purpose:
 
 Primary documents:
 
-- `docs/active/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
+- `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`
 - `docs/active/INDEXER_FOUNDATION_DOCS.md`
-- `docs/active/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
+- `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
 
 ### Phase 3: Indexer API And Web UI Expansion Plan
 
@@ -121,13 +121,18 @@ Phase 3 should not:
 
 ## Go / No-Go Gates
 
-Do not start Phase 3 until:
+Phase 3 start gate:
 
 - the backlog burn-down performance plan is complete and signed off
 - the current refinement doc is complete and signed off
 - assemble backlog behavior is under control
 - release candidate throughput is no longer dominated by fragment-only queue churn
 - the completed stabilization changes remain healthy under live validation
+
+Current status:
+
+- all of the above were satisfied and signed off on `2026-04-22`
+- Phase 3 is now the active execution phase
 
 ## Working Assumptions For This Next Phase
 
