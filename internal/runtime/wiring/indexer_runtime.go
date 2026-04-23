@@ -98,7 +98,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 
 		// Current default: the first configured NNTP server is used as the
 		// scrape transport until per-module transport selection is introduced.
-		provider := nntp.NewNNTPProvider(*runtimeCfg.ScrapeServer)
+		provider := nntp.NewNNTPProviderWithLogger(*runtimeCfg.ScrapeServer, appCtx.Logger)
 		if err := provider.TestConnection(); err != nil {
 			return nil, fmt.Errorf("scrape provider initialization failed: %w", err)
 		}

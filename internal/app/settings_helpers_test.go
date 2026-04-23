@@ -148,8 +148,8 @@ func TestFromConfigMirrorsServerConnectionTuning(t *testing.T) {
 			Priority:               1,
 			DialTimeoutSeconds:     11,
 			TCPKeepAliveSeconds:    31,
-			PoolIdleTimeoutSeconds: 121,
-			PoolMaxAgeSeconds:      901,
+			PoolIdleTimeoutSeconds: 46,
+			PoolMaxAgeSeconds:      601,
 		}},
 	}
 
@@ -158,7 +158,7 @@ func TestFromConfigMirrorsServerConnectionTuning(t *testing.T) {
 		t.Fatalf("expected one server, got %d", len(runtime.Servers))
 	}
 	got := runtime.Servers[0]
-	if got.DialTimeoutSeconds != 11 || got.TCPKeepAliveSeconds != 31 || got.PoolIdleTimeoutSeconds != 121 || got.PoolMaxAgeSeconds != 901 {
+	if got.DialTimeoutSeconds != 11 || got.TCPKeepAliveSeconds != 31 || got.PoolIdleTimeoutSeconds != 46 || got.PoolMaxAgeSeconds != 601 {
 		t.Fatalf("expected server tuning fields to round-trip, got %+v", got)
 	}
 }

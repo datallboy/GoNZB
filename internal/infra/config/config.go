@@ -176,8 +176,8 @@ const (
 	defaultServerPriority            = 1
 	defaultServerDialTimeoutSeconds  = 10
 	defaultServerTCPKeepAliveSeconds = 30
-	defaultServerPoolIdleTimeoutSecs = 120
-	defaultServerPoolMaxAgeSeconds   = 900
+	defaultServerPoolIdleTimeoutSecs = 45
+	defaultServerPoolMaxAgeSeconds   = 600
 )
 
 func Load(path string) (*Config, error) {
