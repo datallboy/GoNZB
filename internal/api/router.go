@@ -20,16 +20,21 @@ import (
 func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	// CORS for browser-based UI (Vite/dev and optional external UI hosts).
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: appCtx.Config.API.CORSAllowedOrigins,
+		AllowOrigins:     appCtx.Config.API.CORSAllowedOrigins,
+		AllowCredentials: true,
 		AllowMethods: []string{
 			http.MethodGet,
 			http.MethodPost,
+			http.MethodPut,
+			http.MethodPatch,
+			http.MethodDelete,
 			http.MethodOptions,
 		},
 		AllowHeaders: []string{
 			echo.HeaderOrigin,
 			echo.HeaderContentType,
 			echo.HeaderAccept,
+			echo.HeaderAuthorization,
 			"X-API-Key",
 		},
 	}))
@@ -67,9 +72,9 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
-		v1Admin := e.Group("/api/v1/admin", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		v1Admin.GET("/settings", settingsCtrl.GetSettings)
-		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings)
+		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
+		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 	}
 
 	if modules.API.Enabled && authSvc != nil {
@@ -121,7 +126,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	// Indexer-owned API surface.
 	if modules.API.Enabled && modules.UsenetIndexer.Enabled {
-		v1Indexer := e.Group("/api/v1/indexer", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesRead))
+		v1Indexer := e.Group("/api/v1/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesRead))
 		v1Indexer.GET("/overview", indexerCtrl.GetOverview)
 		v1Indexer.GET("/stages", indexerCtrl.ListStages)
 		v1Indexer.GET("/runs", indexerCtrl.ListRuns)
@@ -133,7 +138,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 
-		v1AdminIndexer := e.Group("/api/v1/admin/indexer", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminIndexer.Use(authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
 		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
