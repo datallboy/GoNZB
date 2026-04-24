@@ -7,12 +7,18 @@ import (
 
 	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/labstack/echo/v5"
+	"github.com/segmentio/ksuid"
 )
 
 const sessionCookieName = "gonzb_session"
+const csrfCookieName = "gonzb_csrf"
 
 func SessionCookieName() string {
 	return sessionCookieName
+}
+
+func CSRFCookieName() string {
+	return csrfCookieName
 }
 
 type AuthController struct {
@@ -60,12 +66,14 @@ func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
+	csrfToken := ensureCSRFCookie(c, session.ExpiresAt)
 	return c.JSON(http.StatusOK, map[string]any{
 		"session": map[string]any{
 			"user_id":       principal.UserID,
 			"username":      principal.Username,
 			"permissions":   permissionList(principal),
 			"authenticated": true,
+			"csrf_token":    csrfToken,
 		},
 	})
 }
@@ -75,12 +83,14 @@ func (ctrl *AuthController) GetSession(c *echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, map[string]any{"session": map[string]any{"authenticated": false}})
 	}
+	csrfToken := ensureCSRFCookie(c, time.Now().UTC().Add(7*24*time.Hour))
 	return c.JSON(http.StatusOK, map[string]any{
 		"session": map[string]any{
 			"user_id":       principal.UserID,
 			"username":      principal.Username,
 			"permissions":   permissionList(principal),
 			"authenticated": true,
+			"csrf_token":    csrfToken,
 		},
 	})
 }
@@ -95,6 +105,14 @@ func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+	})
+	http.SetCookie(c.Response(), &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
@@ -202,4 +220,23 @@ func permissionList(principal *auth.Principal) []string {
 		out = append(out, permission)
 	}
 	return out
+}
+
+func ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {
+	if c == nil || c.Response() == nil {
+		return ""
+	}
+	if cookie, err := c.Cookie(csrfCookieName); err == nil && cookie != nil && strings.TrimSpace(cookie.Value) != "" {
+		return cookie.Value
+	}
+	token := ksuid.New().String()
+	http.SetCookie(c.Response(), &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiresAt,
+	})
+	return token
 }

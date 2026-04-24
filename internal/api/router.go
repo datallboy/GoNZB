@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
@@ -41,6 +42,13 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	e.Use(middleware.RequestID())
 	e.Use(middleware.Recover())
+	e.Use(middleware.SecureWithConfig(middleware.SecureConfig{
+		XFrameOptions:         "DENY",
+		ContentTypeNosniff:    "nosniff",
+		XSSProtection:         "1; mode=block",
+		ReferrerPolicy:        "same-origin",
+		ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+	}))
 
 	// Middleware: Request Logger
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -69,10 +77,19 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		_ = authSvc.Bootstrap(context.Background())
 	}
 	authCtrl := &controllers.AuthController{Service: authSvc}
+	authRateLimit := middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      0.2,
+			Burst:     5,
+			ExpiresIn: 15 * time.Minute,
+		}),
+	})
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
 		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Admin.Use(csrfProtectionMiddleware())
+		v1Admin.Use(auditLogMiddleware(appCtx, "admin.settings"))
 		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 	}
@@ -80,10 +97,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.API.Enabled && authSvc != nil {
 		v1Auth := e.Group("/api/v1/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Auth.GET("/session", authCtrl.GetSession, authMiddleware(authSvc, appCtx.Config.API.Key, true))
-		v1Auth.POST("/session", authCtrl.CreateSession)
-		v1Auth.DELETE("/session", authCtrl.DeleteSession, authMiddleware(authSvc, appCtx.Config.API.Key, true))
+		v1Auth.POST("/session", authCtrl.CreateSession, authRateLimit)
+		v1Auth.DELETE("/session", authCtrl.DeleteSession, authMiddleware(authSvc, appCtx.Config.API.Key, true), csrfProtectionMiddleware())
 
 		v1AdminAuth := e.Group("/api/v1/admin/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminAuth.Use(csrfProtectionMiddleware())
+		v1AdminAuth.Use(auditLogMiddleware(appCtx, "admin.auth"))
 		v1AdminAuth.GET("/users", authCtrl.ListUsers, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersRead))
 		v1AdminAuth.POST("/users", authCtrl.UpsertUser, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersWrite))
 		v1AdminAuth.DELETE("/users/:id", authCtrl.DeleteUser, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersWrite))
@@ -140,6 +159,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminIndexer.Use(authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
+		v1AdminIndexer.Use(csrfProtectionMiddleware())
+		v1AdminIndexer.Use(auditLogMiddleware(appCtx, "admin.indexer"))
 		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
 		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
@@ -167,7 +188,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		eventCtrl := controllers.NewDownloadEvent(downloaderQueries)
 		sabCtrl = controllers.NewSABController(appCtx.DownloaderModule, appCtx.CurrentConfig)
 
-		v1Queue := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Queue := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, appCtx.Config.API.Key, false))
+		v1Queue.Use(csrfProtectionMiddleware())
 		v1Queue.GET("/queue", queueCtrl.ListActive)
 		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
 		v1Queue.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
@@ -271,6 +293,66 @@ func registerWebUIRoutes(e *echo.Echo) {
 	})
 }
 
+func csrfProtectionMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			if c == nil || isSafeMethod(c.Request().Method) || usesNonSessionAuth(c) {
+				return next(c)
+			}
+			if _, err := c.Cookie(controllers.SessionCookieName()); err != nil {
+				return next(c)
+			}
+			cookie, err := c.Cookie(controllers.CSRFCookieName())
+			if err != nil || cookie == nil || strings.TrimSpace(cookie.Value) == "" {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
+			}
+			provided := strings.TrimSpace(c.Request().Header.Get(echo.HeaderXCSRFToken))
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(cookie.Value)) != 1 {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
+			}
+			return next(c)
+		}
+	}
+}
+
+func auditLogMiddleware(appCtx *app.Context, scope string) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			err := next(c)
+			if c == nil || appCtx == nil || appCtx.Logger == nil || isSafeMethod(c.Request().Method) {
+				return err
+			}
+			username := "anonymous"
+			authMode := "none"
+			if principal, ok := controllers.PrincipalFromContext(c); ok && principal != nil {
+				if principal.Username != "" {
+					username = principal.Username
+				}
+				if principal.ByAPIKey {
+					authMode = "api-key"
+				} else {
+					authMode = "principal"
+				}
+			}
+			status := http.StatusOK
+			if res, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && res != nil && res.Status != 0 {
+				status = res.Status
+			}
+			appCtx.Logger.Info(
+				"audit scope=%s request_id=%s method=%s path=%s status=%d actor=%s auth_mode=%s",
+				scope,
+				c.Response().Header().Get(echo.HeaderXRequestID),
+				c.Request().Method,
+				c.Request().URL.Path,
+				status,
+				username,
+				authMode,
+			)
+			return err
+		}
+	}
+}
+
 func authMiddleware(authSvc *auth.Service, apiKey string, optional bool, permissions ...string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -314,4 +396,26 @@ func authenticatePrincipal(c *echo.Context, authSvc *auth.Service, apiKey string
 		return authSvc.AuthenticateSession(c.Request().Context(), cookie.Value)
 	}
 	return nil, auth.ErrUnauthorized
+}
+
+func isSafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func usesNonSessionAuth(c *echo.Context) bool {
+	if c == nil || c.Request() == nil {
+		return false
+	}
+	if strings.HasPrefix(c.Request().Header.Get("Authorization"), "Bearer ") {
+		return true
+	}
+	if strings.TrimSpace(c.Request().Header.Get("X-API-Key")) != "" || strings.TrimSpace(c.QueryParam("apikey")) != "" {
+		return true
+	}
+	return false
 }

@@ -10,6 +10,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (options.body !== undefined) {
     headers.set('Content-Type', 'application/json')
   }
+  if (!isSafeMethod(options.method ?? 'GET')) {
+    const csrfToken = readCookie('gonzb_csrf')
+    if (csrfToken) {
+      headers.set('X-CSRF-Token', csrfToken)
+    }
+  }
 
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
@@ -26,6 +32,24 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     return undefined as T
   }
   return (await response.json()) as T
+}
+
+function isSafeMethod(method: string) {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+}
+
+function readCookie(name: string) {
+  if (typeof document === 'undefined') {
+    return ''
+  }
+  const prefix = `${name}=`
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim()
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length))
+    }
+  }
+  return ''
 }
 
 async function parseError(response: Response): Promise<string> {
