@@ -22,6 +22,8 @@ type stubIndexerService struct {
 	binary       *pgindex.IndexerBinaryDetail
 	file         *pgindex.IndexerFileDetail
 	runErr       error
+	reinspectID  string
+	reenrichID   string
 }
 
 func (s *stubIndexerService) Overview(ctx context.Context) (*pgindex.IndexerOverview, error) {
@@ -107,6 +109,16 @@ func (s *stubIndexerService) GetAdminRelease(ctx context.Context, releaseID stri
 
 func (s *stubIndexerService) UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error) {
 	return &pgindex.ReleaseOverrideRecord{ReleaseID: releaseID}, nil
+}
+
+func (s *stubIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
+	s.reinspectID = releaseID
+	return nil
+}
+
+func (s *stubIndexerService) ReenrichRelease(ctx context.Context, releaseID string) error {
+	s.reenrichID = releaseID
+	return nil
 }
 
 func (s *stubIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
@@ -211,6 +223,30 @@ func TestIndexerControllerListRunsMarksResponseAsInternalDebug(t *testing.T) {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
+	}
+}
+
+func TestIndexerAdminControllerReinspectReleaseAccepted(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/indexer/releases/rel-1/actions/reinspect", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPath("/api/v1/admin/indexer/releases/:id/actions/reinspect")
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: "rel-1"}})
+
+	svc := &stubIndexerService{}
+	ctrl := &IndexerAdminController{Service: svc}
+	if err := ctrl.ReinspectRelease(c); err != nil {
+		t.Fatalf("ReinspectRelease returned error: %v", err)
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+	if svc.reinspectID != "rel-1" {
+		t.Fatalf("expected reinspect release id rel-1, got %q", svc.reinspectID)
+	}
+	if !strings.Contains(rec.Body.String(), `"action":"reinspect"`) {
+		t.Fatalf("expected reinspect action response, got %s", rec.Body.String())
 	}
 }
 

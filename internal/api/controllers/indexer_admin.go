@@ -175,6 +175,38 @@ func (ctrl *IndexerAdminController) UnhideRelease(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"override": override, "action": "unhide"})
 }
 
+func (ctrl *IndexerAdminController) ReinspectRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	releaseID := pathParamTrimmed(c, "id")
+	if err := ctrl.Service.ReinspectRelease(c.Request().Context(), releaseID); err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{
+		"release_id": releaseID,
+		"action":     "reinspect",
+		"status":     "accepted",
+	})
+}
+
+func (ctrl *IndexerAdminController) ReenrichRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	releaseID := pathParamTrimmed(c, "id")
+	if err := ctrl.Service.ReenrichRelease(c.Request().Context(), releaseID); err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{
+		"release_id": releaseID,
+		"action":     "reenrich",
+		"status":     "accepted",
+	})
+}
+
 func (ctrl *IndexerAdminController) RunStage(c *echo.Context) error {
 	return ctrl.runStageAction(c, "run")
 }
