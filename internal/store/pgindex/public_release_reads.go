@@ -101,12 +101,6 @@ type PublicIndexerReleaseCapabilities struct {
 func publicIndexerReleaseVisibilityClause(alias string) string {
 	return fmt.Sprintf(`
 		COALESCE(%[1]s.search_title, '') <> ''
-		AND EXISTS (
-			SELECT 1
-			FROM nzb_cache nz
-			WHERE nz.release_id = %[1]s.release_id
-			  AND nz.generation_status = 'ready'
-		)
 		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) <> 'unknown-release'
 		AND COALESCE(%[1]s.match_confidence, 0) >= 0.55
 		AND COALESCE(%[1]s.completion_pct, 0) >= 50

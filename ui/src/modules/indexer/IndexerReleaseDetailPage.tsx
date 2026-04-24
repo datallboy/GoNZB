@@ -62,7 +62,6 @@ export function IndexerReleaseDetailPage() {
   }
 
   const { release, media, external, files, capabilities } = data
-  const subtitleLanguages = media.subtitle_languages ?? []
 
   return (
     <div className="page-section stack">
@@ -141,7 +140,7 @@ export function IndexerReleaseDetailPage() {
             </div>
             <div>
               <dt>Subtitles</dt>
-              <dd>{subtitleLanguages.join(', ') || 'None'}</dd>
+              <dd>{media.subtitle_languages.join(', ') || 'None'}</dd>
             </div>
             <div>
               <dt>Sample Present</dt>
