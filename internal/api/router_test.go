@@ -82,6 +82,13 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/binaries/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/files/:id")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/overview")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/runs")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/run")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/pause")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/resume")
 	assertRouteMissing(t, routes, "/api/v1/releases/search")
 	assertRouteMissing(t, routes, "/api/v1/queue")
 }
