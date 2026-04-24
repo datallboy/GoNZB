@@ -41,6 +41,8 @@ export default function App() {
         >
           <Route index element={<Navigate to="/indexer/releases" replace />} />
           <Route path="indexer/releases" element={<IndexerReleaseListPage />} />
+          <Route path="indexer/browse/:category" element={<IndexerReleaseListPage />} />
+          <Route path="indexer/browse/:category/:subcategory" element={<IndexerReleaseListPage />} />
           <Route path="indexer/releases/:id" element={<IndexerReleaseDetailPage />} />
         </Route>
         <Route

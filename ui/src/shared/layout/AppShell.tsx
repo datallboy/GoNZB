@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { browseCategories } from '../../modules/indexer/browse'
 
 function canOpenAdminPortal(permissions: string[]) {
   return permissions.some((permission) =>
@@ -60,7 +61,12 @@ export function PublicAppShell() {
             <strong>Indexer Viewer</strong>
           </Link>
           <nav className="public-nav">
-            <NavLink to="/indexer/releases">Catalog</NavLink>
+            <NavLink to="/indexer/releases">Browse</NavLink>
+            {browseCategories.map((category) => (
+              <NavLink key={category.slug} to={`/indexer/browse/${category.slug}`}>
+                {category.label}
+              </NavLink>
+            ))}
           </nav>
         </div>
         <AccountMenu />
