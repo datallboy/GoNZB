@@ -28,7 +28,7 @@ type indexerService interface {
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error)
-	GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error)
+	GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
 	ReinspectRelease(ctx context.Context, releaseID string) error
 	ReenrichRelease(ctx context.Context, releaseID string) error
@@ -71,6 +71,13 @@ type indexerReleaseOverridePatch struct {
 	Hidden                 *bool     `json:"hidden,omitempty"`
 	Notes                  *string   `json:"notes,omitempty"`
 	Tags                   *[]string `json:"tags,omitempty"`
+}
+
+type indexerAdminReleaseView struct {
+	Release  *pgindex.IndexerReleaseDetail  `json:"release"`
+	Override *pgindex.ReleaseOverrideRecord `json:"override,omitempty"`
+	Files    []*pgindex.IndexerFileDetail   `json:"files"`
+	Binaries []*pgindex.IndexerBinaryDetail `json:"binaries"`
 }
 
 type runtimeIndexerService struct {
@@ -281,19 +288,54 @@ func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, query str
 	return s.store.ListIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
 }
 
-func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error) {
+func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {
 	if s == nil || s.store == nil {
-		return nil, nil, errIndexerUnavailable
+		return nil, errIndexerUnavailable
 	}
 	release, err := s.store.GetIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
 	if err != nil || release == nil {
-		return release, nil, err
+		return nil, err
 	}
 	override, err := s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return release, override, nil
+
+	files := make([]*pgindex.IndexerFileDetail, 0, len(release.Files))
+	binaries := make([]*pgindex.IndexerBinaryDetail, 0, len(release.Files))
+	seenBinaryIDs := make(map[int64]struct{}, len(release.Files))
+	for _, file := range release.Files {
+		if file.FileID > 0 {
+			fileDetail, err := s.store.GetIndexerFileDetail(ctx, file.FileID)
+			if err != nil {
+				return nil, err
+			}
+			if fileDetail != nil {
+				files = append(files, fileDetail)
+			}
+		}
+		if file.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seenBinaryIDs[file.BinaryID]; ok {
+			continue
+		}
+		seenBinaryIDs[file.BinaryID] = struct{}{}
+		binaryDetail, err := s.store.GetIndexerBinaryDetail(ctx, file.BinaryID)
+		if err != nil {
+			return nil, err
+		}
+		if binaryDetail != nil {
+			binaries = append(binaries, binaryDetail)
+		}
+	}
+
+	return &indexerAdminReleaseView{
+		Release:  release,
+		Override: override,
+		Files:    files,
+		Binaries: binaries,
+	}, nil
 }
 
 func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error) {

@@ -19,6 +19,7 @@ type stubIndexerService struct {
 	releases     []pgindex.PublicIndexerReleaseSummary
 	releaseTotal int
 	release      *pgindex.PublicIndexerReleaseDetail
+	adminRelease *indexerAdminReleaseView
 	binary       *pgindex.IndexerBinaryDetail
 	file         *pgindex.IndexerFileDetail
 	runErr       error
@@ -103,8 +104,8 @@ func (s *stubIndexerService) ListAdminReleases(ctx context.Context, query string
 	return nil, 0, nil
 }
 
-func (s *stubIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error) {
-	return nil, nil, nil
+func (s *stubIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {
+	return s.adminRelease, nil
 }
 
 func (s *stubIndexerService) UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error) {

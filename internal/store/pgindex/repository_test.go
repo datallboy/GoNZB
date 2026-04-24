@@ -2912,6 +2912,55 @@ func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) 
 	}
 }
 
+func TestPublicIndexerReleaseVisibilityRequiresReadyReleaseHeuristics(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicreadyheuristics%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.CompletionPct = 99.9
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public releases with incomplete completion: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected incomplete release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public incomplete detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected incomplete release detail to be hidden, got %+v", detail)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET completion_pct = 100
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("promote release to ready completion: %v", err)
+	}
+
+	items, total, err = store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public releases with ready completion: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected ready release to be visible, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err = store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public ready detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected ready release detail to be visible")
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
