@@ -5,6 +5,8 @@ import {
   getAdminRelease,
   hideAdminRelease,
   patchAdminRelease,
+  reenrichAdminRelease,
+  reinspectAdminRelease,
   unhideAdminRelease,
 } from '../../shared/api/admin'
 import { formatDateTime } from '../../shared/lib/format'
@@ -65,6 +67,20 @@ export function AdminReleaseDetailPage() {
       setMessage(nextHidden ? 'Release hidden.' : 'Release unhidden.')
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to update visibility')
+    }
+  }
+
+  async function handleAction(action: 'reinspect' | 'reenrich') {
+    setMessage(null)
+    try {
+      if (action === 'reinspect') {
+        await reinspectAdminRelease(id)
+      } else {
+        await reenrichAdminRelease(id)
+      }
+      setMessage(`${action} accepted.`)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : `Failed to ${action} release`)
     }
   }
 
@@ -182,6 +198,20 @@ export function AdminReleaseDetailPage() {
             />
           </label>
           <div className="button-row">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void handleAction('reinspect')}
+            >
+              Reinspect Release
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void handleAction('reenrich')}
+            >
+              Reenrich Release
+            </button>
             <button
               className="secondary-button"
               type="button"
