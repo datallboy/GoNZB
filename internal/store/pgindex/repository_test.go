@@ -2847,6 +2847,9 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("replace release files: %v", err)
 	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed ready nzb cache: %v", err)
+	}
 
 	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
@@ -2894,6 +2897,9 @@ func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) 
 		in.AvailabilityScore = 9.25
 		in.AvailabilityTier = "poor"
 	})
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed ready nzb cache: %v", err)
+	}
 
 	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
@@ -2924,6 +2930,12 @@ func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *
 		in.SourceTitle = strings.ReplaceAll(in.Title, " ", ".")
 		in.SearchTitle = strings.ToLower(in.Title)
 	})
+	if err := store.UpsertNZBCache(ctx, visibleID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed visible ready nzb cache: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, hiddenID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed hidden ready nzb cache: %v", err)
+	}
 
 	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
@@ -2954,6 +2966,9 @@ func TestPublicIndexerReleaseVisibilitySuppressesPlaceholderTitles(t *testing.T)
 		in.Title = "unknown-release"
 		in.SourceTitle = "unknown-release"
 	})
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed ready nzb cache: %v", err)
+	}
 
 	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
@@ -2980,6 +2995,9 @@ func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T
 	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
 		in.PasswordState = "unknown"
 	})
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed ready nzb cache: %v", err)
+	}
 
 	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
@@ -3004,6 +3022,50 @@ func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T
 	}
 	if detail.Release.PasswordState != "" {
 		t.Fatalf("expected detail password state to be suppressed, got %+v", detail.Release)
+	}
+}
+
+func TestPublicIndexerReleaseVisibilityRequiresReadyNZBCache(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicreadyonly%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, nil)
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public releases without ready nzb: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected release without ready nzb to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public detail without ready nzb: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected release without ready nzb detail to be hidden, got %+v", detail)
+	}
+
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "deadbeef", ""); err != nil {
+		t.Fatalf("seed ready nzb cache: %v", err)
+	}
+
+	items, total, err = store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public releases with ready nzb: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected release with ready nzb to be visible, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err = store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public detail with ready nzb: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected release with ready nzb detail to be visible")
 	}
 }
 
