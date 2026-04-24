@@ -97,6 +97,18 @@ func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (
 	return s.release, nil
 }
 
+func (s *stubIndexerService) ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+	return nil, 0, nil
+}
+
+func (s *stubIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error) {
+	return nil, nil, nil
+}
+
+func (s *stubIndexerService) UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error) {
+	return &pgindex.ReleaseOverrideRecord{ReleaseID: releaseID}, nil
+}
+
 func (s *stubIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
 	return s.binary, nil
 }

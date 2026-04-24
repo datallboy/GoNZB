@@ -102,6 +102,79 @@ func (ctrl *IndexerAdminController) ListRuns(c *echo.Context) error {
 	})
 }
 
+func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total, err := ctrl.Service.ListAdminReleases(c.Request().Context(), queryParamTrimmed(c, "q"), limit, offset)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(items) < total,
+	})
+}
+
+func (ctrl *IndexerAdminController) GetRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	release, override, err := ctrl.Service.GetAdminRelease(c.Request().Context(), pathParamTrimmed(c, "id"))
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	if release == nil {
+		return jsonError(c, http.StatusNotFound, "release not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"release": release, "override": override})
+}
+
+func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	var patch indexerReleaseOverridePatch
+	if err := decodeJSONBody(c, &patch); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	override, err := ctrl.Service.UpdateReleaseOverride(c.Request().Context(), pathParamTrimmed(c, "id"), patch)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"override": override})
+}
+
+func (ctrl *IndexerAdminController) HideRelease(c *echo.Context) error {
+	v := true
+	override, err := ctrl.Service.UpdateReleaseOverride(c.Request().Context(), pathParamTrimmed(c, "id"), indexerReleaseOverridePatch{Hidden: &v})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"override": override, "action": "hide"})
+}
+
+func (ctrl *IndexerAdminController) UnhideRelease(c *echo.Context) error {
+	v := false
+	override, err := ctrl.Service.UpdateReleaseOverride(c.Request().Context(), pathParamTrimmed(c, "id"), indexerReleaseOverridePatch{Hidden: &v})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"override": override, "action": "unhide"})
+}
+
 func (ctrl *IndexerAdminController) RunStage(c *echo.Context) error {
 	return ctrl.runStageAction(c, "run")
 }

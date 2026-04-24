@@ -27,6 +27,9 @@ type indexerService interface {
 	UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
+	ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error)
+	GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error)
+	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 }
@@ -55,6 +58,17 @@ type indexerStageConfigPatch struct {
 	BatchSize       *int     `json:"batch_size,omitempty"`
 	Concurrency     *int     `json:"concurrency,omitempty"`
 	BackoffSeconds  *int     `json:"backoff_seconds,omitempty"`
+}
+
+type indexerReleaseOverridePatch struct {
+	DisplayTitle           *string   `json:"display_title,omitempty"`
+	ClassificationOverride *string   `json:"classification_override,omitempty"`
+	TMDBIDOverride         *int64    `json:"tmdb_id_override,omitempty"`
+	TVDBIDOverride         *int64    `json:"tvdb_id_override,omitempty"`
+	IMDBIDOverride         *string   `json:"imdb_id_override,omitempty"`
+	Hidden                 *bool     `json:"hidden,omitempty"`
+	Notes                  *string   `json:"notes,omitempty"`
+	Tags                   *[]string `json:"tags,omitempty"`
 }
 
 type runtimeIndexerService struct {
@@ -258,6 +272,46 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 	return detail, nil
 }
 
+func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
+}
+
+func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, nil, errIndexerUnavailable
+	}
+	release, err := s.store.GetIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
+	if err != nil || release == nil {
+		return release, nil, err
+	}
+	override, err := s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
+	if err != nil {
+		return nil, nil, err
+	}
+	return release, override, nil
+}
+
+func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	current, err := s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
+	if err != nil {
+		return nil, err
+	}
+	if current == nil {
+		current = &pgindex.ReleaseOverrideRecord{ReleaseID: strings.TrimSpace(releaseID)}
+	}
+	applyReleaseOverridePatch(current, patch)
+	if err := s.store.UpsertReleaseOverride(ctx, *current); err != nil {
+		return nil, err
+	}
+	return s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
+}
+
 func (s *runtimeIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
@@ -457,6 +511,33 @@ func applyTMDBStagePatch(dst *app.IndexingTMDBRuntimeSettings, patch indexerStag
 	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+}
+
+func applyReleaseOverridePatch(dst *pgindex.ReleaseOverrideRecord, patch indexerReleaseOverridePatch) {
+	if patch.DisplayTitle != nil {
+		dst.DisplayTitle = strings.TrimSpace(*patch.DisplayTitle)
+	}
+	if patch.ClassificationOverride != nil {
+		dst.ClassificationOverride = strings.TrimSpace(*patch.ClassificationOverride)
+	}
+	if patch.TMDBIDOverride != nil {
+		dst.TMDBIDOverride = *patch.TMDBIDOverride
+	}
+	if patch.TVDBIDOverride != nil {
+		dst.TVDBIDOverride = *patch.TVDBIDOverride
+	}
+	if patch.IMDBIDOverride != nil {
+		dst.IMDBIDOverride = strings.TrimSpace(*patch.IMDBIDOverride)
+	}
+	if patch.Hidden != nil {
+		dst.Hidden = *patch.Hidden
+	}
+	if patch.Notes != nil {
+		dst.Notes = *patch.Notes
+	}
+	if patch.Tags != nil {
+		dst.Tags = append([]string(nil), (*patch.Tags)...)
 	}
 }
 
