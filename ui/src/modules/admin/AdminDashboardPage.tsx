@@ -23,7 +23,8 @@ export function AdminDashboardPage() {
   const cards = [
     ['Releases', overview.release_count],
     ['Files', overview.file_count],
-    ['Ready NZBs', overview.ready_nzb_count],
+    ['Ready Releases', overview.ready_release_count],
+    ['Cached NZBs', overview.ready_nzb_count],
     ['Running Stages', overview.running_stage_count],
     ['Paused Stages', overview.paused_stage_count],
     ['Failed Runs', overview.failed_run_count],

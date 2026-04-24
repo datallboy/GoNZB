@@ -53,7 +53,7 @@ export type PublicReleaseDetail = {
     primary_resolution: string
     primary_video_codec: string
     primary_audio_codec: string
-    subtitle_languages: string[]
+    subtitle_languages?: string[]
     sample_present: boolean
     archive_count: number
     video_count: number
@@ -90,6 +90,7 @@ export type IndexerOverview = {
   file_count: number
   inspection_count: number
   ready_nzb_count: number
+  ready_release_count: number
   completed_release_count: number
   encrypted_release_count: number
   password_known_count: number
@@ -199,11 +200,283 @@ export type ReleaseOverridePatch = {
   tags?: string[]
 }
 
+export type AdminInspectionSummary = {
+  stage_name: string
+  binary_id: number
+  release_id: string
+  status: string
+  error_text: string
+  materialized_bytes: number
+  tool_provenance_json?: unknown
+  summary_json?: unknown
+  started_at?: string
+  finished_at?: string
+  updated_at: string
+}
+
+export type AdminPasswordCandidate = {
+  id: number
+  binary_id: number
+  artifact_id: number
+  source_kind: string
+  source_ref: string
+  confidence: number
+  verification_status: string
+  last_verified_at?: string
+  last_error: string
+}
+
+export type AdminExternalMatch = {
+  source: string
+  external_id: number
+  media_type: string
+  title: string
+  original_title: string
+  year: number
+  confidence: number
+  chosen: boolean
+  payload_json?: unknown
+}
+
+export type AdminPredbMatch = {
+  entry_id: number
+  title: string
+  category: string
+  source: string
+  team: string
+  genre: string
+  url: string
+  size_kb: number
+  file_count: number
+  posted_at?: string
+  confidence: number
+  chosen: boolean
+  payload_json?: unknown
+}
+
+export type AdminReleaseRecord = {
+  release_id: string
+  guid: string
+  provider_id: number
+  release_key: string
+  group_name: string
+  title: string
+  source_title: string
+  deobfuscated_title: string
+  matched_media_title: string
+  original_media_title: string
+  tmdb_id: number
+  tvdb_id: number
+  external_media_type: string
+  external_year: number
+  season_number: number
+  episode_number: number
+  season_episode_source: string
+  season_episode_confidence: number
+  title_source: string
+  title_confidence: number
+  category: string
+  classification: string
+  poster: string
+  size_bytes: number
+  posted_at?: string
+  file_count: number
+  expected_file_count: number
+  par_file_count: number
+  completion_pct: number
+  match_confidence: number
+  identity_status: string
+  passworded: boolean
+  passworded_known: boolean
+  passworded_unknown: boolean
+  password_state: string
+  preferred_password_id: number
+  encrypted: boolean
+  has_par2: boolean
+  has_nfo: boolean
+  archive_count: number
+  video_count: number
+  audio_count: number
+  sample_present: boolean
+  availability_score: number
+  availability_tier: string
+  media_quality_score: number
+  media_quality_tier: string
+  identity_confidence_score: number
+  runtime_seconds: number
+  primary_resolution: string
+  primary_video_codec: string
+  primary_audio_codec: string
+  subtitle_languages?: string[]
+  media_tags?: string[]
+  metadata_updated_at?: string
+  nzb_generation_status: string
+}
+
+export type AdminReleaseFileSummary = {
+  file_id: number
+  binary_id: number
+  file_name: string
+  size_bytes: number
+  file_index: number
+  is_pars: boolean
+  subject: string
+  poster: string
+  posted_at?: string
+  article_count: number
+  total_parts: number
+  observed_parts: number
+  match_confidence: number
+  match_status: string
+}
+
+export type AdminFileArticle = {
+  message_id: string
+  bytes: number
+  part_number: number
+}
+
+export type AdminFileDetail = {
+  file_id: number
+  release_id: string
+  release_title: string
+  group_name: string
+  binary_id: number
+  file_name: string
+  size_bytes: number
+  file_index: number
+  is_pars: boolean
+  subject: string
+  poster: string
+  posted_at?: string
+  article_count: number
+  total_parts: number
+  observed_parts: number
+  match_confidence: number
+  match_status: string
+  grouping_evidence_json?: unknown
+  newsgroups: string[]
+  articles: AdminFileArticle[]
+}
+
+export type AdminBinaryInspectionArtifact = {
+  stage_name: string
+  artifact_role: string
+  artifact_name: string
+  artifact_path: string
+  bytes_total: number
+  mime_type: string
+  signature: string
+  source_kind: string
+  metadata_json?: unknown
+}
+
+export type AdminArchiveEntry = {
+  entry_name: string
+  is_dir: boolean
+  uncompressed_bytes: number
+  compressed_bytes: number
+  encrypted: boolean
+  comment: string
+  media_type: string
+  signature: string
+  metadata_json?: unknown
+}
+
+export type AdminMediaStream = {
+  stream_index: number
+  stream_type: string
+  codec_name: string
+  codec_long_name: string
+  profile: string
+  width: number
+  height: number
+  channels: number
+  language: string
+  duration_seconds: number
+  bit_rate: number
+  default_disposition: boolean
+  forced_disposition: boolean
+  metadata_json?: unknown
+}
+
+export type AdminTextEvidence = {
+  stage_name: string
+  evidence_kind: string
+  text_value: string
+  tokens: string[]
+  metadata_json?: unknown
+}
+
+export type AdminPAR2Set = {
+  set_name: string
+  base_name: string
+  is_volume: boolean
+  volume_number: number
+  recovery_blocks: number
+  signature_ok: boolean
+  metadata_json?: unknown
+}
+
+export type AdminBinaryPart = {
+  article_header_id: number
+  message_id: string
+  part_number: number
+  total_parts: number
+  segment_bytes: number
+  file_name: string
+}
+
+export type AdminBinaryDetail = {
+  binary_id: number
+  release_id: string
+  release_title: string
+  group_name: string
+  release_key: string
+  release_name: string
+  binary_key: string
+  binary_name: string
+  file_id: number
+  file_name: string
+  provider_id: number
+  newsgroup_id: number
+  poster: string
+  posted_at?: string
+  file_index: number
+  expected_file_count: number
+  total_parts: number
+  observed_parts: number
+  total_bytes: number
+  first_article_number: number
+  last_article_number: number
+  match_confidence: number
+  match_status: string
+  grouping_evidence_json?: unknown
+  encrypted: boolean
+  password_state: string
+  inspections: AdminInspectionSummary[]
+  artifacts: AdminBinaryInspectionArtifact[]
+  archive_entries: AdminArchiveEntry[]
+  media_streams: AdminMediaStream[]
+  text_evidence: AdminTextEvidence[]
+  par2_sets: AdminPAR2Set[]
+  parts: AdminBinaryPart[]
+}
+
 export type AdminReleaseDetailResponse = {
-  release: PublicReleaseDetail & {
-    release: PublicReleaseSummary
+  release: {
+    release: AdminReleaseRecord
+    newsgroups: string[]
+    files: AdminReleaseFileSummary[]
+    password_candidates: AdminPasswordCandidate[]
+    inspections: AdminInspectionSummary[]
+    predb_matches: AdminPredbMatch[]
+    tmdb_matches: AdminExternalMatch[]
+    tvdb_matches: AdminExternalMatch[]
   }
   override?: ReleaseOverride
+  files: AdminFileDetail[]
+  binaries: AdminBinaryDetail[]
 }
 
 export type User = {
