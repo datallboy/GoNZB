@@ -13,7 +13,7 @@ import { IndexerReleaseDetailPage } from './modules/indexer/IndexerReleaseDetail
 import { IndexerReleaseListPage } from './modules/indexer/IndexerReleaseListPage'
 import { AuthProvider } from './shared/auth/AuthContext'
 import { RequireAuth } from './shared/auth/RequireAuth'
-import { AppShell } from './shared/layout/AppShell'
+import { AdminAppShell, PublicAppShell } from './shared/layout/AppShell'
 
 function NotFoundPage() {
   return (
@@ -35,15 +35,25 @@ export default function App() {
           path="/"
           element={
             <RequireAuth>
-              <AppShell />
+              <PublicAppShell />
             </RequireAuth>
           }
         >
           <Route index element={<Navigate to="/indexer/releases" replace />} />
           <Route path="indexer/releases" element={<IndexerReleaseListPage />} />
           <Route path="indexer/releases/:id" element={<IndexerReleaseDetailPage />} />
+        </Route>
+        <Route
+          path="/admin"
+          element={
+            <RequireAuth>
+              <AdminAppShell />
+            </RequireAuth>
+          }
+        >
+          <Route index element={<Navigate to="/admin/indexer/dashboard" replace />} />
           <Route
-            path="admin/indexer/dashboard"
+            path="indexer/dashboard"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminDashboardPage />
@@ -51,7 +61,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/indexer/releases"
+            path="indexer/releases"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminReleasesPage />
@@ -59,7 +69,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/indexer/releases/:id"
+            path="indexer/releases/:id"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminReleaseDetailPage />
@@ -67,7 +77,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/indexer/stages"
+            path="indexer/stages"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminStagesPage />
@@ -75,7 +85,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/indexer/runs"
+            path="indexer/runs"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminRunsPage />
@@ -83,7 +93,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/indexer/settings"
+            path="indexer/settings"
             element={
               <RequireAuth permission="indexer.runtime.configure">
                 <AdminSettingsPage />
@@ -91,7 +101,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/security/users"
+            path="security/users"
             element={
               <RequireAuth permission="auth.users.read">
                 <AdminUsersPage />
@@ -99,7 +109,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/security/roles"
+            path="security/roles"
             element={
               <RequireAuth permission="auth.roles.read">
                 <AdminRolesPage />
@@ -107,7 +117,7 @@ export default function App() {
             }
           />
           <Route
-            path="admin/security/tokens"
+            path="security/tokens"
             element={
               <RequireAuth permission="auth.tokens.read">
                 <AdminTokensPage />
@@ -116,6 +126,7 @@ export default function App() {
           />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AuthProvider>
   )

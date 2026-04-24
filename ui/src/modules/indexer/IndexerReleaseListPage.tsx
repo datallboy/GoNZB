@@ -116,7 +116,7 @@ export function IndexerReleaseListPage() {
       <div className="page-hero">
         <div>
           <p className="eyebrow">Indexer Catalog</p>
-          <h1 className="page-title">Stable release catalog for the indexer module.</h1>
+          <h1 className="page-title">NZB-ready releases for viewers and operators.</h1>
         </div>
         <div className="hero-stat-grid">
           <div className="stat-card">
