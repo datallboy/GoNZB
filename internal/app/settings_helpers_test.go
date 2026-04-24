@@ -150,6 +150,7 @@ func TestFromConfigMirrorsServerConnectionTuning(t *testing.T) {
 			TCPKeepAliveSeconds:    31,
 			PoolIdleTimeoutSeconds: 46,
 			PoolMaxAgeSeconds:      601,
+			EnablePoolLogging:      true,
 		}},
 	}
 
@@ -158,7 +159,7 @@ func TestFromConfigMirrorsServerConnectionTuning(t *testing.T) {
 		t.Fatalf("expected one server, got %d", len(runtime.Servers))
 	}
 	got := runtime.Servers[0]
-	if got.DialTimeoutSeconds != 11 || got.TCPKeepAliveSeconds != 31 || got.PoolIdleTimeoutSeconds != 46 || got.PoolMaxAgeSeconds != 601 {
+	if got.DialTimeoutSeconds != 11 || got.TCPKeepAliveSeconds != 31 || got.PoolIdleTimeoutSeconds != 46 || got.PoolMaxAgeSeconds != 601 || !got.EnablePoolLogging {
 		t.Fatalf("expected server tuning fields to round-trip, got %+v", got)
 	}
 }

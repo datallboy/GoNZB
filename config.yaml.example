@@ -37,6 +37,7 @@ servers:
     tcp_keepalive_seconds: 30
     pool_idle_timeout_seconds: 45
     pool_max_age_seconds: 600
+    enable_pool_logging: false
   - id: "Backup"
     host: "news.backup.com"
     port: 563
@@ -49,6 +50,7 @@ servers:
     tcp_keepalive_seconds: 30
     pool_idle_timeout_seconds: 45
     pool_max_age_seconds: 600
+    enable_pool_logging: false
 
 # Newznab compatible indexers for searching
 indexers:

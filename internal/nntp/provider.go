@@ -118,6 +118,9 @@ func NewNNTPProvider(c config.ServerConfig) Provider {
 }
 
 func NewNNTPProviderWithLogger(c config.ServerConfig, log providerLogger) Provider {
+	if !c.EnablePoolLogging {
+		log = nil
+	}
 	return &nntpProvider{
 		conf: c,
 		pool: make(chan *nntpConn, c.MaxConnection),
