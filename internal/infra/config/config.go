@@ -37,6 +37,7 @@ type ServerConfig struct {
 	TCPKeepAliveSeconds    int    `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
 	PoolIdleTimeoutSeconds int    `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
 	PoolMaxAgeSeconds      int    `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
+	EnablePoolLogging      bool   `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
 }
 
 type IndexerConfig struct {

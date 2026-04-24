@@ -42,6 +42,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
 			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
 			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
+			EnablePoolLogging:      s.EnablePoolLogging,
 		})
 	}
 
@@ -161,6 +162,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 				TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
 				PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
 				PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
+				EnablePoolLogging:      s.EnablePoolLogging,
 			})
 		}
 	}

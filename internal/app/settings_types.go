@@ -30,6 +30,7 @@ type ServerRuntimeSettings struct {
 	TCPKeepAliveSeconds    int    `json:"tcp_keepalive_seconds"`
 	PoolIdleTimeoutSeconds int    `json:"pool_idle_timeout_seconds"`
 	PoolMaxAgeSeconds      int    `json:"pool_max_age_seconds"`
+	EnablePoolLogging      bool   `json:"enable_pool_logging"`
 }
 
 type IndexerRuntimeSettings struct {
