@@ -14,9 +14,11 @@ export type PublicReleaseSummary = {
   guid: string
   title: string
   posted_at?: string
+  added_at?: string
   size_bytes: number
   file_count: number
   completion_pct: number
+  category: string
   classification: string
   has_par2: boolean
   has_nfo: boolean

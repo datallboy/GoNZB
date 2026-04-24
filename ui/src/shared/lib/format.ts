@@ -32,3 +32,24 @@ export function formatRuntime(seconds: number) {
 export function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value)
 }
+
+export function formatRelativeAge(value?: string | null) {
+  if (!value) return 'Unknown'
+  const then = new Date(value).getTime()
+  const now = Date.now()
+  const delta = Math.max(0, now - then)
+  const minute = 60 * 1000
+  const hour = 60 * minute
+  const day = 24 * hour
+
+  if (delta < hour) {
+    return `${Math.max(1, Math.floor(delta / minute))}m`
+  }
+  if (delta < day) {
+    return `${Math.floor(delta / hour)}h`
+  }
+  if (delta < 30 * day) {
+    return `${Math.floor(delta / day)}d`
+  }
+  return `${Math.floor(delta / (30 * day))}mo`
+}

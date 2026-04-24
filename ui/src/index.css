@@ -112,12 +112,14 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .public-nav a {
-  padding: 0.78rem 0.95rem;
-  border-radius: 14px;
+  padding: 0.62rem 0.88rem;
+  border-radius: 999px;
   color: var(--text-muted);
+  font-size: 0.95rem;
 }
 
 .public-nav a.active,
@@ -204,7 +206,7 @@ textarea {
 }
 
 .public-main {
-  padding: 2rem;
+  padding: 1.5rem 2rem 2rem;
 }
 
 .admin-topbar {
@@ -221,6 +223,12 @@ textarea {
   flex-direction: column;
   gap: 1.5rem;
   animation: fade-in 260ms ease;
+}
+
+.public-catalog,
+.public-detail {
+  max-width: 1280px;
+  margin: 0 auto;
 }
 
 .page-hero,
@@ -241,6 +249,58 @@ textarea {
 
 .page-card {
   padding: 1.4rem;
+}
+
+.catalog-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: end;
+}
+
+.catalog-search {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  width: min(100%, 440px);
+}
+
+.catalog-search input {
+  flex: 1;
+}
+
+.category-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.category-browser__roots,
+.category-browser__subs {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.browse-chip,
+.browse-subchip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.62rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(7, 18, 26, 0.55);
+  color: var(--text-muted);
+}
+
+.browse-chip.active,
+.browse-subchip.active,
+.browse-chip:hover,
+.browse-subchip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: rgba(99, 200, 160, 0.14);
 }
 
 .page-header {
@@ -408,6 +468,30 @@ textarea {
   color: var(--text-muted);
 }
 
+.public-detail__hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
+.public-detail__scene {
+  margin-top: 0.7rem;
+  font-family:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+  color: var(--accent-strong);
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+
+.public-detail__grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
 .primary-button,
 .secondary-button {
   display: inline-flex;
@@ -459,6 +543,12 @@ textarea {
 .data-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.public-data-table td,
+.public-data-table th {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
 }
 
 .data-table th,
@@ -644,6 +734,9 @@ textarea {
   .page-header,
   .pagination-row,
   .list-row,
+  .catalog-hero,
+  .catalog-search,
+  .public-detail__hero,
   .public-topbar,
   .admin-topbar {
     flex-direction: column;

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, NavLink, useParams, useSearchParams } from 'react-router-dom'
 import { listPublicReleases } from '../../shared/api/indexer'
-import { formatBytes, formatDateTime, formatPercent } from '../../shared/lib/format'
+import { formatBytes, formatRelativeAge } from '../../shared/lib/format'
 import type { PublicReleaseListResponse } from '../../shared/types'
+import { browseCategories, findBrowseCategory, releaseCategoryLabel } from './browse'
 
 const defaultResponse: PublicReleaseListResponse = {
   items: [],
@@ -17,21 +18,15 @@ const defaultResponse: PublicReleaseListResponse = {
 }
 
 export function IndexerReleaseListPage() {
+  const { category = '', subcategory = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<PublicReleaseListResponse>(defaultResponse)
   const [query, setQuery] = useState(searchParams.get('q') ?? '')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const sort = searchParams.get('sort') ?? 'posted_at_desc'
-  const classification = searchParams.get('classification') ?? ''
-  const availabilityTier = searchParams.get('availability_tier') ?? ''
-  const qualityTier = searchParams.get('media_quality_tier') ?? ''
-  const passwordState = searchParams.get('password_state') ?? ''
-  const metadataStatus = searchParams.get('metadata_status') ?? ''
-  const hasNfo = searchParams.get('has_nfo') ?? ''
-  const hasPar2 = searchParams.get('has_par2') ?? ''
-  const completionMin = searchParams.get('completion_min') ?? ''
+  const currentCategory = findBrowseCategory(category)
+  const currentSubcategory = subcategory || 'all'
   const offset = Number(searchParams.get('offset') ?? '0') || 0
   const limit = 25
 
@@ -41,15 +36,9 @@ export function IndexerReleaseListPage() {
     setError(null)
     void listPublicReleases({
       q: searchParams.get('q') ?? '',
-      sort,
-      classification,
-      availability_tier: availabilityTier,
-      media_quality_tier: qualityTier,
-      password_state: passwordState,
-      metadata_status: metadataStatus,
-      has_nfo: hasNfo,
-      has_par2: hasPar2,
-      completion_min: completionMin,
+      browse_category: category,
+      browse_subcategory: category ? currentSubcategory : '',
+      sort: 'posted_at_desc',
       limit,
       offset,
     })
@@ -71,37 +60,26 @@ export function IndexerReleaseListPage() {
     return () => {
       cancelled = true
     }
-  }, [
-    availabilityTier,
-    classification,
-    completionMin,
-    hasNfo,
-    hasPar2,
-    limit,
-    metadataStatus,
-    offset,
-    passwordState,
-    qualityTier,
-    searchParams,
-    sort,
-  ])
+  }, [category, currentSubcategory, limit, offset, searchParams])
 
-  function updateParams(next: Record<string, string>) {
-    const params = new URLSearchParams(searchParams)
-    Object.entries(next).forEach(([key, value]) => {
-      if (value) {
-        params.set(key, value)
-      } else {
-        params.delete(key)
-      }
-    })
-    params.set('offset', '0')
-    setSearchParams(params)
-  }
+  const pageTitle = useMemo(() => {
+    if (!currentCategory) {
+      return 'Browse NZB-ready releases'
+    }
+    const sub = currentCategory.subcategories.find((item) => item.slug === currentSubcategory)
+    return sub && sub.slug !== 'all' ? `${currentCategory.label} / ${sub.label}` : currentCategory.label
+  }, [currentCategory, currentSubcategory])
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    updateParams({ q: query })
+    const params = new URLSearchParams(searchParams)
+    if (query) {
+      params.set('q', query)
+    } else {
+      params.delete('q')
+    }
+    params.set('offset', '0')
+    setSearchParams(params)
   }
 
   function handlePage(direction: 'prev' | 'next') {
@@ -112,172 +90,70 @@ export function IndexerReleaseListPage() {
   }
 
   return (
-    <div className="page-section">
-      <div className="page-hero">
+    <div className="page-section public-catalog">
+      <div className="page-card catalog-hero">
         <div>
-          <p className="eyebrow">Indexer Catalog</p>
-          <h1 className="page-title">NZB-ready releases for viewers and operators.</h1>
+          <p className="eyebrow">Browse</p>
+          <h1 className="page-title">{pageTitle}</h1>
+          <p className="muted-copy">
+            {currentCategory?.description || 'Simple public catalog browsing with category-first navigation.'}
+          </p>
         </div>
-        <div className="hero-stat-grid">
-          <div className="stat-card">
-            <span>Total Matches</span>
-            <strong>{data.total}</strong>
-          </div>
-          <div className="stat-card">
-            <span>Sort</span>
-            <strong>{sort.replaceAll('_', ' ')}</strong>
-          </div>
-        </div>
-      </div>
-
-      <div className="page-card stack">
-        <form className="toolbar-grid" onSubmit={handleSearch}>
-          <label className="field">
-            <span>Search</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Title, release name, scene hint"
-            />
-          </label>
-          <label className="field">
-            <span>Sort</span>
-            <select value={sort} onChange={(event) => updateParams({ sort: event.target.value })}>
-              <option value="posted_at_desc">Newest first</option>
-              <option value="posted_at_asc">Oldest first</option>
-              <option value="size_desc">Largest first</option>
-              <option value="size_asc">Smallest first</option>
-              <option value="title_asc">Title A-Z</option>
-              <option value="availability_desc">Availability</option>
-              <option value="quality_desc">Quality</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Classification</span>
-            <select
-              value={classification}
-              onChange={(event) => updateParams({ classification: event.target.value })}
-            >
-              <option value="">All</option>
-              <option value="movie">Movie</option>
-              <option value="tv">TV</option>
-              <option value="audio">Audio</option>
-              <option value="ebook">Ebook</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Availability</span>
-            <select
-              value={availabilityTier}
-              onChange={(event) => updateParams({ availability_tier: event.target.value })}
-            >
-              <option value="">All</option>
-              <option value="excellent">Excellent</option>
-              <option value="good">Good</option>
-              <option value="fair">Fair</option>
-              <option value="weak">Weak</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Quality</span>
-            <select
-              value={qualityTier}
-              onChange={(event) => updateParams({ media_quality_tier: event.target.value })}
-            >
-              <option value="">All</option>
-              <option value="excellent">Excellent</option>
-              <option value="good">Good</option>
-              <option value="fair">Fair</option>
-              <option value="unknown">Unknown</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Password</span>
-            <select
-              value={passwordState}
-              onChange={(event) => updateParams({ password_state: event.target.value })}
-            >
-              <option value="">All</option>
-              <option value="not_passworded">Not passworded</option>
-              <option value="passworded_known">Password known</option>
-              <option value="passworded_unknown">Password unknown</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>NFO</span>
-            <select value={hasNfo} onChange={(event) => updateParams({ has_nfo: event.target.value })}>
-              <option value="">Any</option>
-              <option value="true">Has NFO</option>
-              <option value="false">No NFO</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>PAR2</span>
-            <select value={hasPar2} onChange={(event) => updateParams({ has_par2: event.target.value })}>
-              <option value="">Any</option>
-              <option value="true">Has PAR2</option>
-              <option value="false">No PAR2</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Metadata Status</span>
-            <select
-              value={metadataStatus}
-              onChange={(event) => updateParams({ metadata_status: event.target.value })}
-            >
-              <option value="">Any</option>
-              <option value="updated">Updated</option>
-              <option value="missing">Missing</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Completion Min</span>
-            <input
-              type="number"
-              min="0"
-              max="100"
-              value={completionMin}
-              onChange={(event) => setSearchParams((current) => {
-                const params = new URLSearchParams(current)
-                if (event.target.value) {
-                  params.set('completion_min', event.target.value)
-                } else {
-                  params.delete('completion_min')
-                }
-                params.set('offset', '0')
-                return params
-              })}
-            />
-          </label>
-          <button className="primary-button align-end" type="submit">
-            Apply Filters
-          </button>
-          <button
-            className="secondary-button align-end"
-            type="button"
-            onClick={() => {
-              setQuery('')
-              setSearchParams(new URLSearchParams())
-            }}
-          >
-            Clear
+        <form className="catalog-search" onSubmit={handleSearch}>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search release names"
+          />
+          <button className="primary-button" type="submit">
+            Search
           </button>
         </form>
+      </div>
 
-        {error ? <div className="banner error">{error}</div> : null}
-        {loading ? <div className="banner">Loading releases...</div> : null}
+      <div className="page-card category-browser">
+        <div className="category-browser__roots">
+          <NavLink className={({ isActive }) => `browse-chip${!category && isActive ? ' active' : ''}`} to="/indexer/releases">
+            All
+          </NavLink>
+          {browseCategories.map((item) => (
+            <NavLink
+              className={({ isActive }) => `browse-chip${isActive ? ' active' : ''}`}
+              key={item.slug}
+              to={`/indexer/browse/${item.slug}`}
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+        {currentCategory ? (
+          <div className="category-browser__subs">
+            {currentCategory.subcategories.map((item) => (
+              <NavLink
+                className={({ isActive }) => `browse-subchip${isActive ? ' active' : ''}`}
+                key={item.slug}
+                to={item.slug === 'all' ? `/indexer/browse/${currentCategory.slug}` : `/indexer/browse/${currentCategory.slug}/${item.slug}`}
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
+      {error ? <div className="banner error">{error}</div> : null}
+      {loading ? <div className="banner">Loading releases...</div> : null}
+
+      <div className="page-card">
         <div className="table-shell">
-          <table className="data-table">
+          <table className="data-table public-data-table">
             <thead>
               <tr>
-                <th>Release</th>
-                <th>Posted</th>
+                <th>Title</th>
+                <th>Age</th>
+                <th>Category</th>
+                <th>Files</th>
                 <th>Size</th>
-                <th>Completion</th>
-                <th>Availability</th>
-                <th>Quality</th>
-                <th>Metadata</th>
               </tr>
             </thead>
             <tbody>
@@ -287,56 +163,29 @@ export function IndexerReleaseListPage() {
                     <Link className="table-link" to={`/indexer/releases/${item.release_id}`}>
                       {item.title}
                     </Link>
-                    <div className="muted-row">
-                      <span>{item.classification || 'unclassified'}</span>
-                      <span>{item.external_title || 'no external title'}</span>
-                    </div>
                   </td>
-                  <td>{formatDateTime(item.posted_at)}</td>
+                  <td>{formatRelativeAge(item.posted_at)}</td>
+                  <td>{releaseCategoryLabel(item)}</td>
+                  <td>{item.file_count}</td>
                   <td>{formatBytes(item.size_bytes)}</td>
-                  <td>{formatPercent(item.completion_pct)}</td>
-                  <td>
-                    <span className={`pill tone-${item.availability_tier || 'default'}`}>
-                      {item.availability_tier || 'n/a'}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`pill tone-${item.media_quality_tier || 'default'}`}>
-                      {item.media_quality_tier || 'n/a'}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="muted-row">
-                      <span>{item.imdb_id || item.tmdb_id || item.tvdb_id || 'none'}</span>
-                      <span>{formatDateTime(item.metadata_updated_at)}</span>
-                    </div>
-                  </td>
                 </tr>
               ))}
               {!loading && data.items.length === 0 ? (
                 <tr>
-                  <td colSpan={7}>
-                    <div className="empty-state">No releases matched the current filters.</div>
+                  <td colSpan={5}>
+                    <div className="empty-state">No releases matched this browse view.</div>
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
         </div>
-
         <div className="pagination-row">
-          <span className="muted-copy">
-            Showing {data.count} of {data.total} releases
-          </span>
           <div className="button-row">
             <button className="secondary-button" onClick={() => handlePage('prev')} disabled={offset === 0}>
               Previous
             </button>
-            <button
-              className="secondary-button"
-              onClick={() => handlePage('next')}
-              disabled={!data.has_more}
-            >
+            <button className="secondary-button" onClick={() => handlePage('next')} disabled={!data.has_more}>
               Next
             </button>
           </div>

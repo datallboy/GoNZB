@@ -10,22 +10,24 @@ import (
 )
 
 type PublicIndexerReleaseListParams struct {
-	Query            string
-	Limit            int
-	Offset           int
-	Sort             string
-	Classification   string
-	HasNFO           *bool
-	HasPAR2          *bool
-	PasswordState    string
-	AvailabilityTier string
-	MediaQualityTier string
-	CompletionMin    float64
-	PostedAfter      *time.Time
-	PostedBefore     *time.Time
-	SizeMin          int64
-	SizeMax          int64
-	MetadataStatus   string
+	Query             string
+	Limit             int
+	Offset            int
+	Sort              string
+	Classification    string
+	BrowseCategory    string
+	BrowseSubcategory string
+	HasNFO            *bool
+	HasPAR2           *bool
+	PasswordState     string
+	AvailabilityTier  string
+	MediaQualityTier  string
+	CompletionMin     float64
+	PostedAfter       *time.Time
+	PostedBefore      *time.Time
+	SizeMin           int64
+	SizeMax           int64
+	MetadataStatus    string
 }
 
 type PublicIndexerReleaseSummary struct {
@@ -33,9 +35,11 @@ type PublicIndexerReleaseSummary struct {
 	GUID              string     `json:"guid"`
 	Title             string     `json:"title"`
 	PostedAt          *time.Time `json:"posted_at,omitempty"`
+	AddedAt           *time.Time `json:"added_at,omitempty"`
 	SizeBytes         int64      `json:"size_bytes"`
 	FileCount         int        `json:"file_count"`
 	CompletionPct     float64    `json:"completion_pct"`
+	Category          string     `json:"category"`
 	Classification    string     `json:"classification"`
 	HasPAR2           bool       `json:"has_par2"`
 	HasNFO            bool       `json:"has_nfo"`
@@ -132,6 +136,7 @@ func scanPublicIndexerReleaseSummary(scanner interface {
 	var item PublicIndexerReleaseSummary
 	var (
 		postedAt          sql.NullTime
+		addedAt           sql.NullTime
 		metadataUpdatedAt sql.NullTime
 	)
 	if err := scanner.Scan(
@@ -139,9 +144,11 @@ func scanPublicIndexerReleaseSummary(scanner interface {
 		&item.GUID,
 		&item.Title,
 		&postedAt,
+		&addedAt,
 		&item.SizeBytes,
 		&item.FileCount,
 		&item.CompletionPct,
+		&item.Category,
 		&item.Classification,
 		&item.HasPAR2,
 		&item.HasNFO,
@@ -164,6 +171,10 @@ func scanPublicIndexerReleaseSummary(scanner interface {
 	if postedAt.Valid {
 		t := postedAt.Time.UTC()
 		item.PostedAt = &t
+	}
+	if addedAt.Valid {
+		t := addedAt.Time.UTC()
+		item.AddedAt = &t
 	}
 	if metadataUpdatedAt.Valid {
 		t := metadataUpdatedAt.Time.UTC()
@@ -221,6 +232,9 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	if v := strings.TrimSpace(params.Classification); v != "" {
 		add(fmt.Sprintf("r.classification = $%d", arg), v)
 	}
+	if clause, values := publicBrowseClause(params.BrowseCategory, params.BrowseSubcategory, arg); clause != "" {
+		add(clause, values...)
+	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
 	}
@@ -261,6 +275,113 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	return strings.Join(clauses, "\n  AND "), args
 }
 
+func publicBrowseClause(category, subcategory string, argStart int) (string, []any) {
+	category = strings.ToLower(strings.TrimSpace(category))
+	subcategory = strings.ToLower(strings.TrimSpace(subcategory))
+	if category == "" {
+		return "", nil
+	}
+
+	like := func(index int, expr string) string {
+		return fmt.Sprintf("%s ILIKE $%d", expr, index)
+	}
+
+	switch category {
+	case "movies":
+		base := `(COALESCE(r.classification, '') IN ('movie', 'video', 'video_archive') OR COALESCE(r.external_media_type, '') = 'movie')`
+		switch subcategory {
+		case "", "all":
+			return base, nil
+		case "sd":
+			return base + ` AND (COALESCE(r.primary_resolution, '') = '' OR COALESCE(r.primary_resolution, '') IN ('480p', '576p', 'sd'))`, nil
+		case "hd":
+			return base + ` AND COALESCE(r.primary_resolution, '') IN ('720p', '1080p')`, nil
+		case "uhd":
+			return base + ` AND COALESCE(r.primary_resolution, '') IN ('2160p', '4k', 'uhd')`, nil
+		}
+	case "tv":
+		base := `(COALESCE(r.classification, '') = 'tv' OR COALESCE(r.external_media_type, '') = 'tv')`
+		switch subcategory {
+		case "", "all":
+			return base, nil
+		case "sd":
+			return base + ` AND (COALESCE(r.primary_resolution, '') = '' OR COALESCE(r.primary_resolution, '') IN ('480p', '576p', 'sd'))`, nil
+		case "hd":
+			return base + ` AND COALESCE(r.primary_resolution, '') IN ('720p', '1080p')`, nil
+		case "uhd":
+			return base + ` AND COALESCE(r.primary_resolution, '') IN ('2160p', '4k', 'uhd')`, nil
+		case "anime":
+			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.search_title, '')") + `)`,
+				[]any{"%anime%", "%anime%"}
+		}
+	case "console":
+		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
+		values := []any{"%console%", "%console%"}
+		switch subcategory {
+		case "", "all":
+			return base, values
+		case "playstation":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
+				append(values, "%ps%", "%playstation%")
+		case "xbox":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
+				append(values, "%xbox%", "%xbox%")
+		case "nintendo":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
+				append(values, "%switch%", "%nintendo%")
+		}
+	case "audio":
+		base := `(COALESCE(r.classification, '') = 'audio' OR COALESCE(r.external_media_type, '') = 'audio')`
+		switch subcategory {
+		case "", "all":
+			return base, nil
+		case "mp3":
+			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.primary_audio_codec, '')") + `)`,
+				[]any{"%mp3%", "%mp3%"}
+		case "flac":
+			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.primary_audio_codec, '')") + `)`,
+				[]any{"%flac%", "%flac%"}
+		}
+	case "pc":
+		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
+		values := []any{"%pc%", "%pc%"}
+		switch subcategory {
+		case "", "all":
+			return base, values
+		case "games":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
+				append(values, "%game%", "%game%")
+		case "apps":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
+				append(values, "%app%", "%software%")
+		}
+	case "books":
+		base := `(COALESCE(r.classification, '') = 'ebook' OR ` + like(argStart, "COALESCE(r.category, '')") + `)`
+		values := []any{"%book%"}
+		switch subcategory {
+		case "", "all":
+			return base, values
+		case "comics":
+			return base + ` AND ` + like(argStart+1, "COALESCE(r.title, '')"), append(values, "%comic%")
+		case "audiobook":
+			return base + ` AND (` + like(argStart+1, "COALESCE(r.title, '')") + ` OR ` + like(argStart+2, "COALESCE(r.category, '')") + `)`,
+				append(values, "%audiobook%", "%audio%")
+		}
+	case "xxx":
+		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
+		values := []any{"%xxx%", "%xxx%"}
+		switch subcategory {
+		case "", "all":
+			return base, values
+		case "images":
+			return base + ` AND ` + like(argStart+2, "COALESCE(r.title, '')"), append(values, "%image%")
+		case "video":
+			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR COALESCE(r.video_count, 0) > 0)`, append(values, "%video%")
+		}
+	}
+	return "", nil
+}
+
 func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicIndexerReleaseListParams) ([]PublicIndexerReleaseSummary, int, error) {
 	if params.Limit <= 0 {
 		params.Limit = 50
@@ -289,9 +410,11 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 			r.guid,
 			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
+			r.created_at,
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
+			r.category,
 			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,
 			r.has_nfo,
@@ -346,9 +469,11 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 			r.guid,
 			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
+			r.created_at,
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
+			r.category,
 			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,
 			r.has_nfo,
