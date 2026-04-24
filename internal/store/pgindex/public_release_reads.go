@@ -101,7 +101,7 @@ type PublicIndexerReleaseCapabilities struct {
 func publicIndexerReleaseVisibilityClause(alias string) string {
 	return fmt.Sprintf(`
 		COALESCE(%[1]s.search_title, '') <> ''
-		AND LOWER(BTRIM(COALESCE(%[1]s.title, ''))) <> 'unknown-release'
+		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) <> 'unknown-release'
 		AND COALESCE(%[1]s.match_confidence, 0) >= 0.55
 		AND COALESCE(%[1]s.completion_pct, 0) >= 50
 		AND COALESCE(%[1]s.identity_status, '') IN ('identified', 'probable')
@@ -112,7 +112,8 @@ func publicIndexerReleaseVisibilityClause(alias string) string {
 		AND NOT (
 			COALESCE(%[1]s.search_title, '') ~* '(^|[^a-z0-9])(seed|test)([^a-z0-9]|$)'
 			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
-		)`, alias)
+		)
+		AND COALESCE(ro.hidden, FALSE) = FALSE`, alias)
 }
 
 func sanitizePublicPasswordState(raw string) string {
@@ -186,19 +187,19 @@ func normalizePublicSort(sort string) string {
 func publicSortClause(sort string) string {
 	switch normalizePublicSort(sort) {
 	case "posted_at_asc":
-		return "r.posted_at ASC NULLS LAST, r.updated_at DESC, r.title"
+		return "r.posted_at ASC NULLS LAST, r.updated_at DESC, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	case "size_desc":
-		return "r.size_bytes DESC, r.posted_at DESC NULLS LAST, r.title"
+		return "r.size_bytes DESC, r.posted_at DESC NULLS LAST, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	case "size_asc":
-		return "r.size_bytes ASC, r.posted_at DESC NULLS LAST, r.title"
+		return "r.size_bytes ASC, r.posted_at DESC NULLS LAST, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	case "title_asc":
-		return "r.title ASC, r.posted_at DESC NULLS LAST"
+		return "COALESCE(NULLIF(ro.display_title, ''), r.title) ASC, r.posted_at DESC NULLS LAST"
 	case "availability_desc":
-		return "r.availability_score DESC, r.posted_at DESC NULLS LAST, r.title"
+		return "r.availability_score DESC, r.posted_at DESC NULLS LAST, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	case "quality_desc":
-		return "r.media_quality_score DESC, r.posted_at DESC NULLS LAST, r.title"
+		return "r.media_quality_score DESC, r.posted_at DESC NULLS LAST, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	default:
-		return "r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title"
+		return "r.posted_at DESC NULLS LAST, r.updated_at DESC, COALESCE(NULLIF(ro.display_title, ''), r.title)"
 	}
 }
 
@@ -273,6 +274,7 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		WHERE %s`, filterSQL),
 		args...,
 	).Scan(&total); err != nil {
@@ -284,12 +286,12 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 		SELECT
 			r.release_id,
 			r.guid,
-			r.title,
+			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
-			r.classification,
+			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,
 			r.has_nfo,
 			r.password_state,
@@ -297,14 +299,15 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 			r.availability_tier,
 			r.media_quality_score,
 			r.media_quality_tier,
-			r.tmdb_id,
-			r.tvdb_id,
+			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
+			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			r.original_media_title,
+			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
 			r.external_year,
-			'' AS imdb_id,
+			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at
 		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d`, filterSQL, publicSortClause(params.Sort), len(args)-1, len(args)),
@@ -340,12 +343,12 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 		SELECT
 			r.release_id,
 			r.guid,
-			r.title,
+			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
-			r.classification,
+			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,
 			r.has_nfo,
 			r.password_state,
@@ -353,14 +356,15 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 			r.availability_tier,
 			r.media_quality_score,
 			r.media_quality_tier,
-			r.tmdb_id,
-			r.tvdb_id,
+			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
+			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			r.original_media_title,
+			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
 			r.external_year,
-			'' AS imdb_id,
+			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at
 		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		WHERE r.release_id = $1
 		  AND (%s)`, publicIndexerReleaseVisibilityClause("r")),
 		releaseID,

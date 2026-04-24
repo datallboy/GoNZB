@@ -14,7 +14,7 @@ import (
 )
 
 const usenetIndexerModuleName = "usenet_indexer"
-const expectedSchemaVersion = 4
+const expectedSchemaVersion = 5
 
 type Store struct {
 	db *sql.DB
