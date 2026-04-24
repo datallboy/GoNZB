@@ -53,7 +53,7 @@ export type PublicReleaseDetail = {
     primary_resolution: string
     primary_video_codec: string
     primary_audio_codec: string
-    subtitle_languages: string[]
+    subtitle_languages?: string[]
     sample_present: boolean
     archive_count: number
     video_count: number
