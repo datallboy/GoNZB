@@ -11,10 +11,12 @@ export function AdminTokensPage() {
 
   async function refresh() {
     const [userResponse, tokenResponse] = await Promise.all([getUsers(), getTokens()])
-    setUsers(userResponse.items)
-    setTokens(tokenResponse.items)
-    if (!form.user_id && userResponse.items[0]) {
-      setForm((current) => ({ ...current, user_id: userResponse.items[0].id }))
+    const nextUsers = userResponse.items ?? []
+    const nextTokens = tokenResponse.items ?? []
+    setUsers(nextUsers)
+    setTokens(nextTokens)
+    if (!form.user_id && nextUsers[0]) {
+      setForm((current) => ({ ...current, user_id: nextUsers[0].id }))
     }
   }
 

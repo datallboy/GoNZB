@@ -125,6 +125,9 @@ func (ctrl *AuthController) ListUsers(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
+	if items == nil {
+		items = []auth.StoredUser{}
+	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
@@ -158,6 +161,9 @@ func (ctrl *AuthController) ListRoles(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
+	if items == nil {
+		items = []auth.Role{}
+	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
@@ -188,6 +194,9 @@ func (ctrl *AuthController) ListTokens(c *echo.Context) error {
 	items, err := ctrl.Service.ListTokens(c.Request().Context())
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if items == nil {
+		items = []auth.Token{}
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
