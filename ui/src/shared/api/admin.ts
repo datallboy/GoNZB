@@ -57,3 +57,11 @@ export function hideAdminRelease(id: string) {
 export function unhideAdminRelease(id: string) {
   return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/unhide`, { method: 'POST' })
 }
+
+export function reinspectAdminRelease(id: string) {
+  return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/reinspect`, { method: 'POST' })
+}
+
+export function reenrichAdminRelease(id: string) {
+  return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/reenrich`, { method: 'POST' })
+}
