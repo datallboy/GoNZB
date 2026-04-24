@@ -12,7 +12,7 @@ import (
 )
 
 type DownloaderCommands interface {
-	EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error)
+	EnqueueByReleaseID(ctx context.Context, sourceKind, releaseID, title string) (*domain.QueueItem, error)
 	EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error)
 	EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error)
 	Cancel(id string) bool
