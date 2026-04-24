@@ -27,6 +27,11 @@ export function IndexerReleaseListPage() {
   const classification = searchParams.get('classification') ?? ''
   const availabilityTier = searchParams.get('availability_tier') ?? ''
   const qualityTier = searchParams.get('media_quality_tier') ?? ''
+  const passwordState = searchParams.get('password_state') ?? ''
+  const metadataStatus = searchParams.get('metadata_status') ?? ''
+  const hasNfo = searchParams.get('has_nfo') ?? ''
+  const hasPar2 = searchParams.get('has_par2') ?? ''
+  const completionMin = searchParams.get('completion_min') ?? ''
   const offset = Number(searchParams.get('offset') ?? '0') || 0
   const limit = 25
 
@@ -40,6 +45,11 @@ export function IndexerReleaseListPage() {
       classification,
       availability_tier: availabilityTier,
       media_quality_tier: qualityTier,
+      password_state: passwordState,
+      metadata_status: metadataStatus,
+      has_nfo: hasNfo,
+      has_par2: hasPar2,
+      completion_min: completionMin,
       limit,
       offset,
     })
@@ -61,7 +71,20 @@ export function IndexerReleaseListPage() {
     return () => {
       cancelled = true
     }
-  }, [availabilityTier, classification, limit, offset, qualityTier, searchParams, sort])
+  }, [
+    availabilityTier,
+    classification,
+    completionMin,
+    hasNfo,
+    hasPar2,
+    limit,
+    metadataStatus,
+    offset,
+    passwordState,
+    qualityTier,
+    searchParams,
+    sort,
+  ])
 
   function updateParams(next: Record<string, string>) {
     const params = new URLSearchParams(searchParams)
@@ -168,8 +191,76 @@ export function IndexerReleaseListPage() {
               <option value="unknown">Unknown</option>
             </select>
           </label>
+          <label className="field">
+            <span>Password</span>
+            <select
+              value={passwordState}
+              onChange={(event) => updateParams({ password_state: event.target.value })}
+            >
+              <option value="">All</option>
+              <option value="not_passworded">Not passworded</option>
+              <option value="passworded_known">Password known</option>
+              <option value="passworded_unknown">Password unknown</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>NFO</span>
+            <select value={hasNfo} onChange={(event) => updateParams({ has_nfo: event.target.value })}>
+              <option value="">Any</option>
+              <option value="true">Has NFO</option>
+              <option value="false">No NFO</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>PAR2</span>
+            <select value={hasPar2} onChange={(event) => updateParams({ has_par2: event.target.value })}>
+              <option value="">Any</option>
+              <option value="true">Has PAR2</option>
+              <option value="false">No PAR2</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Metadata Status</span>
+            <select
+              value={metadataStatus}
+              onChange={(event) => updateParams({ metadata_status: event.target.value })}
+            >
+              <option value="">Any</option>
+              <option value="updated">Updated</option>
+              <option value="missing">Missing</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Completion Min</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={completionMin}
+              onChange={(event) => setSearchParams((current) => {
+                const params = new URLSearchParams(current)
+                if (event.target.value) {
+                  params.set('completion_min', event.target.value)
+                } else {
+                  params.delete('completion_min')
+                }
+                params.set('offset', '0')
+                return params
+              })}
+            />
+          </label>
           <button className="primary-button align-end" type="submit">
             Apply Filters
+          </button>
+          <button
+            className="secondary-button align-end"
+            type="button"
+            onClick={() => {
+              setQuery('')
+              setSearchParams(new URLSearchParams())
+            }}
+          >
+            Clear
           </button>
         </form>
 
