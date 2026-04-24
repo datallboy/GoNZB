@@ -36,6 +36,14 @@ func (s *stubIndexerService) ListRuns(ctx context.Context, stageName string, lim
 	return s.runs, nil
 }
 
+func (s *stubIndexerService) GetStage(ctx context.Context, stageName string) (*indexerStageView, error) {
+	if len(s.stages) == 0 {
+		return &indexerStageView{StageName: stageName}, nil
+	}
+	stage := s.stages[0]
+	return &stage, nil
+}
+
 func (s *stubIndexerService) RunStage(ctx context.Context, stageName string) error {
 	return s.runErr
 }
@@ -58,7 +66,30 @@ func (s *stubIndexerService) ResumeStage(ctx context.Context, stageName string) 
 	return &stage, nil
 }
 
-func (s *stubIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
+func (s *stubIndexerService) UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error) {
+	if len(s.stages) == 0 {
+		return &indexerStageView{StageName: stageName}, nil
+	}
+	stage := s.stages[0]
+	if patch.Enabled != nil {
+		stage.Enabled = *patch.Enabled
+	}
+	if patch.IntervalMinutes != nil {
+		stage.IntervalSeconds = int(*patch.IntervalMinutes * 60)
+	}
+	if patch.BatchSize != nil {
+		stage.BatchSize = *patch.BatchSize
+	}
+	if patch.Concurrency != nil {
+		stage.Concurrency = *patch.Concurrency
+	}
+	if patch.BackoffSeconds != nil {
+		stage.BackoffSeconds = *patch.BackoffSeconds
+	}
+	return &stage, nil
+}
+
+func (s *stubIndexerService) ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	return s.releases, s.releaseTotal, nil
 }
 
@@ -291,6 +322,7 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 				SizeBytes:         1_500_000_000,
 				FileCount:         3,
 				CompletionPct:     100,
+				Classification:    "video",
 				HasPAR2:           true,
 				HasNFO:            true,
 				PasswordState:     "passworded_known",
@@ -298,6 +330,11 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 				AvailabilityTier:  "excellent",
 				MediaQualityScore: 90,
 				MediaQualityTier:  "premium",
+				TMDBID:            123,
+				TVDBID:            456,
+				ExternalMediaType: "movie",
+				ExternalTitle:     "Example Feature",
+				ExternalYear:      1963,
 			}},
 		},
 	}
@@ -315,12 +352,16 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 	body := rec.Body.String()
 	for _, needle := range []string{
 		`"count":1`,
+		`"total":1`,
 		`"limit":10`,
 		`"offset":5`,
-		`"query":"example"`,
+		`"q":"example"`,
+		`"sort":"posted_at_desc"`,
 		`"release_id":"rel-1"`,
 		`"guid":"guid-1"`,
 		`"password_state":"passworded_known"`,
+		`"tmdb_id":123`,
+		`"external_media_type":"movie"`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
@@ -329,8 +370,6 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 	for _, needle := range []string{
 		`"release_key"`,
 		`"matched_media_title"`,
-		`"tmdb_id"`,
-		`"external_media_type"`,
 		`"season_number"`,
 		`"predb_matches"`,
 		`"tmdb_matches"`,
@@ -361,6 +400,7 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 					SizeBytes:         1_500_000_000,
 					FileCount:         3,
 					CompletionPct:     100,
+					Classification:    "video",
 					HasPAR2:           true,
 					HasNFO:            true,
 					PasswordState:     "passworded_known",
@@ -368,6 +408,11 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 					AvailabilityTier:  "excellent",
 					MediaQualityScore: 90,
 					MediaQualityTier:  "premium",
+					TMDBID:            123,
+					TVDBID:            456,
+					ExternalMediaType: "movie",
+					ExternalTitle:     "Example Feature",
+					ExternalYear:      1963,
 				},
 				Files: []pgindex.PublicIndexerReleaseFileSummary{{
 					FileName:      "example.feature.1963.7z.001",
@@ -377,6 +422,21 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 					TotalParts:    20,
 					ObservedParts: 20,
 				}},
+				Media: pgindex.PublicIndexerReleaseMediaSummary{
+					RuntimeSeconds:    5400,
+					PrimaryResolution: "1080p",
+					PrimaryVideoCodec: "x265",
+				},
+				External: pgindex.PublicIndexerReleaseExternal{
+					TMDBID:            123,
+					TVDBID:            456,
+					ExternalMediaType: "movie",
+					ExternalTitle:     "Example Feature",
+					ExternalYear:      1963,
+				},
+				Capabilities: pgindex.PublicIndexerReleaseCapabilities{
+					CanSendToDownloader: true,
+				},
 			},
 		},
 	}
@@ -391,7 +451,16 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopePublic, got)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{`"release_id":"rel-1"`, `"guid":"guid-1"`, `"password_state":"passworded_known"`, `"file_name":"example.feature.1963.7z.001"`} {
+	for _, needle := range []string{
+		`"release_id":"rel-1"`,
+		`"guid":"guid-1"`,
+		`"password_state":"passworded_known"`,
+		`"file_name":"example.feature.1963.7z.001"`,
+		`"tmdb_id":123`,
+		`"external_media_type":"movie"`,
+		`"runtime_seconds":5400`,
+		`"can_send_to_downloader":true`,
+	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
@@ -399,8 +468,6 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 	for _, needle := range []string{
 		`"release_key"`,
 		`"matched_media_title"`,
-		`"tmdb_id"`,
-		`"external_media_type"`,
 		`"season_number"`,
 		`"predb_matches"`,
 		`"tmdb_matches"`,

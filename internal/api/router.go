@@ -55,6 +55,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
+	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
@@ -105,6 +106,16 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.GET("/releases/:id", indexerCtrl.GetRelease)
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
+
+		v1AdminIndexer := e.Group("/api/v1/admin/indexer", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
+		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
+		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
+		v1AdminIndexer.PATCH("/stages/:stage", indexerAdminCtrl.PatchStage)
+		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage)
+		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage)
+		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage)
+		v1AdminIndexer.GET("/runs", indexerAdminCtrl.ListRuns)
 	}
 
 	// Downloader-owned API surface.

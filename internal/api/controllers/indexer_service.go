@@ -10,6 +10,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
+	"github.com/datallboy/gonzb/internal/settingsadmin"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -18,11 +19,13 @@ var errIndexerUnavailable = errors.New("indexer runtime is unavailable")
 type indexerService interface {
 	Overview(ctx context.Context) (*pgindex.IndexerOverview, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
+	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ListRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
 	RunStage(ctx context.Context, stageName string) error
 	PauseStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ResumeStage(ctx context.Context, stageName string) (*indexerStageView, error)
-	ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error)
+	UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error)
+	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
@@ -46,10 +49,20 @@ type indexerStageView struct {
 	LatestRun       *pgindex.IndexerStageRun `json:"latest_run,omitempty"`
 }
 
+type indexerStageConfigPatch struct {
+	Enabled         *bool    `json:"enabled,omitempty"`
+	IntervalMinutes *float64 `json:"interval_minutes,omitempty"`
+	BatchSize       *int     `json:"batch_size,omitempty"`
+	Concurrency     *int     `json:"concurrency,omitempty"`
+	BackoffSeconds  *int     `json:"backoff_seconds,omitempty"`
+}
+
 type runtimeIndexerService struct {
-	store   app.UsenetIndexStore
-	indexer app.UsenetIndexerService
-	log     interface {
+	store           app.UsenetIndexStore
+	indexer         app.UsenetIndexerService
+	settingsAdmin   app.SettingsAdmin
+	downloaderReady bool
+	log             interface {
 		Error(format string, v ...interface{})
 	}
 }
@@ -65,9 +78,11 @@ func newIndexerService(appCtx *app.Context) indexerService {
 		log = appCtx.Logger
 	}
 	return &runtimeIndexerService{
-		store:   appCtx.PGIndexStore,
-		indexer: appCtx.UsenetIndexer,
-		log:     log,
+		store:           appCtx.PGIndexStore,
+		indexer:         appCtx.UsenetIndexer,
+		settingsAdmin:   appCtx.SettingsAdmin,
+		downloaderReady: appCtx.DownloaderModule != nil,
+		log:             log,
 	}
 }
 
@@ -134,6 +149,17 @@ func (s *runtimeIndexerService) ListRuns(ctx context.Context, stageName string, 
 	return s.store.ListIndexerStageRuns(ctx, stageName, limit)
 }
 
+func (s *runtimeIndexerService) GetStage(ctx context.Context, stageName string) (*indexerStageView, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	stage, err := parseIndexerStage(stageName)
+	if err != nil {
+		return nil, err
+	}
+	return s.getStage(ctx, string(stage))
+}
+
 func (s *runtimeIndexerService) RunStage(ctx context.Context, stageName string) error {
 	if s == nil || s.indexer == nil {
 		return errIndexerUnavailable
@@ -187,18 +213,49 @@ func (s *runtimeIndexerService) ResumeStage(ctx context.Context, stageName strin
 	return s.getStage(ctx, string(stage))
 }
 
-func (s *runtimeIndexerService) ListReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
+func (s *runtimeIndexerService) UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error) {
+	if s == nil || s.settingsAdmin == nil {
+		return nil, settingsadmin.ErrUnavailable
+	}
+	stage, err := parseIndexerStage(stageName)
+	if err != nil {
+		return nil, err
+	}
+	current, err := s.settingsAdmin.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	next := app.CloneRuntimeSettings(current)
+	if next.Indexing == nil {
+		next.Indexing = &app.IndexingRuntimeSettings{}
+	}
+	if err := applyIndexerStageConfigPatch(next.Indexing, string(stage), patch); err != nil {
+		return nil, err
+	}
+	if _, err := s.settingsAdmin.Update(ctx, &app.RuntimeSettingsPatch{Indexing: next.Indexing}); err != nil {
+		return nil, err
+	}
+	return s.getStage(ctx, string(stage))
+}
+
+func (s *runtimeIndexerService) ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, errIndexerUnavailable
 	}
-	return s.store.ListPublicIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
+	params.Query = strings.TrimSpace(params.Query)
+	return s.store.ListPublicIndexerReleases(ctx, params)
 }
 
 func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
-	return s.store.GetPublicIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
+	detail, err := s.store.GetPublicIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
+	if err != nil || detail == nil {
+		return detail, err
+	}
+	detail.Capabilities.CanSendToDownloader = s.downloaderReady
+	return detail, nil
 }
 
 func (s *runtimeIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
@@ -294,9 +351,120 @@ func normalizeStageName(stageName string) string {
 	return strings.ToLower(strings.TrimSpace(stageName))
 }
 
+func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageName string, patch indexerStageConfigPatch) error {
+	if indexing == nil {
+		return fmt.Errorf("indexing settings are required")
+	}
+	switch stageName {
+	case string(supervisor.StageScrapeLatest):
+		applyStagePatch(&indexing.ScrapeLatest, patch)
+	case string(supervisor.StageScrapeBackfill):
+		applyStagePatch(&indexing.ScrapeBackfill, patch)
+	case string(supervisor.StageAssemble):
+		applyStagePatch(&indexing.Assemble, patch)
+	case string(supervisor.StageRelease):
+		applyReleaseStagePatch(&indexing.Release, patch)
+	case string(supervisor.StageInspectDiscovery):
+		applyStagePatch(&indexing.InspectArchive, patch)
+	case string(supervisor.StageInspectPAR2):
+		applyStagePatch(&indexing.InspectPAR2, patch)
+	case string(supervisor.StageInspectNFO):
+		applyStagePatch(&indexing.InspectNFO, patch)
+	case string(supervisor.StageInspectArchive):
+		applyStagePatch(&indexing.InspectArchive, patch)
+	case string(supervisor.StageInspectPassword):
+		applyStagePatch(&indexing.InspectPassword, patch)
+	case string(supervisor.StageInspectMedia):
+		applyStagePatch(&indexing.InspectMedia, patch)
+	case string(supervisor.StageEnrichPreDB):
+		applyPreDBStagePatch(&indexing.EnrichPreDB, patch)
+	case string(supervisor.StageEnrichTMDB):
+		applyTMDBStagePatch(&indexing.EnrichTMDB, patch)
+	case string(supervisor.StageMaintenance):
+		return fmt.Errorf("stage %q is not runtime configurable", stageName)
+	default:
+		return fmt.Errorf("unknown stage %q", stageName)
+	}
+	return nil
+}
+
+func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageConfigPatch) {
+	if patch.Enabled != nil {
+		dst.Enabled = *patch.Enabled
+	}
+	if patch.IntervalMinutes != nil {
+		dst.IntervalMinutes = *patch.IntervalMinutes
+	}
+	if patch.BatchSize != nil {
+		dst.BatchSize = *patch.BatchSize
+	}
+	if patch.Concurrency != nil {
+		dst.Concurrency = *patch.Concurrency
+	}
+	if patch.BackoffSeconds != nil {
+		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+}
+
+func applyReleaseStagePatch(dst *app.IndexingReleaseRuntimeSettings, patch indexerStageConfigPatch) {
+	if patch.Enabled != nil {
+		dst.Enabled = *patch.Enabled
+	}
+	if patch.IntervalMinutes != nil {
+		dst.IntervalMinutes = *patch.IntervalMinutes
+	}
+	if patch.BatchSize != nil {
+		dst.BatchSize = *patch.BatchSize
+	}
+	if patch.Concurrency != nil {
+		dst.Concurrency = *patch.Concurrency
+	}
+	if patch.BackoffSeconds != nil {
+		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+}
+
+func applyPreDBStagePatch(dst *app.IndexingPreDBRuntimeSettings, patch indexerStageConfigPatch) {
+	if patch.Enabled != nil {
+		dst.Enabled = *patch.Enabled
+	}
+	if patch.IntervalMinutes != nil {
+		dst.IntervalMinutes = *patch.IntervalMinutes
+	}
+	if patch.BatchSize != nil {
+		dst.BatchSize = *patch.BatchSize
+	}
+	if patch.Concurrency != nil {
+		dst.Concurrency = *patch.Concurrency
+	}
+	if patch.BackoffSeconds != nil {
+		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+}
+
+func applyTMDBStagePatch(dst *app.IndexingTMDBRuntimeSettings, patch indexerStageConfigPatch) {
+	if patch.Enabled != nil {
+		dst.Enabled = *patch.Enabled
+	}
+	if patch.IntervalMinutes != nil {
+		dst.IntervalMinutes = *patch.IntervalMinutes
+	}
+	if patch.BatchSize != nil {
+		dst.BatchSize = *patch.BatchSize
+	}
+	if patch.Concurrency != nil {
+		dst.Concurrency = *patch.Concurrency
+	}
+	if patch.BackoffSeconds != nil {
+		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+}
+
 func indexerErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, errIndexerUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, settingsadmin.ErrUnavailable):
 		return http.StatusServiceUnavailable
 	case err == nil:
 		return http.StatusOK

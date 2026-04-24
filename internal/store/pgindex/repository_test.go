@@ -2848,7 +2848,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 		t.Fatalf("replace release files: %v", err)
 	}
 
-	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("list public indexer releases: %v", err)
 	}
@@ -2895,7 +2895,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) 
 		in.AvailabilityTier = "poor"
 	})
 
-	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("list public weak fragment releases: %v", err)
 	}
@@ -2925,7 +2925,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *
 		in.SearchTitle = strings.ToLower(in.Title)
 	})
 
-	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("list public releases with seed row: %v", err)
 	}
@@ -2955,7 +2955,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPlaceholderTitles(t *testing.T)
 		in.SourceTitle = "unknown-release"
 	})
 
-	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("list public placeholder-title releases: %v", err)
 	}
@@ -2981,7 +2981,7 @@ func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T
 		in.PasswordState = "unknown"
 	})
 
-	items, total, err := store.ListPublicIndexerReleases(ctx, token, 50, 0)
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("list public releases with unstable password state: %v", err)
 	}

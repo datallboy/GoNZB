@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v5"
 )
@@ -147,6 +148,66 @@ func parseOptionalBoundedInt(raw, field string, fallback, min, max int) (int, er
 	}
 
 	return n, nil
+}
+
+func parseOptionalBool(raw, field string) (*bool, error) {
+	raw = normalizeLowerTrimmed(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	switch raw {
+	case "true", "1", "yes":
+		v := true
+		return &v, nil
+	case "false", "0", "no":
+		v := false
+		return &v, nil
+	default:
+		return nil, fmt.Errorf("%s must be a boolean", field)
+	}
+}
+
+func parseOptionalFloat64(raw, field string, min, max float64) (float64, error) {
+	raw = normalizeTrimmed(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number", field)
+	}
+	if n < min || n > max {
+		return 0, fmt.Errorf("%s must be between %.0f and %.0f", field, min, max)
+	}
+	return n, nil
+}
+
+func parseOptionalInt64(raw, field string, min, max int64) (int64, error) {
+	raw = normalizeTrimmed(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", field)
+	}
+	if n < min || n > max {
+		return 0, fmt.Errorf("%s must be between %d and %d", field, min, max)
+	}
+	return n, nil
+}
+
+func parseOptionalDate(raw, field string) (*time.Time, error) {
+	raw = normalizeTrimmed(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be in YYYY-MM-DD format", field)
+	}
+	utc := t.UTC()
+	return &utc, nil
 }
 
 func parseIntDefault(raw string, fallback int) int {
