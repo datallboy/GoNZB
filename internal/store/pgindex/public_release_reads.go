@@ -103,8 +103,9 @@ func publicIndexerReleaseVisibilityClause(alias string) string {
 		COALESCE(%[1]s.search_title, '') <> ''
 		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) <> 'unknown-release'
 		AND COALESCE(%[1]s.match_confidence, 0) >= 0.55
-		AND COALESCE(%[1]s.completion_pct, 0) >= 50
+		AND COALESCE(%[1]s.completion_pct, 0) >= 100
 		AND COALESCE(%[1]s.identity_status, '') IN ('identified', 'probable')
+		AND COALESCE(%[1]s.size_bytes, 0) > 0
 		AND (
 			COALESCE(%[1]s.expected_file_count, 0) <= 1
 			OR COALESCE(%[1]s.file_count, 0) >= 2

@@ -15,6 +15,7 @@ type IndexerOverview struct {
 	FileCount             int64 `json:"file_count"`
 	InspectionCount       int64 `json:"inspection_count"`
 	ReadyNZBCount         int64 `json:"ready_nzb_count"`
+	ReadyReleaseCount     int64 `json:"ready_release_count"`
 	CompletedReleaseCount int64 `json:"completed_release_count"`
 	EncryptedReleaseCount int64 `json:"encrypted_release_count"`
 	PasswordKnownCount    int64 `json:"password_known_count"`
@@ -309,6 +310,10 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 			(SELECT COUNT(*) FROM release_files),
 			(SELECT COUNT(*) FROM binary_inspections),
 			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
+			(SELECT COUNT(*)
+			 FROM releases r
+			 LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+			 WHERE `+publicIndexerReleaseVisibilityClause("r")+`),
 			(SELECT COUNT(*) FROM releases WHERE completion_pct >= 100),
 			(SELECT COUNT(*) FROM releases WHERE encrypted = TRUE),
 			(SELECT COUNT(*) FROM releases WHERE passworded_known = TRUE),
@@ -327,6 +332,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 		&item.FileCount,
 		&item.InspectionCount,
 		&item.ReadyNZBCount,
+		&item.ReadyReleaseCount,
 		&item.CompletedReleaseCount,
 		&item.EncryptedReleaseCount,
 		&item.PasswordKnownCount,

@@ -131,14 +131,14 @@ func (ctrl *IndexerAdminController) GetRelease(c *echo.Context) error {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
 	setIndexerContractScope(c, indexerContractScopeInternalDebug)
-	release, override, err := ctrl.Service.GetAdminRelease(c.Request().Context(), pathParamTrimmed(c, "id"))
+	releaseView, err := ctrl.Service.GetAdminRelease(c.Request().Context(), pathParamTrimmed(c, "id"))
 	if err != nil {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
-	if release == nil {
+	if releaseView == nil || releaseView.Release == nil {
 		return jsonError(c, http.StatusNotFound, "release not found")
 	}
-	return c.JSON(http.StatusOK, map[string]any{"release": release, "override": override})
+	return c.JSON(http.StatusOK, releaseView)
 }
 
 func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
