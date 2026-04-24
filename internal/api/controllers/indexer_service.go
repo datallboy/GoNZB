@@ -30,6 +30,8 @@ type indexerService interface {
 	ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetAdminRelease(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, *pgindex.ReleaseOverrideRecord, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
+	ReinspectRelease(ctx context.Context, releaseID string) error
+	ReenrichRelease(ctx context.Context, releaseID string) error
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 }
@@ -312,6 +314,58 @@ func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, relea
 	return s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
 }
 
+func (s *runtimeIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
+	if s == nil || s.store == nil || s.indexer == nil {
+		return errIndexerUnavailable
+	}
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+	if _, err := s.store.GetIndexerReleaseDetail(ctx, releaseID); err != nil {
+		return err
+	}
+	if err := s.store.ResetReleaseInspectionState(ctx, releaseID); err != nil {
+		return err
+	}
+	go s.runStageSequence(
+		"admin release reinspect",
+		[]string{
+			string(supervisor.StageInspectDiscovery),
+			string(supervisor.StageInspectPAR2),
+			string(supervisor.StageInspectNFO),
+			string(supervisor.StageInspectArchive),
+			string(supervisor.StageInspectPassword),
+			string(supervisor.StageInspectMedia),
+		},
+	)
+	return nil
+}
+
+func (s *runtimeIndexerService) ReenrichRelease(ctx context.Context, releaseID string) error {
+	if s == nil || s.store == nil || s.indexer == nil {
+		return errIndexerUnavailable
+	}
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+	if _, err := s.store.GetIndexerReleaseDetail(ctx, releaseID); err != nil {
+		return err
+	}
+	if err := s.store.ResetReleaseEnrichmentState(ctx, releaseID); err != nil {
+		return err
+	}
+	go s.runStageSequence(
+		"admin release reenrich",
+		[]string{
+			string(supervisor.StageEnrichPreDB),
+			string(supervisor.StageEnrichTMDB),
+		},
+	)
+	return nil
+}
+
 func (s *runtimeIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
@@ -338,6 +392,14 @@ func (s *runtimeIndexerService) getStage(ctx context.Context, stageName string) 
 		}
 	}
 	return nil, fmt.Errorf("unknown stage %q", stageName)
+}
+
+func (s *runtimeIndexerService) runStageSequence(reason string, stages []string) {
+	for _, stage := range stages {
+		if err := s.indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
+			s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
+		}
+	}
 }
 
 func stageViewFromState(stageName string, state pgindex.IndexerStageState, ok bool) indexerStageView {

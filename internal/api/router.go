@@ -151,6 +151,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
 		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
 		v1AdminIndexer.PATCH("/releases/:id", indexerAdminCtrl.PatchRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesOverride))
+		v1AdminIndexer.POST("/releases/:id/actions/reinspect", indexerAdminCtrl.ReinspectRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/releases/:id/actions/reenrich", indexerAdminCtrl.ReenrichRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/releases/:id/actions/hide", indexerAdminCtrl.HideRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesHide))
 		v1AdminIndexer.POST("/releases/:id/actions/unhide", indexerAdminCtrl.UnhideRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesHide))
 	}

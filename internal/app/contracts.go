@@ -119,6 +119,8 @@ type UsenetIndexStore interface {
 	GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	UpsertReleaseOverride(ctx context.Context, in pgindex.ReleaseOverrideRecord) error
 	GetReleaseOverride(ctx context.Context, releaseID string) (*pgindex.ReleaseOverrideRecord, error)
+	ResetReleaseInspectionState(ctx context.Context, releaseID string) error
+	ResetReleaseEnrichmentState(ctx context.Context, releaseID string) error
 	GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetIndexerFileDetail(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 
