@@ -3,6 +3,7 @@ package controllers
 import (
 	"net/http"
 
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
 
@@ -112,7 +113,28 @@ func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	items, total, err := ctrl.Service.ListAdminReleases(c.Request().Context(), queryParamTrimmed(c, "q"), limit, offset)
+	items, total, err := ctrl.Service.ListAdminReleases(c.Request().Context(), pgindex.AdminIndexerReleaseListParams{
+		Query:              queryParamTrimmed(c, "q"),
+		Limit:              limit,
+		Offset:             offset,
+		Sort:               queryParamTrimmed(c, "sort"),
+		CategoryID:         pgindex.ParseAdminCategoryID(queryParamTrimmed(c, "category_id")),
+		Classification:     queryParamTrimmed(c, "classification"),
+		ExternalMediaType:  queryParamTrimmed(c, "external_media_type"),
+		IdentityStatus:     queryParamTrimmed(c, "identity_status"),
+		PasswordState:      queryParamTrimmed(c, "password_state"),
+		MediaQualityTier:   queryParamTrimmed(c, "media_quality_tier"),
+		Hidden:             queryParamTrimmed(c, "hidden"),
+		PublicState:        queryParamTrimmed(c, "public_state"),
+		Inspected:          queryParamTrimmed(c, "inspected"),
+		Enriched:           queryParamTrimmed(c, "enriched"),
+		Uncategorized:      queryParamTrimmed(c, "uncategorized"),
+		PasswordCandidates: queryParamTrimmed(c, "password_candidates"),
+		MetadataMismatch:   queryParamTrimmed(c, "metadata_mismatch"),
+		LowConfidence:      queryParamTrimmed(c, "low_confidence"),
+		HasNFO:             parseOptionalBoolQuery(c, "has_nfo"),
+		HasPAR2:            parseOptionalBoolQuery(c, "has_par2"),
+	})
 	if err != nil {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
