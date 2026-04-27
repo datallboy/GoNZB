@@ -49,6 +49,7 @@ type IndexerReleaseSummary struct {
 	SeasonEpisodeConfidence float64    `json:"season_episode_confidence"`
 	TitleSource             string     `json:"title_source"`
 	TitleConfidence         float64    `json:"title_confidence"`
+	CategoryID              int        `json:"category_id"`
 	Category                string     `json:"category"`
 	Classification          string     `json:"classification"`
 	Poster                  string     `json:"poster"`
@@ -390,6 +391,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, of
 			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
+			r.category_id,
 			r.category,
 			r.classification,
 			r.poster,
@@ -483,6 +485,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
+			r.category_id,
 			r.category,
 			r.classification,
 			r.poster,
@@ -867,6 +870,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.SeasonEpisodeConfidence,
 		&item.TitleSource,
 		&item.TitleConfidence,
+		&item.CategoryID,
 		&item.Category,
 		&item.Classification,
 		&item.Poster,

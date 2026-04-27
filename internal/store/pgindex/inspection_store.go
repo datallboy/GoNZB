@@ -1248,6 +1248,9 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 	if err := s.applyDerivedInspectionTitleUpdate(ctx, in.ReleaseID, in.MetadataUpdatedAt); err != nil {
 		return err
 	}
+	if err := s.refreshReleaseCategory(ctx, in.ReleaseID); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1314,6 +1317,9 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 	)
 	if err != nil {
 		return fmt.Errorf("apply derived inspection title update %s: %w", releaseID, err)
+	}
+	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
+		return err
 	}
 	return nil
 }

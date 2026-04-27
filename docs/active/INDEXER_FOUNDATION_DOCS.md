@@ -31,6 +31,14 @@ Use for:
 - backend contract rollout for initial user-facing indexer release surfaces
 - first indexer web UI views built on the hardened release contract
 
+### `docs/active/NEWSNAB_CATEGORY_NORMALIZATION_PLAN.md`
+
+Use for:
+
+- canonical Newsnab category normalization across indexer and aggregator boundaries
+- release-category storage, formation, and reform decisions
+- public browse/category filtering sign-off and Newznab compatibility alignment
+
 ## Archived Completed Indexer Docs
 
 ### `docs/archive/completed/indexer/INDEXER_STABILIZATION_WORKLIST.md`
@@ -170,4 +178,4 @@ Do not let this drive schema expansion before the stabilization docs say the fou
 4. Treat Phase 1 and Phase 2 docs as completed/archive material, not the active backlog.
 5. Treat the backlog burn-down performance plan and refinement exit criteria as completed/sign-off history, not active blockers.
 6. Keep milestone docs as context, not as the active source of truth for current execution.
-7. The API/UI expansion plan is the current bounded execution doc for active indexer feature work.
+7. The API/UI expansion plan is the current bounded execution doc for active indexer feature work unless a more focused active execution doc exists for a substream such as category normalization.
