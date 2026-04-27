@@ -100,7 +100,7 @@ func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (
 	return s.release, nil
 }
 
-func (s *stubIndexerService) ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+func (s *stubIndexerService) ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error) {
 	return nil, 0, nil
 }
 

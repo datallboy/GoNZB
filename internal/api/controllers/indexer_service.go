@@ -27,7 +27,7 @@ type indexerService interface {
 	UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
-	ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error)
+	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
 	ReinspectRelease(ctx context.Context, releaseID string) error
@@ -281,11 +281,12 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 	return detail, nil
 }
 
-func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.IndexerReleaseSummary, int, error) {
+func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, errIndexerUnavailable
 	}
-	return s.store.ListIndexerReleases(ctx, strings.TrimSpace(query), limit, offset)
+	params.Query = strings.TrimSpace(params.Query)
+	return s.store.ListIndexerReleases(ctx, params)
 }
 
 func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {

@@ -2,6 +2,7 @@ import { apiRequest } from './http'
 import type {
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
+  AdminReleaseListParams,
   AdminRunsResponse,
   AdminStageConfigPatch,
   AdminStagesResponse,
@@ -34,10 +35,13 @@ export function getAdminRuns(stage: string) {
   return apiRequest<AdminRunsResponse>(`/api/v1/admin/indexer/runs?${query.toString()}`)
 }
 
-export function getAdminReleases(q: string) {
+export function getAdminReleases(params: AdminReleaseListParams) {
   const query = new URLSearchParams()
-  if (q) {
-    query.set('q', q)
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') {
+      continue
+    }
+    query.set(key, String(value))
   }
   return apiRequest<AdminReleaseListResponse>(`/api/v1/admin/indexer/releases?${query.toString()}`)
 }

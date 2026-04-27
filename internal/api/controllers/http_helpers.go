@@ -167,6 +167,14 @@ func parseOptionalBool(raw, field string) (*bool, error) {
 	}
 }
 
+func parseOptionalBoolQuery(c *echo.Context, name string) *bool {
+	value, err := parseOptionalBool(queryParamTrimmed(c, name), name)
+	if err != nil {
+		return nil
+	}
+	return value
+}
+
 func parseOptionalFloat64(raw, field string, min, max float64) (float64, error) {
 	raw = normalizeTrimmed(raw)
 	if raw == "" {

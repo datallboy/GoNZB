@@ -160,13 +160,27 @@ export type AdminRunsResponse = {
 
 export type AdminReleaseSummary = {
   release_id: string
+  guid: string
+  provider_id: number
   title: string
   group_name: string
+  category_id: number
+  category: string
+  classification: string
+  external_media_type: string
   identity_status: string
   posted_at?: string
   size_bytes: number
+  file_count: number
+  completion_pct: number
+  has_nfo: boolean
+  has_par2: boolean
   password_state: string
   media_quality_tier: string
+  nzb_generation_status: string
+  hidden: boolean
+  public_visible: boolean
+  password_candidate_count: number
 }
 
 export type AdminReleaseListResponse = {
@@ -176,6 +190,29 @@ export type AdminReleaseListResponse = {
   limit: number
   offset: number
   has_more: boolean
+}
+
+export type AdminReleaseListParams = {
+  q?: string
+  sort?: string
+  category_id?: string
+  classification?: string
+  external_media_type?: string
+  identity_status?: string
+  password_state?: string
+  media_quality_tier?: string
+  hidden?: string
+  public_state?: string
+  inspected?: string
+  enriched?: string
+  uncategorized?: string
+  password_candidates?: string
+  metadata_mismatch?: string
+  low_confidence?: string
+  has_nfo?: string
+  has_par2?: string
+  limit?: number
+  offset?: number
 }
 
 export type ReleaseOverride = {
