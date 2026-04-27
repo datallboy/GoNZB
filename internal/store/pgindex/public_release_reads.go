@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 )
 
 type PublicIndexerReleaseListParams struct {
@@ -39,6 +41,7 @@ type PublicIndexerReleaseSummary struct {
 	SizeBytes         int64      `json:"size_bytes"`
 	FileCount         int        `json:"file_count"`
 	CompletionPct     float64    `json:"completion_pct"`
+	CategoryID        int        `json:"category_id"`
 	Category          string     `json:"category"`
 	Classification    string     `json:"classification"`
 	HasPAR2           bool       `json:"has_par2"`
@@ -110,6 +113,7 @@ func publicIndexerReleaseVisibilityClause(alias string) string {
 		AND COALESCE(%[1]s.completion_pct, 0) >= 100
 		AND COALESCE(%[1]s.identity_status, '') IN ('identified', 'probable')
 		AND COALESCE(%[1]s.size_bytes, 0) > 0
+		AND COALESCE(%[1]s.category_id, 8010) <> 8010
 		AND (
 			COALESCE(%[1]s.expected_file_count, 0) <= 1
 			OR COALESCE(%[1]s.file_count, 0) >= 2
@@ -148,6 +152,7 @@ func scanPublicIndexerReleaseSummary(scanner interface {
 		&item.SizeBytes,
 		&item.FileCount,
 		&item.CompletionPct,
+		&item.CategoryID,
 		&item.Category,
 		&item.Classification,
 		&item.HasPAR2,
@@ -276,110 +281,17 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 }
 
 func publicBrowseClause(category, subcategory string, argStart int) (string, []any) {
-	category = strings.ToLower(strings.TrimSpace(category))
-	subcategory = strings.ToLower(strings.TrimSpace(subcategory))
-	if category == "" {
+	ids := newsnab.IDsForBrowse(category, subcategory)
+	if len(ids) == 0 {
 		return "", nil
 	}
-
-	like := func(index int, expr string) string {
-		return fmt.Sprintf("%s ILIKE $%d", expr, index)
+	parts := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		parts = append(parts, fmt.Sprintf("$%d", argStart+i))
+		args = append(args, id)
 	}
-
-	switch category {
-	case "movies":
-		base := `(COALESCE(r.classification, '') IN ('movie', 'video', 'video_archive') OR COALESCE(r.external_media_type, '') = 'movie')`
-		switch subcategory {
-		case "", "all":
-			return base, nil
-		case "sd":
-			return base + ` AND (COALESCE(r.primary_resolution, '') = '' OR COALESCE(r.primary_resolution, '') IN ('480p', '576p', 'sd'))`, nil
-		case "hd":
-			return base + ` AND COALESCE(r.primary_resolution, '') IN ('720p', '1080p')`, nil
-		case "uhd":
-			return base + ` AND COALESCE(r.primary_resolution, '') IN ('2160p', '4k', 'uhd')`, nil
-		}
-	case "tv":
-		base := `(COALESCE(r.classification, '') = 'tv' OR COALESCE(r.external_media_type, '') = 'tv')`
-		switch subcategory {
-		case "", "all":
-			return base, nil
-		case "sd":
-			return base + ` AND (COALESCE(r.primary_resolution, '') = '' OR COALESCE(r.primary_resolution, '') IN ('480p', '576p', 'sd'))`, nil
-		case "hd":
-			return base + ` AND COALESCE(r.primary_resolution, '') IN ('720p', '1080p')`, nil
-		case "uhd":
-			return base + ` AND COALESCE(r.primary_resolution, '') IN ('2160p', '4k', 'uhd')`, nil
-		case "anime":
-			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.search_title, '')") + `)`,
-				[]any{"%anime%", "%anime%"}
-		}
-	case "console":
-		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
-		values := []any{"%console%", "%console%"}
-		switch subcategory {
-		case "", "all":
-			return base, values
-		case "playstation":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
-				append(values, "%ps%", "%playstation%")
-		case "xbox":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
-				append(values, "%xbox%", "%xbox%")
-		case "nintendo":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
-				append(values, "%switch%", "%nintendo%")
-		}
-	case "audio":
-		base := `(COALESCE(r.classification, '') = 'audio' OR COALESCE(r.external_media_type, '') = 'audio')`
-		switch subcategory {
-		case "", "all":
-			return base, nil
-		case "mp3":
-			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.primary_audio_codec, '')") + `)`,
-				[]any{"%mp3%", "%mp3%"}
-		case "flac":
-			return base + ` AND (` + like(argStart, "COALESCE(r.title, '')") + ` OR ` + like(argStart+1, "COALESCE(r.primary_audio_codec, '')") + `)`,
-				[]any{"%flac%", "%flac%"}
-		}
-	case "pc":
-		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
-		values := []any{"%pc%", "%pc%"}
-		switch subcategory {
-		case "", "all":
-			return base, values
-		case "games":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
-				append(values, "%game%", "%game%")
-		case "apps":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR ` + like(argStart+3, "COALESCE(r.category, '')") + `)`,
-				append(values, "%app%", "%software%")
-		}
-	case "books":
-		base := `(COALESCE(r.classification, '') = 'ebook' OR ` + like(argStart, "COALESCE(r.category, '')") + `)`
-		values := []any{"%book%"}
-		switch subcategory {
-		case "", "all":
-			return base, values
-		case "comics":
-			return base + ` AND ` + like(argStart+1, "COALESCE(r.title, '')"), append(values, "%comic%")
-		case "audiobook":
-			return base + ` AND (` + like(argStart+1, "COALESCE(r.title, '')") + ` OR ` + like(argStart+2, "COALESCE(r.category, '')") + `)`,
-				append(values, "%audiobook%", "%audio%")
-		}
-	case "xxx":
-		base := `(` + like(argStart, "COALESCE(r.category, '')") + ` OR ` + like(argStart+1, "COALESCE(r.title, '')") + `)`
-		values := []any{"%xxx%", "%xxx%"}
-		switch subcategory {
-		case "", "all":
-			return base, values
-		case "images":
-			return base + ` AND ` + like(argStart+2, "COALESCE(r.title, '')"), append(values, "%image%")
-		case "video":
-			return base + ` AND (` + like(argStart+2, "COALESCE(r.title, '')") + ` OR COALESCE(r.video_count, 0) > 0)`, append(values, "%video%")
-		}
-	}
-	return "", nil
+	return fmt.Sprintf("COALESCE(r.category_id, %d) IN (%s)", newsnab.OtherMisc, strings.Join(parts, ", ")), args
 }
 
 func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicIndexerReleaseListParams) ([]PublicIndexerReleaseSummary, int, error) {
@@ -414,6 +326,7 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
+			r.category_id,
 			r.category,
 			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,
@@ -473,6 +386,7 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 			r.size_bytes,
 			r.file_count,
 			r.completion_pct,
+			r.category_id,
 			r.category,
 			COALESCE(NULLIF(ro.classification_override, ''), r.classification) AS classification,
 			r.has_par2,

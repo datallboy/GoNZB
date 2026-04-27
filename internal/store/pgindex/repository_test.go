@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 )
 
 func TestInspectCandidateFilterPasswordRequiresEncryptedRelease(t *testing.T) {
@@ -378,6 +380,49 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	}
 	if release.Release.PasswordState != "passworded_unknown" {
 		t.Fatalf("expected passworded_unknown state, got %q", release.Release.PasswordState)
+	}
+}
+
+func TestApplyReleaseEnrichmentUpdateRefreshesTVCategory(t *testing.T) {
+	store := openTestStore(t)
+	releaseID := seedTestRelease(t, store, "enrich_tv_category")
+	ctx := context.Background()
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET title = 'Example Show S01E01 1080p x265',
+		    source_title = 'Example.Show.S01E01.1080p.x265',
+		    deobfuscated_title = 'Example.Show.S01E01.1080p.x265',
+		    search_title = 'example show s01e01 1080p x265',
+		    classification = 'video',
+		    category_id = $2,
+		    category = $3
+		WHERE release_id = $1`,
+		releaseID,
+		newsnab.OtherMisc,
+		newsnab.DisplayName(newsnab.OtherMisc),
+	); err != nil {
+		t.Fatalf("prepare release for tv enrichment category refresh: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.ApplyReleaseEnrichmentUpdate(ctx, ReleaseEnrichmentUpdate{
+		ReleaseID:         releaseID,
+		ExternalMediaType: "tv",
+		TVDBID:            42,
+		SeasonNumber:      1,
+		EpisodeNumber:     1,
+		MetadataUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("apply release enrichment update: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.CategoryID != newsnab.TVHD {
+		t.Fatalf("expected TVHD category after enrichment, got %+v", release.Release)
 	}
 }
 
@@ -2961,6 +3006,117 @@ func TestPublicIndexerReleaseVisibilityRequiresReadyReleaseHeuristics(t *testing
 	}
 }
 
+func TestPublicIndexerReleaseVisibilityHidesUncategorizedRelease(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("uncategorizedhide%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public uncategorized releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected uncategorized release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public uncategorized detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected uncategorized detail to be hidden, got %+v", detail)
+	}
+}
+
+func TestPublicIndexerReleaseBrowseUsesNormalizedCategoryIDs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	movieToken := fmt.Sprintf("moviebrowse%d", time.Now().UnixNano())
+	tvToken := fmt.Sprintf("tvbrowse%d", time.Now().UnixNano())
+
+	_, _ = seedVisibilityTestRelease(t, store, movieToken, func(in *ReleaseRecord) {
+		in.CategoryID = newsnab.MoviesHD
+		in.Category = newsnab.DisplayName(newsnab.MoviesHD)
+	})
+	_, _ = seedVisibilityTestRelease(t, store, tvToken, func(in *ReleaseRecord) {
+		in.Title = fmt.Sprintf("Public Visible %s S01E01 2026 1080p WEB-DL x265-GRP", tvToken)
+		in.SourceTitle = fmt.Sprintf("Public.Visible.%s.S01E01.2026.1080p.WEB-DL.x265-GRP", tvToken)
+		in.SearchTitle = strings.ToLower(fmt.Sprintf("public visible %s s01e01 2026 1080p web dl x265 grp", tvToken))
+		in.CategoryID = newsnab.TVHD
+		in.Category = newsnab.DisplayName(newsnab.TVHD)
+		in.Classification = "tv"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{
+		Query:          "browse",
+		BrowseCategory: "movies",
+		Limit:          50,
+	})
+	if err != nil {
+		t.Fatalf("list public movie browse releases: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one movie browse release, got total=%d items=%d", total, len(items))
+	}
+	if items[0].CategoryID != newsnab.MoviesHD {
+		t.Fatalf("expected movie category id %d, got %+v", newsnab.MoviesHD, items[0])
+	}
+
+	items, total, err = store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{
+		Query:             "browse",
+		BrowseCategory:    "tv",
+		BrowseSubcategory: "hd",
+		Limit:             50,
+	})
+	if err != nil {
+		t.Fatalf("list public tv browse releases: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected one tv browse release, got total=%d items=%d", total, len(items))
+	}
+	if items[0].CategoryID != newsnab.TVHD {
+		t.Fatalf("expected tv category id %d, got %+v", newsnab.TVHD, items[0])
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesUnreadableMiscRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("miscobfuscated%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "JG1OxwlKTzcG8lfrY2t2H90vAFmf37O9 vol12+03"
+		in.SourceTitle = in.Title
+		in.SearchTitle = strings.ToLower(strings.ReplaceAll(in.Title, "+", " "))
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+		in.TitleSource = "source"
+		in.DeobfuscatedTitle = ""
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: "JG1OxwlKTzcG8lfrY2t2H90vAFmf37O9", Limit: 50})
+	if err != nil {
+		t.Fatalf("list public misc releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected unreadable misc release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public misc detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected unreadable misc detail to be hidden, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3117,7 +3273,8 @@ func seedVisibilityTestRelease(t *testing.T, store *Store, token string, mutate 
 		Title:                   fmt.Sprintf("Public Visible %s 2026 1080p BluRay x265-GRP", token),
 		SourceTitle:             fmt.Sprintf("Public.Visible.%s.2026.1080p.BluRay.x265-GRP", token),
 		SearchTitle:             strings.ToLower(fmt.Sprintf("public visible %s 2026 1080p bluray x265 grp", token)),
-		Category:                "usenet",
+		CategoryID:              newsnab.MoviesHD,
+		Category:                newsnab.DisplayName(newsnab.MoviesHD),
 		Classification:          "video",
 		Poster:                  "poster-public",
 		SizeBytes:               1_500_000_000,
@@ -3167,7 +3324,8 @@ func seedTestRelease(t *testing.T, store *Store, suffix string) string {
 		TitleSource:             "source",
 		TitleConfidence:         0.95,
 		SearchTitle:             "seed release 2026 1080p bluray x265 grp",
-		Category:                "usenet",
+		CategoryID:              newsnab.MoviesHD,
+		Category:                newsnab.DisplayName(newsnab.MoviesHD),
 		Classification:          "video",
 		Poster:                  "poster-a",
 		SizeBytes:               1_500_000_000,

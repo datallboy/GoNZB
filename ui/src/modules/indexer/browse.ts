@@ -14,9 +14,10 @@ export const browseCategories: BrowseCategory[] = [
     description: 'Feature films and movie releases.',
     subcategories: [
       { slug: 'all', label: 'All Movies' },
-      { slug: 'sd', label: 'SD' },
       { slug: 'hd', label: 'HD' },
       { slug: 'uhd', label: 'UHD' },
+      { slug: 'bluray', label: 'BluRay' },
+      { slug: 'foreign', label: 'Foreign' },
     ],
   },
   {
@@ -25,10 +26,10 @@ export const browseCategories: BrowseCategory[] = [
     description: 'Television episodes and season packs.',
     subcategories: [
       { slug: 'all', label: 'All TV' },
-      { slug: 'sd', label: 'SD' },
       { slug: 'hd', label: 'HD' },
       { slug: 'uhd', label: 'UHD' },
       { slug: 'anime', label: 'Anime' },
+      { slug: 'documentary', label: 'Documentary' },
     ],
   },
   {
@@ -37,9 +38,9 @@ export const browseCategories: BrowseCategory[] = [
     description: 'Console game releases.',
     subcategories: [
       { slug: 'all', label: 'All Console' },
-      { slug: 'playstation', label: 'PlayStation' },
+      { slug: 'ps4', label: 'PS4' },
       { slug: 'xbox', label: 'Xbox' },
-      { slug: 'nintendo', label: 'Nintendo' },
+      { slug: 'switch', label: 'Switch' },
     ],
   },
   {
@@ -49,7 +50,8 @@ export const browseCategories: BrowseCategory[] = [
     subcategories: [
       { slug: 'all', label: 'All Audio' },
       { slug: 'mp3', label: 'MP3' },
-      { slug: 'flac', label: 'FLAC' },
+      { slug: 'lossless', label: 'Lossless' },
+      { slug: 'audiobook', label: 'Audiobook' },
     ],
   },
   {
@@ -59,7 +61,8 @@ export const browseCategories: BrowseCategory[] = [
     subcategories: [
       { slug: 'all', label: 'All PC' },
       { slug: 'games', label: 'Games' },
-      { slug: 'apps', label: 'Apps' },
+      { slug: 'iso', label: 'ISO' },
+      { slug: 'mobile-android', label: 'Android' },
     ],
   },
   {
@@ -68,8 +71,9 @@ export const browseCategories: BrowseCategory[] = [
     description: 'Ebooks, comics, and audiobooks.',
     subcategories: [
       { slug: 'all', label: 'All Books' },
+      { slug: 'ebook', label: 'Ebook' },
       { slug: 'comics', label: 'Comics' },
-      { slug: 'audiobook', label: 'Audiobooks' },
+      { slug: 'mags', label: 'Mags' },
     ],
   },
   {
@@ -78,8 +82,9 @@ export const browseCategories: BrowseCategory[] = [
     description: 'Adult releases.',
     subcategories: [
       { slug: 'all', label: 'All XXX' },
-      { slug: 'video', label: 'Video' },
-      { slug: 'images', label: 'Images' },
+      { slug: 'hd', label: 'HD' },
+      { slug: 'uhd', label: 'UHD' },
+      { slug: 'imgset', label: 'ImgSet' },
     ],
   },
 ]

@@ -3,8 +3,10 @@ package newznab
 import (
 	"encoding/xml"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/domain"
 )
 
@@ -65,9 +67,18 @@ func (i Item) getSize() int64 {
 
 func (i Item) getCategory() string {
 	if cat := i.getAttribute("category"); cat != "" {
-		return cat
+		if parsed, ok := newsnab.ParseID(cat); ok {
+			return strconv.Itoa(parsed)
+		}
+		if parsed, ok := newsnab.ParseName(cat); ok {
+			return strconv.Itoa(parsed)
+		}
+		return strings.TrimSpace(cat)
 	}
-	return ""
+	if parsed, ok := newsnab.ParseName(i.Category); ok {
+		return strconv.Itoa(parsed)
+	}
+	return strings.TrimSpace(i.Category)
 }
 
 func (i Item) getAttribute(name string) string {

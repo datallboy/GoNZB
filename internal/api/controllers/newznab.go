@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/domain"
-	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/labstack/echo/v5"
 )
 
@@ -78,107 +80,9 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 				SupportedParams: "q,imdbid,genre",
 			},
 		},
-		Categories: []CapCategory{
-			{
-				ID:   1000,
-				Name: "Console",
-				SubCats: []CapSubCat{
-					{ID: 1010, Name: "NDS"},
-					{ID: 1020, Name: "PSP"},
-					{ID: 1030, Name: "Wii"},
-					{ID: 1035, Name: "Switch"},
-					{ID: 1040, Name: "Xbox"},
-					{ID: 1050, Name: "Xbox 360"},
-					{ID: 1080, Name: "PS3"},
-					{ID: 1090, Name: "Xbox One"},
-					{ID: 1100, Name: "PS4"},
-				},
-			},
-			{
-				ID:   2000,
-				Name: "Movies",
-				SubCats: []CapSubCat{
-					{ID: 2060, Name: "3D"},
-					{ID: 2050, Name: "BluRay"},
-					{ID: 2010, Name: "Foreign"},
-					{ID: 2040, Name: "HD"},
-					{ID: 2020, Name: "Other"},
-					{ID: 2030, Name: "SD"},
-					{ID: 2045, Name: "UHD"},
-				},
-			},
-			{
-				ID:   3000,
-				Name: "Audio",
-				SubCats: []CapSubCat{
-					{ID: 3030, Name: "Audiobook"},
-					{ID: 3040, Name: "Lossless"},
-					{ID: 3010, Name: "MP3"},
-					{ID: 3050, Name: "Podcast"},
-					{ID: 3020, Name: "Video"},
-				},
-			},
-			{
-				ID:   4000,
-				Name: "PC",
-				SubCats: []CapSubCat{
-					{ID: 4010, Name: "0day"},
-					{ID: 4080, Name: "3dModels", Description: "3dprint stls"},
-					{ID: 4050, Name: "Games"},
-					{ID: 4020, Name: "ISO"},
-					{ID: 4030, Name: "Mac"},
-					{ID: 4070, Name: "Mobile-Android"},
-					{ID: 4040, Name: "Mobile-Other"},
-					{ID: 4060, Name: "Mobile-iOS"},
-				},
-			},
-			{
-				ID:   5000,
-				Name: "TV",
-				SubCats: []CapSubCat{
-					{ID: 5070, Name: "Anime"},
-					{ID: 5080, Name: "Documentary"},
-					{ID: 5020, Name: "Foreign"},
-					{ID: 5040, Name: "HD"},
-					{ID: 5050, Name: "Other"},
-					{ID: 5030, Name: "SD"},
-					{ID: 5060, Name: "Sport"},
-					{ID: 5045, Name: "UHD"},
-				},
-			},
-			{
-				ID:   6000,
-				Name: "XXX",
-				SubCats: []CapSubCat{
-					{ID: 6010, Name: "DVD"},
-					{ID: 6040, Name: "HD"},
-					{ID: 6060, Name: "ImgSet"},
-					{ID: 6070, Name: "Other"},
-					{ID: 6050, Name: "Pack"},
-					{ID: 6030, Name: "SD"},
-					{ID: 6045, Name: "UHD"},
-					{ID: 6020, Name: "WMV"},
-				},
-			},
-			{
-				ID:   7000,
-				Name: "Books",
-				SubCats: []CapSubCat{
-					{ID: 7030, Name: "Comics"},
-					{ID: 7020, Name: "Ebook"},
-					{ID: 7010, Name: "Mags"},
-				},
-			},
-			{
-				ID:   8000,
-				Name: "Other",
-				SubCats: []CapSubCat{
-					{ID: 8010, Name: "Misc"},
-				},
-			},
-		},
-		Groups: []CapGroup{},
-		Genres: []CapGenre{},
+		Categories: buildCapCategories(),
+		Groups:     []CapGroup{},
+		Genres:     []CapGenre{},
 	}
 
 	return c.XML(http.StatusOK, caps)
@@ -259,6 +163,15 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 	items := make([]RSSItem, 0, len(results))
 
 	for _, res := range results {
+		categoryAttr := strings.TrimSpace(res.Category)
+		categoryLabel := categoryAttr
+		if parsed, ok := newsnab.ParseID(categoryAttr); ok {
+			categoryAttr = strconv.Itoa(parsed)
+			categoryLabel = newsnab.DisplayName(parsed)
+		} else if categoryAttr == "" {
+			categoryAttr = strconv.Itoa(newsnab.OtherMisc)
+			categoryLabel = newsnab.DisplayName(newsnab.OtherMisc)
+		}
 		downloadURL := fmt.Sprintf("%s/api?t=get&id=%s", baseAddr, res.ID)
 		if apiKey != "" {
 			downloadURL = fmt.Sprintf("%s&apikey=%s", downloadURL, url.QueryEscape(apiKey))
@@ -271,7 +184,7 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 				IsPermaLink: false,
 			},
 			Link:     downloadURL,
-			Category: nzb.GetCategoryName(res.Category),
+			Category: categoryLabel,
 			PubDate:  res.PublishDate.Format(time.RFC1123Z),
 			Enclosure: Enclosure{
 				URL:    downloadURL,
@@ -279,7 +192,7 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 				Type:   "application/x-nzb",
 			},
 			Attributes: []Attr{
-				{Name: "category", Value: res.Category},
+				{Name: "category", Value: categoryAttr},
 				{Name: "size", Value: fmt.Sprintf("%d", res.Size)},
 				{Name: "guid", Value: res.ID},
 			},
@@ -300,4 +213,25 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 			},
 		},
 	}
+}
+
+func buildCapCategories() []CapCategory {
+	roots := newsnab.Roots()
+	out := make([]CapCategory, 0, len(roots))
+	for _, root := range roots {
+		item := CapCategory{
+			ID:      root.ID,
+			Name:    root.Name,
+			SubCats: make([]CapSubCat, 0, len(root.Subcategories)),
+		}
+		for _, sub := range root.Subcategories {
+			item.SubCats = append(item.SubCats, CapSubCat{
+				ID:          sub.ID,
+				Name:        sub.Name,
+				Description: sub.Description,
+			})
+		}
+		out = append(out, item)
+	}
+	return out
 }

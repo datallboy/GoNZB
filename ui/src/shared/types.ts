@@ -18,6 +18,7 @@ export type PublicReleaseSummary = {
   size_bytes: number
   file_count: number
   completion_pct: number
+  category_id: number
   category: string
   classification: string
   has_par2: boolean
