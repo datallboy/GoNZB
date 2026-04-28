@@ -92,6 +92,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		UnrarPath:       firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
 		PAR2Path:        firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
+	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
 	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
 	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
 	out.InspectArchive = indexStageRuntimeFromConfig(cfg.InspectArchive, true, 10, 100)
@@ -226,6 +227,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			UnrarPath:       indexing.Inspect.UnrarPath,
 			PAR2Path:        indexing.Inspect.PAR2Path,
 		}
+		effective.Indexing.InspectDiscovery = toStageConfig(indexing.InspectDiscovery)
 		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
 		effective.Indexing.InspectNFO = toStageConfig(indexing.InspectNFO)
 		effective.Indexing.InspectArchive = toStageConfig(indexing.InspectArchive)
@@ -386,20 +388,21 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		return nil
 	}
 	return &IndexingRuntimeSettings{
-		Newsgroups:      append([]string(nil), in.Newsgroups...),
-		ScrapeLatest:    in.ScrapeLatest,
-		ScrapeBackfill:  in.ScrapeBackfill,
-		Assemble:        in.Assemble,
-		Release:         in.Release,
-		Match:           in.Match,
-		Inspect:         in.Inspect,
-		InspectPAR2:     in.InspectPAR2,
-		InspectNFO:      in.InspectNFO,
-		InspectArchive:  in.InspectArchive,
-		InspectPassword: in.InspectPassword,
-		InspectMedia:    in.InspectMedia,
-		EnrichPreDB:     in.EnrichPreDB,
-		EnrichTMDB:      in.EnrichTMDB,
+		Newsgroups:       append([]string(nil), in.Newsgroups...),
+		ScrapeLatest:     in.ScrapeLatest,
+		ScrapeBackfill:   in.ScrapeBackfill,
+		Assemble:         in.Assemble,
+		Release:          in.Release,
+		Match:            in.Match,
+		Inspect:          in.Inspect,
+		InspectDiscovery: in.InspectDiscovery,
+		InspectPAR2:      in.InspectPAR2,
+		InspectNFO:       in.InspectNFO,
+		InspectArchive:   in.InspectArchive,
+		InspectPassword:  in.InspectPassword,
+		InspectMedia:     in.InspectMedia,
+		EnrichPreDB:      in.EnrichPreDB,
+		EnrichTMDB:       in.EnrichTMDB,
 	}
 }
 

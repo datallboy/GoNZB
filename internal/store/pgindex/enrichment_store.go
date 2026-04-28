@@ -741,6 +741,9 @@ func (s *Store) ApplyReleaseEnrichmentUpdate(ctx context.Context, in ReleaseEnri
 	if err != nil {
 		return fmt.Errorf("apply release enrichment update %s: %w", in.ReleaseID, err)
 	}
+	if err := s.refreshReleaseCategory(ctx, in.ReleaseID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -796,6 +799,9 @@ func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpda
 	)
 	if err != nil {
 		return fmt.Errorf("apply release predb update %s: %w", releaseID, err)
+	}
+	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
+		return err
 	}
 	return nil
 }

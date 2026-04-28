@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -39,9 +40,25 @@ type Runner interface {
 	Run(ctx context.Context) error
 }
 
+type ResultRunner interface {
+	Runner
+	RunResult(ctx context.Context) (json.RawMessage, error)
+}
+
 type RunnerFunc func(ctx context.Context) error
 
 func (fn RunnerFunc) Run(ctx context.Context) error {
+	return fn(ctx)
+}
+
+type ResultRunnerFunc func(ctx context.Context) (json.RawMessage, error)
+
+func (fn ResultRunnerFunc) Run(ctx context.Context) error {
+	_, err := fn(ctx)
+	return err
+}
+
+func (fn ResultRunnerFunc) RunResult(ctx context.Context) (json.RawMessage, error) {
 	return fn(ctx)
 }
 
@@ -124,6 +141,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageScrapeBackfill,
 		StageAssemble,
 		StageRelease,
+		StageInspectDiscovery,
 		StageInspectPAR2,
 		StageInspectNFO,
 		StageInspectArchive,
@@ -247,7 +265,15 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 	heartbeatErrCh := make(chan error, 1)
 	go s.heartbeatStageRun(heartbeatCtx, claim.Run.ID, heartbeatErrCh)
 
-	runErr := stage.Runner.Run(ctx)
+	var (
+		runErr  error
+		metrics json.RawMessage
+	)
+	if resultRunner, ok := stage.Runner.(ResultRunner); ok {
+		metrics, runErr = resultRunner.RunResult(ctx)
+	} else {
+		runErr = stage.Runner.Run(ctx)
+	}
 
 	cancelHeartbeat()
 	heartbeatErr := <-heartbeatErrCh
@@ -257,9 +283,10 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 
 	if runErr != nil {
 		finishErr := s.tracker.FailIndexerStageRun(controlCtx, pgindex.IndexerStageFinishRequest{
-			RunID:     claim.Run.ID,
-			Owner:     s.owner,
-			ErrorText: runErr.Error(),
+			RunID:       claim.Run.ID,
+			Owner:       s.owner,
+			ErrorText:   runErr.Error(),
+			MetricsJSON: metrics,
 		})
 		if finishErr != nil {
 			return fmt.Errorf("%v (also failed to mark stage run failed: %w)", runErr, finishErr)
@@ -272,8 +299,9 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 	}
 
 	if err := s.tracker.CompleteIndexerStageRun(controlCtx, pgindex.IndexerStageFinishRequest{
-		RunID: claim.Run.ID,
-		Owner: s.owner,
+		RunID:       claim.Run.ID,
+		Owner:       s.owner,
+		MetricsJSON: metrics,
 	}); err != nil {
 		return err
 	}
@@ -315,9 +343,15 @@ func (s *Supervisor) selectStages(names ...StageName) ([]Stage, error) {
 
 	out := make([]Stage, 0, len(names))
 	for _, name := range names {
-		stage, err := s.stage(name)
+		stage, ok, err := s.selectableStage(name)
 		if err != nil {
 			return nil, err
+		}
+		if !ok {
+			if s.log != nil {
+				s.log.Info("index supervisor skipping disabled stage=%s", name)
+			}
+			continue
 		}
 		out = append(out, stage)
 	}
@@ -325,21 +359,32 @@ func (s *Supervisor) selectStages(names ...StageName) ([]Stage, error) {
 }
 
 func (s *Supervisor) stage(name StageName) (Stage, error) {
+	stage, ok, err := s.selectableStage(name)
+	if err != nil {
+		return Stage{}, err
+	}
+	if !ok {
+		return Stage{}, fmt.Errorf("stage %q is disabled", name)
+	}
+	return stage, nil
+}
+
+func (s *Supervisor) selectableStage(name StageName) (Stage, bool, error) {
 	if s == nil {
-		return Stage{}, fmt.Errorf("supervisor is not configured")
+		return Stage{}, false, fmt.Errorf("supervisor is not configured")
 	}
 
 	stage, ok := s.stages[name]
 	if !ok {
-		return Stage{}, fmt.Errorf("stage %q is not configured", name)
+		return Stage{}, false, fmt.Errorf("stage %q is not configured", name)
 	}
 	if !stage.Enabled {
-		return Stage{}, fmt.Errorf("stage %q is disabled", name)
+		return Stage{}, false, nil
 	}
 	if stage.Runner == nil {
-		return Stage{}, fmt.Errorf("stage %q has no runner", name)
+		return Stage{}, false, fmt.Errorf("stage %q has no runner", name)
 	}
-	return stage, nil
+	return stage, true, nil
 }
 
 func joinStageNames(stages []Stage) string {

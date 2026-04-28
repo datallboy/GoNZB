@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/segmentio/ksuid"
 )
 
@@ -71,6 +72,7 @@ type ReleaseRecord struct {
 	TitleSource             string
 	TitleConfidence         float64
 	SearchTitle             string
+	CategoryID              int
 	Category                string
 	Classification          string
 	Poster                  string
@@ -136,6 +138,12 @@ func normalizeReleaseIdentity(in *ReleaseRecord) {
 	in.SourceReleaseKey = firstNonBlank(in.SourceReleaseKey, in.ReleaseFamilyKey, in.ReleaseKey, in.GroupName)
 	// Keep legacy release_key as a compatibility mirror of release_family_key.
 	in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+	if in.CategoryID <= 0 {
+		in.CategoryID = newsnab.OtherMisc
+	}
+	if strings.TrimSpace(in.Category) == "" {
+		in.Category = newsnab.DisplayName(in.CategoryID)
+	}
 }
 
 // CHANGED: return release groups whose binaries are new or changed since last formation.
@@ -614,6 +622,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			title_source,
 			title_confidence,
 			search_title,
+			category_id,
 			category,
 			classification,
 			poster,
@@ -652,7 +661,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,'usenet_index',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,'usenet_index',NOW())
 		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
 		    source_release_key = EXCLUDED.source_release_key,
@@ -698,6 +707,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    	THEN releases.search_title
 		    	ELSE EXCLUDED.search_title
 		    END,
+		    category_id = EXCLUDED.category_id,
 		    category = EXCLUDED.category,
 		    classification = EXCLUDED.classification,
 		    poster = EXCLUDED.poster,
@@ -776,6 +786,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		strings.TrimSpace(in.TitleSource),
 		in.TitleConfidence,
 		strings.TrimSpace(in.SearchTitle),
+		in.CategoryID,
 		strings.TrimSpace(in.Category),
 		strings.TrimSpace(in.Classification),
 		strings.TrimSpace(in.Poster),
@@ -814,6 +825,9 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	).Scan(&releaseID)
 	if err != nil {
 		return "", fmt.Errorf("upsert release %q: %w", in.GroupName, err)
+	}
+	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
+		return "", err
 	}
 
 	return releaseID, nil

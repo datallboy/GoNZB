@@ -1318,6 +1318,9 @@ func TestBuildReleaseRecordPopulatesDeobfuscatedTitleForReadableSource(t *testin
 	if record.IdentityStatus != "identified" {
 		t.Fatalf("expected readable source title to keep identified status, got %q", record.IdentityStatus)
 	}
+	if record.CategoryID != 5040 {
+		t.Fatalf("expected TVHD category id, got %+v", record)
+	}
 }
 
 func TestBuildReleaseRecordNeverLeavesFamilyIdentityBlank(t *testing.T) {
