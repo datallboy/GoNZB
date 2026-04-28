@@ -66,16 +66,31 @@ func NewService(repo repository, log logger, opts Options) *Service {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
-	return s.runOnce(ctx, false)
+	_, err := s.runOnceWithMetrics(ctx, false)
+	return err
 }
 
 func (s *Service) RunReformOnce(ctx context.Context) error {
-	return s.runOnce(ctx, true)
+	_, err := s.runOnceWithMetrics(ctx, true)
+	return err
 }
 
 func (s *Service) runOnce(ctx context.Context, reform bool) error {
+	_, err := s.runOnceWithMetrics(ctx, reform)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runOnceWithMetrics(ctx, false)
+}
+
+func (s *Service) RunReformOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runOnceWithMetrics(ctx, true)
+}
+
+func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("release repo is required")
+		return nil, fmt.Errorf("release repo is required")
 	}
 
 	var (
@@ -87,7 +102,7 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		for {
 			page, pageErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize, offset)
 			if pageErr != nil {
-				return fmt.Errorf("list existing release candidates: %w", pageErr)
+				return nil, fmt.Errorf("list existing release candidates: %w", pageErr)
 			}
 			if len(page) == 0 {
 				break
@@ -101,8 +116,21 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 	} else {
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
 		if err != nil {
-			return fmt.Errorf("list release candidates: %w", err)
+			return nil, fmt.Errorf("list release candidates: %w", err)
 		}
+	}
+	metrics := map[string]any{
+		"reform":                 reform,
+		"batch_size":             s.opts.BatchSize,
+		"min_confidence":         s.opts.ReleaseMinConfidence,
+		"min_completion_pct":     s.opts.ReleaseMinCompletion,
+		"candidate_families":     len(candidates),
+		"formed":                 0,
+		"skipped_fragments":      0,
+		"skipped_confidence":     0,
+		"skipped_completion":     0,
+		"stale_cleanup_families": 0,
+		"fragment_only_families": 0,
 	}
 	if len(candidates) == 0 {
 		if reform {
@@ -110,7 +138,7 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		} else {
 			s.log.Debug("release: no release candidates found")
 		}
-		return nil
+		return metrics, nil
 	}
 
 	formed := 0
@@ -122,12 +150,20 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 	skippedCompletion := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["candidate_families_inspected"] = candidateFamiliesInspected
+			return metrics, err
 		}
 		candidateFamiliesInspected++
 		outcome, err := s.formCandidate(ctx, candidate)
 		if err != nil {
-			return fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
+			metrics["candidate_families_inspected"] = candidateFamiliesInspected
+			metrics["formed"] = formed
+			metrics["fragment_only_families"] = cooledDownFragmentOnly
+			metrics["stale_cleanup_families"] = staleCleanupOnly
+			metrics["skipped_fragments"] = skippedFragments
+			metrics["skipped_confidence"] = skippedConfidence
+			metrics["skipped_completion"] = skippedCompletion
+			return metrics, fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
 		}
 		formed += outcome.formed
 		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
@@ -136,6 +172,13 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		skippedConfidence += outcome.skippedConfidence
 		skippedCompletion += outcome.skippedCompletion
 	}
+	metrics["candidate_families_inspected"] = candidateFamiliesInspected
+	metrics["formed"] = formed
+	metrics["fragment_only_families"] = cooledDownFragmentOnly
+	metrics["stale_cleanup_families"] = staleCleanupOnly
+	metrics["skipped_fragments"] = skippedFragments
+	metrics["skipped_confidence"] = skippedConfidence
+	metrics["skipped_completion"] = skippedCompletion
 
 	s.log.Info(
 		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
@@ -151,7 +194,7 @@ func (s *Service) runOnce(ctx context.Context, reform bool) error {
 		s.opts.ReleaseMinCompletion,
 		reform,
 	)
-	return nil
+	return metrics, nil
 }
 
 type candidateOutcome struct {

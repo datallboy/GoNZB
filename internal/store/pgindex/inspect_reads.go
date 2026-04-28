@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 )
 
 type IndexerOverview struct {
@@ -15,6 +18,7 @@ type IndexerOverview struct {
 	FileCount             int64 `json:"file_count"`
 	InspectionCount       int64 `json:"inspection_count"`
 	ReadyNZBCount         int64 `json:"ready_nzb_count"`
+	ReadyReleaseCount     int64 `json:"ready_release_count"`
 	CompletedReleaseCount int64 `json:"completed_release_count"`
 	EncryptedReleaseCount int64 `json:"encrypted_release_count"`
 	PasswordKnownCount    int64 `json:"password_known_count"`
@@ -48,6 +52,7 @@ type IndexerReleaseSummary struct {
 	SeasonEpisodeConfidence float64    `json:"season_episode_confidence"`
 	TitleSource             string     `json:"title_source"`
 	TitleConfidence         float64    `json:"title_confidence"`
+	CategoryID              int        `json:"category_id"`
 	Category                string     `json:"category"`
 	Classification          string     `json:"classification"`
 	Poster                  string     `json:"poster"`
@@ -84,6 +89,32 @@ type IndexerReleaseSummary struct {
 	MediaTags               []string   `json:"media_tags"`
 	MetadataUpdatedAt       *time.Time `json:"metadata_updated_at,omitempty"`
 	NZBGenerationStatus     string     `json:"nzb_generation_status"`
+	Hidden                  bool       `json:"hidden"`
+	PublicVisible           bool       `json:"public_visible"`
+	PasswordCandidateCount  int        `json:"password_candidate_count"`
+}
+
+type AdminIndexerReleaseListParams struct {
+	Query              string
+	Limit              int
+	Offset             int
+	Sort               string
+	CategoryID         int
+	Classification     string
+	ExternalMediaType  string
+	IdentityStatus     string
+	PasswordState      string
+	MediaQualityTier   string
+	Hidden             string
+	PublicState        string
+	Inspected          string
+	Enriched           string
+	Uncategorized      string
+	PasswordCandidates string
+	MetadataMismatch   string
+	LowConfidence      string
+	HasNFO             *bool
+	HasPAR2            *bool
 }
 
 type IndexerReleaseFileSummary struct {
@@ -309,6 +340,10 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 			(SELECT COUNT(*) FROM release_files),
 			(SELECT COUNT(*) FROM binary_inspections),
 			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
+			(SELECT COUNT(*)
+			 FROM releases r
+			 LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+			 WHERE `+publicIndexerReleaseVisibilityClause("r")+`),
 			(SELECT COUNT(*) FROM releases WHERE completion_pct >= 100),
 			(SELECT COUNT(*) FROM releases WHERE encrypted = TRUE),
 			(SELECT COUNT(*) FROM releases WHERE passworded_known = TRUE),
@@ -327,6 +362,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 		&item.FileCount,
 		&item.InspectionCount,
 		&item.ReadyNZBCount,
+		&item.ReadyReleaseCount,
 		&item.CompletedReleaseCount,
 		&item.EncryptedReleaseCount,
 		&item.PasswordKnownCount,
@@ -344,25 +380,157 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	return &item, nil
 }
 
-func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, offset int) ([]IndexerReleaseSummary, int, error) {
-	query = strings.TrimSpace(query)
-	if limit <= 0 {
-		limit = 50
+func normalizeAdminReleaseSort(sort string) string {
+	switch strings.TrimSpace(sort) {
+	case "", "posted_desc":
+		return "posted_desc"
+	case "posted_asc", "size_desc", "size_asc", "title_asc", "updated_desc", "quality_desc", "completion_desc":
+		return sort
+	default:
+		return "posted_desc"
 	}
-	if offset < 0 {
-		offset = 0
+}
+
+func adminReleaseSortClause(sort string) string {
+	switch normalizeAdminReleaseSort(sort) {
+	case "posted_asc":
+		return "r.posted_at ASC NULLS LAST, r.updated_at DESC, r.title"
+	case "size_desc":
+		return "r.size_bytes DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "size_asc":
+		return "r.size_bytes ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "title_asc":
+		return "r.title ASC, r.posted_at DESC NULLS LAST"
+	case "updated_desc":
+		return "r.updated_at DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "quality_desc":
+		return "r.media_quality_score DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "completion_desc":
+		return "r.completion_pct DESC, r.posted_at DESC NULLS LAST, r.title"
+	default:
+		return "r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title"
+	}
+}
+
+func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (string, []any) {
+	clauses := []string{"1=1"}
+	args := make([]any, 0, 16)
+	arg := 1
+	add := func(clause string, values ...any) {
+		clauses = append(clauses, clause)
+		args = append(args, values...)
+		arg += len(values)
 	}
 
+	if query := strings.TrimSpace(params.Query); query != "" {
+		add(fmt.Sprintf("(r.search_title ILIKE '%%' || $%d || '%%' OR r.group_name ILIKE '%%' || $%d || '%%')", arg, arg), query)
+	}
+	if params.CategoryID > 0 {
+		add(fmt.Sprintf("r.category_id = $%d", arg), params.CategoryID)
+	}
+	if v := strings.TrimSpace(params.Classification); v != "" {
+		add(fmt.Sprintf("r.classification = $%d", arg), v)
+	}
+	if v := strings.TrimSpace(params.ExternalMediaType); v != "" {
+		add(fmt.Sprintf("r.external_media_type = $%d", arg), v)
+	}
+	if v := strings.TrimSpace(params.IdentityStatus); v != "" {
+		add(fmt.Sprintf("r.identity_status = $%d", arg), v)
+	}
+	if v := strings.TrimSpace(params.PasswordState); v != "" {
+		add(fmt.Sprintf("r.password_state = $%d", arg), v)
+	}
+	if v := strings.TrimSpace(params.MediaQualityTier); v != "" {
+		add(fmt.Sprintf("r.media_quality_tier = $%d", arg), v)
+	}
+	switch strings.TrimSpace(params.Hidden) {
+	case "hidden":
+		add("COALESCE(ro.hidden, FALSE) = TRUE")
+	case "visible":
+		add("COALESCE(ro.hidden, FALSE) = FALSE")
+	}
+	switch strings.TrimSpace(params.PublicState) {
+	case "public":
+		add("(" + publicIndexerReleaseVisibilityClause("r") + ")")
+	case "internal_only":
+		add("NOT (" + publicIndexerReleaseVisibilityClause("r") + ") AND COALESCE(ro.hidden, FALSE) = FALSE")
+	case "hidden":
+		add("COALESCE(ro.hidden, FALSE) = TRUE")
+	}
+	switch strings.TrimSpace(params.Inspected) {
+	case "yes":
+		add("(r.runtime_seconds > 0 OR r.primary_resolution <> '' OR r.primary_video_codec <> '' OR r.primary_audio_codec <> '' OR r.has_nfo = TRUE OR r.has_par2 = TRUE)")
+	case "no":
+		add("(r.runtime_seconds = 0 AND r.primary_resolution = '' AND r.primary_video_codec = '' AND r.primary_audio_codec = '' AND r.has_nfo = FALSE AND r.has_par2 = FALSE)")
+	}
+	switch strings.TrimSpace(params.Enriched) {
+	case "yes":
+		add("(r.tmdb_id > 0 OR r.tvdb_id > 0 OR r.external_media_type <> '' OR r.matched_media_title <> '')")
+	case "no":
+		add("(r.tmdb_id = 0 AND r.tvdb_id = 0 AND r.external_media_type = '' AND r.matched_media_title = '')")
+	}
+	switch strings.TrimSpace(params.Uncategorized) {
+	case "yes":
+		add(fmt.Sprintf("r.category_id = %d", newsnab.OtherMisc))
+	case "no":
+		add(fmt.Sprintf("r.category_id <> %d", newsnab.OtherMisc))
+	}
+	switch strings.TrimSpace(params.PasswordCandidates) {
+	case "yes":
+		add("EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
+	case "no":
+		add("NOT EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
+	}
+	switch strings.TrimSpace(params.MetadataMismatch) {
+	case "yes":
+		add(`(
+			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
+			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
+		)`)
+	case "no":
+		add(`NOT (
+			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
+			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
+		)`)
+	}
+	switch strings.TrimSpace(params.LowConfidence) {
+	case "yes":
+		add("COALESCE(r.identity_confidence_score, 0) < 0.80")
+	case "no":
+		add("COALESCE(r.identity_confidence_score, 0) >= 0.80")
+	}
+	if params.HasNFO != nil {
+		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
+	}
+	if params.HasPAR2 != nil {
+		add(fmt.Sprintf("r.has_par2 = $%d", arg), *params.HasPAR2)
+	}
+
+	return strings.Join(clauses, "\n  AND "), args
+}
+
+func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerReleaseListParams) ([]IndexerReleaseSummary, int, error) {
+	params.Query = strings.TrimSpace(params.Query)
+	if params.Limit <= 0 {
+		params.Limit = 50
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	filterSQL, args := buildAdminIndexerReleaseFilterSQL(params)
+
 	var total int
-	if err := s.db.QueryRowContext(ctx, `
+	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM releases r
-		WHERE ($1 = '' OR r.search_title ILIKE '%' || $1 || '%')`, query,
-	).Scan(&total); err != nil {
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		WHERE %s`, filterSQL), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count indexer releases: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	args = append(args, params.Limit, params.Offset)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
 			r.release_id,
 			r.guid,
@@ -384,6 +552,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, of
 			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
+			r.category_id,
 			r.category,
 			r.classification,
 			r.poster,
@@ -419,22 +588,28 @@ func (s *Store) ListIndexerReleases(ctx context.Context, query string, limit, of
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending')
+			COALESCE(n.generation_status, 'pending'),
+			COALESCE(ro.hidden, FALSE),
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
-		WHERE ($1 = '' OR r.search_title ILIKE '%' || $1 || '%')
-		ORDER BY r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title
-		LIMIT $2 OFFSET $3`,
-		query,
-		limit,
-		offset,
+		WHERE %s
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`,
+		filterSQL,
+		adminReleaseSortClause(params.Sort),
+		len(args)-1,
+		len(args)),
+		args...,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list indexer releases: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]IndexerReleaseSummary, 0, limit)
+	out := make([]IndexerReleaseSummary, 0, params.Limit)
 	for rows.Next() {
 		item, err := scanIndexerReleaseSummary(rows)
 		if err != nil {
@@ -477,6 +652,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.season_episode_confidence,
 			r.title_source,
 			r.title_confidence,
+			r.category_id,
 			r.category,
 			r.classification,
 			r.poster,
@@ -512,8 +688,12 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending')
+			COALESCE(n.generation_status, 'pending'),
+			COALESCE(ro.hidden, FALSE),
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		WHERE r.release_id = $1`, releaseID)
 
@@ -861,6 +1041,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.SeasonEpisodeConfidence,
 		&item.TitleSource,
 		&item.TitleConfidence,
+		&item.CategoryID,
 		&item.Category,
 		&item.Classification,
 		&item.Poster,
@@ -897,6 +1078,9 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&mediaTagsJSON,
 		&metadataUpdatedAt,
 		&item.NZBGenerationStatus,
+		&item.Hidden,
+		&item.PublicVisible,
+		&item.PasswordCandidateCount,
 	); err != nil {
 		return IndexerReleaseSummary{}, err
 	}
@@ -913,4 +1097,16 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 	item.MediaTags = decodeJSONStringSlice(mediaTagsJSON)
 
 	return item, nil
+}
+
+func ParseAdminCategoryID(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
 }

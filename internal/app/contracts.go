@@ -12,7 +12,7 @@ import (
 )
 
 type DownloaderCommands interface {
-	EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error)
+	EnqueueByReleaseID(ctx context.Context, sourceKind, releaseID, title string) (*domain.QueueItem, error)
 	EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error)
 	EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error)
 	Cancel(id string) bool
@@ -112,9 +112,17 @@ type UsenetIndexStore interface {
 	RepairIndexerStageRuntime(ctx context.Context) (*pgindex.IndexerStageRepairResult, error)
 	ListIndexerStageStates(ctx context.Context) ([]pgindex.IndexerStageState, error)
 	ListIndexerStageRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
+	ListIndexerStageRunsFiltered(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
+	GetIndexerStageRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error)
 	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)
-	ListPublicIndexerReleases(ctx context.Context, query string, limit, offset int) ([]pgindex.PublicIndexerReleaseSummary, int, error)
+	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
+	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
+	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
+	UpsertReleaseOverride(ctx context.Context, in pgindex.ReleaseOverrideRecord) error
+	GetReleaseOverride(ctx context.Context, releaseID string) (*pgindex.ReleaseOverrideRecord, error)
+	ResetReleaseInspectionState(ctx context.Context, releaseID string) error
+	ResetReleaseEnrichmentState(ctx context.Context, releaseID string) error
 	GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetIndexerFileDetail(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 

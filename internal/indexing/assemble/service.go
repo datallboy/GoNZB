@@ -72,25 +72,37 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 
 // RunOnce assembles one batch of article headers into binaries + binary_parts.
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("assembly repo is required")
+		return nil, fmt.Errorf("assembly repo is required")
 	}
 	if s.matcher == nil {
-		return fmt.Errorf("assembly matcher is required")
+		return nil, fmt.Errorf("assembly matcher is required")
 	}
 
 	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
 	if err != nil {
-		return fmt.Errorf("count unassembled article headers: %w", err)
+		return nil, fmt.Errorf("count unassembled article headers: %w", err)
 	}
 
 	headers, err := s.repo.ListUnassembledArticleHeaders(ctx, s.opts.BatchSize)
 	if err != nil {
-		return fmt.Errorf("list unassembled article headers: %w", err)
+		return nil, fmt.Errorf("list unassembled article headers: %w", err)
+	}
+	metrics := map[string]any{
+		"pending_headers":  pendingCount,
+		"selected_headers": len(headers),
+		"batch_size":       s.opts.BatchSize,
 	}
 	if len(headers) == 0 {
 		s.log.Debug("assemble: no unassembled article headers found pending_headers=%d", pendingCount)
-		return nil
+		metrics["processed_headers"] = 0
+		metrics["binaries_refreshed"] = 0
+		return metrics, nil
 	}
 
 	refreshed := make(map[int64]struct{}, len(headers))
@@ -107,7 +119,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 	for _, header := range headers {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			return metrics, err
 		}
 
 		candidate := match.Candidate{
@@ -126,7 +140,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			recovery.attempts++
 			rematched, result, err := s.rematchFromYEncHeader(ctx, header, candidate)
 			if err != nil {
-				return fmt.Errorf("recover yenc metadata for article %d: %w", header.ID, err)
+				metrics["processed_headers"] = assembledCount
+				metrics["binaries_refreshed"] = len(refreshed)
+				return metrics, fmt.Errorf("recover yenc metadata for article %d: %w", header.ID, err)
 			}
 			if result.fetchFailed {
 				recovery.fetchFailures++
@@ -144,7 +160,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			var err error
 			posterID, err = s.repo.EnsurePoster(ctx, header.Poster)
 			if err != nil {
-				return fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
+				metrics["processed_headers"] = assembledCount
+				metrics["binaries_refreshed"] = len(refreshed)
+				return metrics, fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
 			}
 		}
 
@@ -173,7 +191,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			GroupingEvidence:  matched.GroupingEvidence,
 		})
 		if err != nil {
-			return fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			return metrics, fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
 		}
 
 		if err := s.repo.UpsertBinaryPart(ctx, pgindex.BinaryPartRecord{
@@ -185,7 +205,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			SegmentBytes:    header.Bytes,
 			FileName:        matched.FileName,
 		}); err != nil {
-			return fmt.Errorf("upsert binary part for article %d: %w", header.ID, err)
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			return metrics, fmt.Errorf("upsert binary part for article %d: %w", header.ID, err)
 		}
 
 		refreshed[binaryID] = struct{}{}
@@ -194,9 +216,19 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 	for binaryID := range refreshed {
 		if err := s.repo.RefreshBinaryStats(ctx, binaryID); err != nil {
-			return fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			return metrics, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
 		}
 	}
+	metrics["lane_a_selected"] = laneASelected
+	metrics["lane_b_selected"] = laneBSelected
+	metrics["processed_headers"] = assembledCount
+	metrics["binaries_refreshed"] = len(refreshed)
+	metrics["recovery_attempts"] = recovery.attempts
+	metrics["recovery_successes"] = recovery.successes
+	metrics["recovery_noops"] = recovery.noops
+	metrics["recovery_fetch_failures"] = recovery.fetchFailures
 
 	s.log.Info(
 		"assemble: pending_headers=%d lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
@@ -212,7 +244,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		recovery.fetchFailures,
 	)
 
-	return nil
+	return metrics, nil
 }
 
 func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, matched match.Result) bool {

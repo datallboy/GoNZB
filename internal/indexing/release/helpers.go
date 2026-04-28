@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/indexing/releasepolicy"
 	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -290,6 +291,16 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	subtitles := detectSubtitleLanguages(cluster.Binaries)
 	postedAt := earliestPostedAt(candidate.PostedAt, cluster.Binaries)
 	now := time.Now().UTC()
+	category := newsnab.ResolveReleaseCategory(newsnab.ReleaseAttributes{
+		Classification:    classification,
+		PrimaryResolution: primaryResolution,
+		PrimaryAudioCodec: primaryAudioCodec,
+		Title:             finalTitle,
+		SourceTitle:       titleInfo.SourceTitle,
+		DeobfuscatedTitle: titleInfo.DeobfuscatedTitle,
+		MatchedMediaTitle: titleInfo.MatchedMediaTitle,
+		TitleSource:       titleInfo.TitleSource,
+	})
 
 	return pgindex.ReleaseRecord{
 		ProviderID:              candidate.ProviderID,
@@ -304,7 +315,8 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		TitleSource:             titleInfo.TitleSource,
 		TitleConfidence:         titleInfo.TitleConfidence,
 		SearchTitle:             normalizeSearchTitle(finalTitle),
-		Category:                "usenet",
+		CategoryID:              category.ID,
+		Category:                category.Name,
 		Classification:          classification,
 		Poster:                  dominantPoster(cluster.Binaries),
 		SizeBytes:               totalBytes(cluster.Binaries),
