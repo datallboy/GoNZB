@@ -1,10 +1,35 @@
 # Indexer API And Web UI Expansion Plan
 
 Snapshot date: 2026-04-23
+Sign-off date: 2026-04-28
+Status: Completed and approved for merge
 
 This is Phase 3 of the next indexer era.
 
 The goal is to ship the first production-ready indexer API and web UI experience on top of the stabilized storage model and hardened release contract, while preserving strict module independence across the indexer, downloader, and aggregator domains.
+
+## Final Sign-Off
+
+Phase 3 is complete.
+
+Delivered:
+
+- stable public indexer API and public browse/detail UX
+- admin indexer API and admin portal UX
+- first-run auth bootstrap with no seeded default admin account
+- session auth, API token auth, RBAC, CSRF, audit logging, and admin security surfaces
+- bounded downloader handoff integration
+- shared Newsnab category normalization consumed by indexer and aggregator-compatible surfaces
+- run metrics persistence and admin run detail visibility
+
+Sign-off basis:
+
+- backend contracts implemented and covered by targeted tests
+- frontend production build passes
+- auth/bootstrap and RBAC flow verified by router-level security tests
+- indexer public/admin surfaces are feature-complete for the Phase 3 scope
+
+Residual follow-up work is tuning and future enhancement, not a Phase 3 blocker.
 
 ## Scope
 

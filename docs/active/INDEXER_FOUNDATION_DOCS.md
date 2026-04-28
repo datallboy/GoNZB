@@ -11,7 +11,8 @@ We currently have several planning/reference documents. This file defines which 
 - Phase 1 and Phase 2 of the next-phase docs are complete
 - the stabilization/schema/runtime pass is mostly complete and has been moved to completed-history docs
 - the backlog burn-down performance pass and the assemble/release refinement loop were completed and signed off on `2026-04-22`
-- the current active execution focus is now Phase 3 API/UI expansion work
+- Phase 3 API/UI expansion work was completed and signed off on `2026-04-28`
+- the active indexer execution focus should now move to post-Phase-3 follow-up workstreams rather than the original API/UI expansion backlog
 
 ## Current Active Docs
 
@@ -27,9 +28,9 @@ Use for:
 
 Use for:
 
-- Phase 3 execution planning
-- backend contract rollout for initial user-facing indexer release surfaces
-- first indexer web UI views built on the hardened release contract
+- completed Phase 3 execution record
+- final backend contract rollout decisions for initial user-facing indexer release surfaces
+- final sign-off record for the first indexer web UI and admin UI phase
 
 ### `docs/active/NEWSNAB_CATEGORY_NORMALIZATION_PLAN.md`
 
