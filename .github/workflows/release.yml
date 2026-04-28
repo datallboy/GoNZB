@@ -37,7 +37,7 @@ jobs:
 
             # 1. Build binaries via Makefile
             - name: Build Binaries
-              run: make build
+              run: make build-release
 
             # 2. Generate Checksums
             - name: Generate Checksums

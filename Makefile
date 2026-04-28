@@ -8,7 +8,7 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build ui-build clean test vet lint install
+.PHONY: all build build-release ui-build clean test vet lint install
 
 all: build
 
@@ -16,6 +16,19 @@ build: ui-build
 	@echo "Building $(DIST_NAME)..."
 	GOCACHE=$${GOCACHE:-/tmp/gocache} go build $(LDFLAGS) -o bin/$(DIST_NAME) $(PKG)
 
+build-release: ui-build
+	@echo "Building release binaries..."
+	@mkdir -p bin
+	@for target in linux/amd64 windows/amd64; do \
+		GOOS=$${target%/*}; \
+		GOARCH=$${target#*/}; \
+		EXT=""; \
+		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
+		OUT="bin/$(BINARY_NAME)_$(VERSION)_$$GOOS_$$GOARCH$$EXT"; \
+		echo "Building $$OUT"; \
+		CGO_ENABLED=0 GOCACHE=$${GOCACHE:-/tmp/gocache} GOOS=$$GOOS GOARCH=$$GOARCH go build $(LDFLAGS) -o "$$OUT" $(PKG); \
+	done
+		
 ui-build:
 	@echo "Building embedded web UI..."
 	npm --prefix ui run build
