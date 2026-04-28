@@ -71,6 +71,18 @@ type Service struct {
 	opts     Options
 }
 
+type runMetrics struct {
+	Mode               string
+	BatchSize          int64
+	GroupsTotal        int
+	GroupsProcessed    int
+	GroupsWithWork     int
+	RangesFetched      int
+	ArticleHeadersSeen int64
+	ArticlesInserted   int64
+	CheckpointUpdates  int
+}
+
 func NewService(repo repository, p provider, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 5000
@@ -86,46 +98,63 @@ func NewService(repo repository, p provider, log logger, opts Options) *Service 
 
 // backward-compatible alias. Default scrape mode is latest.
 func (s *Service) RunOnce(ctx context.Context) error {
-	return s.RunLatestOnce(ctx)
+	_, err := s.RunLatestOnceWithMetrics(ctx)
+	return err
 }
 
 // latest mode prioritizes the head of the group and continues forward.
 func (s *Service) RunLatestOnce(ctx context.Context) error {
-	return s.runMode(ctx, "latest")
+	_, err := s.RunLatestOnceWithMetrics(ctx)
+	return err
 }
 
 // backfill mode walks backward from the most recent known boundary.
 func (s *Service) RunBackfillOnce(ctx context.Context) error {
-	return s.runMode(ctx, "backfill")
+	_, err := s.RunBackfillOnceWithMetrics(ctx)
+	return err
 }
 
 func (s *Service) runMode(ctx context.Context, mode string) error {
+	_, err := s.runModeWithMetrics(ctx, mode)
+	return err
+}
+
+func (s *Service) RunLatestOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runModeWithMetrics(ctx, "latest")
+}
+
+func (s *Service) RunBackfillOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runModeWithMetrics(ctx, "backfill")
+}
+
+func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("scrape repo is required")
+		return nil, fmt.Errorf("scrape repo is required")
 	}
 	if s.provider == nil {
-		return fmt.Errorf("scrape provider is required")
+		return nil, fmt.Errorf("scrape provider is required")
 	}
 	if len(s.opts.Newsgroups) == 0 {
-		return fmt.Errorf("at least one newsgroup is required")
+		return nil, fmt.Errorf("at least one newsgroup is required")
 	}
 
 	providerKey := strings.TrimSpace(s.provider.ID())
 	if providerKey == "" {
-		return fmt.Errorf("provider id is required")
+		return nil, fmt.Errorf("provider id is required")
 	}
 
 	providerID, err := s.repo.EnsureProvider(ctx, providerKey, providerKey)
 	if err != nil {
-		return fmt.Errorf("ensure provider: %w", err)
+		return nil, fmt.Errorf("ensure provider: %w", err)
 	}
 
 	runID, err := s.repo.StartScrapeRun(ctx, providerID)
 	if err != nil {
-		return fmt.Errorf("start scrape run: %w", err)
+		return nil, fmt.Errorf("start scrape run: %w", err)
 	}
 
-	runErr := s.runGroups(ctx, providerID, mode)
+	metrics := &runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}
+	runErr := s.runGroups(ctx, providerID, mode, metrics)
 
 	status := "completed"
 	errText := ""
@@ -136,27 +165,29 @@ func (s *Service) runMode(ctx context.Context, mode string) error {
 
 	if finishErr := s.repo.FinishScrapeRun(ctx, runID, status, errText); finishErr != nil {
 		if runErr != nil {
-			return fmt.Errorf("%v (also failed to finish scrape run: %w)", runErr, finishErr)
+			return metrics.toMap(), fmt.Errorf("%v (also failed to finish scrape run: %w)", runErr, finishErr)
 		}
-		return fmt.Errorf("finish scrape run: %w", finishErr)
+		return metrics.toMap(), fmt.Errorf("finish scrape run: %w", finishErr)
 	}
 
-	return runErr
+	return metrics.toMap(), runErr
 }
 
-func (s *Service) runGroups(ctx context.Context, providerID int64, mode string) error {
+func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, metrics *runMetrics) error {
+	metrics.GroupsTotal = len(s.opts.Newsgroups)
 	for _, g := range s.opts.Newsgroups {
 		group := strings.TrimSpace(g)
 		if group == "" {
 			continue
 		}
+		metrics.GroupsProcessed++
 
 		var err error
 		switch mode {
 		case "latest":
-			err = s.runLatestGroup(ctx, providerID, group)
+			err = s.runLatestGroup(ctx, providerID, group, metrics)
 		case "backfill":
-			err = s.runBackfillGroup(ctx, providerID, group)
+			err = s.runBackfillGroup(ctx, providerID, group, metrics)
 		default:
 			err = fmt.Errorf("unsupported scrape mode %q", mode)
 		}
@@ -168,7 +199,7 @@ func (s *Service) runGroups(ctx context.Context, providerID int64, mode string) 
 	return nil
 }
 
-func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string) error {
+func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string, metrics *runMetrics) error {
 	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
 	if err != nil {
 		return fmt.Errorf("ensure newsgroup %s: %w", group, err)
@@ -200,6 +231,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 		s.log.Debug("scrape latest: group %s up-to-date at %d", group, last)
 		return nil
 	}
+	metrics.GroupsWithWork++
 
 	s.log.Info("scrape latest: group=%s start=%d high=%d batch=%d", group, start, stats.High, s.opts.BatchSize)
 
@@ -209,10 +241,14 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 			to = stats.High
 		}
 
-		_, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to)
+		headers, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to)
 		if err != nil {
 			return err
 		}
+		metrics.RangesFetched++
+		metrics.ArticleHeadersSeen += int64(len(headers))
+		metrics.ArticlesInserted += inserted
+		metrics.CheckpointUpdates++
 
 		if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
 			return fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
@@ -224,7 +260,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	return nil
 }
 
-func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group string) error {
+func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group string, metrics *runMetrics) error {
 	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
 	if err != nil {
 		return fmt.Errorf("ensure newsgroup %s: %w", group, err)
@@ -292,6 +328,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		s.log.Debug("scrape backfill: group %s completed at %d", group, end)
 		return nil
 	}
+	metrics.GroupsWithWork++
 
 	start := end - s.opts.BatchSize + 1
 	if start < stats.Low {
@@ -304,6 +341,9 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	if err != nil {
 		return err
 	}
+	metrics.RangesFetched++
+	metrics.ArticleHeadersSeen += int64(len(headers))
+	metrics.ArticlesInserted += inserted
 
 	if hasCutoff {
 		var oldest *time.Time
@@ -333,6 +373,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, nextCursor); err != nil {
 		return fmt.Errorf("upsert backfill checkpoint %s=%d: %w", group, nextCursor, err)
 	}
+	metrics.CheckpointUpdates++
 
 	s.log.Info("scrape backfill: group=%s range=%d-%d inserted=%d next=%d", group, start, end, inserted, nextCursor)
 	return nil
@@ -380,6 +421,23 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 	}
 
 	return headers, inserted, nil
+}
+
+func (m *runMetrics) toMap() map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                 m.Mode,
+		"groups_total":         m.GroupsTotal,
+		"groups_processed":     m.GroupsProcessed,
+		"groups_with_work":     m.GroupsWithWork,
+		"ranges_fetched":       m.RangesFetched,
+		"article_headers_seen": m.ArticleHeadersSeen,
+		"articles_inserted":    m.ArticlesInserted,
+		"checkpoint_updates":   m.CheckpointUpdates,
+		"batch_size":           m.BatchSize,
+	}
 }
 
 func ptrTime(v time.Time) *time.Time {

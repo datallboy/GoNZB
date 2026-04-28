@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -39,9 +40,25 @@ type Runner interface {
 	Run(ctx context.Context) error
 }
 
+type ResultRunner interface {
+	Runner
+	RunResult(ctx context.Context) (json.RawMessage, error)
+}
+
 type RunnerFunc func(ctx context.Context) error
 
 func (fn RunnerFunc) Run(ctx context.Context) error {
+	return fn(ctx)
+}
+
+type ResultRunnerFunc func(ctx context.Context) (json.RawMessage, error)
+
+func (fn ResultRunnerFunc) Run(ctx context.Context) error {
+	_, err := fn(ctx)
+	return err
+}
+
+func (fn ResultRunnerFunc) RunResult(ctx context.Context) (json.RawMessage, error) {
 	return fn(ctx)
 }
 
@@ -248,7 +265,15 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 	heartbeatErrCh := make(chan error, 1)
 	go s.heartbeatStageRun(heartbeatCtx, claim.Run.ID, heartbeatErrCh)
 
-	runErr := stage.Runner.Run(ctx)
+	var (
+		runErr  error
+		metrics json.RawMessage
+	)
+	if resultRunner, ok := stage.Runner.(ResultRunner); ok {
+		metrics, runErr = resultRunner.RunResult(ctx)
+	} else {
+		runErr = stage.Runner.Run(ctx)
+	}
 
 	cancelHeartbeat()
 	heartbeatErr := <-heartbeatErrCh
@@ -258,9 +283,10 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 
 	if runErr != nil {
 		finishErr := s.tracker.FailIndexerStageRun(controlCtx, pgindex.IndexerStageFinishRequest{
-			RunID:     claim.Run.ID,
-			Owner:     s.owner,
-			ErrorText: runErr.Error(),
+			RunID:       claim.Run.ID,
+			Owner:       s.owner,
+			ErrorText:   runErr.Error(),
+			MetricsJSON: metrics,
 		})
 		if finishErr != nil {
 			return fmt.Errorf("%v (also failed to mark stage run failed: %w)", runErr, finishErr)
@@ -273,8 +299,9 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 	}
 
 	if err := s.tracker.CompleteIndexerStageRun(controlCtx, pgindex.IndexerStageFinishRequest{
-		RunID: claim.Run.ID,
-		Owner: s.owner,
+		RunID:       claim.Run.ID,
+		Owner:       s.owner,
+		MetricsJSON: metrics,
 	}); err != nil {
 		return err
 	}

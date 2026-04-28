@@ -52,36 +52,48 @@ func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectArchive), s.opts.CandidateBatchSize)
 	if err != nil {
-		return fmt.Errorf("list inspect_archive candidates: %w", err)
+		return nil, fmt.Errorf("list inspect_archive candidates: %w", err)
 	}
+	metrics := map[string]any{"candidate_count": len(candidates), "processed_count": 0, "batch_size": s.opts.CandidateBatchSize}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_archive: no inspection candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 	candidates, err = s.dedupeCandidates(ctx, candidates)
 	if err != nil {
-		return fmt.Errorf("dedupe inspect_archive candidates: %w", err)
+		return metrics, fmt.Errorf("dedupe inspect_archive candidates: %w", err)
 	}
+	metrics["deduped_candidate_count"] = len(candidates)
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_archive: no deduped inspection candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
+	processed := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
 		if err := s.inspectCandidate(ctx, candidate); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
+		processed++
 	}
-	return nil
+	metrics["processed_count"] = processed
+	return metrics, nil
 }
 
 func (s *Service) dedupeCandidates(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {

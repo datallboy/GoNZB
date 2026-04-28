@@ -85,35 +85,49 @@ func NewService(repo repository, log logger, opts Options) *Service {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("enrichment repo is required")
+		return nil, fmt.Errorf("enrichment repo is required")
 	}
 	if s.tmdb == nil && s.tvdb == nil {
 		if s.log != nil {
 			s.log.Debug("enrich_tmdb: no TMDB/TVDB credentials configured; skipping")
 		}
-		return nil
+		return map[string]any{"candidates": 0, "updated": 0, "tmdb_enabled": false, "tvdb_enabled": false}, nil
 	}
 
 	candidates, err := s.repo.ListReleaseEnrichmentCandidates(ctx, string(supervisor.StageEnrichTMDB), s.opts.Limit)
 	if err != nil {
-		return fmt.Errorf("list enrich_tmdb candidates: %w", err)
+		return nil, fmt.Errorf("list enrich_tmdb candidates: %w", err)
+	}
+	metrics := map[string]any{
+		"candidates":   len(candidates),
+		"updated":      0,
+		"tmdb_enabled": s.tmdb != nil,
+		"tvdb_enabled": s.tvdb != nil,
+		"limit":        s.opts.Limit,
 	}
 	if len(candidates) == 0 {
 		if s.log != nil {
 			s.log.Debug("enrich_tmdb: no enrichment candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
 	updated := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["updated"] = updated
+			return metrics, err
 		}
 		applied, err := s.enrichCandidate(ctx, candidate)
 		if err != nil {
-			return fmt.Errorf("enrich release %s: %w", candidate.ReleaseID, err)
+			metrics["updated"] = updated
+			return metrics, fmt.Errorf("enrich release %s: %w", candidate.ReleaseID, err)
 		}
 		if applied {
 			updated++
@@ -122,7 +136,8 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	if s.log != nil {
 		s.log.Info("enrich_tmdb: candidates=%d updated=%d", len(candidates), updated)
 	}
-	return nil
+	metrics["updated"] = updated
+	return metrics, nil
 }
 
 func (s *Service) enrichCandidate(ctx context.Context, candidate pgindex.ReleaseEnrichmentCandidate) (bool, error) {

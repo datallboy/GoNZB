@@ -22,6 +22,30 @@ function prettyJSON(value?: unknown) {
   }
 }
 
+function metricEntries(value?: unknown): Array<[string, string]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return []
+  }
+  return Object.entries(value as Record<string, unknown>).map(([key, raw]) => [key, metricValue(raw)])
+}
+
+function metricValue(value: unknown): string {
+  if (value == null) {
+    return 'n/a'
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0 ? '[]' : value.map((item) => metricValue(item)).join(', ')
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
 export function AdminRunDetailPage() {
   const { id = '' } = useParams()
   const [run, setRun] = useState<AdminRun | null>(null)
@@ -108,6 +132,16 @@ export function AdminRunDetailPage() {
 
       <div className="page-card">
         <h2 className="section-title">Metrics JSON</h2>
+        {metricEntries(run.metrics_json).length > 0 ? (
+          <dl className="detail-grid">
+            {metricEntries(run.metrics_json).map(([key, value]) => (
+              <div key={key}>
+                <dt>{key}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
         <pre className="json-block">{prettyJSON(run.metrics_json)}</pre>
       </div>
     </div>
