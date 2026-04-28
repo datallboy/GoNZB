@@ -12,13 +12,13 @@ export const stageOptions = [
   { value: 'inspect_media', label: 'Inspect Media' },
   { value: 'enrich_predb', label: 'Enrich PreDB' },
   { value: 'enrich_tmdb', label: 'Enrich TMDB' },
-  { value: 'maintenance', label: 'Maintenance' },
+  { value: 'indexer_maintenance', label: 'Maintenance' },
 ] as const
 
 export const runStatusOptions = [
   { value: '', label: 'Any status' },
   { value: 'running', label: 'Running' },
-  { value: 'succeeded', label: 'Succeeded' },
+  { value: 'completed', label: 'Completed' },
   { value: 'failed', label: 'Failed' },
   { value: 'abandoned', label: 'Abandoned' },
 ] as const
@@ -27,7 +27,6 @@ export const runTriggerOptions = [
   { value: '', label: 'Any trigger' },
   { value: 'scheduled', label: 'Scheduled' },
   { value: 'manual', label: 'Manual' },
-  { value: 'api', label: 'API' },
 ] as const
 
 export const permissionGroups = [
