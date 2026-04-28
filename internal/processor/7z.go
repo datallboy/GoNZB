@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 // 7z file signature (magic bytes)
 var sevenZipSignature = []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}
+var splitSevenZipVolumeRE = regexp.MustCompile(`(?i)\.7z\.(\d{3})$`)
 
 type CLI7z struct {
 	BinaryPath string
@@ -36,7 +38,14 @@ func (z *CLI7z) Name() string {
 func (z *CLI7z) CanExtract(filePath string) (bool, error) {
 	lower := strings.ToLower(filepath.Base(filePath))
 
-	if !strings.HasSuffix(lower, ".7z") {
+	switch {
+	case strings.HasSuffix(lower, ".7z"):
+	case splitSevenZipVolumeRE.MatchString(lower):
+		matches := splitSevenZipVolumeRE.FindStringSubmatch(lower)
+		if len(matches) != 2 || matches[1] != "001" {
+			return false, nil
+		}
+	default:
 		return false, nil
 	}
 

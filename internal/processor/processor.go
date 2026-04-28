@@ -442,7 +442,48 @@ func (p *Processor) cleanupWorkDir(workDir, completedDir string) error {
 		}
 	}
 
+	if err := removeEmptyDirsWithin(absWorkDir); err != nil {
+		return err
+	}
+
 	return removeEmptyDirsUp(absWorkDir, absDownloadRoot)
+}
+
+func removeEmptyDirsWithin(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil
+	}
+
+	var dirs []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info != nil && info.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	for i := len(dirs) - 1; i >= 0; i-- {
+		dir := dirs[i]
+		if samePath(dir, root) {
+			continue
+		}
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			// non-empty directories are expected and should be retained
+			continue
+		}
+	}
+
+	return nil
 }
 
 func removeEmptyDirsUp(startDir, stopDir string) error {
@@ -484,7 +525,7 @@ func samePath(a, b string) bool {
 	return aa == bb
 }
 
-var archiveArtifactRE = regexp.MustCompile(`(?i)(\.part\d+\.rar|\.rar|\.r\d{2,3}|\.par2|\.vol\d+\+\d+\.par2|\.sfv)$`)
+var archiveArtifactRE = regexp.MustCompile(`(?i)(\.part\d+\.rar|\.rar|\.r\d{2,3}|\.7z|\.7z\.\d{3}|\.zip|\.z\d{2,3}|\.par2|\.vol\d+\+\d+\.par2|\.sfv)$`)
 
 func isArchiveArtifact(path string) bool {
 	name := filepath.Base(path)
