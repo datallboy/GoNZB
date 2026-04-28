@@ -57,6 +57,13 @@ type IndexerStageRun struct {
 	MetricsJSON json.RawMessage `json:"metrics_json"`
 }
 
+type IndexerStageRunListParams struct {
+	StageName   string
+	Status      string
+	TriggerKind string
+	Limit       int
+}
+
 type IndexerStageFinishRequest struct {
 	RunID       int64
 	Owner       string
@@ -451,9 +458,18 @@ func (s *Store) ListIndexerStageStates(ctx context.Context) ([]IndexerStageState
 }
 
 func (s *Store) ListIndexerStageRuns(ctx context.Context, stageName string, limit int) ([]IndexerStageRun, error) {
-	stageName = strings.TrimSpace(stageName)
-	if limit <= 0 {
-		limit = 50
+	return s.ListIndexerStageRunsFiltered(ctx, IndexerStageRunListParams{
+		StageName: stageName,
+		Limit:     limit,
+	})
+}
+
+func (s *Store) ListIndexerStageRunsFiltered(ctx context.Context, params IndexerStageRunListParams) ([]IndexerStageRun, error) {
+	params.StageName = strings.TrimSpace(params.StageName)
+	params.Status = strings.ToLower(strings.TrimSpace(params.Status))
+	params.TriggerKind = strings.ToLower(strings.TrimSpace(params.TriggerKind))
+	if params.Limit <= 0 {
+		params.Limit = 50
 	}
 
 	query := `
@@ -470,15 +486,24 @@ func (s *Store) ListIndexerStageRuns(ctx context.Context, stageName string, limi
 			metrics_json
 		FROM indexer_stage_runs`
 	args := []any{}
-	if stageName != "" {
-		query += ` WHERE stage_name = $1`
-		args = append(args, stageName)
-		query += ` ORDER BY started_at DESC, id DESC LIMIT $2`
-		args = append(args, limit)
-	} else {
-		query += ` ORDER BY started_at DESC, id DESC LIMIT $1`
-		args = append(args, limit)
+	clauses := make([]string, 0, 3)
+	if params.StageName != "" {
+		args = append(args, params.StageName)
+		clauses = append(clauses, fmt.Sprintf("stage_name = $%d", len(args)))
 	}
+	if params.Status != "" {
+		args = append(args, params.Status)
+		clauses = append(clauses, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if params.TriggerKind != "" {
+		args = append(args, params.TriggerKind)
+		clauses = append(clauses, fmt.Sprintf("trigger_kind = $%d", len(args)))
+	}
+	if len(clauses) > 0 {
+		query += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	args = append(args, params.Limit)
+	query += fmt.Sprintf(` ORDER BY started_at DESC, id DESC LIMIT $%d`, len(args))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -486,7 +511,7 @@ func (s *Store) ListIndexerStageRuns(ctx context.Context, stageName string, limi
 	}
 	defer rows.Close()
 
-	out := make([]IndexerStageRun, 0, limit)
+	out := make([]IndexerStageRun, 0, params.Limit)
 	for rows.Next() {
 		item, err := scanIndexerStageRun(rows)
 		if err != nil {

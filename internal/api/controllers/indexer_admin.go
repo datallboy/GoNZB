@@ -84,8 +84,13 @@ func (ctrl *IndexerAdminController) ListRuns(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	stageName := queryParamLower(c, "stage")
-	items, err := ctrl.Service.ListRuns(c.Request().Context(), stageName, limit)
+	params := pgindex.IndexerStageRunListParams{
+		StageName:   queryParamLower(c, "stage"),
+		Status:      queryParamLower(c, "status"),
+		TriggerKind: queryParamLower(c, "trigger_kind"),
+		Limit:       limit,
+	}
+	items, err := ctrl.Service.ListRuns(c.Request().Context(), params)
 	if err != nil {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
@@ -98,7 +103,9 @@ func (ctrl *IndexerAdminController) ListRuns(c *echo.Context) error {
 		"count":    len(page),
 		"limit":    limit,
 		"offset":   offset,
-		"stage":    stageName,
+		"stage":    params.StageName,
+		"status":   params.Status,
+		"trigger":  params.TriggerKind,
 		"has_more": false,
 	})
 }

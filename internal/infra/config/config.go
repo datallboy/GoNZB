@@ -84,6 +84,7 @@ type IndexingConfig struct {
 	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
 	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
 	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
+	InspectDiscovery         IndexingStageConfig   `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
 	InspectPAR2              IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
 	InspectNFO               IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
 	InspectArchive           IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
@@ -256,6 +257,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
+	v.SetDefault("indexing.inspect_discovery.enabled", true)
+	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
+	v.SetDefault("indexing.inspect_discovery.concurrency", 1)
+	v.SetDefault("indexing.inspect_discovery.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_par2.enabled", true)
 	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_par2.batch_size", 100)

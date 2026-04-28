@@ -397,7 +397,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			Concurrency:     indexingCfg.Release.Concurrency,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
-		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectArchive),
+		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectDiscovery),
 		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
 		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),
 		InspectArchive:   newIndexerStageConfig(indexingCfg.InspectArchive),

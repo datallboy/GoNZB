@@ -258,10 +258,22 @@ func (s *Store) CreateAuthToken(ctx context.Context, token auth.StoredToken) err
 }
 
 func (s *Store) ListAuthTokens(ctx context.Context) ([]auth.Token, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.listAuthTokensWhere(ctx, `
 		SELECT id, user_id, name, prefix, created_at, last_used_at, revoked_at
 		FROM auth_api_tokens
 		ORDER BY created_at DESC`)
+}
+
+func (s *Store) ListAuthTokensByUserID(ctx context.Context, userID string) ([]auth.Token, error) {
+	return s.listAuthTokensWhere(ctx, `
+		SELECT id, user_id, name, prefix, created_at, last_used_at, revoked_at
+		FROM auth_api_tokens
+		WHERE user_id = ?
+		ORDER BY created_at DESC`, userID)
+}
+
+func (s *Store) listAuthTokensWhere(ctx context.Context, query string, args ...any) ([]auth.Token, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +288,33 @@ func (s *Store) ListAuthTokens(ctx context.Context) ([]auth.Token, error) {
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetAuthTokenByID(ctx context.Context, tokenID string) (*auth.StoredToken, error) {
+	var (
+		item              auth.StoredToken
+		lastUsed, revoked sql.NullTime
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, name, prefix, token_hash, created_at, last_used_at, revoked_at
+		FROM auth_api_tokens
+		WHERE id = ?`, tokenID,
+	).Scan(&item.ID, &item.UserID, &item.Name, &item.Prefix, &item.TokenHash, &item.CreatedAt, &lastUsed, &revoked)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lastUsed.Valid {
+		t := lastUsed.Time.UTC()
+		item.LastUsedAt = &t
+	}
+	if revoked.Valid {
+		t := revoked.Time.UTC()
+		item.RevokedAt = &t
+	}
+	return &item, nil
 }
 
 func (s *Store) GetAuthTokenByHash(ctx context.Context, tokenHash string) (*auth.StoredToken, error) {
