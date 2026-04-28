@@ -3,6 +3,7 @@ import type {
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
+  AdminRunDetailResponse,
   AdminRunListParams,
   AdminRunsResponse,
   AdminStageConfigPatch,
@@ -37,6 +38,10 @@ export function getAdminRuns(params: AdminRunListParams) {
     query.set(key, String(value))
   }
   return apiRequest<AdminRunsResponse>(`/api/v1/admin/indexer/runs?${query.toString()}`)
+}
+
+export function getAdminRun(id: string) {
+  return apiRequest<AdminRunDetailResponse>(`/api/v1/admin/indexer/runs/${id}`)
 }
 
 export function getAdminReleases(params: AdminReleaseListParams) {

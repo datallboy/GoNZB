@@ -171,6 +171,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/releases", indexerAdminCtrl.ListReleases)
 		v1AdminIndexer.GET("/releases/:id", indexerAdminCtrl.GetRelease)
 		v1AdminIndexer.GET("/runs", indexerAdminCtrl.ListRuns)
+		v1AdminIndexer.GET("/runs/:id", indexerAdminCtrl.GetRun)
 		v1AdminIndexer.PATCH("/stages/:stage", indexerAdminCtrl.PatchStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))

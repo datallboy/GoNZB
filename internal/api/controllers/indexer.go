@@ -312,6 +312,18 @@ func parsePublicIndexerListParams(c *echo.Context, limit, offset int) (pgindex.P
 	}, nil
 }
 
+func parseInt64PathParam(c *echo.Context, name string) (int64, error) {
+	value := pathParamTrimmed(c, name)
+	if value == "" {
+		return 0, fmt.Errorf("%s is required", name)
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", name, value)
+	}
+	return parsed, nil
+}
+
 func pgindexSortOrDefault(sort string) string {
 	sort = normalizeTrimmed(sort)
 	if sort == "" {

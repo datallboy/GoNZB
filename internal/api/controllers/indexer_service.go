@@ -21,6 +21,7 @@ type indexerService interface {
 	ListStages(ctx context.Context) ([]indexerStageView, error)
 	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
+	GetRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error)
 	RunStage(ctx context.Context, stageName string) error
 	PauseStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ResumeStage(ctx context.Context, stageName string) (*indexerStageView, error)
@@ -186,6 +187,13 @@ func (s *runtimeIndexerService) GetStage(ctx context.Context, stageName string) 
 		return nil, err
 	}
 	return s.getStage(ctx, string(stage))
+}
+
+func (s *runtimeIndexerService) GetRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetIndexerStageRun(ctx, runID)
 }
 
 func (s *runtimeIndexerService) RunStage(ctx context.Context, stageName string) error {

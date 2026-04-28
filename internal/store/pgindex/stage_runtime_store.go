@@ -527,6 +527,34 @@ func (s *Store) ListIndexerStageRunsFiltered(ctx context.Context, params Indexer
 	return out, nil
 }
 
+func (s *Store) GetIndexerStageRun(ctx context.Context, runID int64) (*IndexerStageRun, error) {
+	if runID <= 0 {
+		return nil, fmt.Errorf("run id is required")
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			id,
+			stage_name,
+			trigger_kind,
+			status,
+			claimed_by,
+			started_at,
+			heartbeat_at,
+			finished_at,
+			error_text,
+			metrics_json
+		FROM indexer_stage_runs
+		WHERE id = $1`, runID)
+	item, err := scanIndexerStageRun(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get indexer stage run %d: %w", runID, err)
+	}
+	return &item, nil
+}
+
 func (s *Store) finishIndexerStageRun(ctx context.Context, req IndexerStageFinishRequest, status string) error {
 	if req.RunID <= 0 {
 		return fmt.Errorf("run id is required")
