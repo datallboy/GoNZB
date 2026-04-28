@@ -124,6 +124,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageScrapeBackfill,
 		StageAssemble,
 		StageRelease,
+		StageInspectDiscovery,
 		StageInspectPAR2,
 		StageInspectNFO,
 		StageInspectArchive,
@@ -315,9 +316,15 @@ func (s *Supervisor) selectStages(names ...StageName) ([]Stage, error) {
 
 	out := make([]Stage, 0, len(names))
 	for _, name := range names {
-		stage, err := s.stage(name)
+		stage, ok, err := s.selectableStage(name)
 		if err != nil {
 			return nil, err
+		}
+		if !ok {
+			if s.log != nil {
+				s.log.Info("index supervisor skipping disabled stage=%s", name)
+			}
+			continue
 		}
 		out = append(out, stage)
 	}
@@ -325,21 +332,32 @@ func (s *Supervisor) selectStages(names ...StageName) ([]Stage, error) {
 }
 
 func (s *Supervisor) stage(name StageName) (Stage, error) {
+	stage, ok, err := s.selectableStage(name)
+	if err != nil {
+		return Stage{}, err
+	}
+	if !ok {
+		return Stage{}, fmt.Errorf("stage %q is disabled", name)
+	}
+	return stage, nil
+}
+
+func (s *Supervisor) selectableStage(name StageName) (Stage, bool, error) {
 	if s == nil {
-		return Stage{}, fmt.Errorf("supervisor is not configured")
+		return Stage{}, false, fmt.Errorf("supervisor is not configured")
 	}
 
 	stage, ok := s.stages[name]
 	if !ok {
-		return Stage{}, fmt.Errorf("stage %q is not configured", name)
+		return Stage{}, false, fmt.Errorf("stage %q is not configured", name)
 	}
 	if !stage.Enabled {
-		return Stage{}, fmt.Errorf("stage %q is disabled", name)
+		return Stage{}, false, nil
 	}
 	if stage.Runner == nil {
-		return Stage{}, fmt.Errorf("stage %q has no runner", name)
+		return Stage{}, false, fmt.Errorf("stage %q has no runner", name)
 	}
-	return stage, nil
+	return stage, true, nil
 }
 
 func joinStageNames(stages []Stage) string {
