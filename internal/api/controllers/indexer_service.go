@@ -174,24 +174,7 @@ func (s *runtimeIndexerService) ListRuns(ctx context.Context, params pgindex.Ind
 		}
 	}
 
-	items, err := s.store.ListIndexerStageRuns(ctx, params.StageName, params.Limit)
-	if err != nil {
-		return nil, err
-	}
-	if params.Status == "" && params.TriggerKind == "" {
-		return items, nil
-	}
-	filtered := make([]pgindex.IndexerStageRun, 0, len(items))
-	for _, item := range items {
-		if params.Status != "" && !strings.EqualFold(item.Status, params.Status) {
-			continue
-		}
-		if params.TriggerKind != "" && !strings.EqualFold(item.TriggerKind, params.TriggerKind) {
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	return filtered, nil
+	return s.store.ListIndexerStageRunsFiltered(ctx, params)
 }
 
 func (s *runtimeIndexerService) GetStage(ctx context.Context, stageName string) (*indexerStageView, error) {
@@ -559,6 +542,14 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			BatchSize:       runtime.Indexing.EnrichTMDB.BatchSize,
 			Concurrency:     runtime.Indexing.EnrichTMDB.Concurrency,
 			BackoffSeconds:  runtime.Indexing.EnrichTMDB.BackoffSeconds,
+		}, true
+	case string(supervisor.StageMaintenance):
+		return app.IndexingStageRuntimeSettings{
+			Enabled:         true,
+			IntervalMinutes: 360,
+			BatchSize:       0,
+			Concurrency:     1,
+			BackoffSeconds:  0,
 		}, true
 	default:
 		return app.IndexingStageRuntimeSettings{}, false

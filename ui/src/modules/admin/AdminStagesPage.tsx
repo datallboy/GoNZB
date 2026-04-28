@@ -12,6 +12,19 @@ function stagePatchFromView(stage: AdminStage): AdminStageConfigPatch {
   }
 }
 
+function stageRuntimeStatus(stage: AdminStage) {
+  if (!stage.enabled) {
+    return 'disabled'
+  }
+  if (stage.paused) {
+    return 'paused'
+  }
+  if (stage.lease_owner) {
+    return 'running'
+  }
+  return 'idle'
+}
+
 function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => Promise<void> }) {
   const [patch, setPatch] = useState<AdminStageConfigPatch>(() => stagePatchFromView(stage))
   const [message, setMessage] = useState<string | null>(null)
@@ -55,7 +68,7 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
             Runtime settings stored in the app settings DB. `config.yaml` is bootstrap only.
           </p>
           <p className="muted-copy">
-            Lease owner: {stage.lease_owner || 'none'} · paused: {stage.paused ? 'yes' : 'no'} · last error:{' '}
+            Status: {stageRuntimeStatus(stage)} · lease owner: {stage.lease_owner || 'none'} · last error:{' '}
             {stage.last_error || 'none'}
           </p>
         </div>
