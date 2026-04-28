@@ -210,6 +210,10 @@ Storage:
 
 - PostgreSQL catalog/index state
 
+Indexer engineering reference:
+
+- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage indexer pipeline, core tables, release/inspect/enrich update flow, and current rough edges around file-name recovery and inspection coverage
+
 Runtime notes:
 
 - the usenet indexer runtime now derives a dedicated runtime config before runtime construction
@@ -522,6 +526,6 @@ Future coverage that is still valuable:
 
 ## Related Documents
 
-- [MODULAR_REFACTOR.md](MODULAR_REFACTOR.md)
+- [archive/MODULAR_REFACTOR.md](archive/MODULAR_REFACTOR.md)
 - [README.md](../README.md)
 - [INDEXER_PLAN.md](archive/INDEXER_PLAN.md)

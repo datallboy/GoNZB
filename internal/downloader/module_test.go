@@ -29,7 +29,7 @@ func TestCommandsEnqueueByReleaseIDUsesResolverAndQueue(t *testing.T) {
 		Resolver: func() app.ReleaseResolver { return resolver },
 	})
 
-	item, err := module.Commands().EnqueueByReleaseID(context.Background(), "rel-1", "Override Title")
+	item, err := module.Commands().EnqueueByReleaseID(context.Background(), "aggregator", "rel-1", "Override Title")
 	if err != nil {
 		t.Fatalf("EnqueueByReleaseID() error = %v", err)
 	}
@@ -48,6 +48,40 @@ func TestCommandsEnqueueByReleaseIDUsesResolverAndQueue(t *testing.T) {
 	}
 	if resolver.lastSourceKind != "aggregator" {
 		t.Fatalf("expected resolver source kind aggregator, got %q", resolver.lastSourceKind)
+	}
+}
+
+func TestCommandsEnqueueByReleaseIDSupportsUsenetIndexSourceKind(t *testing.T) {
+	queue := &fakeQueueManager{
+		addResult: &domain.QueueItem{ID: "queue-idx-1"},
+	}
+	resolver := &fakeResolver{
+		release: &domain.Release{
+			ID:       "idx-rel-1",
+			GUID:     "idx-guid-1",
+			Title:    "Indexer Release",
+			Source:   "usenet_index",
+			Category: "tv",
+		},
+	}
+
+	module := NewModule(DependencyProvider{
+		Queue:    func() app.QueueManager { return queue },
+		Resolver: func() app.ReleaseResolver { return resolver },
+	})
+
+	item, err := module.Commands().EnqueueByReleaseID(context.Background(), "usenet_indexer", "idx-rel-1", "")
+	if err != nil {
+		t.Fatalf("EnqueueByReleaseID() error = %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected queue item")
+	}
+	if resolver.lastSourceKind != "usenet_index" {
+		t.Fatalf("expected normalized resolver source kind usenet_index, got %q", resolver.lastSourceKind)
+	}
+	if queue.lastAddRequest.SourceKind != "usenet_index" {
+		t.Fatalf("expected queue source kind usenet_index, got %q", queue.lastAddRequest.SourceKind)
 	}
 }
 

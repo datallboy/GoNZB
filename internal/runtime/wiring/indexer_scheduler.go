@@ -6,15 +6,81 @@ import (
 	"io"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 )
 
 type indexerRuntimeState struct {
 	cancel func()
 	closer io.Closer
+	owner  string
 }
 
 // Long-running scrape mode restart loop lives outside cmd/main.
 func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeLatest)
+}
+
+// Long-running backfill mode restart loop lives outside cmd/main.
+func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
+}
+
+// Long-running assemble mode restart loop lives outside cmd/main.
+func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
+}
+
+// Long-running release mode restart loop lives outside cmd/main.
+func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)
+}
+
+func RunIndexerInspectScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(
+		ctx,
+		appCtx,
+		supervisor.StageInspectDiscovery,
+		supervisor.StageInspectPAR2,
+		supervisor.StageInspectNFO,
+		supervisor.StageInspectArchive,
+		supervisor.StageInspectPassword,
+		supervisor.StageInspectMedia,
+	)
+}
+
+func RunIndexerInspectDiscoveryScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectDiscovery)
+}
+
+func RunIndexerInspectPAR2Scheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectPAR2)
+}
+
+func RunIndexerInspectNFOScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectNFO)
+}
+
+func RunIndexerInspectArchiveScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectArchive)
+}
+
+func RunIndexerInspectPasswordScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectPassword)
+}
+
+func RunIndexerInspectMediaScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageInspectMedia)
+}
+
+func RunIndexerEnrichPredbScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageEnrichPreDB)
+}
+
+func RunIndexerEnrichTMDBScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageEnrichTMDB)
+}
+
+func runIndexerStages(ctx context.Context, appCtx *app.Context, stages ...supervisor.StageName) error {
 	if appCtx == nil {
 		return fmt.Errorf("app context is required")
 	}
@@ -27,10 +93,10 @@ func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
 
 	var state indexerRuntimeState
 
-	if err := startIndexerSchedulerRuntime(runCtx, appCtx, &state); err != nil {
+	if err := startIndexerStageRuntime(runCtx, appCtx, &state, stages...); err != nil {
 		return err
 	}
-	defer stopIndexerSchedulerRuntime(appCtx, &state)
+	defer stopIndexerStageRuntime(appCtx, &state)
 
 	if appCtx.SettingsStore == nil {
 		<-ctx.Done()
@@ -57,23 +123,27 @@ func RunIndexerScrapeScheduler(ctx context.Context, appCtx *app.Context) error {
 				continue
 			}
 
-			stopIndexerSchedulerRuntime(appCtx, &state)
-			if err := startIndexerSchedulerRuntime(runCtx, appCtx, &state); err != nil {
-				appCtx.Logger.Error("failed to rebuild indexer scheduler runtime: %v", err)
+			stopIndexerStageRuntime(appCtx, &state)
+			if err := startIndexerStageRuntime(runCtx, appCtx, &state, stages...); err != nil {
+				appCtx.Logger.Error("failed to rebuild indexer stage runtime: %v", err)
 				continue
 			}
 
-			appCtx.Logger.Info("Applied runtime settings update to indexer scheduler runtime")
+			appCtx.Logger.Info("Applied runtime settings update to indexer stage runtime")
 		}
 	}
 }
 
-func startIndexerSchedulerRuntime(parent context.Context, appCtx *app.Context, state *indexerRuntimeState) error {
-	rt, err := buildUsenetIndexerRuntime(appCtx)
+func startIndexerStageRuntime(parent context.Context, appCtx *app.Context, state *indexerRuntimeState, stages ...supervisor.StageName) error {
+	if state.owner == "" {
+		state.owner = newIndexerStageOwner()
+	}
+
+	rt, err := buildUsenetIndexerRuntime(appCtx, state.owner)
 	if err != nil {
 		return err
 	}
-	if rt.service == nil {
+	if rt.service == nil || rt.supervisor == nil {
 		return fmt.Errorf("usenet indexer runtime is not configured")
 	}
 
@@ -84,15 +154,15 @@ func startIndexerSchedulerRuntime(parent context.Context, appCtx *app.Context, s
 	state.closer = rt.scrapeProvider
 
 	go func() {
-		if err := appCtx.UsenetIndexer.Start(childCtx, rt.interval); err != nil && childCtx.Err() == nil {
-			appCtx.Logger.Error("indexer scheduler failed: %v", err)
+		if err := rt.supervisor.RunSelected(childCtx, stages...); err != nil && childCtx.Err() == nil {
+			appCtx.Logger.Error("indexer stage runtime failed: %v", err)
 		}
 	}()
 
 	return nil
 }
 
-func stopIndexerSchedulerRuntime(appCtx *app.Context, state *indexerRuntimeState) {
+func stopIndexerStageRuntime(appCtx *app.Context, state *indexerRuntimeState) {
 	if state == nil {
 		return
 	}

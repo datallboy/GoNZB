@@ -12,7 +12,7 @@ import (
 )
 
 type DownloaderCommands interface {
-	EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error)
+	EnqueueByReleaseID(ctx context.Context, sourceKind, releaseID, title string) (*domain.QueueItem, error)
 	EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error)
 	EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error)
 	Cancel(id string) bool
@@ -103,6 +103,28 @@ type UsenetIndexStore interface {
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
+	HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error
+	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+	FailIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+	PauseIndexerStage(ctx context.Context, stageName string) error
+	ResumeIndexerStage(ctx context.Context, stageName string) error
+	RepairIndexerStageRuntime(ctx context.Context) (*pgindex.IndexerStageRepairResult, error)
+	ListIndexerStageStates(ctx context.Context) ([]pgindex.IndexerStageState, error)
+	ListIndexerStageRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
+	ListIndexerStageRunsFiltered(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
+	GetIndexerStageRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error)
+	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)
+	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
+	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
+	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
+	GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
+	UpsertReleaseOverride(ctx context.Context, in pgindex.ReleaseOverrideRecord) error
+	GetReleaseOverride(ctx context.Context, releaseID string) (*pgindex.ReleaseOverrideRecord, error)
+	ResetReleaseInspectionState(ctx context.Context, releaseID string) error
+	ResetReleaseEnrichmentState(ctx context.Context, releaseID string) error
+	GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
+	GetIndexerFileDetail(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 
 	EnsureProvider(ctx context.Context, providerKey, displayName string) (int64, error)
 	EnsureNewsgroup(ctx context.Context, groupName string) (int64, error)
@@ -112,21 +134,54 @@ type UsenetIndexStore interface {
 	UpsertLatestCheckpoint(ctx context.Context, providerID, newsgroupID, lastArticleNumber int64) error
 	GetBackfillCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error)
 	UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error
+	GetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64) (*pgindex.BackfillCheckpointState, error)
+	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
 
+	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
-	LinkArticlePoster(ctx context.Context, articleHeaderID, posterID int64) error
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
+	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
+	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
+	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
+	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
+	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
+	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
+	ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []pgindex.BinaryArchiveEntryRecord) error
+	ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []pgindex.BinaryMediaStreamRecord) error
+	ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryTextEvidenceRecord) error
+	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
+	ApplyBinaryRecovery(ctx context.Context, in pgindex.BinaryRecoveryRecord) error
+	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
+	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
+	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
+	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.ReleaseEnrichmentCandidate, error)
+	UpsertPredbEntries(ctx context.Context, rows []pgindex.PredbEntryRecord) error
+	GetPredbBackfillWindow(ctx context.Context) (*pgindex.PredbBackfillWindow, error)
+	GetPredbEntryWindow(ctx context.Context) (*pgindex.PredbBackfillWindow, error)
+	GetPredbBackfillCheckpoint(ctx context.Context, provider string) (*pgindex.PredbBackfillCheckpoint, error)
+	UpsertPredbBackfillCheckpoint(ctx context.Context, in pgindex.PredbBackfillCheckpoint) error
+	ListPredbEntriesForWindow(ctx context.Context, from, to *time.Time, categoryHint string, limit int) ([]pgindex.PredbEntrySummary, error)
+	ReplaceReleasePredbMatches(ctx context.Context, releaseID string, rows []pgindex.ReleasePredbMatchRecord) error
+	ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTMDBMatchRecord) error
+	ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTVDBMatchRecord) error
+	ApplyReleasePredbUpdate(ctx context.Context, in pgindex.ReleasePredbUpdate) error
+	ApplyReleaseEnrichmentUpdate(ctx context.Context, in pgindex.ReleaseEnrichmentUpdate) error
 }
 
 // resolver routes by source kind instead of assuming aggregator-only resolution.
@@ -141,6 +196,21 @@ type UsenetIndexerService interface {
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	ReformReleasesOnce(ctx context.Context) error
+	InspectOnce(ctx context.Context) error
+	InspectDiscoveryOnce(ctx context.Context) error
+	InspectPAR2Once(ctx context.Context) error
+	InspectNFOOnce(ctx context.Context) error
+	InspectArchiveOnce(ctx context.Context) error
+	InspectPasswordOnce(ctx context.Context) error
+	InspectMediaOnce(ctx context.Context) error
+	EnrichPredbOnce(ctx context.Context) error
+	EnrichPredbSceneNameRecoveryOnce(ctx context.Context) error
+	EnrichPredbMetadataFallbackOnce(ctx context.Context) error
+	EnrichPredbSyncFeedOnce(ctx context.Context) error
+	EnrichPredbSyncBackfillOnce(ctx context.Context) error
+	EnrichTMDBOnce(ctx context.Context) error
+	RunStageOnce(ctx context.Context, stageName string) error
 	RunPipelineOnce(ctx context.Context) error
 	Start(ctx context.Context, interval time.Duration) error
 }

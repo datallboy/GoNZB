@@ -45,7 +45,7 @@ func BootstrapStores(appCtx *app.Context) error {
 	modules := cfg.Modules
 
 	needsJobStore := modules.Downloader.Enabled || (modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled)
-	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled
+	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.API.Enabled || modules.WebUI.Enabled
 
 	closers := make([]io.Closer, 0, 3)
 	closeCreated := func() {

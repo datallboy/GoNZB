@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
-const expectedSchemaVersion = 4
+const expectedSchemaVersion = 8
 
 type Store struct {
 	db *sql.DB
@@ -21,10 +22,18 @@ func NewStore(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("pg dsn is required")
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	connConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open pg connection: %w", err)
+		return nil, fmt.Errorf("parse pg connection config: %w", err)
 	}
+	if connConfig.RuntimeParams == nil {
+		connConfig.RuntimeParams = make(map[string]string)
+	}
+	// These indexing selectors are small enough after refinement that PostgreSQL JIT
+	// startup cost dominates one-shot stage runs. Disable it for this workload.
+	connConfig.RuntimeParams["jit"] = "off"
+
+	db := stdlib.OpenDB(*connConfig)
 
 	// Reasonable pool defaults for initial indexing workloads.
 	db.SetMaxOpenConns(20)

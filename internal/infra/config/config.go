@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -24,14 +25,19 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ID            string `mapstructure:"id" yaml:"id"`
-	Host          string `mapstructure:"host" yaml:"host"`
-	Port          int    `mapstructure:"port" yaml:"port"`
-	Username      string `mapstructure:"username" yaml:"username"`
-	Password      string `mapstructure:"password" yaml:"password"`
-	TLS           bool   `mapstructure:"tls" yaml:"tls"`
-	MaxConnection int    `mapstructure:"max_connections" yaml:"max_connections"`
-	Priority      int    `mapstructure:"priority" yaml:"priority"`
+	ID                     string `mapstructure:"id" yaml:"id"`
+	Host                   string `mapstructure:"host" yaml:"host"`
+	Port                   int    `mapstructure:"port" yaml:"port"`
+	Username               string `mapstructure:"username" yaml:"username"`
+	Password               string `mapstructure:"password" yaml:"password"`
+	TLS                    bool   `mapstructure:"tls" yaml:"tls"`
+	MaxConnection          int    `mapstructure:"max_connections" yaml:"max_connections"`
+	Priority               int    `mapstructure:"priority" yaml:"priority"`
+	DialTimeoutSeconds     int    `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int    `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int    `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int    `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
+	EnablePoolLogging      bool   `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
 }
 
 type IndexerConfig struct {
@@ -70,9 +76,88 @@ type APIConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups              []string `mapstructure:"newsgroups" yaml:"newsgroups"`
-	ScrapeBatchSize         int64    `mapstructure:"scrape_batch_size" yaml:"scrape_batch_size"`
-	ScheduleIntervalMinutes int      `mapstructure:"schedule_interval_minutes" yaml:"schedule_interval_minutes"`
+	Newsgroups               []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest             IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill           IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	Assemble                 IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
+	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
+	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
+	InspectDiscovery         IndexingStageConfig   `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2              IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO               IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive           IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword          IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia             IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB              IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB               IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+}
+
+type IndexingStageConfig struct {
+	Enabled         *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize       *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency     *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+}
+
+type IndexingMatchConfig struct {
+	HighConfidenceThreshold     *float64 `mapstructure:"high_confidence_threshold" yaml:"high_confidence_threshold"`
+	ProbableConfidenceThreshold *float64 `mapstructure:"probable_confidence_threshold" yaml:"probable_confidence_threshold"`
+	ArticleBucketSize           *int64   `mapstructure:"article_bucket_size" yaml:"article_bucket_size"`
+}
+
+type IndexingReleaseConfig struct {
+	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency                                     *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
+	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
+	RequireExpectedFileCountForContextualObfuscated *bool    `mapstructure:"require_expected_file_count_for_contextual_obfuscated" yaml:"require_expected_file_count_for_contextual_obfuscated"`
+}
+
+type IndexingInspectConfig struct {
+	WorkDir         string `mapstructure:"work_dir" yaml:"work_dir"`
+	MaxBytes        int64  `mapstructure:"max_bytes" yaml:"max_bytes"`
+	MaxArchiveDepth int    `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
+	ToolTimeoutSecs int    `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFProbePath     string `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath    string `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath       string `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path        string `mapstructure:"par2_path" yaml:"par2_path"`
+}
+
+type IndexingPreDBConfig struct {
+	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	Provider           string   `mapstructure:"provider" yaml:"provider"`
+	BaseURL            string   `mapstructure:"base_url" yaml:"base_url"`
+	FeedURL            string   `mapstructure:"feed_url" yaml:"feed_url"`
+	DumpURL            string   `mapstructure:"dump_url" yaml:"dump_url"`
+	HTTPTimeoutSeconds *int     `mapstructure:"http_timeout_seconds" yaml:"http_timeout_seconds"`
+	BackfillPageSize   *int     `mapstructure:"backfill_page_size" yaml:"backfill_page_size"`
+	MaxBackfillPages   *int     `mapstructure:"max_backfill_pages" yaml:"max_backfill_pages"`
+}
+
+type IndexingTMDBConfig struct {
+	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	HTTPTimeoutSeconds *int     `mapstructure:"http_timeout_seconds" yaml:"http_timeout_seconds"`
+	TMDBAPIKey         string   `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
+	TMDBAccessToken    string   `mapstructure:"tmdb_access_token" yaml:"tmdb_access_token"`
+	TMDBBaseURL        string   `mapstructure:"tmdb_base_url" yaml:"tmdb_base_url"`
+	TVDBAPIKey         string   `mapstructure:"tvdb_api_key" yaml:"tvdb_api_key"`
+	TVDBPIN            string   `mapstructure:"tvdb_pin" yaml:"tvdb_pin"`
+	TVDBBaseURL        string   `mapstructure:"tvdb_base_url" yaml:"tvdb_base_url"`
 }
 
 // ModuleConfig is used to enable or disable certain modules within the application
@@ -87,6 +172,15 @@ type ModulesConfig struct {
 type ModuleToggle struct {
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 }
+
+const (
+	defaultServerMaxConnections      = 10
+	defaultServerPriority            = 1
+	defaultServerDialTimeoutSeconds  = 10
+	defaultServerTCPKeepAliveSeconds = 30
+	defaultServerPoolIdleTimeoutSecs = 45
+	defaultServerPoolMaxAgeSeconds   = 600
+)
 
 func Load(path string) (*Config, error) {
 
@@ -128,8 +222,95 @@ func Load(path string) (*Config, error) {
 
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
-	v.SetDefault("indexing.scrape_batch_size", 5000)
-	v.SetDefault("indexing.schedule_interval_minutes", 10)
+	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
+	v.SetDefault("indexing.scrape_latest.enabled", true)
+	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
+	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
+	v.SetDefault("indexing.scrape_latest.concurrency", 1)
+	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
+	v.SetDefault("indexing.scrape_backfill.enabled", true)
+	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
+	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
+	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
+	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
+	v.SetDefault("indexing.assemble.enabled", true)
+	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
+	v.SetDefault("indexing.assemble.batch_size", 5000)
+	v.SetDefault("indexing.assemble.concurrency", 1)
+	v.SetDefault("indexing.assemble.backoff_seconds", 0)
+	v.SetDefault("indexing.release.enabled", true)
+	v.SetDefault("indexing.release.interval_minutes", 10.0)
+	v.SetDefault("indexing.release.batch_size", 1000)
+	v.SetDefault("indexing.release.concurrency", 1)
+	v.SetDefault("indexing.release.backoff_seconds", 0)
+	v.SetDefault("indexing.release.min_confidence", 0.55)
+	v.SetDefault("indexing.release.min_completion_pct", 0.0)
+	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
+	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
+	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
+	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
+	v.SetDefault("indexing.inspect.work_dir", "/store/indexer/inspect")
+	v.SetDefault("indexing.inspect.max_bytes", int64(2*1024*1024*1024))
+	v.SetDefault("indexing.inspect.max_archive_depth", 3)
+	v.SetDefault("indexing.inspect.tool_timeout_seconds", 30)
+	v.SetDefault("indexing.inspect.ffprobe_path", "ffprobe")
+	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
+	v.SetDefault("indexing.inspect.unrar_path", "unrar")
+	v.SetDefault("indexing.inspect.par2_path", "par2")
+	v.SetDefault("indexing.inspect_discovery.enabled", true)
+	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
+	v.SetDefault("indexing.inspect_discovery.concurrency", 1)
+	v.SetDefault("indexing.inspect_discovery.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_par2.enabled", true)
+	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_par2.batch_size", 100)
+	v.SetDefault("indexing.inspect_par2.concurrency", 1)
+	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_nfo.enabled", true)
+	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_nfo.batch_size", 100)
+	v.SetDefault("indexing.inspect_nfo.concurrency", 1)
+	v.SetDefault("indexing.inspect_nfo.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_archive.enabled", true)
+	v.SetDefault("indexing.inspect_archive.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_archive.batch_size", 100)
+	v.SetDefault("indexing.inspect_archive.concurrency", 1)
+	v.SetDefault("indexing.inspect_archive.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_password.enabled", true)
+	v.SetDefault("indexing.inspect_password.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_password.batch_size", 100)
+	v.SetDefault("indexing.inspect_password.concurrency", 1)
+	v.SetDefault("indexing.inspect_password.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_media.enabled", true)
+	v.SetDefault("indexing.inspect_media.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_media.batch_size", 100)
+	v.SetDefault("indexing.inspect_media.concurrency", 1)
+	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_predb.enabled", true)
+	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
+	v.SetDefault("indexing.enrich_predb.batch_size", 100)
+	v.SetDefault("indexing.enrich_predb.concurrency", 1)
+	v.SetDefault("indexing.enrich_predb.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_predb.provider", "club,me")
+	v.SetDefault("indexing.enrich_predb.base_url", "https://predb.club/api/v1")
+	v.SetDefault("indexing.enrich_predb.feed_url", "https://predb.me/?rss=1")
+	v.SetDefault("indexing.enrich_predb.dump_url", "")
+	v.SetDefault("indexing.enrich_predb.http_timeout_seconds", 10)
+	v.SetDefault("indexing.enrich_predb.backfill_page_size", 1000)
+	v.SetDefault("indexing.enrich_predb.max_backfill_pages", 250)
+	v.SetDefault("indexing.enrich_tmdb.enabled", true)
+	v.SetDefault("indexing.enrich_tmdb.interval_minutes", 10.0)
+	v.SetDefault("indexing.enrich_tmdb.batch_size", 100)
+	v.SetDefault("indexing.enrich_tmdb.concurrency", 1)
+	v.SetDefault("indexing.enrich_tmdb.backoff_seconds", 0)
+	v.SetDefault("indexing.enrich_tmdb.http_timeout_seconds", 15)
+	v.SetDefault("indexing.enrich_tmdb.tmdb_api_key", "")
+	v.SetDefault("indexing.enrich_tmdb.tmdb_access_token", "")
+	v.SetDefault("indexing.enrich_tmdb.tmdb_base_url", "https://api.themoviedb.org/3")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_api_key", "")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_pin", "")
+	v.SetDefault("indexing.enrich_tmdb.tvdb_base_url", "https://api4.thetvdb.com/v4")
 
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
@@ -177,13 +358,115 @@ func (c *Config) validate() error {
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
 	}
-
-	if c.Indexing.ScrapeBatchSize <= 0 {
-		c.Indexing.ScrapeBatchSize = 5000
+	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
+		return err
 	}
-
-	if c.Indexing.ScheduleIntervalMinutes <= 0 {
-		c.Indexing.ScheduleIntervalMinutes = 10
+	for group, rawDate := range c.Indexing.BackfillUntilDateByGroup {
+		if strings.TrimSpace(group) == "" {
+			return errors.New("indexing.backfill_until_date_by_group keys must not be blank")
+		}
+		if strings.TrimSpace(rawDate) == "" {
+			return fmt.Errorf("indexing.backfill_until_date_by_group[%s] must not be blank", group)
+		}
+		if _, err := time.Parse("2006-01-02", strings.TrimSpace(rawDate)); err != nil {
+			return fmt.Errorf("indexing.backfill_until_date_by_group[%s] must be in YYYY-MM-DD format: %w", group, err)
+		}
+	}
+	if err := validateIndexingStageConfig("indexing.scrape_backfill", c.Indexing.ScrapeBackfill); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
+		Enabled:         c.Indexing.Release.Enabled,
+		IntervalMinutes: c.Indexing.Release.IntervalMinutes,
+		BatchSize:       c.Indexing.Release.BatchSize,
+		Concurrency:     c.Indexing.Release.Concurrency,
+		BackoffSeconds:  c.Indexing.Release.BackoffSeconds,
+	}); err != nil {
+		return err
+	}
+	if c.Indexing.Release.MinConfidence != nil {
+		if *c.Indexing.Release.MinConfidence <= 0 || *c.Indexing.Release.MinConfidence > 1 {
+			return errors.New("indexing.release.min_confidence must be between 0 and 1")
+		}
+	}
+	if c.Indexing.Release.MinCompletionPct != nil {
+		if *c.Indexing.Release.MinCompletionPct < 0 || *c.Indexing.Release.MinCompletionPct > 100 {
+			return errors.New("indexing.release.min_completion_pct must be between 0 and 100")
+		}
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_par2", c.Indexing.InspectPAR2); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_nfo", c.Indexing.InspectNFO); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_archive", c.Indexing.InspectArchive); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_password", c.Indexing.InspectPassword); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_media", c.Indexing.InspectMedia); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.enrich_predb", IndexingStageConfig{
+		Enabled:         c.Indexing.EnrichPreDB.Enabled,
+		IntervalMinutes: c.Indexing.EnrichPreDB.IntervalMinutes,
+		BatchSize:       c.Indexing.EnrichPreDB.BatchSize,
+		Concurrency:     c.Indexing.EnrichPreDB.Concurrency,
+		BackoffSeconds:  c.Indexing.EnrichPreDB.BackoffSeconds,
+	}); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.enrich_tmdb", IndexingStageConfig{
+		Enabled:         c.Indexing.EnrichTMDB.Enabled,
+		IntervalMinutes: c.Indexing.EnrichTMDB.IntervalMinutes,
+		BatchSize:       c.Indexing.EnrichTMDB.BatchSize,
+		Concurrency:     c.Indexing.EnrichTMDB.Concurrency,
+		BackoffSeconds:  c.Indexing.EnrichTMDB.BackoffSeconds,
+	}); err != nil {
+		return err
+	}
+	if c.Indexing.Match.HighConfidenceThreshold != nil {
+		if *c.Indexing.Match.HighConfidenceThreshold <= 0 || *c.Indexing.Match.HighConfidenceThreshold > 1 {
+			return errors.New("indexing.match.high_confidence_threshold must be between 0 and 1")
+		}
+	}
+	if c.Indexing.Match.ProbableConfidenceThreshold != nil {
+		if *c.Indexing.Match.ProbableConfidenceThreshold <= 0 || *c.Indexing.Match.ProbableConfidenceThreshold > 1 {
+			return errors.New("indexing.match.probable_confidence_threshold must be between 0 and 1")
+		}
+	}
+	if c.Indexing.Match.HighConfidenceThreshold != nil && c.Indexing.Match.ProbableConfidenceThreshold != nil &&
+		*c.Indexing.Match.ProbableConfidenceThreshold > *c.Indexing.Match.HighConfidenceThreshold {
+		return errors.New("indexing.match.probable_confidence_threshold must be less than or equal to indexing.match.high_confidence_threshold")
+	}
+	if c.Indexing.Match.ArticleBucketSize != nil && *c.Indexing.Match.ArticleBucketSize <= 0 {
+		return errors.New("indexing.match.article_bucket_size must be greater than 0")
+	}
+	if c.Indexing.Inspect.MaxBytes < 0 {
+		return errors.New("indexing.inspect.max_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.Inspect.MaxArchiveDepth < 0 {
+		return errors.New("indexing.inspect.max_archive_depth must be greater than or equal to 0")
+	}
+	if c.Indexing.Inspect.ToolTimeoutSecs < 0 {
+		return errors.New("indexing.inspect.tool_timeout_seconds must be greater than or equal to 0")
+	}
+	if c.Indexing.EnrichPreDB.HTTPTimeoutSeconds != nil && *c.Indexing.EnrichPreDB.HTTPTimeoutSeconds <= 0 {
+		return errors.New("indexing.enrich_predb.http_timeout_seconds must be greater than 0")
+	}
+	if c.Indexing.EnrichPreDB.BackfillPageSize != nil && *c.Indexing.EnrichPreDB.BackfillPageSize <= 0 {
+		return errors.New("indexing.enrich_predb.backfill_page_size must be greater than 0")
+	}
+	if c.Indexing.EnrichPreDB.MaxBackfillPages != nil && *c.Indexing.EnrichPreDB.MaxBackfillPages <= 0 {
+		return errors.New("indexing.enrich_predb.max_backfill_pages must be greater than 0")
+	}
+	if c.Indexing.EnrichTMDB.HTTPTimeoutSeconds != nil && *c.Indexing.EnrichTMDB.HTTPTimeoutSeconds <= 0 {
+		return errors.New("indexing.enrich_tmdb.http_timeout_seconds must be greater than 0")
 	}
 
 	// startup must have at least one meaningful runtime surface.
@@ -239,13 +522,41 @@ func (c *Config) validate() error {
 				fmt.Println("Warning: TLS is enabled but port is set to 119 (standard non-TLS)")
 			}
 			if s.MaxConnection <= 0 {
-				c.Servers[i].MaxConnection = 10
+				c.Servers[i].MaxConnection = defaultServerMaxConnections
 			}
 			if s.Priority == 0 {
-				c.Servers[i].Priority = 1
+				c.Servers[i].Priority = defaultServerPriority
+			}
+			if s.DialTimeoutSeconds <= 0 {
+				c.Servers[i].DialTimeoutSeconds = defaultServerDialTimeoutSeconds
+			}
+			if s.TCPKeepAliveSeconds <= 0 {
+				c.Servers[i].TCPKeepAliveSeconds = defaultServerTCPKeepAliveSeconds
+			}
+			if s.PoolIdleTimeoutSeconds <= 0 {
+				c.Servers[i].PoolIdleTimeoutSeconds = defaultServerPoolIdleTimeoutSecs
+			}
+			if s.PoolMaxAgeSeconds <= 0 {
+				c.Servers[i].PoolMaxAgeSeconds = defaultServerPoolMaxAgeSeconds
 			}
 		}
 	}
 
+	return nil
+}
+
+func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
+	if cfg.IntervalMinutes != nil && *cfg.IntervalMinutes <= 0 {
+		return fmt.Errorf("%s.interval_minutes must be greater than 0", name)
+	}
+	if cfg.BatchSize != nil && *cfg.BatchSize <= 0 {
+		return fmt.Errorf("%s.batch_size must be greater than 0", name)
+	}
+	if cfg.Concurrency != nil && *cfg.Concurrency <= 0 {
+		return fmt.Errorf("%s.concurrency must be greater than 0", name)
+	}
+	if cfg.BackoffSeconds != nil && *cfg.BackoffSeconds < 0 {
+		return fmt.Errorf("%s.backoff_seconds must be greater than or equal to 0", name)
+	}
 	return nil
 }
