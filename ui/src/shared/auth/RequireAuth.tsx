@@ -14,6 +14,9 @@ export function RequireAuth({ children, permission }: RequireAuthProps) {
     return <div className="banner">Loading session...</div>
   }
   if (!session.authenticated) {
+    if (session.setup_required) {
+      return <Navigate to="/setup" replace />
+    }
     return <Navigate to="/login" replace state={{ from: location.pathname }} />
   }
   if (permission && !hasPermission(permission)) {

@@ -8,13 +8,16 @@ export function LoginPage() {
   const { session, refreshSession } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('admin')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   if (session.authenticated) {
     return <Navigate to="/indexer/releases" replace />
+  }
+  if (session.setup_required) {
+    return <Navigate to="/setup" replace />
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -45,7 +48,7 @@ export function LoginPage() {
         <form className="stack" onSubmit={handleSubmit}>
           <label className="field">
             <span>Username</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} />
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
           </label>
           <label className="field">
             <span>Password</span>
@@ -53,6 +56,7 @@ export function LoginPage() {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
             />
           </label>
           {error ? <div className="banner error">{error}</div> : null}

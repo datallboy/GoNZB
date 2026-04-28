@@ -13,6 +13,7 @@ type AuthContextValue = {
 
 const unauthenticatedSession: SessionInfo = {
   authenticated: false,
+  setup_required: false,
   permissions: [],
 }
 

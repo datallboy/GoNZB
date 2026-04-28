@@ -1,5 +1,6 @@
 export type SessionInfo = {
   authenticated: boolean
+  setup_required?: boolean
   user_id?: string
   username?: string
   permissions: string[]
@@ -8,6 +9,10 @@ export type SessionInfo = {
 
 export type SessionResponse = {
   session: SessionInfo
+}
+
+export type SetupStatusResponse = {
+  setup_required: boolean
 }
 
 export type PublicReleaseSummary = {
@@ -148,7 +153,7 @@ export type AdminRun = {
   heartbeat_at?: string
   finished_at?: string
   error_text: string
-  metrics_json?: string
+  metrics_json?: unknown
 }
 
 export type AdminRunsResponse = {

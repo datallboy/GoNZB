@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
+import { SetupPage } from './modules/auth/SetupPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
@@ -33,6 +34,7 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/setup" element={<SetupPage />} />
         <Route
           path="/"
           element={

@@ -31,6 +31,11 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type setupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type upsertUserRequest struct {
 	ID       string   `json:"id"`
 	Username string   `json:"username"`
@@ -55,6 +60,42 @@ type authUserDetailResponse struct {
 	Tokens []auth.Token `json:"tokens"`
 }
 
+func (ctrl *AuthController) GetSetupStatus(c *echo.Context) error {
+	required, err := ctrl.Service.SetupRequired(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"setup_required": required})
+}
+
+func (ctrl *AuthController) CreateInitialUser(c *echo.Context) error {
+	var req setupRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	session, principal, err := ctrl.Service.SetupInitialUser(c.Request().Context(), req.Username, req.Password)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrSetupCompleted):
+			return jsonError(c, http.StatusConflict, "initial setup already completed")
+		default:
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+	}
+	http.SetCookie(c.Response(), &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    session.ID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  session.ExpiresAt,
+	})
+	csrfToken := ensureCSRFCookie(c, session.ExpiresAt)
+	return c.JSON(http.StatusCreated, map[string]any{
+		"session": sessionPayload(principal, csrfToken, false),
+	})
+}
+
 func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 	var req loginRequest
 	if err := decodeJSONBody(c, &req); err != nil {
@@ -62,6 +103,16 @@ func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 	}
 	session, principal, err := ctrl.Service.AuthenticatePassword(c.Request().Context(), req.Username, req.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrSetupRequired) {
+			return c.JSON(http.StatusConflict, map[string]any{
+				"error": "initial setup required",
+				"session": map[string]any{
+					"authenticated":  false,
+					"setup_required": true,
+					"permissions":    []string{},
+				},
+			})
+		}
 		return jsonError(c, http.StatusUnauthorized, "invalid username or password")
 	}
 	http.SetCookie(c.Response(), &http.Cookie{
@@ -73,32 +124,20 @@ func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 		Expires:  session.ExpiresAt,
 	})
 	csrfToken := ensureCSRFCookie(c, session.ExpiresAt)
-	return c.JSON(http.StatusOK, map[string]any{
-		"session": map[string]any{
-			"user_id":       principal.UserID,
-			"username":      principal.Username,
-			"permissions":   permissionList(principal),
-			"authenticated": true,
-			"csrf_token":    csrfToken,
-		},
-	})
+	return c.JSON(http.StatusOK, map[string]any{"session": sessionPayload(principal, csrfToken, false)})
 }
 
 func (ctrl *AuthController) GetSession(c *echo.Context) error {
+	required, err := ctrl.Service.SetupRequired(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
 	principal, ok := PrincipalFromContext(c)
 	if !ok {
-		return c.JSON(http.StatusOK, map[string]any{"session": map[string]any{"authenticated": false}})
+		return c.JSON(http.StatusOK, map[string]any{"session": map[string]any{"authenticated": false, "setup_required": required, "permissions": []string{}}})
 	}
 	csrfToken := ensureCSRFCookie(c, time.Now().UTC().Add(7*24*time.Hour))
-	return c.JSON(http.StatusOK, map[string]any{
-		"session": map[string]any{
-			"user_id":       principal.UserID,
-			"username":      principal.Username,
-			"permissions":   permissionList(principal),
-			"authenticated": true,
-			"csrf_token":    csrfToken,
-		},
-	})
+	return c.JSON(http.StatusOK, map[string]any{"session": sessionPayload(principal, csrfToken, false)})
 }
 
 func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
@@ -306,6 +345,22 @@ func permissionList(principal *auth.Principal) []string {
 		out = append(out, permission)
 	}
 	return out
+}
+
+func sessionPayload(principal *auth.Principal, csrfToken string, setupRequired bool) map[string]any {
+	payload := map[string]any{
+		"authenticated":  principal != nil,
+		"setup_required": setupRequired,
+		"permissions":    []string{},
+	}
+	if principal == nil {
+		return payload
+	}
+	payload["user_id"] = principal.UserID
+	payload["username"] = principal.Username
+	payload["permissions"] = permissionList(principal)
+	payload["csrf_token"] = csrfToken
+	return payload
 }
 
 func sanitizeStoredUser(user auth.StoredUser) auth.User {
