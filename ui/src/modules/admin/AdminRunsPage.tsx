@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { getAdminRuns } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
 import type { AdminRun, AdminRunListParams } from '../../shared/types'
@@ -94,7 +95,11 @@ export function AdminRunsPage() {
             <tbody>
               {runs.map((run) => (
                 <tr key={run.id}>
-                  <td>{run.stage_name}</td>
+                  <td>
+                    <Link className="table-link" to={`/admin/indexer/runs/${run.id}`}>
+                      {run.stage_name}
+                    </Link>
+                  </td>
                   <td>{run.status}</td>
                   <td>{run.trigger_kind}</td>
                   <td>{run.claimed_by || 'n/a'}</td>

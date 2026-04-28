@@ -16,6 +16,7 @@ type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
+	run          *pgindex.IndexerStageRun
 	releases     []pgindex.PublicIndexerReleaseSummary
 	releaseTotal int
 	release      *pgindex.PublicIndexerReleaseDetail
@@ -37,6 +38,19 @@ func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView
 
 func (s *stubIndexerService) ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error) {
 	return s.runs, nil
+}
+
+func (s *stubIndexerService) GetRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error) {
+	if s.run != nil {
+		return s.run, nil
+	}
+	for i := range s.runs {
+		if s.runs[i].ID == runID {
+			run := s.runs[i]
+			return &run, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *stubIndexerService) GetStage(ctx context.Context, stageName string) (*indexerStageView, error) {

@@ -110,6 +110,25 @@ func (ctrl *IndexerAdminController) ListRuns(c *echo.Context) error {
 	})
 }
 
+func (ctrl *IndexerAdminController) GetRun(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	runID, err := parseInt64PathParam(c, "id")
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	run, err := ctrl.Service.GetRun(c.Request().Context(), runID)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	if run == nil {
+		return jsonError(c, http.StatusNotFound, "run not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"run": run})
+}
+
 func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

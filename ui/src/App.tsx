@@ -4,6 +4,7 @@ import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
 import { AdminRolesPage } from './modules/admin/AdminRolesPage'
+import { AdminRunDetailPage } from './modules/admin/AdminRunDetailPage'
 import { AdminRunsPage } from './modules/admin/AdminRunsPage'
 import { AdminSettingsPage } from './modules/admin/AdminSettingsPage'
 import { AdminStagesPage } from './modules/admin/AdminStagesPage'
@@ -93,6 +94,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminRunsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/runs/:id"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminRunDetailPage />
               </RequireAuth>
             }
           />

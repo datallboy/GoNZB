@@ -161,6 +161,10 @@ export type AdminRunsResponse = {
   trigger?: string
 }
 
+export type AdminRunDetailResponse = {
+  run: AdminRun
+}
+
 export type AdminRunListParams = {
   stage?: string
   status?: string
