@@ -19,6 +19,7 @@ function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
   }, [session.username])
 
   const showAdminPortal = canOpenAdminPortal(session.permissions)
+  const showAccountTokens = session.authenticated
 
   return (
     <div className="account-menu">
@@ -35,6 +36,11 @@ function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
           {viewerLink ? (
             <Link className="secondary-button" to="/indexer/releases" onClick={() => setOpen(false)}>
               Viewer
+            </Link>
+          ) : null}
+          {showAccountTokens ? (
+            <Link className="secondary-button" to="/account/tokens" onClick={() => setOpen(false)}>
+              API Tokens
             </Link>
           ) : null}
           {showAdminPortal ? (
@@ -102,7 +108,6 @@ export function AdminAppShell() {
           ) : null}
           {hasPermission('auth.users.read') ? <NavLink to="/admin/security/users">Users</NavLink> : null}
           {hasPermission('auth.roles.read') ? <NavLink to="/admin/security/roles">Roles</NavLink> : null}
-          {hasPermission('auth.tokens.read') ? <NavLink to="/admin/security/tokens">Tokens</NavLink> : null}
         </nav>
         <div className="sidebar-footer">
           <Link className="secondary-button" to="/indexer/releases">

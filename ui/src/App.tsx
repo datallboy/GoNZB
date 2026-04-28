@@ -7,10 +7,11 @@ import { AdminRolesPage } from './modules/admin/AdminRolesPage'
 import { AdminRunsPage } from './modules/admin/AdminRunsPage'
 import { AdminSettingsPage } from './modules/admin/AdminSettingsPage'
 import { AdminStagesPage } from './modules/admin/AdminStagesPage'
-import { AdminTokensPage } from './modules/admin/AdminTokensPage'
+import { AdminUserDetailPage } from './modules/admin/AdminUserDetailPage'
 import { AdminUsersPage } from './modules/admin/AdminUsersPage'
 import { IndexerReleaseDetailPage } from './modules/indexer/IndexerReleaseDetailPage'
 import { IndexerReleaseListPage } from './modules/indexer/IndexerReleaseListPage'
+import { AccountTokensPage } from './modules/auth/AccountTokensPage'
 import { AuthProvider } from './shared/auth/AuthContext'
 import { RequireAuth } from './shared/auth/RequireAuth'
 import { AdminAppShell, PublicAppShell } from './shared/layout/AppShell'
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="indexer/browse/:category" element={<IndexerReleaseListPage />} />
           <Route path="indexer/browse/:category/:subcategory" element={<IndexerReleaseListPage />} />
           <Route path="indexer/releases/:id" element={<IndexerReleaseDetailPage />} />
+          <Route path="account/tokens" element={<AccountTokensPage />} />
         </Route>
         <Route
           path="/admin"
@@ -111,18 +113,18 @@ export default function App() {
             }
           />
           <Route
-            path="security/roles"
+            path="security/users/:id"
             element={
-              <RequireAuth permission="auth.roles.read">
-                <AdminRolesPage />
+              <RequireAuth permission="auth.users.read">
+                <AdminUserDetailPage />
               </RequireAuth>
             }
           />
           <Route
-            path="security/tokens"
+            path="security/roles"
             element={
-              <RequireAuth permission="auth.tokens.read">
-                <AdminTokensPage />
+              <RequireAuth permission="auth.roles.read">
+                <AdminRolesPage />
               </RequireAuth>
             }
           />

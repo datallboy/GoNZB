@@ -3,6 +3,7 @@ import type {
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
+  AdminRunListParams,
   AdminRunsResponse,
   AdminStageConfigPatch,
   AdminStagesResponse,
@@ -27,10 +28,13 @@ export function runStageAction(stageName: string, action: 'run' | 'pause' | 'res
   return apiRequest(`/api/v1/admin/indexer/stages/${stageName}/actions/${action}`, { method: 'POST' })
 }
 
-export function getAdminRuns(stage: string) {
+export function getAdminRuns(params: AdminRunListParams) {
   const query = new URLSearchParams()
-  if (stage) {
-    query.set('stage', stage)
+  for (const [key, value] of Object.entries(params)) {
+    if (!value) {
+      continue
+    }
+    query.set(key, String(value))
   }
   return apiRequest<AdminRunsResponse>(`/api/v1/admin/indexer/runs?${query.toString()}`)
 }

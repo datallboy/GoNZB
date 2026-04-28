@@ -2,24 +2,36 @@ import { useEffect, useState } from 'react'
 import { getAdminStages, patchAdminStage, runStageAction } from '../../shared/api/admin'
 import type { AdminStage, AdminStageConfigPatch } from '../../shared/types'
 
-function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => Promise<void> }) {
-  const [patch, setPatch] = useState<AdminStageConfigPatch>({
+function stagePatchFromView(stage: AdminStage): AdminStageConfigPatch {
+  return {
     enabled: stage.enabled,
     interval_minutes: stage.interval_seconds > 0 ? stage.interval_seconds / 60 : 0,
     batch_size: stage.batch_size,
     concurrency: stage.concurrency,
     backoff_seconds: stage.backoff_seconds,
-  })
+  }
+}
+
+function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => Promise<void> }) {
+  const [patch, setPatch] = useState<AdminStageConfigPatch>(() => stagePatchFromView(stage))
   const [message, setMessage] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setPatch(stagePatchFromView(stage))
+  }, [stage])
 
   async function savePatch() {
     setMessage(null)
+    setSaving(true)
     try {
       await patchAdminStage(stage.stage_name, patch)
       setMessage('Saved runtime settings.')
       await onRefresh()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to save stage settings')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -40,18 +52,21 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
         <div>
           <h2 className="section-title">{stage.stage_name}</h2>
           <p className="muted-copy">
-            Lease owner: {stage.lease_owner || 'none'} · paused: {stage.paused ? 'yes' : 'no'} ·
-            last error: {stage.last_error || 'none'}
+            Runtime settings stored in the app settings DB. `config.yaml` is bootstrap only.
+          </p>
+          <p className="muted-copy">
+            Lease owner: {stage.lease_owner || 'none'} · paused: {stage.paused ? 'yes' : 'no'} · last error:{' '}
+            {stage.last_error || 'none'}
           </p>
         </div>
         <div className="button-row">
-          <button className="secondary-button" onClick={() => runAction('run')}>
+          <button className="secondary-button" type="button" onClick={() => void runAction('run')}>
             Run
           </button>
-          <button className="secondary-button" onClick={() => runAction('pause')}>
+          <button className="secondary-button" type="button" onClick={() => void runAction('pause')}>
             Pause
           </button>
-          <button className="secondary-button" onClick={() => runAction('resume')}>
+          <button className="secondary-button" type="button" onClick={() => void runAction('resume')}>
             Resume
           </button>
         </div>
@@ -80,9 +95,7 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
           <input
             type="number"
             value={patch.batch_size ?? 0}
-            onChange={(event) =>
-              setPatch((current) => ({ ...current, batch_size: Number(event.target.value) }))
-            }
+            onChange={(event) => setPatch((current) => ({ ...current, batch_size: Number(event.target.value) }))}
           />
         </label>
         <label className="field">
@@ -90,9 +103,7 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
           <input
             type="number"
             value={patch.concurrency ?? 0}
-            onChange={(event) =>
-              setPatch((current) => ({ ...current, concurrency: Number(event.target.value) }))
-            }
+            onChange={(event) => setPatch((current) => ({ ...current, concurrency: Number(event.target.value) }))}
           />
         </label>
         <label className="field">
@@ -105,9 +116,14 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
             }
           />
         </label>
-        <button className="primary-button align-end" onClick={savePatch}>
-          Save Stage Settings
-        </button>
+        <div className="button-row align-end">
+          <button className="secondary-button" type="button" onClick={() => setPatch(stagePatchFromView(stage))}>
+            Reset
+          </button>
+          <button className="primary-button" type="button" disabled={saving} onClick={() => void savePatch()}>
+            {saving ? 'Saving...' : 'Save Stage Settings'}
+          </button>
+        </div>
       </div>
       {message ? <div className="banner">{message}</div> : null}
     </div>

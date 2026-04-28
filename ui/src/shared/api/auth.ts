@@ -7,6 +7,7 @@ import type {
   TokenListResponse,
   UpsertRoleRequest,
   UpsertUserRequest,
+  UserDetailResponse,
   UserListResponse,
 } from '../types'
 
@@ -34,6 +35,10 @@ export function deleteUser(id: string) {
   return apiRequest<void>(`/api/v1/admin/auth/users/${id}`, { method: 'DELETE' })
 }
 
+export function getUserDetail(id: string) {
+  return apiRequest<UserDetailResponse>(`/api/v1/admin/auth/users/${id}`)
+}
+
 export function getRoles() {
   return apiRequest<RoleListResponse>('/api/v1/admin/auth/roles')
 }
@@ -56,4 +61,16 @@ export function createToken(body: TokenCreateRequest) {
 
 export function revokeToken(id: string) {
   return apiRequest<void>(`/api/v1/admin/auth/tokens/${id}`, { method: 'DELETE' })
+}
+
+export function getCurrentUserTokens() {
+  return apiRequest<TokenListResponse>('/api/v1/auth/tokens')
+}
+
+export function createCurrentUserToken(body: { name: string }) {
+  return apiRequest<TokenCreateResponse>('/api/v1/auth/tokens', { method: 'POST', body })
+}
+
+export function revokeCurrentUserToken(id: string) {
+  return apiRequest<void>(`/api/v1/auth/tokens/${id}`, { method: 'DELETE' })
 }
