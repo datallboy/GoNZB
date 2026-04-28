@@ -52,19 +52,30 @@ func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectPassword), s.opts.CandidateBatchSize)
 	if err != nil {
-		return fmt.Errorf("list inspect_password candidates: %w", err)
+		return nil, fmt.Errorf("list inspect_password candidates: %w", err)
 	}
 	passwords, err := s.repo.ListPasswordVerificationCandidates(ctx, s.opts.CandidateBatchSize*4)
 	if err != nil {
-		return fmt.Errorf("list password verification candidates: %w", err)
+		return nil, fmt.Errorf("list password verification candidates: %w", err)
+	}
+	metrics := map[string]any{
+		"candidate_count":          len(candidates),
+		"password_candidate_count": len(passwords),
+		"processed_count":          0,
+		"batch_size":               s.opts.CandidateBatchSize,
 	}
 	if len(candidates) == 0 && len(passwords) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_password: no password verification candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
 	candidateByRelease := make(map[string]pgindex.BinaryInspectionCandidate, len(candidates))
@@ -80,16 +91,22 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		passwordsByRelease[candidate.ReleaseID] = append(passwordsByRelease[candidate.ReleaseID], candidate)
 	}
 
+	processed := 0
 	for releaseID, candidate := range candidateByRelease {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
 		if err := s.inspectCandidate(ctx, candidate, passwordsByRelease[releaseID]); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
+		processed++
 	}
 
-	return nil
+	metrics["processable_release_count"] = len(candidateByRelease)
+	metrics["processed_count"] = processed
+	return metrics, nil
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, passwords []pgindex.PasswordVerificationCandidate) error {

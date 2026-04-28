@@ -51,26 +51,37 @@ func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectPAR2), s.opts.CandidateBatchSize)
 	if err != nil {
-		return fmt.Errorf("list inspect_par2 candidates: %w", err)
+		return nil, fmt.Errorf("list inspect_par2 candidates: %w", err)
 	}
+	metrics := map[string]any{"candidate_count": len(candidates), "processed_count": 0, "batch_size": s.opts.CandidateBatchSize}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_par2: no inspection candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
+	processed := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
 		if err := s.inspectCandidate(ctx, candidate); err != nil {
-			return err
+			metrics["processed_count"] = processed
+			return metrics, err
 		}
+		processed++
 	}
-	return nil
+	metrics["processed_count"] = processed
+	return metrics, nil
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {

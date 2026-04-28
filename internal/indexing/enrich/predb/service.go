@@ -167,38 +167,56 @@ func NewService(repo repository, log logger, opts Options) *Service {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
-	if err := s.RunSceneNameRecoveryOnce(ctx); err != nil {
-		return err
+	_, err := s.RunOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	sceneMetrics, err := s.RunSceneNameRecoveryOnceWithMetrics(ctx)
+	if err != nil {
+		return sceneMetrics, err
 	}
-	return s.RunMetadataFallbackOnce(ctx)
+	fallbackMetrics, err := s.RunMetadataFallbackOnceWithMetrics(ctx)
+	metrics := map[string]any{
+		"scene_name_recovery": sceneMetrics,
+		"metadata_fallback":   fallbackMetrics,
+	}
+	return metrics, err
 }
 
 func (s *Service) RunSceneNameRecoveryOnce(ctx context.Context) error {
+	_, err := s.RunSceneNameRecoveryOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunSceneNameRecoveryOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("predb repo is required")
+		return nil, fmt.Errorf("predb repo is required")
 	}
 	if s.searchProvider == nil {
 		if s.log != nil {
 			s.log.Debug("enrich_predb scene-name-recovery: no search provider configured; skipping")
 		}
-		return nil
+		return map[string]any{"candidates": 0, "updated": 0, "provider_configured": false}, nil
 	}
 
 	candidates, err := s.repo.ListReleaseEnrichmentCandidates(ctx, "enrich_predb_scene_name_recovery", s.opts.Limit)
 	if err != nil {
-		return fmt.Errorf("list enrich_predb scene-name-recovery candidates: %w", err)
+		return nil, fmt.Errorf("list enrich_predb scene-name-recovery candidates: %w", err)
 	}
+	metrics := map[string]any{"candidates": len(candidates), "updated": 0, "provider_configured": true, "limit": s.opts.Limit}
 	if len(candidates) == 0 {
 		if s.log != nil {
 			s.log.Debug("enrich_predb scene-name-recovery: no candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
 	updated := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["updated"] = updated
+			return metrics, err
 		}
 		applied, err := s.sceneNameRecoveryCandidate(ctx, candidate)
 		if err != nil {
@@ -208,7 +226,8 @@ func (s *Service) RunSceneNameRecoveryOnce(ctx context.Context) error {
 				}
 				break
 			}
-			return fmt.Errorf("enrich predb scene-name-recovery release %s: %w", candidate.ReleaseID, err)
+			metrics["updated"] = updated
+			return metrics, fmt.Errorf("enrich predb scene-name-recovery release %s: %w", candidate.ReleaseID, err)
 		}
 		if applied {
 			updated++
@@ -217,32 +236,41 @@ func (s *Service) RunSceneNameRecoveryOnce(ctx context.Context) error {
 	if s.log != nil {
 		s.log.Info("enrich_predb scene-name-recovery: candidates=%d updated=%d", len(candidates), updated)
 	}
-	return nil
+	metrics["updated"] = updated
+	return metrics, nil
 }
 
 func (s *Service) RunMetadataFallbackOnce(ctx context.Context) error {
+	_, err := s.RunMetadataFallbackOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunMetadataFallbackOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("predb repo is required")
+		return nil, fmt.Errorf("predb repo is required")
 	}
 	candidates, err := s.repo.ListReleaseEnrichmentCandidates(ctx, "enrich_predb_metadata_only_fallback", s.opts.Limit)
 	if err != nil {
-		return fmt.Errorf("list enrich_predb metadata-only-fallback candidates: %w", err)
+		return nil, fmt.Errorf("list enrich_predb metadata-only-fallback candidates: %w", err)
 	}
+	metrics := map[string]any{"candidates": len(candidates), "updated": 0, "limit": s.opts.Limit}
 	if len(candidates) == 0 {
 		if s.log != nil {
 			s.log.Debug("enrich_predb metadata-only-fallback: no candidates available")
 		}
-		return nil
+		return metrics, nil
 	}
 
 	updated := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["updated"] = updated
+			return metrics, err
 		}
 		applied, err := s.metadataFallbackCandidate(ctx, candidate)
 		if err != nil {
-			return fmt.Errorf("enrich predb metadata-only-fallback release %s: %w", candidate.ReleaseID, err)
+			metrics["updated"] = updated
+			return metrics, fmt.Errorf("enrich predb metadata-only-fallback release %s: %w", candidate.ReleaseID, err)
 		}
 		if applied {
 			updated++
@@ -251,7 +279,8 @@ func (s *Service) RunMetadataFallbackOnce(ctx context.Context) error {
 	if s.log != nil {
 		s.log.Info("enrich_predb metadata-only-fallback: candidates=%d updated=%d", len(candidates), updated)
 	}
-	return nil
+	metrics["updated"] = updated
+	return metrics, nil
 }
 
 func (s *Service) RunSyncFeedOnce(ctx context.Context) error {

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -181,6 +182,33 @@ func TestRunStageOnceCompletesTrackedRun(t *testing.T) {
 	}
 }
 
+func TestRunStageOncePersistsMetricsFromResultRunner(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: true,
+			Run:     &pgindex.IndexerStageRun{ID: 51, StageName: string(StageAssemble)},
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageAssemble,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: ResultRunnerFunc(func(context.Context) (json.RawMessage, error) {
+				return json.RawMessage(`{"processed_headers":12}`), nil
+			}),
+		},
+	}, Options{Tracker: tracker, Owner: "test-owner"})
+
+	if err := svc.RunStageOnce(context.Background(), StageAssemble); err != nil {
+		t.Fatalf("run stage once: %v", err)
+	}
+	if string(tracker.lastFinish.MetricsJSON) != `{"processed_headers":12}` {
+		t.Fatalf("unexpected metrics payload: %s", string(tracker.lastFinish.MetricsJSON))
+	}
+}
+
 func TestRunStageOnceFailsTrackedRunWhenRunnerErrors(t *testing.T) {
 	tracker := &fakeTracker{
 		claimResult: &pgindex.IndexerStageClaimResult{
@@ -225,6 +253,7 @@ type fakeTracker struct {
 	heartbeats  int
 	completes   int
 	fails       int
+	lastFinish  pgindex.IndexerStageFinishRequest
 }
 
 func (f *fakeTracker) ClaimIndexerStage(context.Context, pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error) {
@@ -241,16 +270,18 @@ func (f *fakeTracker) HeartbeatIndexerStageRun(context.Context, int64, string, t
 	return nil
 }
 
-func (f *fakeTracker) CompleteIndexerStageRun(context.Context, pgindex.IndexerStageFinishRequest) error {
+func (f *fakeTracker) CompleteIndexerStageRun(_ context.Context, req pgindex.IndexerStageFinishRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completes++
+	f.lastFinish = req
 	return nil
 }
 
-func (f *fakeTracker) FailIndexerStageRun(context.Context, pgindex.IndexerStageFinishRequest) error {
+func (f *fakeTracker) FailIndexerStageRun(_ context.Context, req pgindex.IndexerStageFinishRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fails++
+	f.lastFinish = req
 	return nil
 }

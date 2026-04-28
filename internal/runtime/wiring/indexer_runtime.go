@@ -2,6 +2,7 @@ package wiring
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -170,8 +171,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.ScrapeLatest.BatchSize,
 			Concurrency: runtimeCfg.ScrapeLatest.Concurrency,
 			Backoff:     runtimeCfg.ScrapeLatest.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return scrapeLatestSvc.RunLatestOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeLatestSvc.RunLatestOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -181,8 +182,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.ScrapeBackfill.BatchSize,
 			Concurrency: runtimeCfg.ScrapeBackfill.Concurrency,
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return scrapeBackfillSvc.RunBackfillOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -192,8 +193,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.Assemble.BatchSize,
 			Concurrency: runtimeCfg.Assemble.Concurrency,
 			Backoff:     runtimeCfg.Assemble.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return assembleSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(assembleSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -203,8 +204,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.ReleaseStage.BatchSize,
 			Concurrency: runtimeCfg.ReleaseStage.Concurrency,
 			Backoff:     runtimeCfg.ReleaseStage.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return releaseSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(releaseSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -214,8 +215,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectDiscovery.BatchSize,
 			Concurrency: runtimeCfg.InspectDiscovery.Concurrency,
 			Backoff:     runtimeCfg.InspectDiscovery.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectDiscoverySvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectDiscoverySvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -225,8 +226,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectPAR2.BatchSize,
 			Concurrency: runtimeCfg.InspectPAR2.Concurrency,
 			Backoff:     runtimeCfg.InspectPAR2.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectPAR2Svc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectPAR2Svc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -236,8 +237,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectNFO.BatchSize,
 			Concurrency: runtimeCfg.InspectNFO.Concurrency,
 			Backoff:     runtimeCfg.InspectNFO.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectNFOSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectNFOSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -247,8 +248,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectArchive.BatchSize,
 			Concurrency: runtimeCfg.InspectArchive.Concurrency,
 			Backoff:     runtimeCfg.InspectArchive.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectArchiveSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectArchiveSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -258,8 +259,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectPassword.BatchSize,
 			Concurrency: runtimeCfg.InspectPassword.Concurrency,
 			Backoff:     runtimeCfg.InspectPassword.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectPasswordSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectPasswordSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -269,8 +270,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.InspectMedia.BatchSize,
 			Concurrency: runtimeCfg.InspectMedia.Concurrency,
 			Backoff:     runtimeCfg.InspectMedia.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return inspectMediaSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(inspectMediaSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -280,8 +281,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.EnrichPreDBStage.BatchSize,
 			Concurrency: runtimeCfg.EnrichPreDBStage.Concurrency,
 			Backoff:     runtimeCfg.EnrichPreDBStage.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return enrichPreDBSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(enrichPreDBSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -291,8 +292,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.EnrichTMDBStage.BatchSize,
 			Concurrency: runtimeCfg.EnrichTMDBStage.Concurrency,
 			Backoff:     runtimeCfg.EnrichTMDBStage.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return enrichTMDBSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(enrichTMDBSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -302,8 +303,8 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:   runtimeCfg.MaintenanceStage.BatchSize,
 			Concurrency: runtimeCfg.MaintenanceStage.Concurrency,
 			Backoff:     runtimeCfg.MaintenanceStage.Backoff,
-			Runner: supervisor.RunnerFunc(func(ctx context.Context) error {
-				return maintenanceSvc.RunOnce(ctx)
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(maintenanceSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 	}, supervisor.Options{
@@ -324,6 +325,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		supervisor:     supervisorSvc,
 		scrapeProvider: scrapeProvider,
 	}, nil
+}
+
+func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, error) {
+	if metrics == nil {
+		metrics = map[string]any{}
+	}
+	payload, marshalErr := json.Marshal(metrics)
+	if marshalErr != nil {
+		if err != nil {
+			return json.RawMessage(`{"metrics_error":"marshal_failed"}`), err
+		}
+		return nil, marshalErr
+	}
+	return payload, err
 }
 
 func newIndexerStageOwner() string {
