@@ -22,4 +22,4 @@ testdata
 # Web dist
 internal/webui/dist
 
-AGENTS.md
+.codex

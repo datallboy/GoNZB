@@ -14,7 +14,7 @@ import (
 )
 
 const usenetIndexerModuleName = "usenet_indexer"
-const expectedSchemaVersion = 2
+const expectedSchemaVersion = 5
 
 type Store struct {
 	db *sql.DB
@@ -302,7 +302,9 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 	hasState := false
 
 	serverRows, err := s.db.QueryContext(ctx, `
-		SELECT id, host, port, username, password_ciphertext, tls, max_connections, priority
+		SELECT id, host, port, username, password_ciphertext, tls, max_connections, priority,
+		       dial_timeout_seconds, tcp_keepalive_seconds, pool_idle_timeout_seconds, pool_max_age_seconds,
+		       enable_pool_logging
 		FROM settings_nntp_servers
 		ORDER BY priority, id`)
 	if err != nil {
@@ -323,6 +325,11 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 			&item.TLS,
 			&item.MaxConnection,
 			&item.Priority,
+			&item.DialTimeoutSeconds,
+			&item.TCPKeepAliveSeconds,
+			&item.PoolIdleTimeoutSeconds,
+			&item.PoolMaxAgeSeconds,
+			&item.EnablePoolLogging,
 		); err != nil {
 			return nil, false, err
 		}
@@ -444,8 +451,10 @@ func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, servers []ServerRu
 		// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO settings_nntp_servers (
-				id, host, port, username, password_ciphertext, tls, max_connections, priority, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+				id, host, port, username, password_ciphertext, tls, max_connections, priority,
+				dial_timeout_seconds, tcp_keepalive_seconds, pool_idle_timeout_seconds, pool_max_age_seconds,
+				enable_pool_logging, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
 			item.ID,
 			item.Host,
 			item.Port,
@@ -454,6 +463,11 @@ func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, servers []ServerRu
 			item.TLS,
 			item.MaxConnection,
 			item.Priority,
+			item.DialTimeoutSeconds,
+			item.TCPKeepAliveSeconds,
+			item.PoolIdleTimeoutSeconds,
+			item.PoolMaxAgeSeconds,
+			item.EnablePoolLogging,
 		); err != nil {
 			return err
 		}

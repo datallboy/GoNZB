@@ -1,0 +1,2004 @@
+package pgindex
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/datallboy/gonzb/internal/indexing/releasepolicy"
+	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
+)
+
+func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]ReleaseTitleCandidate, error) {
+	if len(binaryIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, 0, len(binaryIDs))
+	args := make([]any, 0, len(binaryIDs))
+	for idx, binaryID := range binaryIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx+1))
+		args = append(args, binaryID)
+	}
+	filter := strings.Join(placeholders, ",")
+
+	out := make([]ReleaseTitleCandidate, 0, len(binaryIDs)*3)
+	appendRows := func(query string, source string, confidence float64) error {
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var item ReleaseTitleCandidate
+			item.Source = source
+			item.Confidence = confidence
+			if err := rows.Scan(&item.BinaryID, &item.Value); err != nil {
+				return err
+			}
+			item.Value = strings.TrimSpace(item.Value)
+			if item.Value == "" {
+				continue
+			}
+			out = append(out, item)
+		}
+		return rows.Err()
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, summary_json->>'archive_entry'
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_media'
+		  AND binary_id IN (`+filter+`)
+		  AND COALESCE(summary_json->>'archive_entry', '') <> ''`,
+		"archive_entry", 0.98); err != nil {
+		return nil, fmt.Errorf("list inspect_media title candidates: %w", err)
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, entry_name
+		FROM binary_archive_entries
+		WHERE binary_id IN (`+filter+`)
+		  AND is_dir = FALSE
+		  AND (
+			media_type IN ('video', 'audio')
+			OR lower(entry_name) ~ '\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
+		  )`,
+		"archive_entry", 0.92); err != nil {
+		return nil, fmt.Errorf("list archive entry title candidates: %w", err)
+	}
+
+	if err := appendRows(`
+		SELECT binary_id, text_value
+		FROM binary_text_evidence
+		WHERE stage_name = 'inspect_nfo'
+		  AND evidence_kind = 'nfo_text'
+		  AND binary_id IN (`+filter+`)
+		  AND text_value <> ''`,
+		"nfo", 0.84); err != nil {
+		return nil, fmt.Errorf("list nfo title candidates: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerPasswordCandidates(ctx context.Context, releaseID string) ([]IndexerPasswordCandidateSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id,
+			COALESCE(binary_id, 0),
+			COALESCE(artifact_id, 0),
+			source_kind,
+			source_ref,
+			confidence,
+			verification_status,
+			last_verified_at,
+			last_error
+		FROM release_password_candidates
+		WHERE release_id = $1
+		ORDER BY verification_status DESC, confidence DESC, updated_at DESC, id DESC`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list password candidates for %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerPasswordCandidateSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerPasswordCandidateSummary
+		var lastVerifiedAt sql.NullTime
+		if err := rows.Scan(
+			&item.ID,
+			&item.BinaryID,
+			&item.ArtifactID,
+			&item.SourceKind,
+			&item.SourceRef,
+			&item.Confidence,
+			&item.VerificationStatus,
+			&lastVerifiedAt,
+			&item.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("scan password candidate summary: %w", err)
+		}
+		if lastVerifiedAt.Valid {
+			t := lastVerifiedAt.Time.UTC()
+			item.LastVerifiedAt = &t
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate password candidates for %s: %w", releaseID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseID string) ([]IndexerExternalMatchSummary, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	var query string
+	switch strings.TrimSpace(source) {
+	case "tmdb":
+		query = `
+			SELECT
+				tmdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json
+			FROM release_tmdb_matches
+			WHERE release_id = $1
+			ORDER BY chosen DESC, confidence DESC, title`
+	case "tvdb":
+		query = `
+			SELECT
+				tvdb_id,
+				media_type,
+				title,
+				original_title,
+				year,
+				confidence,
+				chosen,
+				payload_json
+			FROM release_tvdb_matches
+			WHERE release_id = $1
+			ORDER BY chosen DESC, confidence DESC, title`
+	default:
+		return nil, fmt.Errorf("unsupported external match source %q", source)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list %s matches for %s: %w", source, releaseID, err)
+	}
+	defer rows.Close()
+
+	out := []IndexerExternalMatchSummary{}
+	for rows.Next() {
+		var item IndexerExternalMatchSummary
+		item.Source = source
+		if err := rows.Scan(
+			&item.ExternalID,
+			&item.MediaType,
+			&item.Title,
+			&item.OriginalTitle,
+			&item.Year,
+			&item.Confidence,
+			&item.Chosen,
+			&item.Payload,
+		); err != nil {
+			return nil, fmt.Errorf("scan %s match summary: %w", source, err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s matches for %s: %w", source, releaseID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerPredbMatches(ctx context.Context, releaseID string) ([]IndexerPredbMatchSummary, error) {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			p.id,
+			p.title,
+			p.category,
+			p.source,
+			COALESCE(p.team, ''),
+			COALESCE(p.genre, ''),
+			COALESCE(p.url, ''),
+			COALESCE(p.size_kb, 0),
+			COALESCE(p.file_count, 0),
+			p.posted_at,
+			rpm.confidence,
+			rpm.chosen,
+			COALESCE(p.payload_json, '{}'::jsonb)
+		FROM release_predb_matches rpm
+		JOIN predb_entries p ON p.id = rpm.predb_entry_id
+		WHERE rpm.release_id = $1
+		ORDER BY rpm.chosen DESC, rpm.confidence DESC, p.title`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list predb matches for %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	out := []IndexerPredbMatchSummary{}
+	for rows.Next() {
+		var item IndexerPredbMatchSummary
+		var postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.EntryID,
+			&item.Title,
+			&item.Category,
+			&item.Source,
+			&item.Team,
+			&item.Genre,
+			&item.URL,
+			&item.SizeKB,
+			&item.FileCount,
+			&postedAt,
+			&item.Confidence,
+			&item.Chosen,
+			&item.Payload,
+		); err != nil {
+			return nil, fmt.Errorf("scan predb match summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate predb matches for %s: %w", releaseID, err)
+	}
+	return out, nil
+}
+
+func (s *Store) listIndexerInspectionSummaries(ctx context.Context, whereClause string, args ...any) ([]IndexerInspectionSummary, error) {
+	query := `
+		SELECT
+			stage_name,
+			binary_id,
+			COALESCE(release_id, ''),
+			status,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			started_at,
+			finished_at,
+			updated_at
+		FROM binary_inspections`
+	if strings.TrimSpace(whereClause) != "" {
+		query += ` WHERE ` + whereClause
+	}
+	query += ` ORDER BY updated_at DESC, stage_name, binary_id`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection summaries: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerInspectionSummary, 0, 16)
+	for rows.Next() {
+		var (
+			item        IndexerInspectionSummary
+			startedAt   sql.NullTime
+			finishedAt  sql.NullTime
+			toolJSON    []byte
+			summaryJSON []byte
+		)
+		if err := rows.Scan(
+			&item.StageName,
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.Status,
+			&item.ErrorText,
+			&item.MaterializedBytes,
+			&toolJSON,
+			&summaryJSON,
+			&startedAt,
+			&finishedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan inspection summary: %w", err)
+		}
+		item.ToolProvenance = cloneRawJSON(toolJSON)
+		item.Summary = cloneRawJSON(summaryJSON)
+		if startedAt.Valid {
+			t := startedAt.Time.UTC()
+			item.StartedAt = &t
+		}
+		if finishedAt.Valid {
+			t := finishedAt.Time.UTC()
+			item.FinishedAt = &t
+		}
+		item.UpdatedAt = item.UpdatedAt.UTC()
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inspection summaries: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerInspectionArtifacts(ctx context.Context, binaryID int64) ([]IndexerBinaryInspectionArtifactSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stage_name,
+			artifact_role,
+			artifact_name,
+			artifact_path,
+			bytes_total,
+			mime_type,
+			signature,
+			source_kind,
+			metadata_json
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1
+		ORDER BY updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection artifacts for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerBinaryInspectionArtifactSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerBinaryInspectionArtifactSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StageName,
+			&item.ArtifactRole,
+			&item.ArtifactName,
+			&item.ArtifactPath,
+			&item.BytesTotal,
+			&item.MIMEType,
+			&item.Signature,
+			&item.SourceKind,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan inspection artifact summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inspection artifacts for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerArchiveEntries(ctx context.Context, binaryID int64) ([]IndexerArchiveEntrySummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			entry_name,
+			is_dir,
+			uncompressed_bytes,
+			compressed_bytes,
+			encrypted,
+			comment_text,
+			media_type,
+			signature,
+			metadata_json
+		FROM binary_archive_entries
+		WHERE binary_id = $1
+		ORDER BY entry_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list archive entries for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerArchiveEntrySummary, 0, 16)
+	for rows.Next() {
+		var item IndexerArchiveEntrySummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.EntryName,
+			&item.IsDir,
+			&item.UncompressedBytes,
+			&item.CompressedBytes,
+			&item.Encrypted,
+			&item.Comment,
+			&item.MediaType,
+			&item.Signature,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan archive entry summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate archive entries for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerMediaStreams(ctx context.Context, binaryID int64) ([]IndexerMediaStreamSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stream_index,
+			stream_type,
+			codec_name,
+			codec_long_name,
+			profile,
+			width,
+			height,
+			channels,
+			language,
+			duration_seconds,
+			bit_rate,
+			default_disposition,
+			forced_disposition,
+			metadata_json
+		FROM binary_media_streams
+		WHERE binary_id = $1
+		ORDER BY stream_index, stream_type`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list media streams for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerMediaStreamSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerMediaStreamSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StreamIndex,
+			&item.StreamType,
+			&item.CodecName,
+			&item.CodecLongName,
+			&item.Profile,
+			&item.Width,
+			&item.Height,
+			&item.Channels,
+			&item.Language,
+			&item.DurationSeconds,
+			&item.BitRate,
+			&item.DefaultDisposition,
+			&item.ForcedDisposition,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan media stream summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media streams for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerTextEvidence(ctx context.Context, binaryID int64) ([]IndexerTextEvidenceSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			stage_name,
+			evidence_kind,
+			text_value,
+			tokens_json,
+			metadata_json
+		FROM binary_text_evidence
+		WHERE binary_id = $1
+		ORDER BY updated_at DESC, stage_name, evidence_kind`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list text evidence for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerTextEvidenceSummary, 0, 8)
+	for rows.Next() {
+		var item IndexerTextEvidenceSummary
+		var tokensJSON []byte
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.StageName,
+			&item.EvidenceKind,
+			&item.TextValue,
+			&tokensJSON,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan text evidence summary: %w", err)
+		}
+		item.Tokens = decodeJSONStringSlice(tokensJSON)
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate text evidence for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]IndexerPAR2SetSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			set_name,
+			base_name,
+			is_volume,
+			volume_number,
+			recovery_blocks,
+			signature_ok,
+			metadata_json
+		FROM binary_par2_sets
+		WHERE binary_id = $1
+		ORDER BY set_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list par2 sets for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerPAR2SetSummary, 0, 4)
+	for rows.Next() {
+		var item IndexerPAR2SetSummary
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&item.SetName,
+			&item.BaseName,
+			&item.IsVolume,
+			&item.VolumeNumber,
+			&item.RecoveryBlocks,
+			&item.SignatureOK,
+			&metadataJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan par2 set summary: %w", err)
+		}
+		item.Metadata = cloneRawJSON(metadataJSON)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate par2 sets for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]IndexerBinaryPartSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			article_header_id,
+			message_id,
+			part_number,
+			total_parts,
+			segment_bytes,
+			file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		ORDER BY part_number, id`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerBinaryPartSummary, 0, 128)
+	for rows.Next() {
+		var item IndexerBinaryPartSummary
+		if err := rows.Scan(
+			&item.ArticleHeaderID,
+			&item.MessageID,
+			&item.PartNumber,
+			&item.TotalParts,
+			&item.SegmentBytes,
+			&item.FileName,
+		); err != nil {
+			return nil, fmt.Errorf("scan binary part summary: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary parts for binary %d: %w", binaryID, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return nil, fmt.Errorf("stage name is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	filter, err := inspectCandidateFilter(stageName)
+	if err != nil {
+		return nil, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate
+	if stageName == "inspect_media" {
+		rerunPredicate += `
+			OR (
+				abi.updated_at IS NOT NULL AND (
+					bi.id IS NULL OR
+					abi.updated_at > bi.updated_at
+				)
+			)`
+	}
+
+	query := `
+		SELECT
+			$1,
+			b.id,
+			r.release_id,
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			r.group_name,
+			COALESCE(rf.file_name, b.file_name, ''),
+			b.binary_name,
+			b.release_name,
+			COALESCE(r.poster, ''),
+			b.posted_at,
+			b.total_bytes,
+			b.total_parts,
+			b.match_confidence,
+			b.updated_at,
+			COALESCE(bi.status, ''),
+			bi.updated_at,
+			COALESCE(bi.summary_json, '{}'::jsonb),
+			COALESCE(abi.summary_json, '{}'::jsonb)
+		FROM binaries b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = $1
+			AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+			ON abi.stage_name = 'inspect_archive'
+			AND abi.binary_id = b.id
+		WHERE ` + filter + `
+		  AND (
+			` + rerunPredicate + `
+		  )`
+	if stageName == "inspect_discovery" {
+		query = `
+			SELECT *
+			FROM (
+				SELECT DISTINCT ON (r.release_id)
+					$1 AS stage_name,
+					b.id AS binary_id,
+					r.release_id,
+					r.title,
+					r.source_title,
+					r.deobfuscated_title,
+					r.group_name,
+					COALESCE(rf.file_name, b.file_name, '') AS file_name,
+					b.binary_name,
+					b.release_name,
+					COALESCE(r.poster, '') AS poster,
+					b.posted_at,
+					b.total_bytes,
+					b.total_parts,
+					b.match_confidence,
+					b.updated_at AS source_updated_at,
+					COALESCE(bi.status, '') AS current_status,
+					bi.updated_at AS current_updated_at,
+					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
+				FROM binaries b
+				JOIN release_files rf ON rf.binary_id = b.id
+				JOIN releases r ON r.release_id = rf.release_id
+				LEFT JOIN binary_inspections bi
+					ON bi.stage_name = $1
+					AND bi.binary_id = b.id
+				LEFT JOIN binary_inspections abi
+					ON abi.stage_name = 'inspect_archive'
+					AND abi.binary_id = b.id
+				WHERE ` + filter + `
+				  AND (
+					` + rerunPredicate + `
+				  )
+				ORDER BY r.release_id, COALESCE(rf.file_index, b.file_index, 0), b.updated_at DESC, b.id
+			) candidates
+			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
+			LIMIT $2`
+	} else if stageName == "inspect_archive" {
+		representativePredicate := `
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$'
+					) OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip'`
+		query = `
+			SELECT *
+			FROM (
+				SELECT DISTINCT ON (
+					r.release_id,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+						ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+					END
+				)
+					$1 AS stage_name,
+					b.id AS binary_id,
+					r.release_id,
+					r.title,
+					r.source_title,
+					r.deobfuscated_title,
+					r.group_name,
+					COALESCE(rf.file_name, b.file_name, '') AS file_name,
+					b.binary_name,
+					b.release_name,
+					COALESCE(r.poster, '') AS poster,
+					b.posted_at,
+					b.total_bytes,
+					b.total_parts,
+					b.match_confidence,
+					b.updated_at AS source_updated_at,
+					COALESCE(bi.status, '') AS current_status,
+					bi.updated_at AS current_updated_at,
+					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
+				FROM binaries b
+				JOIN release_files rf ON rf.binary_id = b.id
+				JOIN releases r ON r.release_id = rf.release_id
+				LEFT JOIN binary_inspections bi
+					ON bi.stage_name = $1
+					AND bi.binary_id = b.id
+				LEFT JOIN binary_inspections abi
+					ON abi.stage_name = 'inspect_archive'
+					AND abi.binary_id = b.id
+				WHERE ` + filter + `
+				  AND (` + representativePredicate + `)
+				  AND (
+					bi.id IS NULL OR
+					bi.status = 'failed' OR
+					b.updated_at > bi.updated_at OR
+					` + errorRerunPredicate + `
+				  )
+				ORDER BY
+					r.release_id,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+							THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+						ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+					END,
+					CASE
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' THEN 0
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' THEN 1
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' THEN 1
+						WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' THEN 1
+						ELSE 2
+					END,
+					COALESCE(NULLIF(rf.file_index, 0), NULLIF(b.file_index, 0), 2147483647),
+					b.updated_at DESC,
+					b.id
+			) candidates
+			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
+			LIMIT $2`
+	} else {
+		query += `
+		ORDER BY r.updated_at DESC, b.updated_at DESC, b.id
+		LIMIT $2`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, stageName, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list binary inspection candidates %s: %w", stageName, err)
+	}
+	defer rows.Close()
+
+	out := make([]BinaryInspectionCandidate, 0, limit)
+	for rows.Next() {
+		var item BinaryInspectionCandidate
+		var postedAt sql.NullTime
+		var sourceUpdatedAt time.Time
+		var currentUpdatedAt sql.NullTime
+
+		if err := rows.Scan(
+			&item.StageName,
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.SourceTitle,
+			&item.DeobfuscatedTitle,
+			&item.GroupName,
+			&item.FileName,
+			&item.BinaryName,
+			&item.ReleaseName,
+			&item.Poster,
+			&postedAt,
+			&item.TotalBytes,
+			&item.TotalParts,
+			&item.MatchConfidence,
+			&sourceUpdatedAt,
+			&item.CurrentStatus,
+			&currentUpdatedAt,
+			&item.CurrentSummaryJSON,
+			&item.ArchiveSummaryJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan binary inspection candidate: %w", err)
+		}
+
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		t := sourceUpdatedAt.UTC()
+		item.SourceUpdatedAt = &t
+		if currentUpdatedAt.Valid {
+			ct := currentUpdatedAt.Time.UTC()
+			item.CurrentUpdatedAt = &ct
+		}
+
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary inspection candidates %s: %w", stageName, err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	var sourceUpdated any
+	if sourceUpdatedAt != nil {
+		sourceUpdated = sourceUpdatedAt.UTC()
+	}
+	releaseID = strings.TrimSpace(releaseID)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO binary_inspections (
+			stage_name,
+			binary_id,
+			release_id,
+			status,
+			started_at,
+			finished_at,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			source_updated_at,
+			updated_at
+		)
+		VALUES (
+			$1,
+			$2,
+			COALESCE(
+				CASE
+					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+					THEN $3
+					ELSE NULL
+				END,
+				(
+					SELECT rf.release_id
+					FROM release_files rf
+					WHERE rf.binary_id = $2
+					ORDER BY rf.release_id
+					LIMIT 1
+				)
+			),
+			'running',
+			NOW(),
+			NULL,
+			'',
+			0,
+			'{}'::jsonb,
+			'{}'::jsonb,
+			$4,
+			NOW()
+		)
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+		    status = 'running',
+		    started_at = NOW(),
+		    finished_at = NULL,
+		    error_text = '',
+		    materialized_bytes = 0,
+		    tool_provenance_json = '{}'::jsonb,
+		    summary_json = '{}'::jsonb,
+		    source_updated_at = EXCLUDED.source_updated_at,
+		    updated_at = NOW()`,
+		stageName,
+		binaryID,
+		releaseID,
+		sourceUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("start binary inspection %s/%d: %w", stageName, binaryID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) CompleteBinaryInspection(ctx context.Context, in BinaryInspectionRecord) error {
+	return s.finishBinaryInspection(ctx, in, "completed")
+}
+
+func (s *Store) FailBinaryInspection(ctx context.Context, in BinaryInspectionRecord) error {
+	return s.finishBinaryInspection(ctx, in, "failed")
+}
+
+func (s *Store) UpsertReleasePasswordCandidate(ctx context.Context, in ReleasePasswordCandidateRecord) (int64, error) {
+	in.ReleaseID = strings.TrimSpace(in.ReleaseID)
+	if in.ReleaseID == "" {
+		return 0, fmt.Errorf("release id is required")
+	}
+	in.PasswordValue = strings.TrimSpace(in.PasswordValue)
+	if in.PasswordValue == "" {
+		return 0, fmt.Errorf("password value is required")
+	}
+	in.SourceKind = strings.TrimSpace(in.SourceKind)
+	if in.SourceKind == "" {
+		in.SourceKind = "inspect_hint"
+	}
+	in.SourceRef = strings.TrimSpace(in.SourceRef)
+	in.VerificationStatus = strings.TrimSpace(in.VerificationStatus)
+	if in.VerificationStatus == "" {
+		in.VerificationStatus = "pending"
+	}
+
+	var binaryID any
+	if in.BinaryID > 0 {
+		binaryID = in.BinaryID
+	}
+	var artifactID any
+	if in.ArtifactID > 0 {
+		artifactID = in.ArtifactID
+	}
+	var verifiedAt any
+	if in.LastVerifiedAt != nil {
+		verifiedAt = in.LastVerifiedAt.UTC()
+	}
+
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO release_password_candidates (
+			release_id,
+			binary_id,
+			artifact_id,
+			password_value,
+			source_kind,
+			source_ref,
+			confidence,
+			verification_status,
+			last_verified_at,
+			last_error,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+		ON CONFLICT (release_id, password_value, source_kind, source_ref) DO UPDATE
+		SET binary_id = COALESCE(EXCLUDED.binary_id, release_password_candidates.binary_id),
+		    artifact_id = COALESCE(EXCLUDED.artifact_id, release_password_candidates.artifact_id),
+		    confidence = GREATEST(release_password_candidates.confidence, EXCLUDED.confidence),
+		    verification_status = CASE
+		    	WHEN release_password_candidates.verification_status = 'verified' THEN release_password_candidates.verification_status
+		    	ELSE EXCLUDED.verification_status
+		    END,
+		    last_verified_at = COALESCE(EXCLUDED.last_verified_at, release_password_candidates.last_verified_at),
+		    last_error = EXCLUDED.last_error,
+		    updated_at = NOW()
+		RETURNING id`,
+		in.ReleaseID,
+		binaryID,
+		artifactID,
+		in.PasswordValue,
+		in.SourceKind,
+		in.SourceRef,
+		in.Confidence,
+		in.VerificationStatus,
+		verifiedAt,
+		strings.TrimSpace(in.LastError),
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("upsert release password candidate %s/%s: %w", in.ReleaseID, in.PasswordValue, err)
+	}
+
+	return id, nil
+}
+
+func (s *Store) ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]PasswordVerificationCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			rpc.id,
+			rpc.release_id,
+			COALESCE(rpc.binary_id, 0),
+			COALESCE(rpc.artifact_id, 0),
+			r.title,
+			r.source_title,
+			r.deobfuscated_title,
+			rpc.password_value,
+			rpc.source_kind,
+			rpc.source_ref,
+			rpc.confidence,
+			rpc.verification_status,
+			rpc.last_error
+		FROM release_password_candidates rpc
+		JOIN releases r ON r.release_id = rpc.release_id
+		WHERE r.encrypted = TRUE
+		  AND rpc.verification_status <> 'verified'
+		ORDER BY rpc.confidence DESC, rpc.updated_at DESC, rpc.id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list password verification candidates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PasswordVerificationCandidate, 0, limit)
+	for rows.Next() {
+		var item PasswordVerificationCandidate
+		if err := rows.Scan(
+			&item.ID,
+			&item.ReleaseID,
+			&item.BinaryID,
+			&item.ArtifactID,
+			&item.Title,
+			&item.SourceTitle,
+			&item.DeobfuscatedTitle,
+			&item.PasswordValue,
+			&item.SourceKind,
+			&item.SourceRef,
+			&item.Confidence,
+			&item.VerificationStatus,
+			&item.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("scan password verification candidate: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate password verification candidates: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error {
+	if candidateID <= 0 {
+		return fmt.Errorf("candidate id is required")
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return fmt.Errorf("status is required")
+	}
+
+	var verified any
+	if verifiedAt != nil {
+		verified = verifiedAt.UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE release_password_candidates
+		SET verification_status = $2,
+		    last_verified_at = COALESCE($3, last_verified_at),
+		    last_error = $4,
+		    updated_at = NOW()
+		WHERE id = $1`,
+		candidateID,
+		status,
+		verified,
+		strings.TrimSpace(lastError),
+	)
+	if err != nil {
+		return fmt.Errorf("update password candidate status %d: %w", candidateID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInspectionUpdate) error {
+	in.ReleaseID = strings.TrimSpace(in.ReleaseID)
+	if in.ReleaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	adjustedAvailability, adjustedTier, err := s.deriveAdjustedAvailability(ctx, in)
+	if err != nil {
+		return err
+	}
+
+	subtitlesJSON, err := json.Marshal(sanitizeStringSlice(in.SubtitleLanguages))
+	if err != nil {
+		return fmt.Errorf("marshal subtitle languages for %s: %w", in.ReleaseID, err)
+	}
+	mediaTagsJSON, err := json.Marshal(sanitizeStringSlice(in.MediaTags))
+	if err != nil {
+		return fmt.Errorf("marshal media tags for %s: %w", in.ReleaseID, err)
+	}
+
+	var metadataUpdated any
+	if in.MetadataUpdatedAt != nil {
+		metadataUpdated = in.MetadataUpdatedAt.UTC()
+	}
+	var preferredPasswordID any
+	if in.PreferredPasswordID != nil && *in.PreferredPasswordID > 0 {
+		preferredPasswordID = *in.PreferredPasswordID
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE releases
+		SET encrypted = COALESCE($2, encrypted),
+		    has_par2 = COALESCE($3, has_par2),
+		    has_nfo = COALESCE($4, has_nfo),
+		    passworded = COALESCE($5, passworded),
+		    passworded_known = COALESCE($6, passworded_known),
+		    passworded_unknown = COALESCE($7, passworded_unknown),
+		    password_state = CASE WHEN $8 <> '' THEN $8 ELSE password_state END,
+		    preferred_password_id = COALESCE($9, preferred_password_id),
+		    archive_count = GREATEST(archive_count, COALESCE($10, archive_count)),
+		    video_count = GREATEST(video_count, COALESCE($11, video_count)),
+		    audio_count = GREATEST(audio_count, COALESCE($12, audio_count)),
+		    runtime_seconds = COALESCE($13, runtime_seconds),
+		    sample_present = COALESCE($14, sample_present),
+		    primary_resolution = CASE WHEN $15 <> '' THEN $15 ELSE primary_resolution END,
+		    primary_video_codec = CASE WHEN $16 <> '' THEN $16 ELSE primary_video_codec END,
+		    primary_audio_codec = CASE WHEN $17 <> '' THEN $17 ELSE primary_audio_codec END,
+		    subtitle_languages_json = CASE
+		    	WHEN jsonb_array_length($18::jsonb) > 0 THEN $18::jsonb
+		    	ELSE subtitle_languages_json
+		    END,
+		    media_tags_json = CASE
+		    	WHEN jsonb_array_length($19::jsonb) > 0 THEN $19::jsonb
+		    	ELSE media_tags_json
+		    END,
+		    media_quality_score = GREATEST(media_quality_score, COALESCE($20, media_quality_score)),
+		    media_quality_tier = CASE WHEN $21 <> '' THEN $21 ELSE media_quality_tier END,
+		    metadata_updated_at = COALESCE($22, metadata_updated_at),
+		    updated_at = NOW()
+		WHERE release_id = $1`,
+		in.ReleaseID,
+		nullableBool(in.Encrypted),
+		nullableBool(in.HasPAR2),
+		nullableBool(in.HasNFO),
+		nullableBool(in.Passworded),
+		nullableBool(in.PasswordedKnown),
+		nullableBool(in.PasswordedUnknown),
+		strings.TrimSpace(in.PasswordState),
+		preferredPasswordID,
+		nullableInt(in.ArchiveCount),
+		nullableInt(in.VideoCount),
+		nullableInt(in.AudioCount),
+		nullableInt(in.RuntimeSeconds),
+		nullableBool(in.SamplePresent),
+		strings.TrimSpace(in.PrimaryResolution),
+		strings.TrimSpace(in.PrimaryVideoCodec),
+		strings.TrimSpace(in.PrimaryAudioCodec),
+		string(subtitlesJSON),
+		string(mediaTagsJSON),
+		nullableFloat64(in.MediaQualityScore),
+		strings.TrimSpace(in.MediaQualityTier),
+		metadataUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("apply release inspection update %s: %w", in.ReleaseID, err)
+	}
+
+	if adjustedAvailability != nil {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE releases
+			SET availability_score = $2,
+			    availability_tier = $3,
+			    updated_at = NOW()
+			WHERE release_id = $1`,
+			in.ReleaseID,
+			*adjustedAvailability,
+			adjustedTier,
+		); err != nil {
+			return fmt.Errorf("apply availability adjustment %s: %w", in.ReleaseID, err)
+		}
+	}
+
+	if err := s.applyDerivedInspectionTitleUpdate(ctx, in.ReleaseID, in.MetadataUpdatedAt); err != nil {
+		return err
+	}
+	if err := s.refreshReleaseCategory(ctx, in.ReleaseID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID string, metadataUpdatedAt *time.Time) error {
+	sourceTitle, currentTitleSource, currentTitleConfidence, binaryIDs, err := s.loadReleaseTitleInputs(ctx, releaseID)
+	if err != nil {
+		return err
+	}
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+
+	candidates, err := s.ListReleaseTitleCandidates(ctx, binaryIDs)
+	if err != nil {
+		return err
+	}
+	inspectionInputs := make([]releasetitle.InspectionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		inspectionInputs = append(inspectionInputs, releasetitle.InspectionCandidate{
+			Source:     candidate.Source,
+			Value:      candidate.Value,
+			Confidence: candidate.Confidence,
+		})
+	}
+	best, ok := releasetitle.ChooseBestInspectionTitle(sourceTitle, inspectionInputs)
+	if !ok {
+		return nil
+	}
+	if !releasetitle.ShouldAdoptInspectionTitle(sourceTitle, best) {
+		return nil
+	}
+
+	displaySource := releasetitle.DisplayTitleStyle(sourceTitle)
+	if releasetitle.NormalizeSearchTitle(best.DisplayTitle) == releasetitle.NormalizeSearchTitle(displaySource) {
+		return nil
+	}
+	if currentTitleSource != "" && currentTitleSource != "source" && currentTitleConfidence >= best.Confidence {
+		return nil
+	}
+
+	var metadataUpdated any
+	if metadataUpdatedAt != nil {
+		metadataUpdated = metadataUpdatedAt.UTC()
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE releases
+		SET title = $2,
+		    deobfuscated_title = $3,
+		    title_source = $4,
+		    title_confidence = $5,
+		    search_title = $6,
+		    metadata_updated_at = COALESCE($7, metadata_updated_at),
+		    updated_at = NOW()
+		WHERE release_id = $1`,
+		releaseID,
+		strings.TrimSpace(best.DisplayTitle),
+		strings.TrimSpace(best.ReleaseTitle),
+		strings.TrimSpace(best.Source),
+		best.Confidence,
+		releasetitle.NormalizeSearchTitle(best.DisplayTitle),
+		metadataUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("apply derived inspection title update %s: %w", releaseID, err)
+	}
+	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) loadReleaseTitleInputs(ctx context.Context, releaseID string) (string, string, float64, []int64, error) {
+	var (
+		sourceTitle       string
+		currentTitleFrom  string
+		currentConfidence float64
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(source_title, ''), COALESCE(title_source, ''), COALESCE(title_confidence, 0)
+		FROM releases
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&sourceTitle, &currentTitleFrom, &currentConfidence); err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", 0, nil, fmt.Errorf("release %s not found for title inputs", releaseID)
+		}
+		return "", "", 0, nil, fmt.Errorf("load release title inputs %s: %w", releaseID, err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT binary_id
+		FROM release_files
+		WHERE release_id = $1
+		  AND binary_id IS NOT NULL
+		ORDER BY binary_id`, releaseID)
+	if err != nil {
+		return "", "", 0, nil, fmt.Errorf("load release file binary ids %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+
+	binaryIDs := make([]int64, 0, 16)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			return "", "", 0, nil, fmt.Errorf("scan release file binary id %s: %w", releaseID, err)
+		}
+		if binaryID > 0 {
+			binaryIDs = append(binaryIDs, binaryID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", 0, nil, fmt.Errorf("iterate release file binary ids %s: %w", releaseID, err)
+	}
+
+	return sourceTitle, currentTitleFrom, currentConfidence, binaryIDs, nil
+}
+
+func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspectionUpdate) (*float64, string, error) {
+	if s == nil || s.db == nil {
+		return nil, "", fmt.Errorf("pgindex store is not initialized")
+	}
+
+	var (
+		completionPct     float64
+		availabilityScore float64
+		passwordedKnown   bool
+		passwordedUnknown bool
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT completion_pct, availability_score, passworded_known, passworded_unknown
+		FROM releases
+		WHERE release_id = $1`,
+		in.ReleaseID,
+	).Scan(&completionPct, &availabilityScore, &passwordedKnown, &passwordedUnknown); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", fmt.Errorf("release %s not found", in.ReleaseID)
+		}
+		return nil, "", fmt.Errorf("load current availability for %s: %w", in.ReleaseID, err)
+	}
+
+	finalKnown := passwordedKnown
+	if in.PasswordedKnown != nil {
+		finalKnown = *in.PasswordedKnown
+	}
+	finalUnknown := passwordedUnknown
+	if in.PasswordedUnknown != nil {
+		finalUnknown = *in.PasswordedUnknown
+	}
+	if finalKnown {
+		finalUnknown = false
+	}
+
+	adjusted, tier := releasepolicy.AdjustAvailabilityForInspection(releasepolicy.AvailabilityAdjustmentInput{
+		CompletionPct:     completionPct,
+		AvailabilityScore: availabilityScore,
+		PasswordedKnown:   finalKnown,
+		PasswordedUnknown: finalUnknown,
+	})
+	return adjusted, tier, nil
+}
+
+func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin artifact replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND stage_name = $2`,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_inspection_artifacts (
+				binary_id,
+				release_id,
+				stage_name,
+				artifact_role,
+				artifact_name,
+				artifact_path,
+				bytes_total,
+				mime_type,
+				signature,
+				source_kind,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.ArtifactRole),
+			strings.TrimSpace(row.ArtifactName),
+			strings.TrimSpace(row.ArtifactPath),
+			row.BytesTotal,
+			strings.TrimSpace(row.MIMEType),
+			strings.TrimSpace(row.Signature),
+			strings.TrimSpace(row.SourceKind),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert inspection artifact %s/%d: %w", stageName, binaryID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit artifact replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []BinaryArchiveEntryRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin archive entry replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal archive entry metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_archive_entries (
+				binary_id,
+				release_id,
+				entry_name,
+				is_dir,
+				uncompressed_bytes,
+				compressed_bytes,
+				encrypted,
+				comment_text,
+				media_type,
+				signature,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.EntryName),
+			row.IsDir,
+			row.UncompressedBytes,
+			row.CompressedBytes,
+			row.Encrypted,
+			strings.TrimSpace(row.Comment),
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Signature),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert archive entry %d/%s: %w", binaryID, row.EntryName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit archive entry replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []BinaryMediaStreamRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin media stream replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal media stream metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_media_streams (
+				binary_id,
+				release_id,
+				stream_index,
+				stream_type,
+				codec_name,
+				codec_long_name,
+				profile,
+				width,
+				height,
+				channels,
+				language,
+				duration_seconds,
+				bit_rate,
+				default_disposition,
+				forced_disposition,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())`,
+			binaryID,
+			releaseID,
+			row.StreamIndex,
+			strings.TrimSpace(row.StreamType),
+			strings.TrimSpace(row.CodecName),
+			strings.TrimSpace(row.CodecLongName),
+			strings.TrimSpace(row.Profile),
+			row.Width,
+			row.Height,
+			row.Channels,
+			strings.TrimSpace(row.Language),
+			row.DurationSeconds,
+			row.BitRate,
+			row.DefaultDisposition,
+			row.ForcedDisposition,
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert media stream %d/%d: %w", binaryID, row.StreamIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit media stream replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []BinaryTextEvidenceRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin text evidence replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_text_evidence
+		WHERE binary_id = $1 AND stage_name = $2`,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete text evidence %s/%d: %w", stageName, binaryID, err)
+	}
+
+	for _, row := range rows {
+		tokensJSON, err := json.Marshal(sanitizeStringSlice(row.Tokens))
+		if err != nil {
+			return fmt.Errorf("marshal text evidence tokens %s/%d: %w", stageName, binaryID, err)
+		}
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal text evidence metadata %s/%d: %w", stageName, binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_text_evidence (
+				binary_id,
+				release_id,
+				stage_name,
+				evidence_kind,
+				text_value,
+				tokens_json,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.EvidenceKind),
+			row.TextValue,
+			string(tokensJSON),
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert text evidence %s/%d: %w", stageName, binaryID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit text evidence replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []BinaryPAR2SetRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin par2 set replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
+	}
+
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal par2 set metadata %d: %w", binaryID, err)
+		}
+		var releaseID any
+		if strings.TrimSpace(row.ReleaseID) != "" {
+			releaseID = strings.TrimSpace(row.ReleaseID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_par2_sets (
+				binary_id,
+				release_id,
+				set_name,
+				base_name,
+				is_volume,
+				volume_number,
+				recovery_blocks,
+				signature_ok,
+				metadata_json,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.SetName),
+			strings.TrimSpace(row.BaseName),
+			row.IsVolume,
+			row.VolumeNumber,
+			row.RecoveryBlocks,
+			row.SignatureOK,
+			string(metadataJSON),
+		); err != nil {
+			return fmt.Errorf("insert par2 set %d/%s: %w", binaryID, row.SetName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit par2 set replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	in.StageName = strings.TrimSpace(in.StageName)
+	if in.StageName == "" {
+		return fmt.Errorf("stage name is required")
+	}
+	if in.BinaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	status := strings.TrimSpace(in.Status)
+	if status == "" {
+		status = fallbackStatus
+	}
+	if status == "" {
+		status = "completed"
+	}
+
+	var releaseID any
+	if strings.TrimSpace(in.ReleaseID) != "" {
+		releaseID = strings.TrimSpace(in.ReleaseID)
+	}
+	var sourceUpdated any
+	if in.SourceUpdatedAt != nil {
+		sourceUpdated = in.SourceUpdatedAt.UTC()
+	}
+
+	toolJSON, err := json.Marshal(sanitizeStringMap(in.ToolProvenance))
+	if err != nil {
+		return fmt.Errorf("marshal tool provenance for %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+	status, in.ErrorText = normalizeBinaryInspectionTerminalState(in.StageName, status, in.ErrorText, in.Summary)
+	summaryJSON, err := json.Marshal(sanitizeStringMap(in.Summary))
+	if err != nil {
+		return fmt.Errorf("marshal inspection summary for %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO binary_inspections (
+			stage_name,
+			binary_id,
+			release_id,
+			status,
+			started_at,
+			finished_at,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			source_updated_at,
+			updated_at
+		)
+		VALUES (
+			$1,
+			$2,
+			COALESCE(
+				CASE
+					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+					THEN $3
+					ELSE NULL
+				END,
+				(
+					SELECT rf.release_id
+					FROM release_files rf
+					WHERE rf.binary_id = $2
+					ORDER BY rf.release_id
+					LIMIT 1
+				)
+			),
+			$4,
+			NOW(),
+			NOW(),
+			$5,
+			$6,
+			$7,
+			$8,
+			$9,
+			NOW()
+		)
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+		    status = EXCLUDED.status,
+		    finished_at = NOW(),
+		    error_text = EXCLUDED.error_text,
+		    materialized_bytes = EXCLUDED.materialized_bytes,
+		    tool_provenance_json = EXCLUDED.tool_provenance_json,
+		    summary_json = EXCLUDED.summary_json,
+		    source_updated_at = COALESCE(EXCLUDED.source_updated_at, binary_inspections.source_updated_at),
+		    updated_at = NOW()`,
+		in.StageName,
+		in.BinaryID,
+		releaseID,
+		status,
+		strings.TrimSpace(in.ErrorText),
+		in.MaterializedBytes,
+		toolJSON,
+		summaryJSON,
+		sourceUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("finish binary inspection %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+
+	return nil
+}
+
+func normalizeBinaryInspectionTerminalState(stageName, status, errorText string, summary map[string]any) (string, string) {
+	status = strings.TrimSpace(status)
+	errorText = strings.TrimSpace(errorText)
+	if status != "completed" {
+		return status, errorText
+	}
+	if !inspectionStageSupportsErrorFailure(stageName) {
+		return status, errorText
+	}
+	for _, key := range []string{"probe_error", "ffprobe_error", "extract_error", "archive_extract_error"} {
+		if msg := inspectionSummaryMessage(summary, key); msg != "" {
+			if errorText == "" {
+				errorText = msg
+			}
+			return "failed", errorText
+		}
+	}
+	if errorText != "" {
+		return "failed", errorText
+	}
+	return status, errorText
+}
+
+func inspectionStageSupportsErrorFailure(stageName string) bool {
+	switch strings.TrimSpace(stageName) {
+	case "inspect_archive", "inspect_media", "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_password":
+		return true
+	default:
+		return false
+	}
+}
+
+func inspectionSummaryMessage(summary map[string]any, key string) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	raw, ok := summary[strings.TrimSpace(key)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func isRecoverableInspectionError(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable")
+}
+
+func inspectCandidateFilter(stageName string) (string, error) {
+	switch stageName {
+	case "inspect_discovery":
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.bin' AND
+		COALESCE(b.recovered_extension, '') = '' AND
+		(b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`, nil
+	case "inspect_par2":
+		return "rf.is_pars = TRUE", nil
+	case "inspect_nfo":
+		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
+	case "inspect_archive":
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+			(
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+				LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+			)
+		)`, nil
+	case "inspect_password":
+		return `r.encrypted = TRUE AND
+		r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+		)`, nil
+	case "inspect_media":
+		return `r.completion_pct >= 100 AND
+		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mkv' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp4' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.avi' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.ts' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.flac' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp3' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.m4a' OR
+			(
+				abi.status = 'completed' AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+					)
+				)
+			)
+		)`, nil
+	default:
+		return "", fmt.Errorf("unsupported inspection stage %q", stageName)
+	}
+}
+
+func nullableBool(v *bool) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableFloat64(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}

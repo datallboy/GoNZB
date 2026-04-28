@@ -19,10 +19,11 @@ func NewCommands(provider DependencyProvider) *Commands {
 	return &Commands{provider: provider}
 }
 
-func (c *Commands) EnqueueByReleaseID(ctx context.Context, releaseID, title string) (*domain.QueueItem, error) {
+func (c *Commands) EnqueueByReleaseID(ctx context.Context, sourceKind, releaseID, title string) (*domain.QueueItem, error) {
 	if releaseID == "" {
 		return nil, fmt.Errorf("release_id is required")
 	}
+	sourceKind = normalizeReleaseSourceKind(sourceKind)
 
 	resolver := c.provider.Resolver()
 	if resolver == nil {
@@ -34,9 +35,9 @@ func (c *Commands) EnqueueByReleaseID(ctx context.Context, releaseID, title stri
 		return nil, fmt.Errorf("downloader queue is unavailable")
 	}
 
-	rel, err := resolver.GetRelease(ctx, "aggregator", releaseID)
+	rel, err := resolver.GetRelease(ctx, sourceKind, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve aggregator release %s: %w", releaseID, err)
+		return nil, fmt.Errorf("failed to resolve %s release %s: %w", sourceKind, releaseID, err)
 	}
 	if rel == nil {
 		return nil, fmt.Errorf("release %s not found", releaseID)
@@ -48,7 +49,7 @@ func (c *Commands) EnqueueByReleaseID(ctx context.Context, releaseID, title stri
 	}
 
 	item, err := queue.Add(ctx, app.QueueAddRequest{
-		SourceKind:      "aggregator",
+		SourceKind:      sourceKind,
 		SourceReleaseID: releaseCopy.ID,
 		Release:         &releaseCopy,
 		Title:           releaseCopy.Title,
@@ -199,4 +200,16 @@ func normalizeQueueCategory(category string) string {
 		return "*"
 	}
 	return category
+}
+
+func normalizeReleaseSourceKind(sourceKind string) string {
+	normalized := strings.TrimSpace(strings.ToLower(sourceKind))
+	switch normalized {
+	case "", "aggregator":
+		return "aggregator"
+	case "usenet_index", "usenet_indexer":
+		return "usenet_index"
+	default:
+		return normalized
+	}
 }

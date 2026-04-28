@@ -26,8 +26,9 @@ func NewQueueController(module app.DownloaderModule) *QueueController {
 }
 
 type enqueueRequest struct {
-	ReleaseID string `json:"release_id"`
-	Title     string `json:"title"`
+	SourceKind string `json:"source_kind"`
+	ReleaseID  string `json:"release_id"`
+	Title      string `json:"title"`
 }
 
 type bulkIDsRequest struct {
@@ -204,8 +205,9 @@ func (ctrl *QueueController) Add(c *echo.Context) error {
 
 	req.ReleaseID = normalizeTrimmed(req.ReleaseID)
 	req.Title = normalizeTrimmed(req.Title)
+	req.SourceKind = normalizeTrimmed(req.SourceKind)
 
-	item, err := ctrl.Commands.EnqueueByReleaseID(c.Request().Context(), req.ReleaseID, req.Title)
+	item, err := ctrl.Commands.EnqueueByReleaseID(c.Request().Context(), req.SourceKind, req.ReleaseID, req.Title)
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}

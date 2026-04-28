@@ -55,6 +55,44 @@ func TestRegisterRoutesAggregatorOnly(t *testing.T) {
 	assertRouteMissing(t, routes, "/api/sab")
 }
 
+func TestRegisterRoutesIndexerOnly(t *testing.T) {
+	e := echo.New()
+	appCtx := &app.Context{
+		Config: &config.Config{
+			API: config.APIConfig{
+				CORSAllowedOrigins: []string{"http://localhost:5173"},
+			},
+			Modules: config.ModulesConfig{
+				API:           config.ModuleToggle{Enabled: true},
+				UsenetIndexer: config.ModuleToggle{Enabled: true},
+			},
+		},
+	}
+
+	RegisterRoutes(e, appCtx)
+	routes := routePaths(e)
+
+	assertRoutePresent(t, routes, "/api/v1/indexer/overview")
+	assertRoutePresent(t, routes, "/api/v1/indexer/stages")
+	assertRoutePresent(t, routes, "/api/v1/indexer/runs")
+	assertRoutePresent(t, routes, "/api/v1/indexer/stages/:stage/run")
+	assertRoutePresent(t, routes, "/api/v1/indexer/stages/:stage/pause")
+	assertRoutePresent(t, routes, "/api/v1/indexer/stages/:stage/resume")
+	assertRoutePresent(t, routes, "/api/v1/indexer/releases")
+	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id")
+	assertRoutePresent(t, routes, "/api/v1/indexer/binaries/:id")
+	assertRoutePresent(t, routes, "/api/v1/indexer/files/:id")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/overview")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/runs")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/run")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/pause")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/resume")
+	assertRouteMissing(t, routes, "/api/v1/releases/search")
+	assertRouteMissing(t, routes, "/api/v1/queue")
+}
+
 func routePaths(e *echo.Echo) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, route := range e.Router().Routes() {

@@ -16,7 +16,7 @@ func BuildUsenetIndexer(appCtx *app.Context) error {
 		return nil
 	}
 
-	rt, err := buildUsenetIndexerRuntime(appCtx)
+	rt, err := buildUsenetIndexerRuntime(appCtx, newIndexerStageOwner())
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,4 @@
+ALTER TABLE scrape_checkpoints
+ADD COLUMN IF NOT EXISTS backfill_until_date TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS backfill_cutoff_reached BOOLEAN NOT NULL DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS backfill_stopped_reason TEXT NOT NULL DEFAULT '';

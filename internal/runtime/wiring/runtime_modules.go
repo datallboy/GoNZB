@@ -140,8 +140,12 @@ func (m *aggregatorRuntimeModule) ReadinessChecks(ctx context.Context) []app.Run
 }
 
 type usenetIndexerRuntimeModule struct {
-	appCtx  *app.Context
-	current io.Closer
+	appCtx     *app.Context
+	current    io.Closer
+	runParent  context.Context
+	runCancel  context.CancelFunc
+	running    bool
+	stageOwner string
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -150,17 +154,33 @@ func (m *usenetIndexerRuntimeModule) Enabled() bool {
 	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.UsenetIndexer.Enabled
 }
 
-func (m *usenetIndexerRuntimeModule) Build(context.Context) error {
-	return m.rebuild()
+func (m *usenetIndexerRuntimeModule) Build(ctx context.Context) error {
+	return m.rebuild(ctx)
 }
 
-func (m *usenetIndexerRuntimeModule) Start(context.Context) error { return nil }
+func (m *usenetIndexerRuntimeModule) Start(ctx context.Context) error {
+	if !m.Enabled() {
+		return nil
+	}
+	if m.appCtx == nil || m.appCtx.UsenetIndexer == nil {
+		return fmt.Errorf("usenet indexer runtime is required")
+	}
+	if m.running {
+		return nil
+	}
 
-func (m *usenetIndexerRuntimeModule) Reload(context.Context) error {
-	return m.rebuild()
+	m.runParent = ctx
+	m.running = true
+	m.startCurrentRuntime()
+	return nil
+}
+
+func (m *usenetIndexerRuntimeModule) Reload(ctx context.Context) error {
+	return m.rebuild(ctx)
 }
 
 func (m *usenetIndexerRuntimeModule) Close() error {
+	m.stopRuntime()
 	if m.current == nil {
 		return nil
 	}
@@ -192,29 +212,73 @@ func (m *usenetIndexerRuntimeModule) ReadinessChecks(ctx context.Context) []app.
 	return checks
 }
 
-func (m *usenetIndexerRuntimeModule) rebuild() error {
+func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 	if m.appCtx == nil {
 		return nil
 	}
 	if !m.Enabled() {
+		m.stopRuntime()
 		m.appCtx.UsenetIndexer = nil
 		return m.Close()
 	}
+	if m.stageOwner == "" {
+		m.stageOwner = newIndexerStageOwner()
+	}
 
-	rt, err := buildUsenetIndexerRuntime(m.appCtx)
+	rt, err := buildUsenetIndexerRuntime(m.appCtx, m.stageOwner)
 	if err != nil {
 		return err
 	}
 
-	if m.current != nil {
-		if closeErr := m.current.Close(); closeErr != nil {
+	oldCloser := m.current
+	wasRunning := m.running
+	if parent != nil {
+		m.runParent = parent
+	}
+	m.appCtx.UsenetIndexer = rt.service
+	m.current = rt.scrapeProvider
+	if wasRunning {
+		m.stopRuntime()
+		m.running = true
+		m.startCurrentRuntime()
+	}
+
+	if oldCloser != nil {
+		if closeErr := oldCloser.Close(); closeErr != nil {
 			m.appCtx.Logger.Warn("failed to close previous usenet indexer scrape provider: %v", closeErr)
 		}
 	}
-
-	m.appCtx.UsenetIndexer = rt.service
-	m.current = rt.scrapeProvider
 	return nil
+}
+
+func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
+	if m.appCtx == nil || m.appCtx.UsenetIndexer == nil {
+		return
+	}
+
+	parent := m.runParent
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	childCtx, childCancel := context.WithCancel(parent)
+	m.runCancel = childCancel
+
+	service := m.appCtx.UsenetIndexer
+	m.appCtx.Logger.Info("starting usenet indexer supervisor")
+	go func() {
+		if err := service.Start(childCtx, 0); err != nil && childCtx.Err() == nil {
+			m.appCtx.Logger.Error("usenet indexer supervisor failed: %v", err)
+		}
+	}()
+}
+
+func (m *usenetIndexerRuntimeModule) stopRuntime() {
+	if m.runCancel != nil {
+		m.runCancel()
+		m.runCancel = nil
+	}
+	m.running = false
 }
 
 type arrNotifierRuntimeModule struct {

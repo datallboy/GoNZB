@@ -22,23 +22,27 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			CompletedDir:      cfg.Download.CompletedDir,
 			CleanupExtensions: append([]string(nil), cfg.Download.CleanupExtensions...),
 		},
-		Indexing: &IndexingRuntimeSettings{
-			Newsgroups:              append([]string(nil), cfg.Indexing.Newsgroups...),
-			ScrapeBatchSize:         cfg.Indexing.ScrapeBatchSize,
-			ScheduleIntervalMinutes: cfg.Indexing.ScheduleIntervalMinutes,
-		},
+		Indexing: func() *IndexingRuntimeSettings {
+			indexing := IndexingRuntimeFromConfig(cfg.Indexing)
+			return &indexing
+		}(),
 	}
 
 	for _, s := range cfg.Servers {
 		out.Servers = append(out.Servers, ServerRuntimeSettings{
-			ID:            s.ID,
-			Host:          s.Host,
-			Port:          s.Port,
-			Username:      s.Username,
-			Password:      s.Password,
-			TLS:           s.TLS,
-			MaxConnection: s.MaxConnection,
-			Priority:      s.Priority,
+			ID:                     s.ID,
+			Host:                   s.Host,
+			Port:                   s.Port,
+			Username:               s.Username,
+			Password:               s.Password,
+			TLS:                    s.TLS,
+			MaxConnection:          s.MaxConnection,
+			Priority:               s.Priority,
+			DialTimeoutSeconds:     s.DialTimeoutSeconds,
+			TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
+			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
+			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
+			EnablePoolLogging:      s.EnablePoolLogging,
 		})
 	}
 
@@ -50,6 +54,77 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			APIKey:   idx.ApiKey,
 			Redirect: idx.Redirect,
 		})
+	}
+
+	return out
+}
+
+func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSettings {
+	out := IndexingRuntimeSettings{
+		Newsgroups: append([]string(nil), cfg.Newsgroups...),
+	}
+
+	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
+	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
+	out.Assemble = indexStageRuntimeFromConfig(cfg.Assemble, true, 10, 5000)
+	out.Release = IndexingReleaseRuntimeSettings{
+		Enabled:          boolValue(cfg.Release.Enabled, true),
+		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, 10),
+		BatchSize:        intValue(cfg.Release.BatchSize, 1000),
+		Concurrency:      intValue(cfg.Release.Concurrency, 1),
+		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
+		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
+		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
+		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
+	}
+	out.Match = IndexingMatchRuntimeSettings{
+		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
+		ProbableConfidenceThreshold: float64Value(cfg.Match.ProbableConfidenceThreshold, 0.55),
+		ArticleBucketSize:           int64Value(cfg.Match.ArticleBucketSize, 5000),
+	}
+	out.Inspect = IndexingInspectRuntimeSettings{
+		WorkDir:         firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
+		MaxBytes:        firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MaxArchiveDepth: firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
+		ToolTimeoutSecs: firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
+		FFProbePath:     firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
+		SevenZipPath:    firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
+		UnrarPath:       firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
+		PAR2Path:        firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
+	}
+	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
+	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
+	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
+	out.InspectArchive = indexStageRuntimeFromConfig(cfg.InspectArchive, true, 10, 100)
+	out.InspectPassword = indexStageRuntimeFromConfig(cfg.InspectPassword, true, 10, 100)
+	out.InspectMedia = indexStageRuntimeFromConfig(cfg.InspectMedia, true, 10, 100)
+	out.EnrichPreDB = IndexingPreDBRuntimeSettings{
+		Enabled:            boolValue(cfg.EnrichPreDB.Enabled, true),
+		IntervalMinutes:    float64Value(cfg.EnrichPreDB.IntervalMinutes, 10),
+		BatchSize:          intValue(cfg.EnrichPreDB.BatchSize, 100),
+		Concurrency:        intValue(cfg.EnrichPreDB.Concurrency, 1),
+		BackoffSeconds:     intValue(cfg.EnrichPreDB.BackoffSeconds, 0),
+		Provider:           firstNonEmpty(cfg.EnrichPreDB.Provider, "club,me"),
+		BaseURL:            firstNonEmpty(cfg.EnrichPreDB.BaseURL, "https://predb.club/api/v1"),
+		FeedURL:            firstNonEmpty(cfg.EnrichPreDB.FeedURL, "https://predb.me/?rss=1"),
+		DumpURL:            firstNonEmpty(cfg.EnrichPreDB.DumpURL),
+		HTTPTimeoutSeconds: intValue(cfg.EnrichPreDB.HTTPTimeoutSeconds, 10),
+		BackfillPageSize:   intValue(cfg.EnrichPreDB.BackfillPageSize, 1000),
+		MaxBackfillPages:   intValue(cfg.EnrichPreDB.MaxBackfillPages, 250),
+	}
+	out.EnrichTMDB = IndexingTMDBRuntimeSettings{
+		Enabled:            boolValue(cfg.EnrichTMDB.Enabled, true),
+		IntervalMinutes:    float64Value(cfg.EnrichTMDB.IntervalMinutes, 10),
+		BatchSize:          intValue(cfg.EnrichTMDB.BatchSize, 100),
+		Concurrency:        intValue(cfg.EnrichTMDB.Concurrency, 1),
+		BackoffSeconds:     intValue(cfg.EnrichTMDB.BackoffSeconds, 0),
+		HTTPTimeoutSeconds: intValue(cfg.EnrichTMDB.HTTPTimeoutSeconds, 15),
+		TMDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TMDBAPIKey),
+		TMDBAccessToken:    firstNonEmpty(cfg.EnrichTMDB.TMDBAccessToken),
+		TMDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TMDBBaseURL, "https://api.themoviedb.org/3"),
+		TVDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TVDBAPIKey),
+		TVDBPIN:            firstNonEmpty(cfg.EnrichTMDB.TVDBPIN),
+		TVDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TVDBBaseURL, "https://api4.thetvdb.com/v4"),
 	}
 
 	return out
@@ -76,14 +151,19 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Servers = make([]config.ServerConfig, 0, len(runtime.Servers))
 		for _, s := range runtime.Servers {
 			effective.Servers = append(effective.Servers, config.ServerConfig{
-				ID:            strings.TrimSpace(s.ID),
-				Host:          strings.TrimSpace(s.Host),
-				Port:          s.Port,
-				Username:      s.Username,
-				Password:      s.Password,
-				TLS:           s.TLS,
-				MaxConnection: s.MaxConnection,
-				Priority:      s.Priority,
+				ID:                     strings.TrimSpace(s.ID),
+				Host:                   strings.TrimSpace(s.Host),
+				Port:                   s.Port,
+				Username:               s.Username,
+				Password:               s.Password,
+				TLS:                    s.TLS,
+				MaxConnection:          s.MaxConnection,
+				Priority:               s.Priority,
+				DialTimeoutSeconds:     s.DialTimeoutSeconds,
+				TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
+				PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
+				PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
+				EnablePoolLogging:      s.EnablePoolLogging,
 			})
 		}
 	}
@@ -114,14 +194,72 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	}
 
 	if runtime.Indexing != nil {
-		if runtime.Indexing.Newsgroups != nil {
-			effective.Indexing.Newsgroups = append([]string(nil), runtime.Indexing.Newsgroups...)
+		indexing := cloneIndexing(runtime.Indexing)
+		if indexing.Newsgroups != nil {
+			effective.Indexing.Newsgroups = append([]string(nil), indexing.Newsgroups...)
 		}
-		if runtime.Indexing.ScrapeBatchSize > 0 {
-			effective.Indexing.ScrapeBatchSize = runtime.Indexing.ScrapeBatchSize
+
+		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
+		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
+		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
+		effective.Indexing.Release = config.IndexingReleaseConfig{
+			Enabled:          boolPtr(indexing.Release.Enabled),
+			IntervalMinutes:  float64Ptr(indexing.Release.IntervalMinutes),
+			BatchSize:        intPtr(indexing.Release.BatchSize),
+			Concurrency:      intPtr(indexing.Release.Concurrency),
+			BackoffSeconds:   intPtr(indexing.Release.BackoffSeconds),
+			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
+			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
+			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
 		}
-		if runtime.Indexing.ScheduleIntervalMinutes > 0 {
-			effective.Indexing.ScheduleIntervalMinutes = runtime.Indexing.ScheduleIntervalMinutes
+		effective.Indexing.Match = config.IndexingMatchConfig{
+			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),
+			ProbableConfidenceThreshold: float64Ptr(indexing.Match.ProbableConfidenceThreshold),
+			ArticleBucketSize:           int64Ptr(indexing.Match.ArticleBucketSize),
+		}
+		effective.Indexing.Inspect = config.IndexingInspectConfig{
+			WorkDir:         indexing.Inspect.WorkDir,
+			MaxBytes:        indexing.Inspect.MaxBytes,
+			MaxArchiveDepth: indexing.Inspect.MaxArchiveDepth,
+			ToolTimeoutSecs: indexing.Inspect.ToolTimeoutSecs,
+			FFProbePath:     indexing.Inspect.FFProbePath,
+			SevenZipPath:    indexing.Inspect.SevenZipPath,
+			UnrarPath:       indexing.Inspect.UnrarPath,
+			PAR2Path:        indexing.Inspect.PAR2Path,
+		}
+		effective.Indexing.InspectDiscovery = toStageConfig(indexing.InspectDiscovery)
+		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
+		effective.Indexing.InspectNFO = toStageConfig(indexing.InspectNFO)
+		effective.Indexing.InspectArchive = toStageConfig(indexing.InspectArchive)
+		effective.Indexing.InspectPassword = toStageConfig(indexing.InspectPassword)
+		effective.Indexing.InspectMedia = toStageConfig(indexing.InspectMedia)
+		effective.Indexing.EnrichPreDB = config.IndexingPreDBConfig{
+			Enabled:            boolPtr(indexing.EnrichPreDB.Enabled),
+			IntervalMinutes:    float64Ptr(indexing.EnrichPreDB.IntervalMinutes),
+			BatchSize:          intPtr(indexing.EnrichPreDB.BatchSize),
+			Concurrency:        intPtr(indexing.EnrichPreDB.Concurrency),
+			BackoffSeconds:     intPtr(indexing.EnrichPreDB.BackoffSeconds),
+			Provider:           indexing.EnrichPreDB.Provider,
+			BaseURL:            indexing.EnrichPreDB.BaseURL,
+			FeedURL:            indexing.EnrichPreDB.FeedURL,
+			DumpURL:            indexing.EnrichPreDB.DumpURL,
+			HTTPTimeoutSeconds: intPtr(indexing.EnrichPreDB.HTTPTimeoutSeconds),
+			BackfillPageSize:   intPtr(indexing.EnrichPreDB.BackfillPageSize),
+			MaxBackfillPages:   intPtr(indexing.EnrichPreDB.MaxBackfillPages),
+		}
+		effective.Indexing.EnrichTMDB = config.IndexingTMDBConfig{
+			Enabled:            boolPtr(indexing.EnrichTMDB.Enabled),
+			IntervalMinutes:    float64Ptr(indexing.EnrichTMDB.IntervalMinutes),
+			BatchSize:          intPtr(indexing.EnrichTMDB.BatchSize),
+			Concurrency:        intPtr(indexing.EnrichTMDB.Concurrency),
+			BackoffSeconds:     intPtr(indexing.EnrichTMDB.BackoffSeconds),
+			HTTPTimeoutSeconds: intPtr(indexing.EnrichTMDB.HTTPTimeoutSeconds),
+			TMDBAPIKey:         indexing.EnrichTMDB.TMDBAPIKey,
+			TMDBAccessToken:    indexing.EnrichTMDB.TMDBAccessToken,
+			TMDBBaseURL:        indexing.EnrichTMDB.TMDBBaseURL,
+			TVDBAPIKey:         indexing.EnrichTMDB.TVDBAPIKey,
+			TVDBPIN:            indexing.EnrichTMDB.TVDBPIN,
+			TVDBBaseURL:        indexing.EnrichTMDB.TVDBBaseURL,
 		}
 	}
 
@@ -138,11 +276,12 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 
 	next := &RuntimeSettings{
-		Servers:  append([]ServerRuntimeSettings(nil), current.Servers...),
-		Indexers: append([]IndexerRuntimeSettings(nil), current.Indexers...),
-		Download: cloneDownload(current.Download),
-		Indexing: cloneIndexing(current.Indexing),
-		Revision: current.Revision,
+		Servers:         append([]ServerRuntimeSettings(nil), current.Servers...),
+		Indexers:        append([]IndexerRuntimeSettings(nil), current.Indexers...),
+		ArrIntegrations: append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
+		Download:        cloneDownload(current.Download),
+		Indexing:        cloneIndexing(current.Indexing),
+		Revision:        current.Revision,
 	}
 
 	if patch.Servers != nil {
@@ -191,6 +330,12 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 	}
 	for i := range out.ArrIntegrations {
 		out.ArrIntegrations[i].APIKey = ""
+	}
+	if out.Indexing != nil {
+		out.Indexing.EnrichTMDB.TMDBAPIKey = ""
+		out.Indexing.EnrichTMDB.TMDBAccessToken = ""
+		out.Indexing.EnrichTMDB.TVDBAPIKey = ""
+		out.Indexing.EnrichTMDB.TVDBPIN = ""
 	}
 	return out
 }
@@ -243,8 +388,111 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		return nil
 	}
 	return &IndexingRuntimeSettings{
-		Newsgroups:              append([]string(nil), in.Newsgroups...),
-		ScrapeBatchSize:         in.ScrapeBatchSize,
-		ScheduleIntervalMinutes: in.ScheduleIntervalMinutes,
+		Newsgroups:       append([]string(nil), in.Newsgroups...),
+		ScrapeLatest:     in.ScrapeLatest,
+		ScrapeBackfill:   in.ScrapeBackfill,
+		Assemble:         in.Assemble,
+		Release:          in.Release,
+		Match:            in.Match,
+		Inspect:          in.Inspect,
+		InspectDiscovery: in.InspectDiscovery,
+		InspectPAR2:      in.InspectPAR2,
+		InspectNFO:       in.InspectNFO,
+		InspectArchive:   in.InspectArchive,
+		InspectPassword:  in.InspectPassword,
+		InspectMedia:     in.InspectMedia,
+		EnrichPreDB:      in.EnrichPreDB,
+		EnrichTMDB:       in.EnrichTMDB,
 	}
+}
+
+func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled bool, defaultInterval float64, defaultBatch int) IndexingStageRuntimeSettings {
+	return IndexingStageRuntimeSettings{
+		Enabled:         boolValue(cfg.Enabled, defaultEnabled),
+		IntervalMinutes: float64Value(cfg.IntervalMinutes, defaultInterval),
+		BatchSize:       intValue(cfg.BatchSize, defaultBatch),
+		Concurrency:     intValue(cfg.Concurrency, 1),
+		BackoffSeconds:  intValue(cfg.BackoffSeconds, 0),
+	}
+}
+
+func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
+	return config.IndexingStageConfig{
+		Enabled:         boolPtr(in.Enabled),
+		IntervalMinutes: float64Ptr(in.IntervalMinutes),
+		BatchSize:       intPtr(in.BatchSize),
+		Concurrency:     intPtr(in.Concurrency),
+		BackoffSeconds:  intPtr(in.BackoffSeconds),
+	}
+}
+
+func boolValue(v *bool, fallback bool) bool {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+func intValue(v *int, fallback int) int {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+func int64Value(v *int64, fallback int64) int64 {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+func float64Value(v *float64, fallback float64) float64 {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
 }

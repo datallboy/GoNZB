@@ -1,10 +1,28 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:17
     container_name: gonzb-postgres
     restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=8GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=64
+      - -c
+      - track_io_timing=on
+      - -c
+      - default_statistics_target=250
+      - -c
+      - jit=off
     environment:
       POSTGRES_DB: gonzb
       POSTGRES_USER: postgres

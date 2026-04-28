@@ -3,10 +3,7 @@ package release
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -18,20 +15,27 @@ type logger interface {
 	Error(format string, v ...interface{})
 }
 
-// private repository boundary for Milestone 6 release formation.
 type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
-	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
+	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
+	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
+	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
+	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseFamilyKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 }
 
 type Options struct {
-	BatchSize int
+	BatchSize                                          int
+	ReleaseMinConfidence                               float64
+	ReleaseMinCompletion                               float64
+	RequireExpectedFileCountForContextualObfuscated    bool
+	RequireExpectedFileCountForContextualObfuscatedSet bool
 }
 
 type Service struct {
@@ -44,6 +48,15 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 1000
 	}
+	if opts.ReleaseMinConfidence <= 0 {
+		opts.ReleaseMinConfidence = 0.55
+	}
+	if opts.ReleaseMinCompletion < 0 {
+		opts.ReleaseMinCompletion = 0
+	}
+	if !opts.RequireExpectedFileCountForContextualObfuscatedSet {
+		opts.RequireExpectedFileCountForContextualObfuscated = true
+	}
 
 	return &Service{
 		repo: repo,
@@ -52,250 +65,341 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 }
 
-// RunOnce forms one batch of PG releases from assembled binaries.
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.runOnceWithMetrics(ctx, false)
+	return err
+}
+
+func (s *Service) RunReformOnce(ctx context.Context) error {
+	_, err := s.runOnceWithMetrics(ctx, true)
+	return err
+}
+
+func (s *Service) runOnce(ctx context.Context, reform bool) error {
+	_, err := s.runOnceWithMetrics(ctx, reform)
+	return err
+}
+
+func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runOnceWithMetrics(ctx, false)
+}
+
+func (s *Service) RunReformOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runOnceWithMetrics(ctx, true)
+}
+
+func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[string]any, error) {
 	if s.repo == nil {
-		return fmt.Errorf("release repo is required")
+		return nil, fmt.Errorf("release repo is required")
 	}
 
-	candidates, err := s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
-	if err != nil {
-		return fmt.Errorf("list release candidates: %w", err)
+	var (
+		candidates []pgindex.ReleaseCandidate
+		err        error
+	)
+	if reform {
+		offset := 0
+		for {
+			page, pageErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize, offset)
+			if pageErr != nil {
+				return nil, fmt.Errorf("list existing release candidates: %w", pageErr)
+			}
+			if len(page) == 0 {
+				break
+			}
+			candidates = append(candidates, page...)
+			if len(page) < s.opts.BatchSize {
+				break
+			}
+			offset += len(page)
+		}
+	} else {
+		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
+		if err != nil {
+			return nil, fmt.Errorf("list release candidates: %w", err)
+		}
+	}
+	metrics := map[string]any{
+		"reform":                 reform,
+		"batch_size":             s.opts.BatchSize,
+		"min_confidence":         s.opts.ReleaseMinConfidence,
+		"min_completion_pct":     s.opts.ReleaseMinCompletion,
+		"candidate_families":     len(candidates),
+		"formed":                 0,
+		"skipped_fragments":      0,
+		"skipped_confidence":     0,
+		"skipped_completion":     0,
+		"stale_cleanup_families": 0,
+		"fragment_only_families": 0,
 	}
 	if len(candidates) == 0 {
-		s.log.Debug("release: no release candidates found")
-		return nil
+		if reform {
+			s.log.Debug("release: no existing release candidates found for reform")
+		} else {
+			s.log.Debug("release: no release candidates found")
+		}
+		return metrics, nil
 	}
 
 	formed := 0
+	candidateFamiliesInspected := 0
+	cooledDownFragmentOnly := 0
+	staleCleanupOnly := 0
+	skippedFragments := 0
+	skippedConfidence := 0
+	skippedCompletion := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			metrics["candidate_families_inspected"] = candidateFamiliesInspected
+			return metrics, err
 		}
-		if err := s.formRelease(ctx, candidate); err != nil {
-			return fmt.Errorf("form release %s: %w", candidate.ReleaseKey, err)
+		candidateFamiliesInspected++
+		outcome, err := s.formCandidate(ctx, candidate)
+		if err != nil {
+			metrics["candidate_families_inspected"] = candidateFamiliesInspected
+			metrics["formed"] = formed
+			metrics["fragment_only_families"] = cooledDownFragmentOnly
+			metrics["stale_cleanup_families"] = staleCleanupOnly
+			metrics["skipped_fragments"] = skippedFragments
+			metrics["skipped_confidence"] = skippedConfidence
+			metrics["skipped_completion"] = skippedCompletion
+			return metrics, fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
 		}
-		formed++
+		formed += outcome.formed
+		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
+		staleCleanupOnly += outcome.staleCleanupOnly
+		skippedFragments += outcome.skippedFragments
+		skippedConfidence += outcome.skippedConfidence
+		skippedCompletion += outcome.skippedCompletion
 	}
+	metrics["candidate_families_inspected"] = candidateFamiliesInspected
+	metrics["formed"] = formed
+	metrics["fragment_only_families"] = cooledDownFragmentOnly
+	metrics["stale_cleanup_families"] = staleCleanupOnly
+	metrics["skipped_fragments"] = skippedFragments
+	metrics["skipped_confidence"] = skippedConfidence
+	metrics["skipped_completion"] = skippedCompletion
 
-	s.log.Info("release: formed=%d batch_size=%d", formed, s.opts.BatchSize)
-	return nil
+	s.log.Info(
+		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
+		candidateFamiliesInspected,
+		formed,
+		cooledDownFragmentOnly,
+		staleCleanupOnly,
+		skippedFragments,
+		skippedConfidence,
+		skippedCompletion,
+		s.opts.BatchSize,
+		s.opts.ReleaseMinConfidence,
+		s.opts.ReleaseMinCompletion,
+		reform,
+	)
+	return metrics, nil
 }
 
-func (s *Service) formRelease(ctx context.Context, candidate pgindex.ReleaseCandidate) error {
-	binaries, err := s.repo.ListBinariesForReleaseCandidate(
-		ctx,
-		candidate.ProviderID,
-		candidate.NewsgroupID,
-		candidate.ReleaseKey,
-	)
+type candidateOutcome struct {
+	formed                 int
+	cooledDownFragmentOnly int
+	staleCleanupOnly       int
+	skippedFragments       int
+	skippedConfidence      int
+	skippedCompletion      int
+}
+
+func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate) (candidateOutcome, error) {
+	familyKey := candidateFamilyKey(candidate)
+	if familyKey == "" {
+		return candidateOutcome{}, fmt.Errorf("release family key is required")
+	}
+
+	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey)
 	if err != nil {
-		return fmt.Errorf("list binaries for release candidate: %w", err)
+		return candidateOutcome{}, fmt.Errorf("list binaries for release candidate: %w", err)
 	}
 	if len(binaries) == 0 {
-		return nil
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
+		}
+		if candidate.KeyKind != "" {
+			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+				return candidateOutcome{}, fmt.Errorf("ack empty release candidate: %w", err)
+			}
+		}
+		return candidateOutcome{staleCleanupOnly: 1}, nil
 	}
 
-	title := bestReleaseTitle(candidate, binaries)
-	poster := bestPoster(binaries)
-	postedAt := earliestPostedAt(candidate.PostedAt, binaries)
-
-	files := make([]pgindex.ReleaseFileRecord, 0, len(binaries))
-	totalBytes := int64(0)
-	parCount := 0
-	totalObservedParts := 0
-	totalExpectedParts := 0
-
-	sort.SliceStable(binaries, func(i, j int) bool {
-		left := strings.ToLower(strings.TrimSpace(binaries[i].FileName))
-		right := strings.ToLower(strings.TrimSpace(binaries[j].FileName))
-		if left == right {
-			return binaries[i].BinaryID < binaries[j].BinaryID
+	if countCompleteBinaries(binaries) == 0 {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
 		}
-		return left < right
-	})
+		if candidate.KeyKind != "" {
+			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+				return candidateOutcome{}, fmt.Errorf("ack cooled-down fragment-only candidate: %w", err)
+			}
+		}
+		return candidateOutcome{cooledDownFragmentOnly: 1}, nil
+	}
 
-	for idx, binary := range binaries {
+	clusters := clusterBinaries(candidate, binaries)
+	keepGroupNames := make([]string, 0, len(clusters))
+	outcome := candidateOutcome{}
+
+	for _, cluster := range clusters {
+		if err := ctx.Err(); err != nil {
+			return outcome, err
+		}
+
+		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
+		if err != nil {
+			return outcome, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
+		}
+
+		record := buildReleaseRecord(candidate, cluster, titleCandidates)
+		if !shouldPersistCluster(cluster, record, s.opts) {
+			outcome.skippedFragments++
+			continue
+		}
+		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
+			outcome.skippedConfidence++
+			continue
+		}
+		if record.CompletionPct < s.opts.ReleaseMinCompletion {
+			outcome.skippedCompletion++
+			continue
+		}
+
+		files, err := s.buildReleaseFiles(ctx, cluster)
+		if err != nil {
+			return outcome, fmt.Errorf("build release files for %s: %w", record.GroupName, err)
+		}
+
+		releaseID, err := s.repo.UpsertRelease(ctx, record)
+		if err != nil {
+			return outcome, fmt.Errorf("upsert release %s: %w", record.GroupName, err)
+		}
+		if err := s.repo.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
+			return outcome, fmt.Errorf("replace release files for %s: %w", releaseID, err)
+		}
+		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{candidate.NewsgroupID}); err != nil {
+			return outcome, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
+		}
+		if err := s.repo.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
+			return outcome, fmt.Errorf("upsert nzb cache for %s: %w", releaseID, err)
+		}
+
+		keepGroupNames = append(keepGroupNames, record.GroupName)
+		outcome.formed++
+	}
+
+	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
+		return outcome, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
+	}
+	if candidate.KeyKind != "" {
+		if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
+			return outcome, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
+		}
+	}
+
+	return outcome, nil
+}
+
+func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
+	if key := strings.TrimSpace(candidate.ReleaseFamilyKey); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(candidate.SourceReleaseKey); key != "" {
+		return key
+	}
+	return strings.TrimSpace(candidate.ReleaseKey)
+}
+
+func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) bool {
+	mainPayloadCount := countMainPayloadBinaries(cluster.Binaries)
+	if mainPayloadCount == 0 {
+		return false
+	}
+	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
+	if expectedFiles > 1 && mainPayloadCount < 2 {
+		return false
+	}
+	if opts.RequireExpectedFileCountForContextualObfuscated &&
+		expectedFiles <= 0 &&
+		clusterIsContextualObfuscated(cluster.Binaries) &&
+		!allowsStandaloneBinaryRelease(cluster.Binaries, record) {
+		return false
+	}
+	if mainPayloadCount == 1 && !allowsStandaloneBinaryRelease(cluster.Binaries, record) {
+		return false
+	}
+	return true
+}
+
+func countCompleteBinaries(binaries []pgindex.BinarySummary) int {
+	count := 0
+	for _, binary := range binaries {
+		if binary.TotalParts > 0 && binary.ObservedParts == binary.TotalParts {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster) ([]pgindex.ReleaseFileRecord, error) {
+	selected := make([]pgindex.BinarySummary, 0, len(cluster.Binaries))
+	byName := make(map[string]int, len(cluster.Binaries))
+	for _, binary := range cluster.Binaries {
+		fileName := pickFileName(binary)
+		key := strings.ToLower(strings.TrimSpace(fileName))
+		if key == "" {
+			key = fmt.Sprintf("binary-%d", binary.BinaryID)
+		}
+		if existingIdx, ok := byName[key]; ok {
+			if prefersBinaryForReleaseFile(binary, selected[existingIdx]) {
+				selected[existingIdx] = binary
+			}
+			continue
+		}
+		byName[key] = len(selected)
+		selected = append(selected, binary)
+	}
+
+	files := make([]pgindex.ReleaseFileRecord, 0, len(selected))
+	for idx, binary := range selected {
 		articles, err := s.repo.ListBinaryPartArticles(ctx, binary.BinaryID)
 		if err != nil {
-			return fmt.Errorf("list binary part articles %d: %w", binary.BinaryID, err)
+			return nil, fmt.Errorf("list binary part articles %d: %w", binary.BinaryID, err)
 		}
 
 		fileName := pickFileName(binary)
-		isPars := isParFile(fileName)
-
+		fileIndex := binary.FileIndex
+		if fileIndex <= 0 {
+			fileIndex = idx
+		}
 		files = append(files, pgindex.ReleaseFileRecord{
 			BinaryID:  binary.BinaryID,
 			FileName:  fileName,
 			SizeBytes: binary.TotalBytes,
-			FileIndex: idx,
-			IsPars:    isPars,
+			FileIndex: fileIndex,
+			IsPars:    isParFile(fileName),
 			Subject:   binary.BinaryName,
 			Poster:    binary.Poster,
 			PostedAt:  binary.PostedAt,
 			Articles:  articles,
 		})
-
-		totalBytes += binary.TotalBytes
-		totalObservedParts += binary.ObservedParts
-		totalExpectedParts += max(binary.TotalParts, binary.ObservedParts)
-		if isPars {
-			parCount++
-		}
 	}
 
-	completionPct := 100.0
-	if totalExpectedParts > 0 {
-		completionPct = (float64(totalObservedParts) / float64(totalExpectedParts)) * 100.0
-		if completionPct > 100.0 {
-			completionPct = 100.0
-		}
-	}
-
-	releaseID, err := s.repo.UpsertRelease(ctx, pgindex.ReleaseRecord{
-		ProviderID:    candidate.ProviderID,
-		ReleaseKey:    candidate.ReleaseKey,
-		Title:         title,
-		SearchTitle:   normalizeSearchTitle(title),
-		Category:      "usenet",
-		Poster:        poster,
-		SizeBytes:     totalBytes,
-		PostedAt:      postedAt,
-		FileCount:     len(files),
-		ParFileCount:  parCount,
-		CompletionPct: completionPct,
-	})
-	if err != nil {
-		return fmt.Errorf("upsert release: %w", err)
-	}
-
-	if err := s.repo.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
-		return fmt.Errorf("replace release files: %w", err)
-	}
-
-	if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{candidate.NewsgroupID}); err != nil {
-		return fmt.Errorf("replace release newsgroups: %w", err)
-	}
-
-	// Milestone 6 only seeds metadata; actual NZB generation comes later.
-	if err := s.repo.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
-		return fmt.Errorf("upsert nzb cache: %w", err)
-	}
-
-	s.log.Info(
-		"release: release_id=%s title=%q files=%d completion_pct=%.2f",
-		releaseID,
-		title,
-		len(files),
-		completionPct,
-	)
-
-	return nil
+	return files, nil
 }
 
-func bestReleaseTitle(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
-	title := strings.TrimSpace(candidate.ReleaseName)
-	if title != "" {
-		return title
+func prefersBinaryForReleaseFile(candidate, current pgindex.BinarySummary) bool {
+	if candidate.ObservedParts != current.ObservedParts {
+		return candidate.ObservedParts > current.ObservedParts
 	}
-
-	for _, binary := range binaries {
-		if v := strings.TrimSpace(binary.ReleaseName); v != "" {
-			return v
-		}
+	if candidate.TotalBytes != current.TotalBytes {
+		return candidate.TotalBytes > current.TotalBytes
 	}
-
-	title = strings.TrimSpace(candidate.ReleaseKey)
-	if title != "" {
-		return title
+	if candidate.MatchConfidence != current.MatchConfidence {
+		return candidate.MatchConfidence > current.MatchConfidence
 	}
-
-	return "unknown-release"
-}
-
-func bestPoster(binaries []pgindex.BinarySummary) string {
-	counts := make(map[string]int)
-	best := ""
-	bestCount := 0
-
-	for _, binary := range binaries {
-		poster := strings.TrimSpace(binary.Poster)
-		if poster == "" {
-			continue
-		}
-		counts[poster]++
-		if counts[poster] > bestCount {
-			best = poster
-			bestCount = counts[poster]
-		}
-	}
-
-	return best
-}
-
-func earliestPostedAt(candidate *time.Time, binaries []pgindex.BinarySummary) *time.Time {
-	var best *time.Time
-
-	if candidate != nil {
-		t := candidate.UTC()
-		best = &t
-	}
-
-	for _, binary := range binaries {
-		if binary.PostedAt == nil {
-			continue
-		}
-		t := binary.PostedAt.UTC()
-		if best == nil || t.Before(*best) {
-			best = &t
-		}
-	}
-
-	return best
-}
-
-func pickFileName(binary pgindex.BinarySummary) string {
-	name := strings.TrimSpace(binary.FileName)
-	if name != "" {
-		return name
-	}
-
-	name = strings.TrimSpace(binary.BinaryName)
-	if name != "" {
-		return name
-	}
-
-	name = strings.TrimSpace(binary.ReleaseName)
-	if name == "" {
-		name = strings.TrimSpace(binary.ReleaseKey)
-	}
-	if name == "" {
-		name = fmt.Sprintf("binary-%d.bin", binary.BinaryID)
-	}
-
-	if filepath.Ext(name) == "" {
-		name += ".bin"
-	}
-	return name
-}
-
-func isParFile(fileName string) bool {
-	lower := strings.ToLower(strings.TrimSpace(fileName))
-	return strings.HasSuffix(lower, ".par2") || strings.Contains(lower, ".vol")
-}
-
-func normalizeSearchTitle(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	v = strings.ReplaceAll(v, "_", " ")
-	v = strings.ReplaceAll(v, ".", " ")
-	v = strings.ReplaceAll(v, "-", " ")
-	v = strings.Join(strings.Fields(v), " ")
-	return v
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return candidate.BinaryID < current.BinaryID
 }
