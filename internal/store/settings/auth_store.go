@@ -10,7 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/auth"
 )
 
-func (s *Store) EnsureAuthDefaults(ctx context.Context, roles []auth.Role, adminUsername, adminPasswordHash string) error {
+func (s *Store) EnsureAuthDefaults(ctx context.Context, roles []auth.Role) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -36,26 +36,46 @@ func (s *Store) EnsureAuthDefaults(ctx context.Context, roles []auth.Role, admin
 		}
 	}
 
+	return tx.Commit()
+}
+
+func (s *Store) CountAuthUsers(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_users`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *Store) CreateInitialAuthUser(ctx context.Context, user auth.StoredUser, roleIDs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_users`).Scan(&count); err != nil {
 		return err
 	}
-	if count == 0 {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO auth_users (id, username, password_hash, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-			"bootstrap-admin", adminUsername, adminPasswordHash,
-		); err != nil {
-			return err
-		}
+	if count > 0 {
+		return auth.ErrSetupCompleted
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO auth_users (id, username, password_hash, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Username, user.PasswordHash, user.Enabled, user.CreatedAt.UTC(), user.UpdatedAt.UTC(),
+	); err != nil {
+		return err
+	}
+	for _, roleID := range roleIDs {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO auth_user_roles (user_id, role_id)
-			VALUES (?, ?)`, "bootstrap-admin", "admin",
+			VALUES (?, ?)`, user.ID, roleID,
 		); err != nil {
 			return err
 		}
 	}
-
 	return tx.Commit()
 }
 

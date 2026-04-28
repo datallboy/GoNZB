@@ -97,6 +97,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.API.Enabled && authSvc != nil {
 		v1Auth := e.Group("/api/v1/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Auth.GET("/session", authCtrl.GetSession, authMiddleware(authSvc, appCtx.Config.API.Key, true))
+		v1Auth.GET("/setup", authCtrl.GetSetupStatus)
+		v1Auth.POST("/setup", authCtrl.CreateInitialUser, authRateLimit)
 		v1Auth.POST("/session", authCtrl.CreateSession, authRateLimit)
 		v1Auth.DELETE("/session", authCtrl.DeleteSession, authMiddleware(authSvc, appCtx.Config.API.Key, true), csrfProtectionMiddleware())
 		v1Auth.GET("/tokens", authCtrl.ListCurrentUserTokens, authMiddleware(authSvc, appCtx.Config.API.Key, false))

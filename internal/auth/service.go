@@ -17,10 +17,14 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrForbidden          = errors.New("forbidden")
+	ErrSetupRequired      = errors.New("initial setup required")
+	ErrSetupCompleted     = errors.New("initial setup already completed")
 )
 
 type Store interface {
-	EnsureAuthDefaults(ctx context.Context, roles []Role, adminUsername, adminPasswordHash string) error
+	EnsureAuthDefaults(ctx context.Context, roles []Role) error
+	CountAuthUsers(ctx context.Context) (int, error)
+	CreateInitialAuthUser(ctx context.Context, user StoredUser, roleIDs []string) error
 	GetAuthUserByUsername(ctx context.Context, username string) (*StoredUser, error)
 	GetAuthUserByID(ctx context.Context, userID string) (*StoredUser, error)
 	ListAuthUsers(ctx context.Context) ([]StoredUser, error)
@@ -78,14 +82,77 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return ErrUnauthorized
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash default admin password: %w", err)
+	return s.store.EnsureAuthDefaults(ctx, DefaultRoles())
+}
+
+func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, ErrUnauthorized
 	}
-	return s.store.EnsureAuthDefaults(ctx, DefaultRoles(), "admin", string(hash))
+	count, err := s.store.CountAuthUsers(ctx)
+	if err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
+func (s *Service) SetupInitialUser(ctx context.Context, username, password string) (*Session, *Principal, error) {
+	if s == nil || s.store == nil {
+		return nil, nil, ErrUnauthorized
+	}
+	username = strings.TrimSpace(username)
+	if len(username) < 3 {
+		return nil, nil, fmt.Errorf("username must be at least 3 characters")
+	}
+	if err := validatePassword(password); err != nil {
+		return nil, nil, err
+	}
+	now := s.now().UTC()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, nil, err
+	}
+	user := StoredUser{
+		User: User{
+			ID:        ksuid.New().String(),
+			Username:  username,
+			Enabled:   true,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		PasswordHash: string(hash),
+	}
+	if err := s.store.CreateInitialAuthUser(ctx, user, []string{"admin"}); err != nil {
+		if errors.Is(err, ErrSetupCompleted) {
+			return nil, nil, err
+		}
+		return nil, nil, err
+	}
+	session := &Session{
+		ID:         ksuid.New().String(),
+		UserID:     user.ID,
+		CreatedAt:  now,
+		LastSeenAt: now,
+		ExpiresAt:  now.Add(7 * 24 * time.Hour),
+	}
+	if err := s.store.CreateAuthSession(ctx, *session); err != nil {
+		return nil, nil, err
+	}
+	principal, err := s.principalForUser(ctx, &user)
+	if err != nil {
+		return nil, nil, err
+	}
+	return session, principal, nil
 }
 
 func (s *Service) AuthenticatePassword(ctx context.Context, username, password string) (*Session, *Principal, error) {
+	required, err := s.SetupRequired(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if required {
+		return nil, nil, ErrSetupRequired
+	}
 	user, err := s.store.GetAuthUserByUsername(ctx, strings.TrimSpace(username))
 	if err != nil || user == nil || !user.Enabled {
 		return nil, nil, ErrInvalidCredentials
@@ -178,6 +245,9 @@ func (s *Service) UpsertUser(ctx context.Context, user StoredUser, password stri
 	}
 	user.UpdatedAt = now
 	if strings.TrimSpace(password) != "" {
+		if err := validatePassword(password); err != nil {
+			return nil, err
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, err
@@ -333,4 +403,11 @@ func (s *Service) hydrateStoredUser(ctx context.Context, user *StoredUser) (*Sto
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func validatePassword(password string) error {
+	if len(password) < 12 {
+		return fmt.Errorf("password must be at least 12 characters")
+	}
+	return nil
 }

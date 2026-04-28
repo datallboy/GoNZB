@@ -1,6 +1,7 @@
 import { apiRequest } from './http'
 import type {
   RoleListResponse,
+  SetupStatusResponse,
   SessionResponse,
   TokenCreateRequest,
   TokenCreateResponse,
@@ -13,6 +14,14 @@ import type {
 
 export function getSession() {
   return apiRequest<SessionResponse>('/api/v1/auth/session')
+}
+
+export function getSetupStatus() {
+  return apiRequest<SetupStatusResponse>('/api/v1/auth/setup')
+}
+
+export function createInitialUser(body: { username: string; password: string }) {
+  return apiRequest<SessionResponse>('/api/v1/auth/setup', { method: 'POST', body })
 }
 
 export function createSession(body: { username: string; password: string }) {
