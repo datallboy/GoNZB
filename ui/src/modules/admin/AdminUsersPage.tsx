@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { deleteUser, getRoles, getUsers, upsertUser } from '../../shared/api/auth'
+import { formatDateTime } from '../../shared/lib/format'
 import type { Role, User } from '../../shared/types'
+
+function toggleRole(current: string[], roleID: string) {
+  if (current.includes(roleID)) {
+    return current.filter((item) => item !== roleID)
+  }
+  return [...current, roleID]
+}
 
 export function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([])
@@ -37,6 +46,16 @@ export function AdminUsersPage() {
     }
   }
 
+  function editUser(user: User) {
+    setForm({
+      id: user.id,
+      username: user.username,
+      password: '',
+      enabled: user.enabled,
+      role_ids: user.role_ids,
+    })
+  }
+
   return (
     <div className="page-section stack">
       <div className="dashboard-grid">
@@ -60,6 +79,7 @@ export function AdminUsersPage() {
               type="password"
               value={form.password}
               onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+              placeholder={form.id ? 'Leave blank to keep current password' : ''}
             />
           </label>
           <label className="field checkbox-field">
@@ -70,25 +90,26 @@ export function AdminUsersPage() {
               onChange={(event) => setForm((current) => ({ ...current, enabled: event.target.checked }))}
             />
           </label>
-          <label className="field">
+          <div className="field">
             <span>Roles</span>
-            <select
-              multiple
-              value={form.role_ids}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  role_ids: Array.from(event.target.selectedOptions).map((option) => option.value),
-                }))
-              }
-            >
+            <div className="checkbox-grid">
               {roles.map((role) => (
-                <option key={role.id} value={role.id}>
-                  {role.name}
-                </option>
+                <label className="checkbox-inline" key={role.id}>
+                  <input
+                    type="checkbox"
+                    checked={form.role_ids.includes(role.id)}
+                    onChange={() =>
+                      setForm((current) => ({
+                        ...current,
+                        role_ids: toggleRole(current.role_ids, role.id),
+                      }))
+                    }
+                  />
+                  <span>{role.name}</span>
+                </label>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
           <button className="primary-button" type="submit">
             Save User
           </button>
@@ -97,30 +118,49 @@ export function AdminUsersPage() {
 
         <div className="page-card">
           <h2 className="section-title">Current Users</h2>
-          <div className="stack">
-            {users.map((user) => (
-              <div className="list-row" key={user.id}>
-                <div>
-                  <strong>{user.username}</strong>
-                  <div className="muted-row">
-                    <span>{user.id}</span>
-                    <span>{user.enabled ? 'enabled' : 'disabled'}</span>
-                  </div>
-                </div>
-                <button
-                  className="secondary-button"
-                  onClick={() =>
-                    deleteUser(user.id)
-                      .then(() => refresh())
-                      .catch((err) =>
-                        setMessage(err instanceof Error ? err.message : 'Failed to delete user'),
-                      )
-                  }
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
+          <div className="table-shell">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Status</th>
+                  <th>Roles</th>
+                  <th>Created</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((user) => (
+                  <tr key={user.id}>
+                    <td>{user.username}</td>
+                    <td>{user.enabled ? 'enabled' : 'disabled'}</td>
+                    <td>{user.role_ids.join(', ') || 'none'}</td>
+                    <td>{formatDateTime(user.created_at)}</td>
+                    <td>
+                      <div className="button-row">
+                        <button className="secondary-button" type="button" onClick={() => editUser(user)}>
+                          Edit
+                        </button>
+                        <Link className="secondary-button" to={`/admin/security/users/${user.id}`}>
+                          Details
+                        </Link>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() =>
+                            deleteUser(user.id)
+                              .then(() => refresh())
+                              .catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to delete user'))
+                          }
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>

@@ -2,11 +2,19 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { deleteRole, getRoles, upsertRole } from '../../shared/api/auth'
 import type { Role } from '../../shared/types'
+import { permissionGroups } from './adminData'
+
+function togglePermission(current: string[], permission: string) {
+  if (current.includes(permission)) {
+    return current.filter((item) => item !== permission)
+  }
+  return [...current, permission]
+}
 
 export function AdminRolesPage() {
   const [roles, setRoles] = useState<Role[]>([])
   const [message, setMessage] = useState<string | null>(null)
-  const [form, setForm] = useState({ id: '', name: '', permissions: 'indexer.releases.read' })
+  const [form, setForm] = useState({ id: '', name: '', permissions: ['indexer.releases.read'] })
 
   async function refresh() {
     const response = await getRoles()
@@ -20,20 +28,21 @@ export function AdminRolesPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     try {
-      await upsertRole({
-        id: form.id,
-        name: form.name,
-        permissions: form.permissions
-          .split(',')
-          .map((value) => value.trim())
-          .filter(Boolean),
-      })
+      await upsertRole(form)
       setMessage('Role saved.')
-      setForm({ id: '', name: '', permissions: 'indexer.releases.read' })
+      setForm({ id: '', name: '', permissions: ['indexer.releases.read'] })
       await refresh()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to save role')
     }
+  }
+
+  function editRole(role: Role) {
+    setForm({
+      id: role.id,
+      name: role.name,
+      permissions: role.permissions,
+    })
   }
 
   return (
@@ -53,14 +62,31 @@ export function AdminRolesPage() {
               onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
             />
           </label>
-          <label className="field">
+          <div className="field">
             <span>Permissions</span>
-            <textarea
-              rows={7}
-              value={form.permissions}
-              onChange={(event) => setForm((current) => ({ ...current, permissions: event.target.value }))}
-            />
-          </label>
+            <div className="checkbox-grid">
+              {permissionGroups.map((group) => (
+                <div className="permission-card" key={group.label}>
+                  <strong>{group.label}</strong>
+                  {group.permissions.map((permission) => (
+                    <label className="checkbox-inline" key={permission}>
+                      <input
+                        type="checkbox"
+                        checked={form.permissions.includes(permission)}
+                        onChange={() =>
+                          setForm((current) => ({
+                            ...current,
+                            permissions: togglePermission(current.permissions, permission),
+                          }))
+                        }
+                      />
+                      <span>{permission}</span>
+                    </label>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
           <button className="primary-button" type="submit">
             Save Role
           </button>
@@ -69,31 +95,47 @@ export function AdminRolesPage() {
 
         <div className="page-card">
           <h2 className="section-title">Current Roles</h2>
-          <div className="stack">
-            {roles.map((role) => (
-              <div className="list-row" key={role.id}>
-                <div>
-                  <strong>{role.name}</strong>
-                  <div className="muted-row">
-                    <span>{role.id}</span>
-                    <span>{role.permissions.length} permissions</span>
-                  </div>
-                </div>
-                <button
-                  className="secondary-button"
-                  disabled={role.builtin}
-                  onClick={() =>
-                    deleteRole(role.id)
-                      .then(() => refresh())
-                      .catch((err) =>
-                        setMessage(err instanceof Error ? err.message : 'Failed to delete role'),
-                      )
-                  }
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
+          <div className="table-shell">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>ID</th>
+                  <th>Permissions</th>
+                  <th>Built-in</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {roles.map((role) => (
+                  <tr key={role.id}>
+                    <td>{role.name}</td>
+                    <td><code>{role.id}</code></td>
+                    <td>{role.permissions.length}</td>
+                    <td>{role.builtin ? 'yes' : 'no'}</td>
+                    <td>
+                      <div className="button-row">
+                        <button className="secondary-button" type="button" onClick={() => editRole(role)}>
+                          Edit
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={role.builtin}
+                          type="button"
+                          onClick={() =>
+                            deleteRole(role.id)
+                              .then(() => refresh())
+                              .catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to delete role'))
+                          }
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>

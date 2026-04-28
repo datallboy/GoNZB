@@ -3,6 +3,7 @@ export type SessionInfo = {
   user_id?: string
   username?: string
   permissions: string[]
+  csrf_token?: string
 }
 
 export type SessionResponse = {
@@ -156,6 +157,14 @@ export type AdminRunsResponse = {
   limit: number
   offset: number
   stage: string
+  status?: string
+  trigger?: string
+}
+
+export type AdminRunListParams = {
+  stage?: string
+  status?: string
+  trigger_kind?: string
 }
 
 export type AdminReleaseSummary = {
@@ -551,6 +560,7 @@ export type Token = {
 export type UserListResponse = { items: User[]; count: number }
 export type RoleListResponse = { items: Role[]; count: number }
 export type TokenListResponse = { items: Token[]; count: number }
+export type UserDetailResponse = { user: User; tokens: Token[] }
 
 export type UpsertUserRequest = {
   id: string
@@ -574,4 +584,54 @@ export type TokenCreateRequest = {
 export type TokenCreateResponse = {
   token: Token
   secret: string
+}
+
+export type IndexingRuntimeSettings = {
+  newsgroups: string[]
+  scrape_latest: AdminStageConfigPatch
+  scrape_backfill: AdminStageConfigPatch
+  assemble: AdminStageConfigPatch
+  release: AdminStageConfigPatch & {
+    min_confidence: number
+    min_completion_pct: number
+    require_expected_file_count_for_contextual_obfuscated: boolean
+  }
+  inspect: {
+    work_dir: string
+    max_bytes: number
+    max_archive_depth: number
+    tool_timeout_seconds: number
+    ffprobe_path: string
+    seven_zip_path: string
+    unrar_path: string
+    par2_path: string
+  }
+  inspect_discovery: AdminStageConfigPatch
+  inspect_par2: AdminStageConfigPatch
+  inspect_nfo: AdminStageConfigPatch
+  inspect_archive: AdminStageConfigPatch
+  inspect_password: AdminStageConfigPatch
+  inspect_media: AdminStageConfigPatch
+  enrich_predb: AdminStageConfigPatch & {
+    provider: string
+    base_url: string
+    feed_url: string
+    dump_url: string
+    http_timeout_seconds: number
+    backfill_page_size: number
+    max_backfill_pages: number
+  }
+  enrich_tmdb: AdminStageConfigPatch & {
+    http_timeout_seconds: number
+    tmdb_api_key: string
+    tmdb_access_token: string
+    tmdb_base_url: string
+    tvdb_api_key: string
+    tvdb_pin: string
+    tvdb_base_url: string
+  }
+}
+
+export type RuntimeSettings = {
+  indexing?: IndexingRuntimeSettings
 }

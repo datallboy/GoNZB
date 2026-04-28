@@ -1,47 +1,80 @@
 import { useEffect, useState } from 'react'
-import type { FormEvent } from 'react'
 import { getAdminRuns } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
-import type { AdminRun } from '../../shared/types'
+import type { AdminRun, AdminRunListParams } from '../../shared/types'
+import { runStatusOptions, runTriggerOptions, stageOptions } from './adminData'
 
 export function AdminRunsPage() {
-  const [stage, setStage] = useState('')
-  const [submittedStage, setSubmittedStage] = useState('')
+  const [filters, setFilters] = useState<AdminRunListParams>({
+    stage: '',
+    status: '',
+    trigger_kind: '',
+  })
   const [runs, setRuns] = useState<AdminRun[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    void getAdminRuns(submittedStage)
+    void getAdminRuns(filters)
       .then((response) => {
         setRuns(response.items)
         setError(null)
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load runs'))
-  }, [submittedStage])
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setSubmittedStage(stage)
-  }
+  }, [filters])
 
   return (
     <div className="page-section stack">
       <div className="page-card stack">
         <p className="eyebrow">Run History</p>
         <h1 className="page-title">Recent stage runs and lease activity.</h1>
-        <form className="toolbar-grid" onSubmit={handleSubmit}>
+        <div className="toolbar-grid toolbar-grid--compact">
           <label className="field">
-            <span>Stage Filter</span>
-            <input
-              value={stage}
-              onChange={(event) => setStage(event.target.value)}
-              placeholder="scrape_latest"
-            />
+            <span>Stage</span>
+            <select
+              value={filters.stage}
+              onChange={(event) => setFilters((current) => ({ ...current, stage: event.target.value }))}
+            >
+              {stageOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
-          <button className="primary-button align-end" type="submit">
-            Filter Runs
+          <label className="field">
+            <span>Status</span>
+            <select
+              value={filters.status}
+              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
+            >
+              {runStatusOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Trigger</span>
+            <select
+              value={filters.trigger_kind}
+              onChange={(event) => setFilters((current) => ({ ...current, trigger_kind: event.target.value }))}
+            >
+              {runTriggerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="secondary-button align-end"
+            type="button"
+            onClick={() => setFilters({ stage: '', status: '', trigger_kind: '' })}
+          >
+            Reset Filters
           </button>
-        </form>
+        </div>
       </div>
       {error ? <div className="banner error">{error}</div> : null}
       <div className="page-card">
@@ -51,6 +84,7 @@ export function AdminRunsPage() {
               <tr>
                 <th>Stage</th>
                 <th>Status</th>
+                <th>Trigger</th>
                 <th>Owner</th>
                 <th>Started</th>
                 <th>Finished</th>
@@ -62,6 +96,7 @@ export function AdminRunsPage() {
                 <tr key={run.id}>
                   <td>{run.stage_name}</td>
                   <td>{run.status}</td>
+                  <td>{run.trigger_kind}</td>
                   <td>{run.claimed_by || 'n/a'}</td>
                   <td>{formatDateTime(run.started_at)}</td>
                   <td>{formatDateTime(run.finished_at)}</td>
@@ -70,8 +105,8 @@ export function AdminRunsPage() {
               ))}
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>
-                    <div className="empty-state">No runs matched the current filter.</div>
+                  <td colSpan={7}>
+                    <div className="empty-state">No runs matched the current filters.</div>
                   </td>
                 </tr>
               ) : null}
