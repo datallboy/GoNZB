@@ -20,7 +20,7 @@ type indexerService interface {
 	Overview(ctx context.Context) (*pgindex.IndexerOverview, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
 	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
-	ListRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error)
+	ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
 	RunStage(ctx context.Context, stageName string) error
 	PauseStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ResumeStage(ctx context.Context, stageName string) (*indexerStageView, error)
@@ -125,6 +125,10 @@ func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageV
 	if err != nil {
 		return nil, err
 	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	runs, err := s.store.ListIndexerStageRuns(ctx, "", len(allIndexerStages)*8)
 	if err != nil {
 		return nil, err
@@ -146,7 +150,8 @@ func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageV
 	items := make([]indexerStageView, 0, len(allIndexerStages))
 	for _, stageName := range allIndexerStages {
 		state, ok := stateByName[stageName]
-		view := stageViewFromState(stageName, state, ok)
+		view := stageViewFromSettings(stageName, runtime)
+		overlayStageState(&view, state, ok)
 		if run, ok := latestRunByStage[stageName]; ok {
 			runCopy := run
 			view.LatestRun = &runCopy
@@ -157,19 +162,36 @@ func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageV
 	return items, nil
 }
 
-func (s *runtimeIndexerService) ListRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error) {
+func (s *runtimeIndexerService) ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
 
-	stageName = normalizeStageName(stageName)
-	if stageName != "" {
-		if _, err := parseIndexerStage(stageName); err != nil {
+	params.StageName = normalizeStageName(params.StageName)
+	if params.StageName != "" {
+		if _, err := parseIndexerStage(params.StageName); err != nil {
 			return nil, err
 		}
 	}
 
-	return s.store.ListIndexerStageRuns(ctx, stageName, limit)
+	items, err := s.store.ListIndexerStageRuns(ctx, params.StageName, params.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if params.Status == "" && params.TriggerKind == "" {
+		return items, nil
+	}
+	filtered := make([]pgindex.IndexerStageRun, 0, len(items))
+	for _, item := range items {
+		if params.Status != "" && !strings.EqualFold(item.Status, params.Status) {
+			continue
+		}
+		if params.TriggerKind != "" && !strings.EqualFold(item.TriggerKind, params.TriggerKind) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func (s *runtimeIndexerService) GetStage(ctx context.Context, stageName string) (*indexerStageView, error) {
@@ -445,20 +467,12 @@ func (s *runtimeIndexerService) runStageSequence(reason string, stages []string)
 	}
 }
 
-func stageViewFromState(stageName string, state pgindex.IndexerStageState, ok bool) indexerStageView {
-	view := indexerStageView{
-		StageName: stageName,
-	}
-	if !ok {
-		return view
+func overlayStageState(view *indexerStageView, state pgindex.IndexerStageState, ok bool) {
+	if view == nil || !ok {
+		return
 	}
 
-	view.Enabled = state.Enabled
 	view.Paused = state.Paused
-	view.IntervalSeconds = state.IntervalSeconds
-	view.BatchSize = state.BatchSize
-	view.Concurrency = state.Concurrency
-	view.BackoffSeconds = state.BackoffSeconds
 	view.LeaseOwner = state.LeaseOwner
 	view.LastRunID = state.LastRunID
 	view.LastError = state.LastError
@@ -476,8 +490,79 @@ func stageViewFromState(stageName string, state pgindex.IndexerStageState, ok bo
 		t := state.LastSuccessAt.UTC()
 		view.LastSuccessAt = &t
 	}
+}
 
+func stageViewFromSettings(stageName string, runtime *app.RuntimeSettings) indexerStageView {
+	view := indexerStageView{StageName: stageName}
+	stageConfig, ok := stageSettingsForName(runtime, stageName)
+	if !ok {
+		return view
+	}
+	view.Enabled = stageConfig.Enabled
+	view.IntervalSeconds = int(stageConfig.IntervalMinutes * 60)
+	view.BatchSize = stageConfig.BatchSize
+	view.Concurrency = stageConfig.Concurrency
+	view.BackoffSeconds = stageConfig.BackoffSeconds
 	return view
+}
+
+func (s *runtimeIndexerService) loadRuntimeSettings(ctx context.Context) (*app.RuntimeSettings, error) {
+	if s == nil || s.settingsAdmin == nil {
+		return nil, settingsadmin.ErrUnavailable
+	}
+	return s.settingsAdmin.Get(ctx)
+}
+
+func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.IndexingStageRuntimeSettings, bool) {
+	if runtime == nil || runtime.Indexing == nil {
+		return app.IndexingStageRuntimeSettings{}, false
+	}
+	switch stageName {
+	case string(supervisor.StageScrapeLatest):
+		return runtime.Indexing.ScrapeLatest, true
+	case string(supervisor.StageScrapeBackfill):
+		return runtime.Indexing.ScrapeBackfill, true
+	case string(supervisor.StageAssemble):
+		return runtime.Indexing.Assemble, true
+	case string(supervisor.StageRelease):
+		return app.IndexingStageRuntimeSettings{
+			Enabled:         runtime.Indexing.Release.Enabled,
+			IntervalMinutes: runtime.Indexing.Release.IntervalMinutes,
+			BatchSize:       runtime.Indexing.Release.BatchSize,
+			Concurrency:     runtime.Indexing.Release.Concurrency,
+			BackoffSeconds:  runtime.Indexing.Release.BackoffSeconds,
+		}, true
+	case string(supervisor.StageInspectDiscovery):
+		return runtime.Indexing.InspectDiscovery, true
+	case string(supervisor.StageInspectPAR2):
+		return runtime.Indexing.InspectPAR2, true
+	case string(supervisor.StageInspectNFO):
+		return runtime.Indexing.InspectNFO, true
+	case string(supervisor.StageInspectArchive):
+		return runtime.Indexing.InspectArchive, true
+	case string(supervisor.StageInspectPassword):
+		return runtime.Indexing.InspectPassword, true
+	case string(supervisor.StageInspectMedia):
+		return runtime.Indexing.InspectMedia, true
+	case string(supervisor.StageEnrichPreDB):
+		return app.IndexingStageRuntimeSettings{
+			Enabled:         runtime.Indexing.EnrichPreDB.Enabled,
+			IntervalMinutes: runtime.Indexing.EnrichPreDB.IntervalMinutes,
+			BatchSize:       runtime.Indexing.EnrichPreDB.BatchSize,
+			Concurrency:     runtime.Indexing.EnrichPreDB.Concurrency,
+			BackoffSeconds:  runtime.Indexing.EnrichPreDB.BackoffSeconds,
+		}, true
+	case string(supervisor.StageEnrichTMDB):
+		return app.IndexingStageRuntimeSettings{
+			Enabled:         runtime.Indexing.EnrichTMDB.Enabled,
+			IntervalMinutes: runtime.Indexing.EnrichTMDB.IntervalMinutes,
+			BatchSize:       runtime.Indexing.EnrichTMDB.BatchSize,
+			Concurrency:     runtime.Indexing.EnrichTMDB.Concurrency,
+			BackoffSeconds:  runtime.Indexing.EnrichTMDB.BackoffSeconds,
+		}, true
+	default:
+		return app.IndexingStageRuntimeSettings{}, false
+	}
 }
 
 var allIndexerStages = []string{
@@ -524,7 +609,7 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 	case string(supervisor.StageRelease):
 		applyReleaseStagePatch(&indexing.Release, patch)
 	case string(supervisor.StageInspectDiscovery):
-		applyStagePatch(&indexing.InspectArchive, patch)
+		applyStagePatch(&indexing.InspectDiscovery, patch)
 	case string(supervisor.StageInspectPAR2):
 		applyStagePatch(&indexing.InspectPAR2, patch)
 	case string(supervisor.StageInspectNFO):

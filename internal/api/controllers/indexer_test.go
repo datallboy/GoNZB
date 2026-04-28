@@ -35,7 +35,7 @@ func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView
 	return s.stages, nil
 }
 
-func (s *stubIndexerService) ListRuns(ctx context.Context, stageName string, limit int) ([]pgindex.IndexerStageRun, error) {
+func (s *stubIndexerService) ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error) {
 	return s.runs, nil
 }
 

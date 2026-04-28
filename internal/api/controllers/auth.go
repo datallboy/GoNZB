@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -47,6 +48,11 @@ type upsertRoleRequest struct {
 type tokenCreateRequest struct {
 	UserID string `json:"user_id"`
 	Name   string `json:"name"`
+}
+
+type authUserDetailResponse struct {
+	User   *auth.User   `json:"user"`
+	Tokens []auth.Token `json:"tokens"`
 }
 
 func (ctrl *AuthController) CreateSession(c *echo.Context) error {
@@ -128,7 +134,31 @@ func (ctrl *AuthController) ListUsers(c *echo.Context) error {
 	if items == nil {
 		items = []auth.StoredUser{}
 	}
-	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+	views := make([]auth.User, 0, len(items))
+	for _, item := range items {
+		views = append(views, sanitizeStoredUser(item))
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": views, "count": len(views)})
+}
+
+func (ctrl *AuthController) GetUser(c *echo.Context) error {
+	userID := pathParamTrimmed(c, "id")
+	user, err := ctrl.Service.GetUser(c.Request().Context(), userID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if user == nil {
+		return jsonError(c, http.StatusNotFound, "user not found")
+	}
+	tokens, err := ctrl.Service.ListTokensByUser(c.Request().Context(), userID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if tokens == nil {
+		tokens = []auth.Token{}
+	}
+	userView := sanitizeStoredUser(*user)
+	return c.JSON(http.StatusOK, authUserDetailResponse{User: &userView, Tokens: tokens})
 }
 
 func (ctrl *AuthController) UpsertUser(c *echo.Context) error {
@@ -146,7 +176,8 @@ func (ctrl *AuthController) UpsertUser(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	return c.JSON(http.StatusOK, map[string]any{"user": user})
+	userView := sanitizeStoredUser(*user)
+	return c.JSON(http.StatusOK, map[string]any{"user": userView})
 }
 
 func (ctrl *AuthController) DeleteUser(c *echo.Context) error {
@@ -201,12 +232,43 @@ func (ctrl *AuthController) ListTokens(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
+func (ctrl *AuthController) ListCurrentUserTokens(c *echo.Context) error {
+	principal, ok := PrincipalFromContext(c)
+	if !ok || principal == nil {
+		return jsonError(c, http.StatusUnauthorized, "authentication required")
+	}
+	items, err := ctrl.Service.ListTokensByUser(c.Request().Context(), principal.UserID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if items == nil {
+		items = []auth.Token{}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
 func (ctrl *AuthController) CreateToken(c *echo.Context) error {
 	var req tokenCreateRequest
 	if err := decodeJSONBody(c, &req); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 	token, raw, err := ctrl.Service.CreateToken(c.Request().Context(), strings.TrimSpace(req.UserID), strings.TrimSpace(req.Name))
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"token": token, "secret": raw})
+}
+
+func (ctrl *AuthController) CreateCurrentUserToken(c *echo.Context) error {
+	principal, ok := PrincipalFromContext(c)
+	if !ok || principal == nil {
+		return jsonError(c, http.StatusUnauthorized, "authentication required")
+	}
+	var req tokenCreateRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	token, raw, err := ctrl.Service.CreateToken(c.Request().Context(), principal.UserID, strings.TrimSpace(req.Name))
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
@@ -220,6 +282,21 @@ func (ctrl *AuthController) RevokeToken(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (ctrl *AuthController) RevokeCurrentUserToken(c *echo.Context) error {
+	principal, ok := PrincipalFromContext(c)
+	if !ok || principal == nil {
+		return jsonError(c, http.StatusUnauthorized, "authentication required")
+	}
+	if err := ctrl.Service.RevokeTokenForUser(c.Request().Context(), principal.UserID, pathParamTrimmed(c, "id")); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, auth.ErrForbidden) {
+			status = http.StatusForbidden
+		}
+		return jsonError(c, status, err.Error())
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 func permissionList(principal *auth.Principal) []string {
 	if principal == nil {
 		return nil
@@ -229,6 +306,18 @@ func permissionList(principal *auth.Principal) []string {
 		out = append(out, permission)
 	}
 	return out
+}
+
+func sanitizeStoredUser(user auth.StoredUser) auth.User {
+	return auth.User{
+		ID:          user.ID,
+		Username:    user.Username,
+		Enabled:     user.Enabled,
+		RoleIDs:     append([]string(nil), user.RoleIDs...),
+		Permissions: append([]string(nil), user.Permissions...),
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+	}
 }
 
 func ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {

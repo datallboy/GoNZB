@@ -37,7 +37,9 @@ type Store interface {
 	DeleteAuthSession(ctx context.Context, sessionID string) error
 	CreateAuthToken(ctx context.Context, token StoredToken) error
 	ListAuthTokens(ctx context.Context) ([]Token, error)
+	ListAuthTokensByUserID(ctx context.Context, userID string) ([]Token, error)
 	GetAuthTokenByHash(ctx context.Context, tokenHash string) (*StoredToken, error)
+	GetAuthTokenByID(ctx context.Context, tokenID string) (*StoredToken, error)
 	TouchAuthToken(ctx context.Context, tokenID string, seenAt time.Time) error
 	RevokeAuthToken(ctx context.Context, tokenID string) error
 }
@@ -158,6 +160,14 @@ func (s *Service) ListUsers(ctx context.Context) ([]StoredUser, error) {
 	return s.store.ListAuthUsers(ctx)
 }
 
+func (s *Service) GetUser(ctx context.Context, userID string) (*StoredUser, error) {
+	user, err := s.store.GetAuthUserByID(ctx, strings.TrimSpace(userID))
+	if err != nil || user == nil {
+		return user, err
+	}
+	return s.hydrateStoredUser(ctx, user)
+}
+
 func (s *Service) UpsertUser(ctx context.Context, user StoredUser, password string, roleIDs []string) (*StoredUser, error) {
 	if strings.TrimSpace(user.ID) == "" {
 		user.ID = ksuid.New().String()
@@ -189,7 +199,7 @@ func (s *Service) UpsertUser(ctx context.Context, user StoredUser, password stri
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return s.hydrateStoredUser(ctx, out)
 }
 
 func (s *Service) DeleteUser(ctx context.Context, userID string) error {
@@ -256,8 +266,26 @@ func (s *Service) ListTokens(ctx context.Context) ([]Token, error) {
 	return s.store.ListAuthTokens(ctx)
 }
 
+func (s *Service) ListTokensByUser(ctx context.Context, userID string) ([]Token, error) {
+	return s.store.ListAuthTokensByUserID(ctx, strings.TrimSpace(userID))
+}
+
 func (s *Service) RevokeToken(ctx context.Context, tokenID string) error {
 	return s.store.RevokeAuthToken(ctx, tokenID)
+}
+
+func (s *Service) RevokeTokenForUser(ctx context.Context, userID, tokenID string) error {
+	token, err := s.store.GetAuthTokenByID(ctx, strings.TrimSpace(tokenID))
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return nil
+	}
+	if token.UserID != strings.TrimSpace(userID) {
+		return ErrForbidden
+	}
+	return s.store.RevokeAuthToken(ctx, token.ID)
 }
 
 func (s *Service) principalForUser(ctx context.Context, user *StoredUser) (*Principal, error) {
@@ -287,6 +315,19 @@ func (s *Service) principalForUser(ctx context.Context, user *StoredUser) (*Prin
 		Username:    user.Username,
 		Permissions: perms,
 	}, nil
+}
+
+func (s *Service) hydrateStoredUser(ctx context.Context, user *StoredUser) (*StoredUser, error) {
+	if user == nil {
+		return nil, nil
+	}
+	roleIDs, err := s.store.ListAuthUserRoleIDs(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	copyUser := *user
+	copyUser.RoleIDs = roleIDs
+	return &copyUser, nil
 }
 
 func hashToken(raw string) string {
