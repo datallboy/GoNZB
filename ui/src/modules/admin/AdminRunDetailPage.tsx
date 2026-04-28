@@ -4,14 +4,21 @@ import { getAdminRun } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
 import type { AdminRun } from '../../shared/types'
 
-function prettyJSON(value?: string) {
-  if (!value) {
+function prettyJSON(value?: unknown) {
+  if (value == null || value === '') {
     return '{}'
+  }
+  if (typeof value !== 'string') {
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
   }
   try {
     return JSON.stringify(JSON.parse(value), null, 2)
   } catch {
-    return value
+    return String(value)
   }
 }
 
