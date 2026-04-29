@@ -25,7 +25,7 @@ type repository interface {
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
-	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
+	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 }
 
@@ -118,6 +118,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 
 	refreshed := make(map[int64]struct{}, len(headers))
 	assembledCount := 0
+	binaryIDsByKey := make(map[string]int64, len(headers))
+	partRecords := make([]pgindex.BinaryPartRecord, 0, len(headers))
 	laneASelected := 0
 	recovery := recoveryCounters{}
 	var (
@@ -190,8 +192,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			}
 		}
 
-		binaryUpsertStarted := time.Now()
-		binaryID, err := s.repo.UpsertBinary(ctx, pgindex.BinaryRecord{
+		binaryRecord := pgindex.BinaryRecord{
 			ProviderID:        header.ProviderID,
 			NewsgroupID:       header.NewsgroupID,
 			PosterID:          posterID,
@@ -214,17 +215,24 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			MatchConfidence:   matched.MatchConfidence,
 			MatchStatus:       matched.MatchStatus,
 			GroupingEvidence:  matched.GroupingEvidence,
-		})
-		binaryUpsertDuration += time.Since(binaryUpsertStarted)
-		if err != nil {
-			metrics["processed_headers"] = assembledCount
-			metrics["binaries_refreshed"] = len(refreshed)
-			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-			return metrics, fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
+		}
+		binaryCacheKey := assembleBinaryCacheKey(binaryRecord)
+		binaryID, ok := binaryIDsByKey[binaryCacheKey]
+		if !ok {
+			binaryUpsertStarted := time.Now()
+			var err error
+			binaryID, err = s.repo.UpsertBinary(ctx, binaryRecord)
+			binaryUpsertDuration += time.Since(binaryUpsertStarted)
+			if err != nil {
+				metrics["processed_headers"] = assembledCount
+				metrics["binaries_refreshed"] = len(refreshed)
+				addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+				return metrics, fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
+			}
+			binaryIDsByKey[binaryCacheKey] = binaryID
 		}
 
-		binaryPartUpsertStarted := time.Now()
-		if err := s.repo.UpsertBinaryPart(ctx, pgindex.BinaryPartRecord{
+		partRecords = append(partRecords, pgindex.BinaryPartRecord{
 			BinaryID:        binaryID,
 			ArticleHeaderID: header.ID,
 			MessageID:       header.MessageID,
@@ -232,18 +240,21 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			TotalParts:      matched.TotalParts,
 			SegmentBytes:    header.Bytes,
 			FileName:        matched.FileName,
-		}); err != nil {
-			metrics["processed_headers"] = assembledCount
-			metrics["binaries_refreshed"] = len(refreshed)
-			binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
-			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-			return metrics, fmt.Errorf("upsert binary part for article %d: %w", header.ID, err)
-		}
-		binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
+		})
 
 		refreshed[binaryID] = struct{}{}
-		assembledCount++
 	}
+
+	binaryPartUpsertStarted := time.Now()
+	if err := s.repo.UpsertBinaryParts(ctx, partRecords); err != nil {
+		metrics["processed_headers"] = assembledCount
+		metrics["binaries_refreshed"] = len(refreshed)
+		binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
+		addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+		return metrics, fmt.Errorf("upsert binary parts batch: %w", err)
+	}
+	binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
+	assembledCount = len(partRecords)
 
 	for binaryID := range refreshed {
 		refreshStarted := time.Now()
@@ -260,6 +271,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics["lane_b_selected"] = laneBSelected
 	metrics["processed_headers"] = assembledCount
 	metrics["binaries_refreshed"] = len(refreshed)
+	metrics["unique_binary_upserts"] = len(binaryIDsByKey)
+	metrics["binary_upsert_cache_hits"] = len(partRecords) - len(binaryIDsByKey)
+	metrics["binary_part_batch_size"] = len(partRecords)
 	metrics["recovery_attempts"] = recovery.attempts
 	metrics["recovery_successes"] = recovery.successes
 	metrics["recovery_noops"] = recovery.noops
@@ -311,6 +325,10 @@ func throughputPerSecond(count int, elapsed time.Duration) float64 {
 		return 0
 	}
 	return float64(count) / elapsed.Seconds()
+}
+
+func assembleBinaryCacheKey(in pgindex.BinaryRecord) string {
+	return fmt.Sprintf("%d:%d:%s", in.ProviderID, in.NewsgroupID, strings.TrimSpace(in.BinaryKey))
 }
 
 func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, matched match.Result) bool {

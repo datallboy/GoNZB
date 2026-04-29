@@ -928,14 +928,60 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 
 // CHANGED: add/update one binary part row.
 func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error {
-	if in.BinaryID <= 0 || in.ArticleHeaderID <= 0 {
-		return fmt.Errorf("binary id and article header id are required")
-	}
-	if in.PartNumber <= 0 {
-		return fmt.Errorf("part number is required")
+	return s.UpsertBinaryParts(ctx, []BinaryPartRecord{in})
+}
+
+// UpsertBinaryParts adds or updates binary parts in one transaction and marks
+// the source article headers assembled with one set-based update.
+func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecord) error {
+	if len(records) == 0 {
+		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	partArgs := make([]any, 0, len(records)*7)
+	headerArgs := make([]any, 0, len(records))
+	partValues := make([]string, 0, len(records))
+	headerValues := make([]string, 0, len(records))
+	for i, record := range records {
+		if record.BinaryID <= 0 || record.ArticleHeaderID <= 0 {
+			return fmt.Errorf("binary id and article header id are required")
+		}
+		if record.PartNumber <= 0 {
+			return fmt.Errorf("part number is required")
+		}
+
+		partBase := (i * 7) + 1
+		partValues = append(partValues, fmt.Sprintf(
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW())",
+			partBase,
+			partBase+1,
+			partBase+2,
+			partBase+3,
+			partBase+4,
+			partBase+5,
+			partBase+6,
+		))
+		headerValues = append(headerValues, fmt.Sprintf("($%d::bigint)", i+1))
+		partArgs = append(
+			partArgs,
+			record.BinaryID,
+			record.ArticleHeaderID,
+			strings.TrimSpace(record.MessageID),
+			record.PartNumber,
+			record.TotalParts,
+			record.SegmentBytes,
+			strings.TrimSpace(record.FileName),
+		)
+		headerArgs = append(headerArgs, record.ArticleHeaderID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin binary parts upsert tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	query := fmt.Sprintf(`
 		INSERT INTO binary_parts (
 			binary_id,
 			article_header_id,
@@ -946,7 +992,7 @@ func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error
 			file_name,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+		VALUES %s
 		ON CONFLICT (binary_id, part_number) DO UPDATE
 		SET article_header_id = EXCLUDED.article_header_id,
 		    message_id = EXCLUDED.message_id,
@@ -954,23 +1000,26 @@ func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error
 		    segment_bytes = EXCLUDED.segment_bytes,
 		    file_name = EXCLUDED.file_name,
 		    updated_at = NOW()`,
-		in.BinaryID,
-		in.ArticleHeaderID,
-		strings.TrimSpace(in.MessageID),
-		in.PartNumber,
-		in.TotalParts,
-		in.SegmentBytes,
-		strings.TrimSpace(in.FileName),
-	)
-	if err != nil {
-		return fmt.Errorf("upsert binary part binary=%d part=%d: %w", in.BinaryID, in.PartNumber, err)
+		strings.Join(partValues, ","))
+	if _, err := tx.ExecContext(ctx, query, partArgs...); err != nil {
+		return fmt.Errorf("upsert %d binary parts: %w", len(records), err)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
+	query = fmt.Sprintf(`
+		WITH claimed_headers(id) AS (
+			VALUES %s
+		)
 		UPDATE article_headers
 		SET assembled_at = COALESCE(assembled_at, NOW())
-		WHERE id = $1`, in.ArticleHeaderID); err != nil {
-		return fmt.Errorf("mark article header %d assembled: %w", in.ArticleHeaderID, err)
+		FROM claimed_headers
+		WHERE article_headers.id = claimed_headers.id`,
+		strings.Join(headerValues, ","))
+	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
+		return fmt.Errorf("mark %d article headers assembled: %w", len(records), err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit binary parts upsert tx: %w", err)
 	}
 
 	return nil
