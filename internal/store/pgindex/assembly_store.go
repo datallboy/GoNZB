@@ -83,6 +83,16 @@ type BinaryPartRecord struct {
 	FileName        string
 }
 
+type AssemblyClaimRequest struct {
+	Limit         int
+	Owner         string
+	LeaseDuration time.Duration
+}
+
+type assemblyQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func normalizeBinaryIdentity(in *BinaryRecord) {
 	if in == nil {
 		return
@@ -94,6 +104,98 @@ func normalizeBinaryIdentity(in *BinaryRecord) {
 }
 
 func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]AssemblyCandidate, error) {
+	return s.listUnassembledArticleHeaders(ctx, s.db, limit)
+}
+
+func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req AssemblyClaimRequest) ([]AssemblyCandidate, error) {
+	if req.Limit <= 0 {
+		req.Limit = 1000
+	}
+	req.Owner = strings.TrimSpace(req.Owner)
+	if req.Owner == "" {
+		return nil, fmt.Errorf("assembly claim owner is required")
+	}
+	if req.LeaseDuration <= 0 {
+		req.LeaseDuration = 5 * time.Minute
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin assembly claim tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`); err != nil {
+		return nil, fmt.Errorf("lock assembly claim selector: %w", err)
+	}
+
+	candidates, err := s.listUnassembledArticleHeaders(ctx, tx, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+
+	args := make([]any, 0, len(candidates)+2)
+	values := make([]string, 0, len(candidates))
+	args = append(args, req.Owner, int64(req.LeaseDuration/time.Second))
+	for _, candidate := range candidates {
+		args = append(args, candidate.ID)
+		values = append(values, fmt.Sprintf("($%d::bigint)", len(args)))
+	}
+
+	query := fmt.Sprintf(`
+		WITH requested(id) AS (
+			VALUES %s
+		),
+		claimed AS (
+			UPDATE article_headers ah
+			SET assembly_claimed_by = $1,
+			    assembly_claimed_until = NOW() + ($2::bigint * INTERVAL '1 second')
+			FROM requested
+			WHERE ah.id = requested.id
+			  AND ah.assembled_at IS NULL
+			  AND (
+			  	ah.assembly_claimed_until IS NULL
+			  	OR ah.assembly_claimed_until < NOW()
+			  )
+			RETURNING ah.id
+		)
+		SELECT id FROM claimed`,
+		strings.Join(values, ","))
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
+	}
+	defer rows.Close()
+
+	claimedIDs := make(map[int64]struct{}, len(candidates))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan claimed article header: %w", err)
+		}
+		claimedIDs[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed article headers: %w", err)
+	}
+
+	out := candidates[:0]
+	for _, candidate := range candidates {
+		if _, ok := claimedIDs[candidate.ID]; ok {
+			out = append(out, candidate)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit assembly claim tx: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -114,7 +216,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 		priorityHeaderWindow = assemblePriorityHeaderMaxScan
 	}
 
-	priorityHeaders, err := s.listPriorityAssemblyHeaders(ctx, laneALimit, priorityHeaderWindow)
+	priorityHeaders, err := s.listPriorityAssemblyHeaders(ctx, q, laneALimit, priorityHeaderWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +244,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 		recentWindow = remaining
 	}
 
-	recentHeaders, err := s.listRecentUnassembledHeaders(ctx, recentWindow)
+	recentHeaders, err := s.listRecentUnassembledHeaders(ctx, q, recentWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +262,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 	return out, nil
 }
 
-func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, limit, pendingWindow int) ([]AssemblyCandidate, error) {
+func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]AssemblyCandidate, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -168,7 +270,7 @@ func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, limit, pendingW
 		pendingWindow = limit
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		WITH pending_structured AS (
 			SELECT
 				ah.id,
@@ -178,6 +280,10 @@ func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, limit, pendingW
 			FROM article_headers ah
 			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 			WHERE ah.assembled_at IS NULL
+			  AND (
+			  	ah.assembly_claimed_until IS NULL
+			  	OR ah.assembly_claimed_until < NOW()
+			  )
 			  AND BTRIM(p.subject_file_name) <> ''
 			ORDER BY ah.id DESC
 			LIMIT $2
@@ -475,6 +581,10 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 			 AND ah.provider_id = rb.provider_id
 			 AND ah.newsgroup_id = rb.newsgroup_id
 			 AND ah.assembled_at IS NULL
+			 AND (
+			 	ah.assembly_claimed_until IS NULL
+			 	OR ah.assembly_claimed_until < NOW()
+			 )
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 			LEFT JOIN posters po ON po.id = p.poster_id
 			WHERE BTRIM(p.subject_file_name) <> ''
@@ -510,8 +620,8 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 	return out, nil
 }
 
-func (s *Store) listRecentUnassembledHeaders(ctx context.Context, limit int) ([]AssemblyCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *Store) listRecentUnassembledHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT
 			ah.id,
 			ah.provider_id,
@@ -539,6 +649,10 @@ func (s *Store) listRecentUnassembledHeaders(ctx context.Context, limit int) ([]
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 		LEFT JOIN posters po ON po.id = p.poster_id
 		WHERE ah.assembled_at IS NULL
+		  AND (
+		  	ah.assembly_claimed_until IS NULL
+		  	OR ah.assembly_claimed_until < NOW()
+		  )
 		ORDER BY ah.id DESC
 		LIMIT $1`, limit)
 	if err != nil {
@@ -1010,7 +1124,9 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 			VALUES %s
 		)
 		UPDATE article_headers
-		SET assembled_at = COALESCE(assembled_at, NOW())
+		SET assembled_at = COALESCE(assembled_at, NOW()),
+		    assembly_claimed_by = '',
+		    assembly_claimed_until = NULL
 		FROM claimed_headers
 		WHERE article_headers.id = claimed_headers.id`,
 		strings.Join(headerValues, ","))

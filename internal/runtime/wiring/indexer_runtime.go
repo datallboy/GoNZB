@@ -136,7 +136,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		inspectFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize: runtimeCfg.Assemble.BatchSize,
+			BatchSize:   runtimeCfg.Assemble.BatchSize,
+			ClaimOwner:  "assemble",
+			ClaimLease:  5 * time.Minute,
+			Concurrency: runtimeCfg.Assemble.Concurrency,
 		},
 	)
 
