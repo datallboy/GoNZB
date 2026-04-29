@@ -347,6 +347,43 @@ Milestone 3 sign-off:
 
 - Complete. `assemble.concurrency > 1` is safe to use with the lease-backed claim model.
 
+### Batch size and concurrency tuning pass
+
+Measured on `2026-04-29` after claimed workers and batched writes landed.
+
+Implementation note:
+
+- `assemble.batch_size` is the total stage-run batch size.
+- Workers split the one DB-claimed batch; each worker does not independently claim its own full `batch_size`.
+- Running unique selector/claim batches per worker was tested during Milestone 3 and underfilled before the claim-once model; it also repeats selector cost. The safer equivalent of "larger unique worker batches" is to increase total `batch_size`, claim once, and split the claimed rows.
+- Large single-worker batches exposed PostgreSQL's extended protocol parameter limit, so `UpsertBinaryParts` now chunks large batched writes inside one transaction.
+
+Tuning results:
+
+| Batch size | Concurrency | Processed | Headers/sec | Selector ms | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `2500` | `1` | `2500` | `675.52` | `1622.6` | current config baseline after batching |
+| `5000` | `1` | `5000` | `992.37` | `2137.6` | better amortization |
+| `7500` | `1` | `7500` | `1307.40` | `2293.8` | good single-worker scaling |
+| `10000` | `1` | `10000` | `1532.20` | `2600.9` | requires chunked part writes |
+| `2500` | `4` | `2500` | `866.18` | `1809.0` | modest gain, too little work per worker |
+| `5000` | `4` | `5000` | `1405.28` | `2125.7` | strong improvement |
+| `7500` | `4` | `7500` | `1565.68` | `2908.0` | moderate improvement |
+| `10000` | `4` | `10000` | `1912.80` | `2687.2` | best measured balance |
+| `15000` | `4` | `15000` | `1617.65` | `6551.0` | selector cost rose sharply |
+| `20000` | `4` | `20000` | `1867.46` | `7236.6` | close, but not better than `10000/4` |
+| `10000` | `2` | `10000` | `1423.80` | `3595.5` | worse than one worker in this run |
+| `10000` | `8` | `10000` | `1823.26` | `3231.2` | below `10000/4`, more contention |
+| `20000` | `8` | `20000` | `1807.26` | `7216.0` | no gain over `20000/4` |
+
+Tuning conclusion:
+
+- Increasing total batch size does improve overall throughput by amortizing fixed count/selector/run overhead.
+- `batch_size=10000` and `concurrency=4` is the best measured balance so far on the live dev database.
+- Higher concurrency is not automatically better. `8` workers increased aggregate write/match contention and did not beat `4`.
+- Larger batches such as `20000/4` are viable, but the selector cost grows and measured throughput was slightly below `10000/4`.
+- Recommended next config trial: set assemble to `batch_size=10000`, `concurrency=4`, then observe several scheduled runs for consistency before increasing further.
+
 ## Milestone 4. Make Assemble Writes And Refreshes Scale
 
 Goal:
