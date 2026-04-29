@@ -226,10 +226,31 @@ Upsert tuning direction:
 
 - The hot cost is write amplification, especially `UpsertBinary` repeated once per header even when a batch touches only a small number of binaries.
 - In the measured Milestone 2 run, `2,500` headers touched only `32` binaries, but the service still called the binary upsert path per header.
-- The first write-path target should be batch-local binary identity caching: after matching, upsert each unique `(provider_id, newsgroup_id, binary_key)` once per batch or claimed chunk, then reuse the returned binary id for that chunk's parts.
+- Completed before Milestone 3: batch-local binary identity caching now upserts each unique `(provider_id, newsgroup_id, binary_key)` once per batch or claimed chunk, then reuses the returned binary id for that chunk's parts.
+- Completed before Milestone 3: binary-part writes and article-header assembled marks now use one batch transaction with set-based `INSERT ... ON CONFLICT` and set-based `UPDATE article_headers`.
 - The second target should be deferring release-family summary refresh out of per-header binary upserts. Mark dirty families cheaply during assemble, then refresh summaries once per touched family after the chunk or in release processing.
-- The third target should be batching part writes and assembled marks where practical, using set-based `INSERT ... ON CONFLICT` and set-based `UPDATE article_headers` rather than one DB round trip per part.
 - Keep `RefreshBinaryStats` batch-level or chunk-level; it is cheap today, but it must remain correct under concurrency.
+
+Write-path batching measurement:
+
+- run id: `61941`
+- lane A selected: `1,750`
+- lane B selected: `750`
+- processed headers: `2,500`
+- unique binary upserts: `25`
+- binary upsert cache hits: `2,475`
+- binary part batch size: `2,500`
+- total runtime: `3.577s`
+- headers per second: `701.08`
+- candidate selection: `1.292s`
+- binary upsert: `0.159s`
+- binary-part batch upsert plus assembled mark: `0.366s`
+- binary refresh: `0.143s`
+
+Write-path conclusion:
+
+- Batching/de-amplification removed the dominant Milestone 1 bottleneck before adding worker concurrency.
+- Milestone 3 can now focus on DB-backed row ownership and real worker fan-out; otherwise multiple workers would have amplified the old per-header write cost.
 
 Milestone 3 action:
 
