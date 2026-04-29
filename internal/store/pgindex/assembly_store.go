@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1169,17 +1170,63 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		return nil
 	}
 
+	uniqueBinaryIDs := make([]int64, 0, len(binaryIDs))
+	seenBinaryIDs := make(map[int64]struct{}, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			return fmt.Errorf("binary id is required")
+		}
+		if _, ok := seenBinaryIDs[binaryID]; ok {
+			continue
+		}
+		seenBinaryIDs[binaryID] = struct{}{}
+		uniqueBinaryIDs = append(uniqueBinaryIDs, binaryID)
+	}
+	sort.Slice(uniqueBinaryIDs, func(i, j int) bool {
+		return uniqueBinaryIDs[i] < uniqueBinaryIDs[j]
+	})
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin refresh binary stats batch tx: %w", err)
 	}
 	defer rollbackTx(tx)
 
-	for _, binaryID := range binaryIDs {
-		if binaryID <= 0 {
-			return fmt.Errorf("binary id is required")
+	summaryKeys := make([]releaseFamilySummaryKey, 0, len(uniqueBinaryIDs)*2)
+	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, len(uniqueBinaryIDs)*2)
+	for _, binaryID := range uniqueBinaryIDs {
+		keys, err := refreshBinaryStatsInTx(ctx, tx, binaryID)
+		if err != nil {
+			return err
 		}
-		if err := refreshBinaryStatsInTx(ctx, tx, binaryID); err != nil {
+		for _, key := range keys {
+			if _, ok := seenSummaryKeys[key]; ok {
+				continue
+			}
+			seenSummaryKeys[key] = struct{}{}
+			summaryKeys = append(summaryKeys, key)
+		}
+	}
+	sort.Slice(summaryKeys, func(i, j int) bool {
+		a := summaryKeys[i]
+		b := summaryKeys[j]
+		if a.ProviderID != b.ProviderID {
+			return a.ProviderID < b.ProviderID
+		}
+		if a.NewsgroupID != b.NewsgroupID {
+			return a.NewsgroupID < b.NewsgroupID
+		}
+		if a.KeyKind != b.KeyKind {
+			return a.KeyKind < b.KeyKind
+		}
+		return a.FamilyKey < b.FamilyKey
+	})
+
+	for _, key := range summaryKeys {
+		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+			return err
+		}
+		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
 			return err
 		}
 	}
@@ -1191,7 +1238,7 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 	return nil
 }
 
-func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) error {
+func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]releaseFamilySummaryKey, error) {
 	var (
 		providerID        int64
 		newsgroupID       int64
@@ -1237,7 +1284,7 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) err
 		&expectedFileCount,
 	)
 	if err != nil {
-		return fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
+		return nil, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
 	}
 
 	summaryKeys := make([]releaseFamilySummaryKey, 0, 2)
@@ -1247,14 +1294,5 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) err
 		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
 	}
 
-	for _, key := range summaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return err
-		}
-		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return summaryKeys, nil
 }

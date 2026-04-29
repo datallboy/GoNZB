@@ -718,7 +718,7 @@ func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
 				IsAuxiliary:     true,
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("build release files: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
 				TotalBytes:    100,
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("build release files: %v", err)
 	}
@@ -1551,6 +1551,14 @@ func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Contex
 
 func (f *fakeReleaseRepository) ListBinaryPartArticles(_ context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error) {
 	return f.articlesByBinaryID[binaryID], nil
+}
+
+func (f *fakeReleaseRepository) ListBinaryPartArticlesBatch(_ context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error) {
+	out := make(map[int64][]pgindex.ReleaseFileArticleRecord, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		out[binaryID] = f.articlesByBinaryID[binaryID]
+	}
+	return out, nil
 }
 
 func (f *fakeReleaseRepository) ListReleaseTitleCandidates(_ context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error) {

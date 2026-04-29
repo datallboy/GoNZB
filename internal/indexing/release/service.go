@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -20,6 +21,7 @@ type repository interface {
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
+	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
@@ -96,11 +98,14 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	var (
 		candidates []pgindex.ReleaseCandidate
 		err        error
+		timings    releaseTimings
 	)
 	if reform {
 		offset := 0
 		for {
+			start := time.Now()
 			page, pageErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.BatchSize, offset)
+			timings.candidateList += time.Since(start)
 			if pageErr != nil {
 				return nil, fmt.Errorf("list existing release candidates: %w", pageErr)
 			}
@@ -114,7 +119,9 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			offset += len(page)
 		}
 	} else {
+		start := time.Now()
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
+		timings.candidateList += time.Since(start)
 		if err != nil {
 			return nil, fmt.Errorf("list release candidates: %w", err)
 		}
@@ -154,7 +161,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			return metrics, err
 		}
 		candidateFamiliesInspected++
-		outcome, err := s.formCandidate(ctx, candidate)
+		outcome, err := s.formCandidate(ctx, candidate, &timings)
 		if err != nil {
 			metrics["candidate_families_inspected"] = candidateFamiliesInspected
 			metrics["formed"] = formed
@@ -179,6 +186,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics["skipped_fragments"] = skippedFragments
 	metrics["skipped_confidence"] = skippedConfidence
 	metrics["skipped_completion"] = skippedCompletion
+	timings.addMetrics(metrics)
 
 	s.log.Info(
 		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
@@ -197,6 +205,49 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	return metrics, nil
 }
 
+type releaseTimings struct {
+	candidateList      time.Duration
+	listBinaries       time.Duration
+	titleCandidates    time.Duration
+	buildFiles         time.Duration
+	articleLookup      time.Duration
+	upsertRelease      time.Duration
+	replaceFiles       time.Duration
+	replaceNewsgroups  time.Duration
+	upsertNZBCache     time.Duration
+	deleteStale        time.Duration
+	ackCandidate       time.Duration
+	binariesListed     int
+	articleLookupCalls int
+	filesBuilt         int
+	articlesBuilt      int
+}
+
+func (t *releaseTimings) addMetrics(metrics map[string]any) {
+	if t == nil {
+		return
+	}
+	metrics["candidate_list_duration_ms"] = durationMillis(t.candidateList)
+	metrics["list_binaries_duration_ms"] = durationMillis(t.listBinaries)
+	metrics["title_candidates_duration_ms"] = durationMillis(t.titleCandidates)
+	metrics["build_files_duration_ms"] = durationMillis(t.buildFiles)
+	metrics["article_lookup_duration_ms"] = durationMillis(t.articleLookup)
+	metrics["upsert_release_duration_ms"] = durationMillis(t.upsertRelease)
+	metrics["replace_files_duration_ms"] = durationMillis(t.replaceFiles)
+	metrics["replace_newsgroups_duration_ms"] = durationMillis(t.replaceNewsgroups)
+	metrics["upsert_nzb_cache_duration_ms"] = durationMillis(t.upsertNZBCache)
+	metrics["delete_stale_duration_ms"] = durationMillis(t.deleteStale)
+	metrics["ack_candidate_duration_ms"] = durationMillis(t.ackCandidate)
+	metrics["binaries_listed"] = t.binariesListed
+	metrics["article_lookup_calls"] = t.articleLookupCalls
+	metrics["files_built"] = t.filesBuilt
+	metrics["articles_built"] = t.articlesBuilt
+}
+
+func durationMillis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000
+}
+
 type candidateOutcome struct {
 	formed                 int
 	cooledDownFragmentOnly int
@@ -206,35 +257,56 @@ type candidateOutcome struct {
 	skippedCompletion      int
 }
 
-func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate) (candidateOutcome, error) {
+func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate, timings *releaseTimings) (candidateOutcome, error) {
 	familyKey := candidateFamilyKey(candidate)
 	if familyKey == "" {
 		return candidateOutcome{}, fmt.Errorf("release family key is required")
 	}
 
+	start := time.Now()
 	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey)
+	if timings != nil {
+		timings.listBinaries += time.Since(start)
+		timings.binariesListed += len(binaries)
+	}
 	if err != nil {
 		return candidateOutcome{}, fmt.Errorf("list binaries for release candidate: %w", err)
 	}
 	if len(binaries) == 0 {
+		start = time.Now()
 		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
 		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
 		if candidate.KeyKind != "" {
+			start = time.Now()
 			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 				return candidateOutcome{}, fmt.Errorf("ack empty release candidate: %w", err)
+			}
+			if timings != nil {
+				timings.ackCandidate += time.Since(start)
 			}
 		}
 		return candidateOutcome{staleCleanupOnly: 1}, nil
 	}
 
 	if countCompleteBinaries(binaries) == 0 {
+		start = time.Now()
 		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
 		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
 		if candidate.KeyKind != "" {
+			start = time.Now()
 			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 				return candidateOutcome{}, fmt.Errorf("ack cooled-down fragment-only candidate: %w", err)
+			}
+			if timings != nil {
+				timings.ackCandidate += time.Since(start)
 			}
 		}
 		return candidateOutcome{cooledDownFragmentOnly: 1}, nil
@@ -249,7 +321,11 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			return outcome, err
 		}
 
+		start = time.Now()
 		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
+		if timings != nil {
+			timings.titleCandidates += time.Since(start)
+		}
 		if err != nil {
 			return outcome, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
 		}
@@ -268,35 +344,63 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			continue
 		}
 
-		files, err := s.buildReleaseFiles(ctx, cluster)
+		start = time.Now()
+		files, err := s.buildReleaseFiles(ctx, cluster, timings)
+		if timings != nil {
+			timings.buildFiles += time.Since(start)
+		}
 		if err != nil {
 			return outcome, fmt.Errorf("build release files for %s: %w", record.GroupName, err)
 		}
 
+		start = time.Now()
 		releaseID, err := s.repo.UpsertRelease(ctx, record)
+		if timings != nil {
+			timings.upsertRelease += time.Since(start)
+		}
 		if err != nil {
 			return outcome, fmt.Errorf("upsert release %s: %w", record.GroupName, err)
 		}
+		start = time.Now()
 		if err := s.repo.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
 			return outcome, fmt.Errorf("replace release files for %s: %w", releaseID, err)
 		}
+		if timings != nil {
+			timings.replaceFiles += time.Since(start)
+		}
+		start = time.Now()
 		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{candidate.NewsgroupID}); err != nil {
 			return outcome, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
 		}
+		if timings != nil {
+			timings.replaceNewsgroups += time.Since(start)
+		}
+		start = time.Now()
 		if err := s.repo.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
 			return outcome, fmt.Errorf("upsert nzb cache for %s: %w", releaseID, err)
+		}
+		if timings != nil {
+			timings.upsertNZBCache += time.Since(start)
 		}
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)
 		outcome.formed++
 	}
 
+	start = time.Now()
 	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
 		return outcome, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
 	}
+	if timings != nil {
+		timings.deleteStale += time.Since(start)
+	}
 	if candidate.KeyKind != "" {
+		start = time.Now()
 		if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 			return outcome, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
+		}
+		if timings != nil {
+			timings.ackCandidate += time.Since(start)
 		}
 	}
 
@@ -344,7 +448,7 @@ func countCompleteBinaries(binaries []pgindex.BinarySummary) int {
 	return count
 }
 
-func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster) ([]pgindex.ReleaseFileRecord, error) {
+func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster, timings *releaseTimings) ([]pgindex.ReleaseFileRecord, error) {
 	selected := make([]pgindex.BinarySummary, 0, len(cluster.Binaries))
 	byName := make(map[string]int, len(cluster.Binaries))
 	for _, binary := range cluster.Binaries {
@@ -363,12 +467,28 @@ func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster)
 		selected = append(selected, binary)
 	}
 
+	binaryIDs := make([]int64, 0, len(selected))
+	for _, binary := range selected {
+		if binary.BinaryID > 0 {
+			binaryIDs = append(binaryIDs, binary.BinaryID)
+		}
+	}
+
+	start := time.Now()
+	articlesByBinaryID, err := s.repo.ListBinaryPartArticlesBatch(ctx, binaryIDs)
+	if timings != nil {
+		timings.articleLookup += time.Since(start)
+		if len(binaryIDs) > 0 {
+			timings.articleLookupCalls++
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list binary part articles batch: %w", err)
+	}
+
 	files := make([]pgindex.ReleaseFileRecord, 0, len(selected))
 	for idx, binary := range selected {
-		articles, err := s.repo.ListBinaryPartArticles(ctx, binary.BinaryID)
-		if err != nil {
-			return nil, fmt.Errorf("list binary part articles %d: %w", binary.BinaryID, err)
-		}
+		articles := articlesByBinaryID[binary.BinaryID]
 
 		fileName := pickFileName(binary)
 		fileIndex := binary.FileIndex
@@ -386,6 +506,10 @@ func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster)
 			PostedAt:  binary.PostedAt,
 			Articles:  articles,
 		})
+		if timings != nil {
+			timings.filesBuilt++
+			timings.articlesBuilt += len(articles)
+		}
 	}
 
 	return files, nil

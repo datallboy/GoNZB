@@ -421,6 +421,8 @@ Additional Milestone 4 change:
 
 - `RefreshBinaryStatsBatch` now refreshes all touched binaries for a worker chunk inside one transaction instead of starting one transaction per binary.
 - The old single-binary `RefreshBinaryStats` API remains as a wrapper for compatibility and tests.
+- Follow-up concurrent backlog building exposed two PostgreSQL deadlocks in `release_family_readiness_summaries` while four assemble workers refreshed overlapping family rows.
+- `RefreshBinaryStatsBatch` now updates binary rows in deterministic binary-id order, collects unique release-family summary keys, and refreshes/marks those family rows once per worker chunk in deterministic key order.
 
 Measurement:
 
@@ -444,7 +446,8 @@ Conclusion:
 
 - The old write amplification bottleneck is resolved for assemble.
 - Binary refresh is no longer dominant after batching; selector and matcher/recovery work are now larger shares of assemble runtime.
-- Dirty-family summary refresh is not the next assemble bottleneck at the measured `10000/4` setting.
+- Dirty-family summary refresh is not the next assemble throughput bottleneck at the measured `10000/4` setting, but it did need deterministic ordering to be concurrency-safe.
+- After deterministic ordering, three additional `10000/4` assemble passes completed without deadlocks.
 - Release formation did become materially more expensive after assemble throughput improved: a follow-up release pass formed `120` of `122` candidate families and took `78.625s`, with the dirty-family queue drained to `0`.
 - Milestone 5 should now evaluate release concurrency and release write/read costs because release, not assemble write amplification, is the next observed long pole.
 
@@ -460,20 +463,84 @@ Goal:
 
 Status:
 
-- [ ] not started
+- [x] complete
 
 Tasks:
 
-- [ ] re-measure `release` after assemble throughput improves
-- [ ] determine whether release runtime becomes materially expensive as dirty-family volume grows again
-- [ ] if needed, define family-level claim semantics for release candidates
-- [ ] ensure workers cannot form the same family concurrently
-- [ ] verify that release claims remain compatible with stale-cleanup-only and fragment-cooldown behavior
+- [x] re-measure `release` after assemble throughput improves
+- [x] determine whether release runtime becomes materially expensive as dirty-family volume grows again
+- [x] if needed, define family-level claim semantics for release candidates
+- [x] ensure workers cannot form the same family concurrently
+- [x] verify that release claims remain compatible with stale-cleanup-only and fragment-cooldown behavior
 
 Acceptance criteria:
 
 - we have a clear yes or no on release multi-worker implementation for this sprint
 - if implemented, `release.concurrency` becomes real and family-safe
+
+Measurement:
+
+- Backlog build: five assemble passes without release left `61` dirty release families.
+- Pre-release-write-batching pass:
+  - run id: `61984`
+  - candidate families: `61`
+  - formed releases: `64`
+  - files built: `1,474`
+  - file article rows: `297,117`
+  - total runtime: `45.814s`
+  - candidate listing: `0.008s`
+  - binary listing: `7.950s`
+  - article lookup: `0.346s`
+  - replace release files/articles: `36.884s`
+- The dominant bottleneck was not release candidate claiming or article lookup; it was row-by-row `release_file_articles` insertion inside `ReplaceReleaseFiles`.
+
+Milestone 5 implementation:
+
+- Release formation now records timing buckets in stage metrics:
+  - candidate listing
+  - binary listing
+  - title candidate listing
+  - file building
+  - article lookup
+  - release upsert
+  - release file/article replacement
+  - newsgroup replacement
+  - NZB cache upsert
+  - stale cleanup
+  - dirty-family ack
+- `buildReleaseFiles` now batches binary-part article lookup per cluster using `ListBinaryPartArticlesBatch`.
+- `ReplaceReleaseFiles` now batches `release_file_articles` inserts instead of executing one insert per article row.
+
+Post-change measurement:
+
+- Backlog build: three assemble passes without release left `20` dirty release families.
+- Release pass:
+  - run id: `61988`
+  - candidate families: `20`
+  - formed releases: `18`
+  - files built: `490`
+  - file article rows: `99,889`
+  - total runtime: `5.970s`
+  - candidate listing: `0.004s`
+  - binary listing: `2.715s`
+  - article lookup: `0.102s`
+  - replace release files/articles: `2.914s`
+  - dirty-family queue after release: `0`
+
+Concurrency decision:
+
+- Do not implement release multi-worker concurrency in this sprint yet.
+- Evidence points to batched release writes as the correct first fix, not workers.
+- If release concurrency is later needed, it must add database-backed family claims on `release_stage_dirty_families` before multiple workers run. A safe shape would mirror assemble:
+  - claim a bounded set of dirty family rows with a worker id and lease expiry, or use row-lock claiming with `FOR UPDATE SKIP LOCKED`
+  - process only claimed family keys
+  - ack/delete only after successful stale-cleanup, fragment-cooldown, or release formation
+  - let stale claims expire so another process can retry
+- Stale-cleanup-only and fragment-cooldown behavior remain compatible with claims because both paths already end in `AckReleaseCandidate`; the ack would simply need to verify ownership or operate only on claimed rows.
+
+Milestone 5 sign-off:
+
+- Complete. Release became temporarily expensive because assemble throughput fed it larger dirty-family batches, but timing showed the bottleneck was row-by-row article persistence. After batching, release drained a 20-family backlog in `5.970s`; release multi-worker concurrency is explicitly deferred until measurements show batching is insufficient.
 
 ## Milestone 6. Optional Cross-Process Worker Topology
 
@@ -545,7 +612,7 @@ The final design must ensure:
 - [ ] `assemble.concurrency` used by real workers
 - [ ] no duplicate header processing under concurrency tests
 - [ ] no binary corruption or release-family summary drift under concurrency tests
-- [ ] `release` concurrency evaluated after assemble improvements
+- [x] `release` concurrency evaluated after assemble improvements
 - [ ] optional cross-process worker path either implemented or explicitly deferred with evidence
 
 ## References
