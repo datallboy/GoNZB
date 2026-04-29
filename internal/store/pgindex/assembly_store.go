@@ -1161,13 +1161,37 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
+	return s.RefreshBinaryStatsBatch(ctx, []int64{binaryID})
+}
+
+func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error {
+	if len(binaryIDs) == 0 {
+		return nil
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin refresh binary stats tx %d: %w", binaryID, err)
+		return fmt.Errorf("begin refresh binary stats batch tx: %w", err)
 	}
 	defer rollbackTx(tx)
 
+	for _, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			return fmt.Errorf("binary id is required")
+		}
+		if err := refreshBinaryStatsInTx(ctx, tx, binaryID); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit refresh binary stats batch tx: %w", err)
+	}
+
+	return nil
+}
+
+func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) error {
 	var (
 		providerID        int64
 		newsgroupID       int64
@@ -1175,7 +1199,7 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 		baseStem          string
 		expectedFileCount int
 	)
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		WITH agg AS (
 			SELECT
 				bp.binary_id,
@@ -1230,10 +1254,6 @@ func (s *Store) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
 		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
 			return err
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit refresh binary stats tx %d: %w", binaryID, err)
 	}
 
 	return nil

@@ -392,20 +392,65 @@ Goal:
 
 Status:
 
-- [ ] not started
+- [x] complete
 
 Tasks:
 
-- [ ] evaluate whether per-header `UpsertBinaryPart` plus per-binary refresh is the dominant cost once workers are added
-- [ ] batch binary-stat refreshes for all touched binaries instead of refreshing each binary in a separate transaction where possible
-- [ ] reduce transaction churn in the hot assemble path
-- [ ] confirm that dirty-family summary refresh work does not become the new bottleneck after assemble fan-out
-- [ ] re-measure assemble runtime after batching changes
+- [x] evaluate whether per-header `UpsertBinaryPart` plus per-binary refresh is the dominant cost once workers are added
+- [x] batch binary-stat refreshes for all touched binaries instead of refreshing each binary in a separate transaction where possible
+- [x] reduce transaction churn in the hot assemble path
+- [x] confirm that dirty-family summary refresh work does not become the new bottleneck after assemble fan-out
+- [x] re-measure assemble runtime after batching changes
 
 Acceptance criteria:
 
-- worker concurrency produces net speedup instead of moving the bottleneck into write amplification
-- binary stats and release-family summaries stay correct under concurrent assemble workers
+- [x] worker concurrency produces net speedup instead of moving the bottleneck into write amplification
+- [x] binary stats and release-family summaries stay correct under concurrent assemble workers
+
+### Milestone 4 write and refresh scaling pass
+
+Implemented on `2026-04-29`.
+
+Changes already completed before this pass:
+
+- Batch-local binary upsert caching reduced `UpsertBinary` calls from per-header to per-unique-binary.
+- `UpsertBinaryParts` batches part writes and article-header assembled marks.
+- Large part batches are chunked inside one transaction to stay under PostgreSQL's extended-protocol parameter limit.
+
+Additional Milestone 4 change:
+
+- `RefreshBinaryStatsBatch` now refreshes all touched binaries for a worker chunk inside one transaction instead of starting one transaction per binary.
+- The old single-binary `RefreshBinaryStats` API remains as a wrapper for compatibility and tests.
+
+Measurement:
+
+- Recommended measured setting remained `batch_size=10000`, `concurrency=4`.
+- Post-refresh-batching assemble run:
+  - run id: `61962`
+  - processed headers: `10,000`
+  - worker count: `4`
+  - lane A selected: `7,000`
+  - lane B selected: `3,000`
+  - unique binary upserts: `122`
+  - binary upsert cache hits: `9,878`
+  - total runtime: `5.237s`
+  - headers per second: `1,913.18`
+  - candidate selection: `2.987s`
+  - binary upsert: `0.632s`
+  - binary-part batch upsert plus assembled mark: `0.850s`
+  - binary refresh: `0.451s`
+
+Conclusion:
+
+- The old write amplification bottleneck is resolved for assemble.
+- Binary refresh is no longer dominant after batching; selector and matcher/recovery work are now larger shares of assemble runtime.
+- Dirty-family summary refresh is not the next assemble bottleneck at the measured `10000/4` setting.
+- Release formation did become materially more expensive after assemble throughput improved: a follow-up release pass formed `120` of `122` candidate families and took `78.625s`, with the dirty-family queue drained to `0`.
+- Milestone 5 should now evaluate release concurrency and release write/read costs because release, not assemble write amplification, is the next observed long pole.
+
+Milestone 4 sign-off:
+
+- Complete. Assemble write and refresh scaling is sufficient for the current sprint baseline; continue with release concurrency evaluation in Milestone 5.
 
 ## Milestone 5. Evaluate Release Multi-Worker Concurrency
 
