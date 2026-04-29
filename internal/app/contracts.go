@@ -150,7 +150,7 @@ type UsenetIndexStore interface {
 
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
-	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
+	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
@@ -159,6 +159,7 @@ type UsenetIndexStore interface {
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
+	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error

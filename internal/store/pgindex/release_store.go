@@ -44,16 +44,25 @@ type BinarySummary struct {
 
 // grouped release candidate used by release formation.
 type ReleaseCandidate struct {
-	ProviderID       int64
-	NewsgroupID      int64
-	KeyKind          string
-	SourceReleaseKey string
-	ReleaseFamilyKey string
-	ReleaseKey       string
-	ReleaseName      string
-	PostedAt         *time.Time
-	BinaryCount      int
-	TotalBytes       int64
+	ProviderID          int64
+	NewsgroupID         int64
+	KeyKind             string
+	SourceReleaseKey    string
+	ReleaseFamilyKey    string
+	ReleaseKey          string
+	ReleaseName         string
+	PostedAt            *time.Time
+	BinaryCount         int
+	CompleteBinaryCount int
+	ReadinessBucket     string
+	TotalBytes          int64
+}
+
+type ReleaseCandidateAck struct {
+	ProviderID  int64
+	NewsgroupID int64
+	KeyKind     string
+	FamilyKey   string
 }
 
 // release catalog upsert input.
@@ -234,6 +243,8 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			q.release_name,
 			q.posted_at,
 			q.binary_count,
+			q.complete_binary_count,
+			q.readiness_bucket,
 			q.total_bytes
 		FROM next_queue q
 		ORDER BY
@@ -276,6 +287,8 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			&item.ReleaseName,
 			&postedAt,
 			&item.BinaryCount,
+			&item.CompleteBinaryCount,
+			&item.ReadinessBucket,
 			&item.TotalBytes,
 		); err != nil {
 			return nil, fmt.Errorf("scan release candidate: %w", err)
@@ -322,12 +335,23 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		SELECT
 			b.provider_id,
 			MIN(b.newsgroup_id)::BIGINT AS newsgroup_id,
+			'release_family' AS key_kind,
 			MAX(b.source_release_key) AS source_release_key,
 			b.effective_release_family_key,
 			MAX(b.release_key) AS release_key,
 			MAX(b.release_name) AS release_name,
 			MIN(b.posted_at) AS posted_at,
 			COUNT(*)::INTEGER AS binary_count,
+			COUNT(*) FILTER (
+				WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+			)::INTEGER AS complete_binary_count,
+			CASE
+				WHEN COUNT(*) FILTER (
+					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+				) > 0 THEN 'actionable'
+				WHEN COUNT(*) > 0 THEN 'fragment_only'
+				ELSE 'stale_cleanup_only'
+			END AS readiness_bucket,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
 		FROM releases r
 		JOIN candidate_binaries b
@@ -351,12 +375,15 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		if err := rows.Scan(
 			&item.ProviderID,
 			&item.NewsgroupID,
+			&item.KeyKind,
 			&item.SourceReleaseKey,
 			&item.ReleaseFamilyKey,
 			&item.ReleaseKey,
 			&item.ReleaseName,
 			&postedAt,
 			&item.BinaryCount,
+			&item.CompleteBinaryCount,
+			&item.ReadinessBucket,
 			&item.TotalBytes,
 		); err != nil {
 			return nil, fmt.Errorf("scan existing release candidate: %w", err)
@@ -378,28 +405,57 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 }
 
 // CHANGED: fetch binaries that belong to one release candidate.
-func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) ([]BinarySummary, error) {
+func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]BinarySummary, error) {
 	if providerID <= 0 {
 		return nil, fmt.Errorf("provider id is required")
 	}
+	keyKind = strings.TrimSpace(keyKind)
 	releaseFamilyKey = strings.TrimSpace(releaseFamilyKey)
 	if releaseFamilyKey == "" {
 		return nil, fmt.Errorf("release family key is required")
 	}
 
-	query := `
-		WITH candidate_binaries AS (
+	candidateSelector := `
 			SELECT b.*
 			FROM binaries b
 			WHERE b.provider_id = $1
-			  AND b.release_family_key = $2
+			  AND b.release_family_key = $2`
+	if newsgroupID > 0 {
+		candidateSelector += `
+			  AND b.newsgroup_id = $3`
+	}
+	switch keyKind {
+	case "base_stem":
+		candidateSelector = `
+			SELECT b.*
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.expected_file_count > 1
+			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND LOWER(BTRIM(b.base_stem)) = $2`
+		if newsgroupID > 0 {
+			candidateSelector += `
+			  AND b.newsgroup_id = $3`
+		}
+	case "release_family":
+	default:
+		candidateSelector += `
 			UNION
 			SELECT b.*
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.expected_file_count > 1
 			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-			  AND LOWER(BTRIM(b.base_stem)) = $2
+			  AND LOWER(BTRIM(b.base_stem)) = $2`
+		if newsgroupID > 0 {
+			candidateSelector += `
+			  AND b.newsgroup_id = $3`
+		}
+	}
+
+	query := `
+		WITH candidate_binaries AS (
+` + candidateSelector + `
 		)
 		SELECT
 			b.id,
@@ -435,12 +491,9 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.match_confidence,
 			b.match_status
 		FROM candidate_binaries b
-		LEFT JOIN posters p ON p.id = b.poster_id
-		WHERE b.provider_id = $1`
+		LEFT JOIN posters p ON p.id = b.poster_id`
 	args := []any{providerID, releaseFamilyKey}
 	if newsgroupID > 0 {
-		query += `
-		  AND b.newsgroup_id = $3`
 		args = append(args, newsgroupID)
 	}
 	query += `
@@ -504,31 +557,73 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 }
 
 func (s *Store) AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error {
-	if providerID <= 0 {
-		return fmt.Errorf("provider id is required")
-	}
-	if newsgroupID <= 0 {
-		return fmt.Errorf("newsgroup id is required")
-	}
-	keyKind = strings.TrimSpace(keyKind)
-	familyKey = strings.TrimSpace(familyKey)
-	if keyKind == "" || familyKey == "" {
-		return fmt.Errorf("key kind and family key are required")
+	return s.AckReleaseCandidates(ctx, []ReleaseCandidateAck{{
+		ProviderID:  providerID,
+		NewsgroupID: newsgroupID,
+		KeyKind:     keyKind,
+		FamilyKey:   familyKey,
+	}})
+}
+
+func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCandidateAck) error {
+	if len(candidates) == 0 {
+		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families
-		WHERE provider_id = $1
-		  AND newsgroup_id = $2
-		  AND key_kind = $3
-		  AND family_key = $4`,
-		providerID,
-		newsgroupID,
-		keyKind,
-		familyKey,
+	unique := make([]ReleaseCandidateAck, 0, len(candidates))
+	seen := make(map[ReleaseCandidateAck]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ProviderID <= 0 {
+			return fmt.Errorf("provider id is required")
+		}
+		if candidate.NewsgroupID <= 0 {
+			return fmt.Errorf("newsgroup id is required")
+		}
+		candidate.KeyKind = strings.TrimSpace(candidate.KeyKind)
+		candidate.FamilyKey = strings.TrimSpace(candidate.FamilyKey)
+		if candidate.KeyKind == "" || candidate.FamilyKey == "" {
+			return fmt.Errorf("key kind and family key are required")
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		unique = append(unique, candidate)
+	}
+
+	const maxAckBatchRows = 1000
+	for start := 0; start < len(unique); start += maxAckBatchRows {
+		end := start + maxAckBatchRows
+		if end > len(unique) {
+			end = len(unique)
+		}
+		if err := ackReleaseCandidatesChunk(ctx, s.db, unique[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []ReleaseCandidateAck) error {
+	args := make([]any, 0, len(candidates)*4)
+	values := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		base := len(args)
+		args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
+	}
+
+	_, err := db.ExecContext(ctx, `
+		DELETE FROM release_stage_dirty_families d
+		USING (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+		WHERE d.provider_id = v.provider_id
+		  AND d.newsgroup_id = v.newsgroup_id
+		  AND d.key_kind = v.key_kind
+		  AND d.family_key = v.family_key`,
+		args...,
 	)
 	if err != nil {
-		return fmt.Errorf("ack release candidate provider=%d group=%d key_kind=%s family=%q: %w", providerID, newsgroupID, keyKind, familyKey, err)
+		return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
 	}
 	return nil
 }
@@ -1089,16 +1184,29 @@ func (s *Store) ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, 
 		return fmt.Errorf("delete release_newsgroups for %s: %w", releaseID, err)
 	}
 
+	args := make([]any, 0, len(newsgroupIDs)*2)
+	placeholders := make([]string, 0, len(newsgroupIDs))
+	seen := make(map[int64]struct{}, len(newsgroupIDs))
 	for _, newsgroupID := range newsgroupIDs {
 		if newsgroupID <= 0 {
 			continue
 		}
+		if _, ok := seen[newsgroupID]; ok {
+			continue
+		}
+		seen[newsgroupID] = struct{}{}
+		base := len(args)
+		args = append(args, releaseID, newsgroupID)
+		placeholders = append(placeholders, fmt.Sprintf("($%d,$%d)", base+1, base+2))
+	}
+
+	if len(placeholders) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO release_newsgroups (release_id, newsgroup_id)
-			VALUES ($1, $2)`,
-			releaseID, newsgroupID,
+			VALUES `+strings.Join(placeholders, ","),
+			args...,
 		); err != nil {
-			return fmt.Errorf("insert release_newsgroup release=%s group=%d: %w", releaseID, newsgroupID, err)
+			return fmt.Errorf("insert release_newsgroups for %s: %w", releaseID, err)
 		}
 	}
 

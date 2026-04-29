@@ -277,6 +277,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 
 	refreshed := make(map[int64]struct{}, len(headers))
+	posterIDsByName := make(map[string]int64, 64)
 	assembledCount := 0
 	binaryIDsByKey := make(map[string]int64, len(headers))
 	partRecords := make([]pgindex.BinaryPartRecord, 0, len(headers))
@@ -340,15 +341,22 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 
 		posterID := header.PosterID
 		if posterID <= 0 {
-			var err error
-			posterStarted := time.Now()
-			posterID, err = s.repo.EnsurePoster(ctx, header.Poster)
-			posterDuration += time.Since(posterStarted)
-			if err != nil {
-				metrics["processed_headers"] = assembledCount
-				metrics["binaries_refreshed"] = len(refreshed)
-				addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-				return metrics, fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
+			if cachedPosterID, ok := posterIDsByName[header.Poster]; ok {
+				posterID = cachedPosterID
+			} else {
+				var err error
+				posterStarted := time.Now()
+				posterID, err = s.repo.EnsurePoster(ctx, header.Poster)
+				posterDuration += time.Since(posterStarted)
+				if err != nil {
+					metrics["processed_headers"] = assembledCount
+					metrics["binaries_refreshed"] = len(refreshed)
+					addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+					return metrics, fmt.Errorf("ensure poster for article %d: %w", header.ID, err)
+				}
+				if posterID > 0 {
+					posterIDsByName[header.Poster] = posterID
+				}
 			}
 		}
 
