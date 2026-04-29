@@ -29,6 +29,7 @@ type repository interface {
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
+	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
 }
 
 // narrow matcher dependency.
@@ -228,6 +229,10 @@ func (r claimedBatchRepository) RefreshBinaryStats(ctx context.Context, binaryID
 	return r.delegate.RefreshBinaryStats(ctx, binaryID)
 }
 
+func (r claimedBatchRepository) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error {
+	return r.delegate.RefreshBinaryStatsBatch(ctx, binaryIDs)
+}
+
 func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("assembly repo is required")
@@ -411,14 +416,18 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
 	assembledCount = len(partRecords)
 
+	refreshIDs := make([]int64, 0, len(refreshed))
 	for binaryID := range refreshed {
+		refreshIDs = append(refreshIDs, binaryID)
+	}
+	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
-		if err := s.repo.RefreshBinaryStats(ctx, binaryID); err != nil {
+		if err := s.repo.RefreshBinaryStatsBatch(ctx, refreshIDs); err != nil {
 			metrics["processed_headers"] = assembledCount
 			metrics["binaries_refreshed"] = len(refreshed)
 			binaryRefreshDuration += time.Since(refreshStarted)
 			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-			return metrics, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
+			return metrics, fmt.Errorf("refresh binary stats batch: %w", err)
 		}
 		binaryRefreshDuration += time.Since(refreshStarted)
 	}

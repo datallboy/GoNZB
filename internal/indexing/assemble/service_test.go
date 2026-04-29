@@ -242,6 +242,10 @@ func (f *fakeRepository) RefreshBinaryStats(context.Context, int64) error {
 	return nil
 }
 
+func (f *fakeRepository) RefreshBinaryStatsBatch(context.Context, []int64) error {
+	return nil
+}
+
 type fakeMatcher struct {
 	lastCandidate match.Candidate
 	result        match.Result

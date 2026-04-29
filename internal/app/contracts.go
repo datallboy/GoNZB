@@ -146,6 +146,7 @@ type UsenetIndexStore interface {
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
+	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
 
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
