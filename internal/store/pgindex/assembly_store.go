@@ -957,6 +957,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	if in.ExpectedFileCount > 1 {
 		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
 	}
+	sortReleaseFamilySummaryKeys(summaryKeys)
 
 	for _, key := range summaryKeys {
 		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
@@ -1078,11 +1079,13 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 }
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
-	partArgs := make([]any, 0, len(records)*7)
+	dedupedRecords := dedupeBinaryPartRecords(records)
+
+	partArgs := make([]any, 0, len(dedupedRecords)*7)
 	headerArgs := make([]any, 0, len(records))
-	partValues := make([]string, 0, len(records))
+	partValues := make([]string, 0, len(dedupedRecords))
 	headerValues := make([]string, 0, len(records))
-	for i, record := range records {
+	for i, record := range dedupedRecords {
 		if record.BinaryID <= 0 || record.ArticleHeaderID <= 0 {
 			return fmt.Errorf("binary id and article header id are required")
 		}
@@ -1101,7 +1104,6 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			partBase+5,
 			partBase+6,
 		))
-		headerValues = append(headerValues, fmt.Sprintf("($%d::bigint)", i+1))
 		partArgs = append(
 			partArgs,
 			record.BinaryID,
@@ -1112,6 +1114,9 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			record.SegmentBytes,
 			strings.TrimSpace(record.FileName),
 		)
+	}
+	for i, record := range records {
+		headerValues = append(headerValues, fmt.Sprintf("($%d::bigint)", i+1))
 		headerArgs = append(headerArgs, record.ArticleHeaderID)
 	}
 
@@ -1136,7 +1141,7 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		    updated_at = NOW()`,
 		strings.Join(partValues, ","))
 	if _, err := tx.ExecContext(ctx, query, partArgs...); err != nil {
-		return fmt.Errorf("upsert %d binary parts: %w", len(records), err)
+		return fmt.Errorf("upsert %d binary parts: %w", len(dedupedRecords), err)
 	}
 
 	query = fmt.Sprintf(`
@@ -1155,6 +1160,54 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	}
 
 	return nil
+}
+
+func dedupeBinaryPartRecords(records []BinaryPartRecord) []BinaryPartRecord {
+	if len(records) <= 1 {
+		return records
+	}
+
+	type binaryPartKey struct {
+		BinaryID   int64
+		PartNumber int
+	}
+
+	bestByKey := make(map[binaryPartKey]BinaryPartRecord, len(records))
+	order := make([]binaryPartKey, 0, len(records))
+	for _, record := range records {
+		key := binaryPartKey{BinaryID: record.BinaryID, PartNumber: record.PartNumber}
+		existing, ok := bestByKey[key]
+		if !ok {
+			bestByKey[key] = record
+			order = append(order, key)
+			continue
+		}
+		bestByKey[key] = preferBinaryPartRecord(existing, record)
+	}
+
+	out := make([]BinaryPartRecord, 0, len(order))
+	for _, key := range order {
+		out = append(out, bestByKey[key])
+	}
+	return out
+}
+
+func preferBinaryPartRecord(current, candidate BinaryPartRecord) BinaryPartRecord {
+	if candidate.SegmentBytes > current.SegmentBytes {
+		return candidate
+	}
+	if candidate.SegmentBytes == current.SegmentBytes {
+		if strings.TrimSpace(candidate.MessageID) != "" && strings.TrimSpace(current.MessageID) == "" {
+			return candidate
+		}
+		if strings.TrimSpace(candidate.FileName) != "" && strings.TrimSpace(current.FileName) == "" {
+			return candidate
+		}
+		if candidate.ArticleHeaderID > current.ArticleHeaderID {
+			return candidate
+		}
+	}
+	return current
 }
 
 // CHANGED: recompute binary aggregate stats after parts were inserted.
