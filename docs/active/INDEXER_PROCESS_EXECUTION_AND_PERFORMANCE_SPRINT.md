@@ -164,22 +164,85 @@ Goal:
 
 Status:
 
-- [ ] not started
+- [x] complete
 
 Tasks:
 
-- [ ] review the current path A binary-priority selector against the live backlog characteristics
-- [ ] measure how many lane A candidates are available and how long the current lane A discovery query takes
-- [ ] redesign path A if the current normalized-filename match strategy is too sparse for the real workload
-- [ ] evaluate whether path A should pivot from current file-name identity matching toward binary-progress or multipart-readiness heuristics
-- [ ] ensure the new selector still preserves deterministic ordering and avoids starvation of fresh work
-- [ ] keep lane-level metrics so we can compare old and new path A contribution
+- [x] review the current path A binary-priority selector against the live backlog characteristics
+- [x] measure how many lane A candidates are available and how long the current lane A discovery query takes
+- [x] redesign path A if the current normalized-filename match strategy is too sparse for the real workload
+- [x] evaluate whether path A should pivot from current file-name identity matching toward binary-progress or multipart-readiness heuristics
+- [x] ensure the new selector still preserves deterministic ordering and avoids starvation of fresh work
+- [x] keep lane-level metrics so we can compare old and new path A contribution
 
 Acceptance criteria:
 
-- path A contributes a meaningful portion of the batch on the live dev backlog, or is intentionally replaced by a better prioritization strategy
-- selector cost remains acceptable at current backlog scale
-- assemble gets a measurable throughput improvement even before multi-worker fan-out lands
+- [x] path A contributes a meaningful portion of the batch on the live dev backlog, or is intentionally replaced by a better prioritization strategy
+- [x] selector cost remains acceptable at current backlog scale
+- [x] assemble gets a measurable throughput improvement even before multi-worker fan-out lands
+
+### Milestone 2 path A selector pass
+
+Implemented on `2026-04-29`.
+
+Decision:
+
+- Keep the two-lane selector model.
+- Path A remains the completion lane for binaries/releases that already exist.
+- Path B remains the fresh-work lane that forms new binaries/releases from recent pending headers.
+- Keep the adjustable lane split in `internal/store/pgindex/assembly_store.go`; the current setting gives path A about `70%` of the batch and path B about `30%`.
+
+Reason:
+
+- The model is still correct for backlog burn-down: as incomplete binary/release backlog grows, path A should receive more attention.
+- The problem found in Milestone 1 was not the path A concept. The old selector ranked incomplete binaries first, then looked for matching pending headers, which spent seconds on many binaries that had no available pending parts.
+
+Selector change:
+
+- Path A now starts from a bounded recent window of pending structured headers, then joins those headers to incomplete binaries by normalized file identity.
+- It ranks matching headers by main-payload preference, binary completion ratio, observed parts, binary id, and header id.
+- It still falls back to path B for the rest of the batch, so fresh release formation is not starved.
+
+Measurement:
+
+- pre-change instrumented run: `lane_a_selected=3`, `lane_b_selected=2497`, selector `3.529s`, total `25.085s`, `99.68` headers/sec
+- path A availability query against a `70,000` pending-header window found `9,505` usable path A candidates in about `1.4s`
+- post-change instrumented run: `lane_a_selected=1750`, `lane_b_selected=750`, selector `2.407s`, total about `23.39s`, `106.88` headers/sec
+
+Milestone 2 conclusion:
+
+- Path A is worth keeping and is now doing the intended job on the live backlog.
+- The current `70/30` lane split is appropriate for the measured backlog because path A can fill its allocation.
+- If path A availability drops below its allocation, the existing fallback naturally gives unused capacity back to path B.
+- Further runtime reduction should now focus on DB-safe claiming and write-path amplification, not more selector churn.
+
+Milestone 2 sign-off:
+
+- Complete. The selector now materially contributes to completing existing binaries while preserving fresh-work progress.
+
+## Later Milestone Action Plan From Milestones 1 And 2
+
+Upsert tuning direction:
+
+- The hot cost is write amplification, especially `UpsertBinary` repeated once per header even when a batch touches only a small number of binaries.
+- In the measured Milestone 2 run, `2,500` headers touched only `32` binaries, but the service still called the binary upsert path per header.
+- The first write-path target should be batch-local binary identity caching: after matching, upsert each unique `(provider_id, newsgroup_id, binary_key)` once per batch or claimed chunk, then reuse the returned binary id for that chunk's parts.
+- The second target should be deferring release-family summary refresh out of per-header binary upserts. Mark dirty families cheaply during assemble, then refresh summaries once per touched family after the chunk or in release processing.
+- The third target should be batching part writes and assembled marks where practical, using set-based `INSERT ... ON CONFLICT` and set-based `UPDATE article_headers` rather than one DB round trip per part.
+- Keep `RefreshBinaryStats` batch-level or chunk-level; it is cheap today, but it must remain correct under concurrency.
+
+Milestone 3 action:
+
+- Add DB-backed ownership before enabling multiple assemble workers.
+- Prefer transaction-scoped chunk claiming with `FOR UPDATE SKIP LOCKED` for the first implementation because it avoids stale lease columns while proving worker safety.
+- If workers need long-lived claims across NNTP recovery or large chunks, promote to lease columns or a side table with maintenance cleanup.
+- Preserve the path A/path B selector semantics inside the claim query so workers claim disjoint rows from the same lane policy.
+
+Milestone 4 action:
+
+- Implement binary upsert de-amplification and part-write batching after claims exist, so each worker owns a chunk and can safely batch within it.
+- Measure whether release-family summary refresh or dirty-family writes become the next bottleneck after binary upsert calls are reduced.
+- Keep unique constraints and idempotent upserts as the final correctness guard under worker concurrency.
 
 ## Milestone 3. Make Assemble Concurrency Real In One Process
 
