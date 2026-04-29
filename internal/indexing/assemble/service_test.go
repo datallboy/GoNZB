@@ -220,6 +220,10 @@ func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]
 	return f.headers, nil
 }
 
+func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, _ pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+	return f.headers, nil
+}
+
 func (f *fakeRepository) EnsurePoster(context.Context, string) (int64, error) {
 	return 44, nil
 }

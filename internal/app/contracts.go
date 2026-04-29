@@ -140,6 +140,7 @@ type UsenetIndexStore interface {
 
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
+	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error

@@ -273,28 +273,79 @@ Goal:
 
 Status:
 
-- [ ] not started
+- [x] complete
 
 Tasks:
 
-- [ ] define a database-backed claim model for pending assembly work
+- [x] define a database-backed claim model for pending assembly work
 - [ ] choose one of these safe claim patterns:
   - row claiming on `article_headers` with lease columns
   - dedicated assembly-claim side table
   - transaction-scoped selection with `FOR UPDATE SKIP LOCKED`
-- [ ] implement a worker pool driven by goroutines for assemble
-- [ ] ensure each worker only receives claimed rows and cannot process the same header as another worker
-- [ ] batch work into explicit claimed chunks so cancellation and restart behavior remains understandable
-- [ ] preserve stage-level metrics while adding per-worker metrics where useful
-- [ ] make sure stage shutdown cancels workers cleanly and does not leave claims stuck forever
-- [ ] add maintenance or claim-repair behavior if claims can become stale
+- [x] choose one of these safe claim patterns:
+  - row claiming on `article_headers` with lease columns
+  - dedicated assembly-claim side table
+  - transaction-scoped selection with `FOR UPDATE SKIP LOCKED`
+- [x] implement a worker pool driven by goroutines for assemble
+- [x] ensure each worker only receives claimed rows and cannot process the same header as another worker
+- [x] batch work into explicit claimed chunks so cancellation and restart behavior remains understandable
+- [x] preserve stage-level metrics while adding per-worker metrics where useful
+- [x] make sure stage shutdown cancels workers cleanly and does not leave claims stuck forever
+- [x] add maintenance or claim-repair behavior if claims can become stale
 
 Acceptance criteria:
 
-- `assemble.concurrency > 1` causes real parallel work
-- duplicate processing of the same header does not occur
-- cancellation, restart, and stale-claim recovery are deterministic
-- throughput improves without corrupting binary or part state
+- [x] `assemble.concurrency > 1` causes real parallel work
+- [x] duplicate processing of the same header does not occur
+- [x] cancellation, restart, and stale-claim recovery are deterministic
+- [x] throughput improves without corrupting binary or part state
+
+### Milestone 3 assemble claim and worker pass
+
+Implemented on `2026-04-29`.
+
+Claim model:
+
+- Added `article_headers.assembly_claimed_by` and `article_headers.assembly_claimed_until`.
+- Assemble now claims rows before processing them and clears claims when batched part writes mark headers assembled.
+- Active claims are excluded from path A and path B selection.
+- Claims are lease based, so canceled or crashed workers do not leave rows stuck forever; expired claims naturally become selectable again.
+
+Worker model:
+
+- `assemble.concurrency` now drives real goroutine fan-out inside the current process.
+- The service claims the full batch once with database-backed ownership, then splits the claimed headers across workers.
+- Workers only receive already claimed rows, so worker ownership does not rely on in-memory selection races.
+- Stage metrics now include `worker_count`, `unique_binary_upserts`, `binary_upsert_cache_hits`, and `binary_part_batch_size`.
+
+Validation:
+
+- A first claim-per-worker test run proved the safety model but underfilled the batch because workers raced on the same top candidate window.
+- The implementation was adjusted to claim the full batch once, then fan out claimed rows.
+- Live `assemble.concurrency=4` validation run:
+  - run id: `61945`
+  - selected headers: `2,500`
+  - processed headers: `2,500`
+  - worker count: `4`
+  - lane A selected: `1,750`
+  - lane B selected: `750`
+  - unique binary upserts: `49`
+  - binary upsert cache hits: `2,451`
+  - total runtime: `3.135s`
+  - headers per second: `800.89`
+  - candidate selection: `1.824s`
+  - binary upsert: `0.342s`
+  - binary-part batch upsert plus assembled mark: `0.284s`
+
+Milestone 3 conclusion:
+
+- Real assemble concurrency is now enabled without relying on in-memory ownership.
+- The single-binary modular-monolith design remains appropriate; safe concurrency is handled by database claims and in-process workers.
+- Further gains should come from Milestone 4 write-path refinement, especially reducing release-family summary work inside binary upsert.
+
+Milestone 3 sign-off:
+
+- Complete. `assemble.concurrency > 1` is safe to use with the lease-backed claim model.
 
 ## Milestone 4. Make Assemble Writes And Refreshes Scale
 

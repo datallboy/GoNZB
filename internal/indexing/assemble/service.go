@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
@@ -23,6 +24,7 @@ type logger interface {
 type repository interface {
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
+	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
@@ -39,7 +41,10 @@ type articleFetcher interface {
 }
 
 type Options struct {
-	BatchSize int
+	BatchSize   int
+	ClaimOwner  string
+	ClaimLease  time.Duration
+	Concurrency int
 }
 
 type recoveryCounters struct {
@@ -61,6 +66,15 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 5000
 	}
+	if opts.ClaimOwner == "" {
+		opts.ClaimOwner = fmt.Sprintf("assemble-%d", time.Now().UnixNano())
+	}
+	if opts.ClaimLease <= 0 {
+		opts.ClaimLease = 5 * time.Minute
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 1
+	}
 
 	return &Service{
 		repo:    repo,
@@ -78,6 +92,143 @@ func (s *Service) RunOnce(ctx context.Context) error {
 }
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	if s.opts.Concurrency <= 1 || s.opts.BatchSize <= 1 {
+		return s.runOnceWithMetricsSingle(ctx, s.opts.BatchSize, s.opts.ClaimOwner)
+	}
+	if s.repo == nil {
+		return nil, fmt.Errorf("assembly repo is required")
+	}
+
+	started := time.Now()
+	countStarted := time.Now()
+	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count unassembled article headers: %w", err)
+	}
+	countDuration := time.Since(countStarted)
+
+	selectionStarted := time.Now()
+	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
+		Limit:         s.opts.BatchSize,
+		Owner:         s.opts.ClaimOwner,
+		LeaseDuration: s.opts.ClaimLease,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
+	}
+	selectionDuration := time.Since(selectionStarted)
+	if len(headers) == 0 {
+		return map[string]any{
+			"pending_headers":                 pendingCount,
+			"selected_headers":                0,
+			"processed_headers":               0,
+			"binaries_refreshed":              0,
+			"batch_size":                      s.opts.BatchSize,
+			"worker_count":                    s.opts.Concurrency,
+			"pending_count_duration_ms":       durationMillis(countDuration),
+			"candidate_selection_duration_ms": durationMillis(selectionDuration),
+			"total_duration_ms":               durationMillis(time.Since(started)),
+			"headers_per_second":              0.0,
+			"refreshed_binaries_per_second":   0.0,
+		}, nil
+	}
+
+	workerCount := s.opts.Concurrency
+	if workerCount > len(headers) {
+		workerCount = len(headers)
+	}
+	baseBatch := len(headers) / workerCount
+	remainder := len(headers) % workerCount
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+		combined = map[string]any{"batch_size": s.opts.BatchSize, "worker_count": workerCount}
+	)
+
+	offset := 0
+	for i := 0; i < workerCount; i++ {
+		workerBatch := baseBatch
+		if i < remainder {
+			workerBatch++
+		}
+		if workerBatch <= 0 {
+			continue
+		}
+
+		workerID := i + 1
+		workerHeaders := headers[offset : offset+workerBatch]
+		offset += workerBatch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			workerSvc := *s
+			workerSvc.repo = claimedBatchRepository{
+				delegate:     s.repo,
+				pendingCount: pendingCount,
+				headers:      workerHeaders,
+			}
+			metrics, err := workerSvc.runOnceWithMetricsSingle(ctx, workerBatch, fmt.Sprintf("%s-worker-%d", s.opts.ClaimOwner, workerID))
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			mergeAssembleMetrics(combined, metrics)
+		}()
+	}
+	wg.Wait()
+
+	totalDuration := time.Since(started)
+	processed, _ := numericMetricInt64(combined, "processed_headers")
+	refreshed, _ := numericMetricInt64(combined, "binaries_refreshed")
+	combined["pending_headers"] = pendingCount
+	combined["selected_headers"] = len(headers)
+	combined["pending_count_duration_ms"] = durationMillis(countDuration)
+	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
+	combined["total_duration_ms"] = durationMillis(totalDuration)
+	combined["headers_per_second"] = throughputPerSecond(int(processed), totalDuration)
+	combined["refreshed_binaries_per_second"] = throughputPerSecond(int(refreshed), totalDuration)
+
+	return combined, firstErr
+}
+
+type claimedBatchRepository struct {
+	delegate     repository
+	pendingCount int64
+	headers      []pgindex.AssemblyCandidate
+}
+
+func (r claimedBatchRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
+	return r.pendingCount, nil
+}
+
+func (r claimedBatchRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
+	return r.headers, nil
+}
+
+func (r claimedBatchRepository) ClaimUnassembledArticleHeaders(context.Context, pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+	return r.headers, nil
+}
+
+func (r claimedBatchRepository) EnsurePoster(ctx context.Context, posterName string) (int64, error) {
+	return r.delegate.EnsurePoster(ctx, posterName)
+}
+
+func (r claimedBatchRepository) UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error) {
+	return r.delegate.UpsertBinary(ctx, in)
+}
+
+func (r claimedBatchRepository) UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error {
+	return r.delegate.UpsertBinaryParts(ctx, records)
+}
+
+func (r claimedBatchRepository) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
+	return r.delegate.RefreshBinaryStats(ctx, binaryID)
+}
+
+func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("assembly repo is required")
 	}
@@ -94,15 +245,19 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	countDuration := time.Since(countStarted)
 
 	selectionStarted := time.Now()
-	headers, err := s.repo.ListUnassembledArticleHeaders(ctx, s.opts.BatchSize)
+	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
+		Limit:         batchSize,
+		Owner:         claimOwner,
+		LeaseDuration: s.opts.ClaimLease,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list unassembled article headers: %w", err)
+		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
 	}
 	selectionDuration := time.Since(selectionStarted)
 	metrics := map[string]any{
 		"pending_headers":                 pendingCount,
 		"selected_headers":                len(headers),
-		"batch_size":                      s.opts.BatchSize,
+		"batch_size":                      batchSize,
 		"pending_count_duration_ms":       durationMillis(countDuration),
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
 	}
@@ -287,7 +442,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		laneBSelected,
 		assembledCount,
 		len(refreshed),
-		s.opts.BatchSize,
+		batchSize,
 		metrics["headers_per_second"],
 		metrics["refreshed_binaries_per_second"],
 		metrics["candidate_selection_duration_ms"],
@@ -302,6 +457,49 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	)
 
 	return metrics, nil
+}
+
+func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
+	for key, value := range src {
+		switch key {
+		case "batch_size", "pending_headers", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
+			continue
+		}
+		switch tv := value.(type) {
+		case int:
+			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
+		case int64:
+			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
+		case float64:
+			dst[key] = numericMetricFloat64(dst, key) + tv
+		}
+	}
+}
+
+func numericMetricFloat64(metrics map[string]any, key string) float64 {
+	switch value := metrics[key].(type) {
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case float64:
+		return value
+	default:
+		return 0
+	}
+}
+
+func numericMetricInt64(metrics map[string]any, key string) (int64, bool) {
+	switch value := metrics[key].(type) {
+	case int:
+		return int64(value), true
+	case int64:
+		return value, true
+	case float64:
+		return int64(value), true
+	default:
+		return 0, false
+	}
 }
 
 func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration time.Duration, processedHeaders, refreshedBinaries int) {
