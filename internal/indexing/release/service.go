@@ -19,7 +19,7 @@ type logger interface {
 type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
-	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
+	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
@@ -30,6 +30,7 @@ type repository interface {
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
+	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 }
 
 type Options struct {
@@ -155,14 +156,21 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	skippedFragments := 0
 	skippedConfidence := 0
 	skippedCompletion := 0
+	deferredAcks := make([]pgindex.ReleaseCandidateAck, 0, 128)
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
+			if flushErr := s.flushDeferredAcks(ctx, deferredAcks, &timings); flushErr != nil {
+				return metrics, flushErr
+			}
 			metrics["candidate_families_inspected"] = candidateFamiliesInspected
 			return metrics, err
 		}
 		candidateFamiliesInspected++
 		outcome, err := s.formCandidate(ctx, candidate, &timings)
 		if err != nil {
+			if flushErr := s.flushDeferredAcks(ctx, deferredAcks, &timings); flushErr != nil {
+				return metrics, fmt.Errorf("%v (also failed to flush deferred release acks: %w)", err, flushErr)
+			}
 			metrics["candidate_families_inspected"] = candidateFamiliesInspected
 			metrics["formed"] = formed
 			metrics["fragment_only_families"] = cooledDownFragmentOnly
@@ -178,6 +186,18 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		skippedFragments += outcome.skippedFragments
 		skippedConfidence += outcome.skippedConfidence
 		skippedCompletion += outcome.skippedCompletion
+		if outcome.deferredAck != nil {
+			deferredAcks = append(deferredAcks, *outcome.deferredAck)
+			if len(deferredAcks) >= 250 {
+				if err := s.flushDeferredAcks(ctx, deferredAcks, &timings); err != nil {
+					return metrics, err
+				}
+				deferredAcks = deferredAcks[:0]
+			}
+		}
+	}
+	if err := s.flushDeferredAcks(ctx, deferredAcks, &timings); err != nil {
+		return metrics, err
 	}
 	metrics["candidate_families_inspected"] = candidateFamiliesInspected
 	metrics["formed"] = formed
@@ -255,6 +275,7 @@ type candidateOutcome struct {
 	skippedFragments       int
 	skippedConfidence      int
 	skippedCompletion      int
+	deferredAck            *pgindex.ReleaseCandidateAck
 }
 
 func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate, timings *releaseTimings) (candidateOutcome, error) {
@@ -263,8 +284,36 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		return candidateOutcome{}, fmt.Errorf("release family key is required")
 	}
 
+	if candidate.ReadinessBucket == "stale_cleanup_only" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			staleCleanupOnly: 1,
+			deferredAck:      buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ReadinessBucket == "fragment_only" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			cooledDownFragmentOnly: 1,
+			deferredAck:            buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
 	start := time.Now()
-	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey)
+	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey)
 	if timings != nil {
 		timings.listBinaries += time.Since(start)
 		timings.binariesListed += len(binaries)
@@ -415,6 +464,32 @@ func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
 		return key
 	}
 	return strings.TrimSpace(candidate.ReleaseKey)
+}
+
+func buildDeferredReleaseAck(candidate pgindex.ReleaseCandidate, familyKey string) *pgindex.ReleaseCandidateAck {
+	if candidate.KeyKind == "" || familyKey == "" {
+		return nil
+	}
+	return &pgindex.ReleaseCandidateAck{
+		ProviderID:  candidate.ProviderID,
+		NewsgroupID: candidate.NewsgroupID,
+		KeyKind:     candidate.KeyKind,
+		FamilyKey:   familyKey,
+	}
+}
+
+func (s *Service) flushDeferredAcks(ctx context.Context, candidates []pgindex.ReleaseCandidateAck, timings *releaseTimings) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	start := time.Now()
+	if err := s.repo.AckReleaseCandidates(ctx, candidates); err != nil {
+		return fmt.Errorf("ack deferred release candidates: %w", err)
+	}
+	if timings != nil {
+		timings.ackCandidate += time.Since(start)
+	}
+	return nil
 }
 
 func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) bool {
