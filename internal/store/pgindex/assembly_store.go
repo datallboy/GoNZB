@@ -1052,6 +1052,31 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		return nil
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin binary parts upsert tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	const maxBinaryPartBatchRecords = 8000
+	for start := 0; start < len(records); start += maxBinaryPartBatchRecords {
+		end := start + maxBinaryPartBatchRecords
+		if end > len(records) {
+			end = len(records)
+		}
+		if err := upsertBinaryPartsChunk(ctx, tx, records[start:end]); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit binary parts upsert tx: %w", err)
+	}
+
+	return nil
+}
+
+func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
 	partArgs := make([]any, 0, len(records)*7)
 	headerArgs := make([]any, 0, len(records))
 	partValues := make([]string, 0, len(records))
@@ -1088,12 +1113,6 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		)
 		headerArgs = append(headerArgs, record.ArticleHeaderID)
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin binary parts upsert tx: %w", err)
-	}
-	defer rollbackTx(tx)
 
 	query := fmt.Sprintf(`
 		INSERT INTO binary_parts (
@@ -1132,10 +1151,6 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		strings.Join(headerValues, ","))
 	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
 		return fmt.Errorf("mark %d article headers assembled: %w", len(records), err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit binary parts upsert tx: %w", err)
 	}
 
 	return nil
