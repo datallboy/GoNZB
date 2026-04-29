@@ -539,23 +539,56 @@ func (s *Store) ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]R
 		return nil, fmt.Errorf("binary id is required")
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT article_header_id, part_number
-		FROM binary_parts
-		WHERE binary_id = $1
-		ORDER BY part_number`, binaryID)
+	articlesByBinaryID, err := s.ListBinaryPartArticlesBatch(ctx, []int64{binaryID})
 	if err != nil {
-		return nil, fmt.Errorf("list binary part articles %d: %w", binaryID, err)
+		return nil, err
+	}
+	return articlesByBinaryID[binaryID], nil
+}
+
+// CHANGED: fetch article ids/part numbers for a set of binaries in one query.
+func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]ReleaseFileArticleRecord, error) {
+	out := make(map[int64][]ReleaseFileArticleRecord, len(binaryIDs))
+	if len(binaryIDs) == 0 {
+		return out, nil
+	}
+
+	seen := make(map[int64]struct{}, len(binaryIDs))
+	args := make([]any, 0, len(binaryIDs))
+	placeholders := make([]string, 0, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[binaryID]; ok {
+			continue
+		}
+		seen[binaryID] = struct{}{}
+		args = append(args, binaryID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		out[binaryID] = nil
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT binary_id, article_header_id, part_number
+		FROM binary_parts
+		WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY binary_id, part_number`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list binary part articles batch: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]ReleaseFileArticleRecord, 0, 64)
 	for rows.Next() {
+		var binaryID int64
 		var item ReleaseFileArticleRecord
-		if err := rows.Scan(&item.ArticleHeaderID, &item.PartNumber); err != nil {
+		if err := rows.Scan(&binaryID, &item.ArticleHeaderID, &item.PartNumber); err != nil {
 			return nil, fmt.Errorf("scan binary part article: %w", err)
 		}
-		out = append(out, item)
+		out[binaryID] = append(out[binaryID], item)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -981,28 +1014,57 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 			return fmt.Errorf("insert release file %q for %s: %w", f.FileName, releaseID, err)
 		}
 
-		for _, article := range f.Articles {
-			if article.ArticleHeaderID <= 0 {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO release_file_articles (
-					release_file_id,
-					article_header_id,
-					part_number
-				)
-				VALUES ($1,$2,$3)`,
-				releaseFileID,
-				article.ArticleHeaderID,
-				article.PartNumber,
-			); err != nil {
-				return fmt.Errorf("insert release file article file=%d article=%d: %w", releaseFileID, article.ArticleHeaderID, err)
-			}
+		if err := insertReleaseFileArticlesBatch(ctx, tx, releaseFileID, f.Articles); err != nil {
+			return err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func insertReleaseFileArticlesBatch(ctx context.Context, tx *sql.Tx, releaseFileID int64, articles []ReleaseFileArticleRecord) error {
+	if tx == nil {
+		return fmt.Errorf("release file article tx is required")
+	}
+	if releaseFileID <= 0 || len(articles) == 0 {
+		return nil
+	}
+
+	const maxRowsPerInsert = 10000
+	for start := 0; start < len(articles); start += maxRowsPerInsert {
+		end := start + maxRowsPerInsert
+		if end > len(articles) {
+			end = len(articles)
+		}
+
+		args := make([]any, 0, (end-start)*3)
+		placeholders := make([]string, 0, end-start)
+		for _, article := range articles[start:end] {
+			if article.ArticleHeaderID <= 0 {
+				continue
+			}
+			args = append(args, releaseFileID, article.ArticleHeaderID, article.PartNumber)
+			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,$%d)", len(args)-2, len(args)-1, len(args)))
+		}
+		if len(placeholders) == 0 {
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO release_file_articles (
+				release_file_id,
+				article_header_id,
+				part_number
+			)
+			VALUES `+strings.Join(placeholders, ","),
+			args...,
+		); err != nil {
+			return fmt.Errorf("insert release file articles batch file=%d: %w", releaseFileID, err)
+		}
 	}
 
 	return nil
