@@ -23,6 +23,15 @@ api:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
 
+# Aggregator source selection. Enable any mix of these plus external Newznab indexers below.
+# At least one aggregator source must be enabled/configured when modules.aggregator.enabled is true.
+aggregator:
+  sources:
+    local_blob:
+      enabled: false # Search previously cached aggregator NZBs from local SQLite/blob cache metadata
+    usenet_indexer:
+      enabled: true # Search the local Usenet/NZB indexer catalog and generate NZBs locally
+
 # Usenet Server Configuration (NNTP)
 servers:
   - id: "Primary"
@@ -52,13 +61,13 @@ servers:
     pool_max_age_seconds: 600
     enable_pool_logging: false
 
-# Newznab compatible indexers for searching
-indexers:
-  - id: "IndexerName"
-    base_url: "https://api.indexer.com"
-    api_path: "/api"
-    api_key: "your_api_key_here"
-    redirect: false # If true, redirects download requests directly to the indexer's URL
+# Optional external Newznab compatible indexers for aggregator searching.
+indexers: []
+#  - id: "IndexerName"
+#    base_url: "https://api.indexer.com"
+#    api_path: "/api"
+#    api_key: "your_api_key_here"
+#    redirect: false # If true, redirects download requests directly to the indexer's URL
 
 # Download and Post-Processing settings
 download:
