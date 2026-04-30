@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -28,6 +29,7 @@ type logger interface {
 
 type repository interface {
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
@@ -56,11 +58,24 @@ func (s *Service) RunOnce(ctx context.Context) error {
 }
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
-	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectMedia), s.opts.CandidateBatchSize)
+	stageName := string(supervisor.StageInspectMedia)
+	candidates, err := s.repo.ClaimBinaryInspectionCandidates(ctx, pgindex.BinaryInspectionClaimRequest{
+		StageName:     stageName,
+		Limit:         s.opts.CandidateBatchSize,
+		Owner:         s.opts.ClaimOwner + ":" + stageName,
+		LeaseDuration: s.opts.ClaimLease,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list inspect_media candidates: %w", err)
+		return nil, fmt.Errorf("claim inspect_media candidates: %w", err)
 	}
-	metrics := map[string]any{"candidate_count": len(candidates), "processed_count": 0, "batch_size": s.opts.CandidateBatchSize}
+	metrics := map[string]any{
+		"candidate_count": len(candidates),
+		"reserved_count":  len(candidates),
+		"processed_count": 0,
+		"failed_count":    0,
+		"batch_size":      s.opts.CandidateBatchSize,
+		"worker_count":    s.opts.Concurrency,
+	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_media: no media probe candidates available")
@@ -68,20 +83,92 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return metrics, nil
 	}
 
-	processed := 0
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			metrics["processed_count"] = processed
-			return metrics, err
-		}
-		if err := s.inspectCandidate(ctx, candidate); err != nil {
-			metrics["processed_count"] = processed
-			return metrics, err
-		}
-		processed++
-	}
+	processed, failed, err := s.processCandidates(ctx, candidates)
 	metrics["processed_count"] = processed
-	return metrics, nil
+	metrics["failed_count"] = failed
+	return metrics, err
+}
+
+func (s *Service) processCandidates(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) (int, int, error) {
+	processed := 0
+	failed := 0
+	if s.opts.Concurrency <= 1 || len(candidates) <= 1 {
+		for _, candidate := range candidates {
+			if err := ctx.Err(); err != nil {
+				return processed, failed, err
+			}
+			if err := s.inspectCandidate(ctx, candidate); err != nil {
+				failed++
+				return processed, failed, err
+			}
+			processed++
+		}
+		return processed, failed, nil
+	}
+
+	workerCount := s.opts.Concurrency
+	if workerCount > len(candidates) {
+		workerCount = len(candidates)
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan pgindex.BinaryInspectionCandidate)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+		mu.Unlock()
+	}
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if err := workerCtx.Err(); err != nil {
+					recordErr(err)
+					return
+				}
+				if err := s.inspectCandidate(workerCtx, candidate); err != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					recordErr(err)
+					return
+				}
+				mu.Lock()
+				processed++
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, candidate := range candidates {
+		if err := workerCtx.Err(); err != nil {
+			recordErr(err)
+			break
+		}
+		select {
+		case jobs <- candidate:
+		case <-workerCtx.Done():
+			recordErr(workerCtx.Err())
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return processed, failed, firstErr
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {

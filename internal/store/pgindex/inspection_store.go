@@ -615,6 +615,14 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 }
 
 func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
+	return s.listBinaryInspectionCandidates(ctx, s.db, stageName, limit)
+}
+
+type binaryInspectionQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
 	stageName = strings.TrimSpace(stageName)
 	if stageName == "" {
 		return nil, fmt.Errorf("stage name is required")
@@ -636,6 +644,11 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 	rerunPredicate := `
 			bi.id IS NULL OR
 			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				bi.inspection_claimed_until IS NOT NULL AND
+				bi.inspection_claimed_until < NOW()
+			) OR
 			b.updated_at > bi.updated_at OR
 			` + errorRerunPredicate
 	if stageName == "inspect_media" {
@@ -682,6 +695,10 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 		WHERE ` + filter + `
 		  AND (
 			` + rerunPredicate + `
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
 		  )`
 	if stageName == "inspect_discovery" {
 		query = `
@@ -720,6 +737,10 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 				WHERE ` + filter + `
 				  AND (
 					` + rerunPredicate + `
+				  )
+				  AND (
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
 				  )
 				ORDER BY r.release_id, COALESCE(rf.file_index, b.file_index, 0), b.updated_at DESC, b.id
 			) candidates
@@ -788,8 +809,17 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 				  AND (
 					bi.id IS NULL OR
 					bi.status = 'failed' OR
+					(
+						bi.status = 'running' AND
+						bi.inspection_claimed_until IS NOT NULL AND
+						bi.inspection_claimed_until < NOW()
+					) OR
 					b.updated_at > bi.updated_at OR
 					` + errorRerunPredicate + `
+				  )
+				  AND (
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
 				  )
 				ORDER BY
 					r.release_id,
@@ -826,7 +856,7 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 		LIMIT $2`
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, stageName, limit)
+	rows, err := q.QueryContext(ctx, query, stageName, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list binary inspection candidates %s: %w", stageName, err)
 	}
@@ -882,6 +912,127 @@ func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName st
 	}
 
 	return out, nil
+}
+
+func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryInspectionClaimRequest) ([]BinaryInspectionCandidate, error) {
+	req.StageName = strings.TrimSpace(req.StageName)
+	if req.StageName == "" {
+		return nil, fmt.Errorf("stage name is required")
+	}
+	if req.Limit <= 0 {
+		req.Limit = 100
+	}
+	req.Owner = strings.TrimSpace(req.Owner)
+	if req.Owner == "" {
+		req.Owner = "inspect"
+	}
+	if req.LeaseDuration <= 0 {
+		req.LeaseDuration = 15 * time.Minute
+	}
+	if _, err := inspectCandidateFilter(req.StageName); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin binary inspection claim tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "gonzb-inspect-claim-"+req.StageName); err != nil {
+		return nil, fmt.Errorf("lock binary inspection claim %s: %w", req.StageName, err)
+	}
+
+	candidates, err := s.listBinaryInspectionCandidates(ctx, tx, req.StageName, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit empty binary inspection claim tx: %w", err)
+		}
+		return candidates, nil
+	}
+
+	for _, candidate := range candidates {
+		var sourceUpdated any
+		if candidate.SourceUpdatedAt != nil {
+			sourceUpdated = candidate.SourceUpdatedAt.UTC()
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO binary_inspections (
+				stage_name,
+				binary_id,
+				release_id,
+				status,
+				started_at,
+				finished_at,
+				error_text,
+				materialized_bytes,
+				tool_provenance_json,
+				summary_json,
+				source_updated_at,
+				inspection_claimed_by,
+				inspection_claimed_until,
+				updated_at
+			)
+			VALUES (
+				$1,
+				$2,
+				COALESCE(
+					CASE
+						WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+						THEN $3
+						ELSE NULL
+					END,
+					(
+						SELECT rf.release_id
+						FROM release_files rf
+						WHERE rf.binary_id = $2
+						ORDER BY rf.release_id
+						LIMIT 1
+					)
+				),
+				'running',
+				NOW(),
+				NULL,
+				'',
+				0,
+				'{}'::jsonb,
+				'{}'::jsonb,
+				$4,
+				$5,
+				NOW() + ($6::DOUBLE PRECISION * INTERVAL '1 second'),
+				NOW()
+			)
+			ON CONFLICT (stage_name, binary_id) DO UPDATE
+			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+			    status = 'running',
+			    started_at = NOW(),
+			    finished_at = NULL,
+			    error_text = '',
+			    materialized_bytes = 0,
+			    tool_provenance_json = '{}'::jsonb,
+			    summary_json = '{}'::jsonb,
+			    source_updated_at = EXCLUDED.source_updated_at,
+			    inspection_claimed_by = EXCLUDED.inspection_claimed_by,
+			    inspection_claimed_until = EXCLUDED.inspection_claimed_until,
+			    updated_at = NOW()`,
+			req.StageName,
+			candidate.BinaryID,
+			strings.TrimSpace(candidate.ReleaseID),
+			sourceUpdated,
+			req.Owner,
+			req.LeaseDuration.Seconds(),
+		); err != nil {
+			return nil, fmt.Errorf("claim binary inspection %s/%d: %w", req.StageName, candidate.BinaryID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit binary inspection claim tx: %w", err)
+	}
+	return candidates, nil
 }
 
 func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error {
@@ -1831,6 +1982,8 @@ func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionR
 		    tool_provenance_json = EXCLUDED.tool_provenance_json,
 		    summary_json = EXCLUDED.summary_json,
 		    source_updated_at = COALESCE(EXCLUDED.source_updated_at, binary_inspections.source_updated_at),
+		    inspection_claimed_by = '',
+		    inspection_claimed_until = NULL,
 		    updated_at = NOW()`,
 		in.StageName,
 		in.BinaryID,

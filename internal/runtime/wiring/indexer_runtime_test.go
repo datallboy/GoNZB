@@ -44,8 +44,10 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Enabled:         &enabled,
 		IntervalMinutes: &interval,
 		BatchSize:       &batch,
-		Concurrency:     &concurrency,
 		BackoffSeconds:  &backoff,
+	}
+	cfg.Indexing.Assemble = config.IndexingStageConfig{
+		Concurrency: &concurrency,
 	}
 	cfg.Indexing.Match = config.IndexingMatchConfig{
 		HighConfidenceThreshold:     &matchHigh,
@@ -56,21 +58,20 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Enabled:          &enabled,
 		IntervalMinutes:  &interval,
 		BatchSize:        &batch,
-		Concurrency:      &concurrency,
 		BackoffSeconds:   &backoff,
 		MinConfidence:    &matchHigh,
 		MinCompletionPct: func() *float64 { v := 25.0; return &v }(),
 		RequireExpectedFileCountForContextualObfuscated: func() *bool { v := true; return &v }(),
 	}
 	cfg.Indexing.InspectMedia = config.IndexingStageConfig{
-		Enabled:   &enabled,
-		BatchSize: &batch,
+		Enabled:     &enabled,
+		BatchSize:   &batch,
+		Concurrency: &concurrency,
 	}
 	cfg.Indexing.EnrichPreDB = config.IndexingPreDBConfig{
 		Enabled:            &enabled,
 		IntervalMinutes:    &interval,
 		BatchSize:          &batch,
-		Concurrency:        &concurrency,
 		BackoffSeconds:     &backoff,
 		Provider:           "club",
 		BaseURL:            "https://predb.example/api",
@@ -81,7 +82,6 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Enabled:            &enabled,
 		IntervalMinutes:    &interval,
 		BatchSize:          &batch,
-		Concurrency:        &concurrency,
 		BackoffSeconds:     &backoff,
 		HTTPTimeoutSeconds: &tmdbTimeout,
 		TMDBAPIKey:         "tmdb-key",
@@ -106,8 +106,8 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ScrapeLatest.Interval != 90*time.Second || got.ScrapeLatest.BatchSize != batch {
 		t.Fatalf("unexpected scrape_latest stage config: %+v", got.ScrapeLatest)
 	}
-	if got.ScrapeLatest.Concurrency != concurrency || got.ScrapeLatest.Backoff != 9*time.Second {
-		t.Fatalf("unexpected scrape_latest concurrency/backoff: %+v", got.ScrapeLatest)
+	if got.ScrapeLatest.Backoff != 9*time.Second || got.Assemble.Concurrency != concurrency {
+		t.Fatalf("unexpected scrape_latest backoff or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
 	}
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
@@ -117,6 +117,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.InspectMedia.BatchSize != batch {
 		t.Fatalf("expected inspect_media batch size %d, got %+v", batch, got.InspectMedia)
+	}
+	if got.InspectMedia.Concurrency != concurrency {
+		t.Fatalf("expected inspect_media concurrency %d, got %+v", concurrency, got.InspectMedia)
 	}
 	if got.EnrichPreDB.Limit != batch || got.EnrichPreDB.HTTPTimeout != 22*time.Second {
 		t.Fatalf("unexpected predb options: %+v", got.EnrichPreDB)
