@@ -30,6 +30,10 @@ type PublicIndexerReleaseListParams struct {
 	SizeMin           int64
 	SizeMax           int64
 	MetadataStatus    string
+	IMDBID            string
+	TVDBID            int64
+	Season            int
+	Episode           int
 }
 
 type PublicIndexerReleaseSummary struct {
@@ -270,6 +274,18 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	if params.SizeMax > 0 {
 		add(fmt.Sprintf("r.size_bytes <= $%d", arg), params.SizeMax)
 	}
+	if imdbID := normalizePublicIMDBID(params.IMDBID); imdbID != "" {
+		add(fmt.Sprintf("LOWER(COALESCE(ro.imdb_id_override, '')) IN ($%d, $%d)", arg, arg+1), imdbID, "tt"+imdbID)
+	}
+	if params.TVDBID > 0 {
+		add(fmt.Sprintf("(CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END) = $%d", arg), params.TVDBID)
+	}
+	if params.Season > 0 {
+		add(fmt.Sprintf("r.season_number = $%d", arg), params.Season)
+	}
+	if params.Episode > 0 {
+		add(fmt.Sprintf("r.episode_number = $%d", arg), params.Episode)
+	}
 	switch strings.TrimSpace(params.MetadataStatus) {
 	case "updated":
 		add("r.metadata_updated_at IS NOT NULL")
@@ -278,6 +294,12 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	}
 
 	return strings.Join(clauses, "\n  AND "), args
+}
+
+func normalizePublicIMDBID(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "tt")
+	return value
 }
 
 func publicBrowseClause(category, subcategory string, argStart int) (string, []any) {

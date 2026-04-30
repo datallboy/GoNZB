@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
+	"github.com/datallboy/gonzb/internal/aggregator/sources/localblob"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
+	"github.com/datallboy/gonzb/internal/aggregator/sources/usenetindex"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -88,6 +90,14 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 		effective.Store.PayloadCacheEnabled,
 		effective.Store.SearchPersistenceEnabled && appCtx.JobStore != nil,
 	)
+
+	if effective.Aggregator.Sources.LocalBlob.Enabled {
+		manager.AddSource(localblob.New(aggregatorStore))
+	}
+
+	if effective.Aggregator.Sources.UsenetIndexer.Enabled && appCtx.PGIndexStore != nil {
+		manager.AddSource(usenetindex.New(appCtx.PGIndexStore))
+	}
 
 	for _, idxCfg := range effective.Indexers {
 		client := newznab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)

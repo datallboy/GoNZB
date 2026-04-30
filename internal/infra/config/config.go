@@ -18,8 +18,9 @@ type Config struct {
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
-	Indexing IndexingConfig `mapstructure:"indexing" yaml:"indexing"`
-	Modules  ModulesConfig  `mapstructure:"modules" yaml:"modules"`
+	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
+	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
+	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
 	Port string `mapstructure:"port" yaml:"port"`
 }
@@ -73,6 +74,15 @@ type StoreConfig struct {
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
+}
+
+type AggregatorConfig struct {
+	Sources AggregatorSourcesConfig `mapstructure:"sources" yaml:"sources"`
+}
+
+type AggregatorSourcesConfig struct {
+	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
+	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
 }
 
 type IndexingConfig struct {
@@ -305,6 +315,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.usenet_indexer.enabled", true)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
+	v.SetDefault("aggregator.sources.local_blob.enabled", false)
+	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
 
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
@@ -471,6 +483,24 @@ func (c *Config) validate() error {
 	// Usenet/NZB Indexer requires PostgreSQL.
 	if c.Modules.UsenetIndexer.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
 		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
+	}
+
+	if c.Modules.Aggregator.Enabled {
+		hasNewznabSource := false
+		for _, idx := range c.Indexers {
+			if strings.TrimSpace(idx.ID) != "" || strings.TrimSpace(idx.BaseUrl) != "" {
+				hasNewznabSource = true
+				break
+			}
+		}
+		if !hasNewznabSource &&
+			!c.Aggregator.Sources.LocalBlob.Enabled &&
+			!c.Aggregator.Sources.UsenetIndexer.Enabled {
+			return errors.New("modules.aggregator.enabled requires at least one aggregator source: aggregator.sources.local_blob, aggregator.sources.usenet_indexer, or indexers")
+		}
+		if c.Aggregator.Sources.UsenetIndexer.Enabled && !c.Modules.UsenetIndexer.Enabled {
+			return errors.New("aggregator.sources.usenet_indexer.enabled requires modules.usenet_indexer.enabled")
+		}
 	}
 
 	// validate configured newsgroups only when Usenet/NZB Indexer is enabled.
