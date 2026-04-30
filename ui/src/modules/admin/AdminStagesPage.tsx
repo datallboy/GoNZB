@@ -3,13 +3,16 @@ import { getAdminStages, patchAdminStage, runStageAction } from '../../shared/ap
 import type { AdminStage, AdminStageConfigPatch } from '../../shared/types'
 
 function stagePatchFromView(stage: AdminStage): AdminStageConfigPatch {
-  return {
+  const patch: AdminStageConfigPatch = {
     enabled: stage.enabled,
     interval_minutes: stage.interval_seconds > 0 ? stage.interval_seconds / 60 : 0,
     batch_size: stage.batch_size,
-    concurrency: stage.concurrency,
     backoff_seconds: stage.backoff_seconds,
   }
+  if (stage.supports_concurrency) {
+    patch.concurrency = stage.concurrency ?? 1
+  }
+  return patch
 }
 
 function stageRuntimeStatus(stage: AdminStage) {
@@ -111,14 +114,16 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
             onChange={(event) => setPatch((current) => ({ ...current, batch_size: Number(event.target.value) }))}
           />
         </label>
-        <label className="field">
-          <span>Concurrency</span>
-          <input
-            type="number"
-            value={patch.concurrency ?? 0}
-            onChange={(event) => setPatch((current) => ({ ...current, concurrency: Number(event.target.value) }))}
-          />
-        </label>
+        {stage.supports_concurrency ? (
+          <label className="field">
+            <span>Concurrency</span>
+            <input
+              type="number"
+              value={patch.concurrency ?? 1}
+              onChange={(event) => setPatch((current) => ({ ...current, concurrency: Number(event.target.value) }))}
+            />
+          </label>
+        ) : null}
         <label className="field">
           <span>Backoff Seconds</span>
           <input

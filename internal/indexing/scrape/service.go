@@ -80,6 +80,7 @@ type runMetrics struct {
 	RangesFetched      int
 	ArticleHeadersSeen int64
 	ArticlesInserted   int64
+	CutoffFiltered     int64
 	CheckpointUpdates  int
 }
 
@@ -241,7 +242,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 			to = stats.High
 		}
 
-		headers, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to)
+		headers, inserted, _, _, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to, nil)
 		if err != nil {
 			return err
 		}
@@ -337,30 +338,26 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 
 	s.log.Info("scrape backfill: group=%s start=%d end=%d low=%d batch=%d", group, start, end, stats.Low, s.opts.BatchSize)
 
-	headers, inserted, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end)
+	var cutoff *time.Time
+	if hasCutoff {
+		c := cutoffDate.UTC()
+		cutoff = &c
+	}
+	headers, inserted, oldestSeen, cutoffFiltered, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff)
 	if err != nil {
 		return err
 	}
 	metrics.RangesFetched++
 	metrics.ArticleHeadersSeen += int64(len(headers))
 	metrics.ArticlesInserted += inserted
+	metrics.CutoffFiltered += int64(cutoffFiltered)
 
 	if hasCutoff {
-		var oldest *time.Time
-		for _, header := range headers {
-			if header.DateUTC == nil {
-				continue
-			}
-			t := header.DateUTC.UTC()
-			if oldest == nil || t.Before(*oldest) {
-				oldest = &t
-			}
-		}
-		if oldest != nil && !oldest.After(cutoffDate.UTC()) {
+		if oldestSeen != nil && !oldestSeen.After(cutoffDate.UTC()) {
 			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, ptrTime(cutoffDate.UTC()), true, "until_date_reached"); err != nil {
 				return fmt.Errorf("mark backfill cutoff reached %s: %w", group, err)
 			}
-			s.log.Info("scrape backfill: group=%s reached cutoff=%s oldest=%s inserted=%d", group, cutoffDate.UTC().Format(time.RFC3339), oldest.Format(time.RFC3339), inserted)
+			s.log.Info("scrape backfill: group=%s reached cutoff=%s oldest=%s inserted=%d", group, cutoffDate.UTC().Format(time.RFC3339), oldestSeen.Format(time.RFC3339), inserted)
 			return nil
 		}
 	}
@@ -379,15 +376,30 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	return nil
 }
 
-func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64) ([]pgindex.ArticleHeader, int64, error) {
+func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time) ([]pgindex.ArticleHeader, int64, *time.Time, int, error) {
 	rows, err := s.provider.XOver(ctx, group, from, to)
 	if err != nil {
-		return nil, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
+		return nil, 0, nil, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
 	}
 
 	headers := make([]pgindex.ArticleHeader, 0, len(rows))
+	var oldestSeen *time.Time
+	cutoffFiltered := 0
 	for _, r := range rows {
 		if r.ArticleNumber <= 0 || strings.TrimSpace(r.MessageID) == "" {
+			continue
+		}
+		if r.DateUTC != nil {
+			t := r.DateUTC.UTC()
+			if oldestSeen == nil || t.Before(*oldestSeen) {
+				oldestSeen = &t
+			}
+			if cutoff != nil && t.Before(cutoff.UTC()) {
+				cutoffFiltered++
+				continue
+			}
+		} else if cutoff != nil {
+			cutoffFiltered++
 			continue
 		}
 
@@ -417,10 +429,10 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 
 	inserted, err := s.repo.InsertArticleHeaders(ctx, providerID, newsgroupID, headers)
 	if err != nil {
-		return nil, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
+		return nil, 0, oldestSeen, cutoffFiltered, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
 	}
 
-	return headers, inserted, nil
+	return headers, inserted, oldestSeen, cutoffFiltered, nil
 }
 
 func (m *runMetrics) toMap() map[string]any {
@@ -435,6 +447,7 @@ func (m *runMetrics) toMap() map[string]any {
 		"ranges_fetched":       m.RangesFetched,
 		"article_headers_seen": m.ArticleHeadersSeen,
 		"articles_inserted":    m.ArticlesInserted,
+		"cutoff_filtered":      m.CutoffFiltered,
 		"checkpoint_updates":   m.CheckpointUpdates,
 		"batch_size":           m.BatchSize,
 	}

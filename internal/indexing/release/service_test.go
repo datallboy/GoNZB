@@ -258,6 +258,53 @@ func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsBinaryListingForFragmentOnlyCandidates(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:          1,
+				NewsgroupID:         2,
+				KeyKind:             "release_family",
+				ReleaseFamilyKey:    "frag-a",
+				BinaryCount:         4,
+				CompleteBinaryCount: 0,
+				ReadinessBucket:     "fragment_only",
+			},
+			{
+				ProviderID:          1,
+				NewsgroupID:         2,
+				KeyKind:             "release_family",
+				ReleaseFamilyKey:    "frag-b",
+				BinaryCount:         3,
+				CompleteBinaryCount: 0,
+				ReadinessBucket:     "fragment_only",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for fragment-only candidates, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.ackedCandidates) != 2 {
+		t.Fatalf("expected 2 acked candidates, got %d", len(repo.ackedCandidates))
+	}
+	if len(repo.deletedStaleCalls) != 2 {
+		t.Fatalf("expected 2 stale-delete calls, got %d", len(repo.deletedStaleCalls))
+	}
+	if got := metrics["fragment_only_families"]; got != 2 {
+		t.Fatalf("expected fragment_only_families=2, got %#v", got)
+	}
+	if got := metrics["binaries_listed"]; got != 0 {
+		t.Fatalf("expected binaries_listed=0, got %#v", got)
+	}
+}
+
 func TestRunOnceCoolsDownFragmentOnlyFamilyAndAcksDirtyCandidate(t *testing.T) {
 	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -718,7 +765,7 @@ func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
 				IsAuxiliary:     true,
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("build release files: %v", err)
 	}
@@ -752,7 +799,7 @@ func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
 				TotalBytes:    100,
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("build release files: %v", err)
 	}
@@ -1508,6 +1555,7 @@ type fakeReleaseRepository struct {
 	nzbCalls                           int
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
+	listBinariesCalls                  int
 	deletedStaleCalls                  []staleDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
 }
@@ -1545,12 +1593,21 @@ func (f *fakeReleaseRepository) ListExistingReleaseCandidates(_ context.Context,
 	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates[offset:end]...), nil
 }
 
-func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, releaseKey string) ([]pgindex.BinarySummary, error) {
+func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, _ string, releaseKey string) ([]pgindex.BinarySummary, error) {
+	f.listBinariesCalls++
 	return f.binariesByKey[releaseKey], nil
 }
 
 func (f *fakeReleaseRepository) ListBinaryPartArticles(_ context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error) {
 	return f.articlesByBinaryID[binaryID], nil
+}
+
+func (f *fakeReleaseRepository) ListBinaryPartArticlesBatch(_ context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error) {
+	out := make(map[int64][]pgindex.ReleaseFileArticleRecord, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		out[binaryID] = f.articlesByBinaryID[binaryID]
+	}
+	return out, nil
 }
 
 func (f *fakeReleaseRepository) ListReleaseTitleCandidates(_ context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error) {
@@ -1597,6 +1654,18 @@ func (f *fakeReleaseRepository) AckReleaseCandidate(_ context.Context, providerI
 		keyKind:     keyKind,
 		familyKey:   familyKey,
 	})
+	return nil
+}
+
+func (f *fakeReleaseRepository) AckReleaseCandidates(_ context.Context, candidates []pgindex.ReleaseCandidateAck) error {
+	for _, candidate := range candidates {
+		f.ackedCandidates = append(f.ackedCandidates, ackedReleaseCandidate{
+			providerID:  candidate.ProviderID,
+			newsgroupID: candidate.NewsgroupID,
+			keyKind:     candidate.KeyKind,
+			familyKey:   candidate.FamilyKey,
+		})
+	}
 	return nil
 }
 

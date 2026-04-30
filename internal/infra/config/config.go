@@ -112,7 +112,6 @@ type IndexingReleaseConfig struct {
 	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency                                     *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
@@ -134,7 +133,6 @@ type IndexingPreDBConfig struct {
 	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	Provider           string   `mapstructure:"provider" yaml:"provider"`
 	BaseURL            string   `mapstructure:"base_url" yaml:"base_url"`
@@ -149,7 +147,6 @@ type IndexingTMDBConfig struct {
 	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	HTTPTimeoutSeconds *int     `mapstructure:"http_timeout_seconds" yaml:"http_timeout_seconds"`
 	TMDBAPIKey         string   `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
@@ -226,12 +223,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_latest.enabled", true)
 	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
-	v.SetDefault("indexing.scrape_latest.concurrency", 1)
 	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
 	v.SetDefault("indexing.scrape_backfill.enabled", true)
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
-	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
 	v.SetDefault("indexing.assemble.enabled", true)
 	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
@@ -241,7 +236,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.enabled", true)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
-	v.SetDefault("indexing.release.concurrency", 1)
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
@@ -260,17 +254,14 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_discovery.enabled", true)
 	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
-	v.SetDefault("indexing.inspect_discovery.concurrency", 1)
 	v.SetDefault("indexing.inspect_discovery.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_par2.enabled", true)
 	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_par2.batch_size", 100)
-	v.SetDefault("indexing.inspect_par2.concurrency", 1)
 	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_nfo.enabled", true)
 	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_nfo.batch_size", 100)
-	v.SetDefault("indexing.inspect_nfo.concurrency", 1)
 	v.SetDefault("indexing.inspect_nfo.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_archive.enabled", true)
 	v.SetDefault("indexing.inspect_archive.interval_minutes", 10.0)
@@ -280,7 +271,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_password.enabled", true)
 	v.SetDefault("indexing.inspect_password.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_password.batch_size", 100)
-	v.SetDefault("indexing.inspect_password.concurrency", 1)
 	v.SetDefault("indexing.inspect_password.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_media.enabled", true)
 	v.SetDefault("indexing.inspect_media.interval_minutes", 10.0)
@@ -290,7 +280,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enrich_predb.enabled", true)
 	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_predb.batch_size", 100)
-	v.SetDefault("indexing.enrich_predb.concurrency", 1)
 	v.SetDefault("indexing.enrich_predb.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_predb.provider", "club,me")
 	v.SetDefault("indexing.enrich_predb.base_url", "https://predb.club/api/v1")
@@ -302,7 +291,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enrich_tmdb.enabled", true)
 	v.SetDefault("indexing.enrich_tmdb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_tmdb.batch_size", 100)
-	v.SetDefault("indexing.enrich_tmdb.concurrency", 1)
 	v.SetDefault("indexing.enrich_tmdb.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_tmdb.http_timeout_seconds", 15)
 	v.SetDefault("indexing.enrich_tmdb.tmdb_api_key", "")
@@ -382,7 +370,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.Release.Enabled,
 		IntervalMinutes: c.Indexing.Release.IntervalMinutes,
 		BatchSize:       c.Indexing.Release.BatchSize,
-		Concurrency:     c.Indexing.Release.Concurrency,
 		BackoffSeconds:  c.Indexing.Release.BackoffSeconds,
 	}); err != nil {
 		return err
@@ -416,7 +403,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.EnrichPreDB.Enabled,
 		IntervalMinutes: c.Indexing.EnrichPreDB.IntervalMinutes,
 		BatchSize:       c.Indexing.EnrichPreDB.BatchSize,
-		Concurrency:     c.Indexing.EnrichPreDB.Concurrency,
 		BackoffSeconds:  c.Indexing.EnrichPreDB.BackoffSeconds,
 	}); err != nil {
 		return err
@@ -425,7 +411,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.EnrichTMDB.Enabled,
 		IntervalMinutes: c.Indexing.EnrichTMDB.IntervalMinutes,
 		BatchSize:       c.Indexing.EnrichTMDB.BatchSize,
-		Concurrency:     c.Indexing.EnrichTMDB.Concurrency,
 		BackoffSeconds:  c.Indexing.EnrichTMDB.BackoffSeconds,
 	}); err != nil {
 		return err

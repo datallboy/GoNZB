@@ -59,7 +59,6 @@ type IndexingReleaseRuntimeSettings struct {
 	Enabled                                         bool    `json:"enabled,omitempty"`
 	IntervalMinutes                                 float64 `json:"interval_minutes,omitempty"`
 	BatchSize                                       int     `json:"batch_size,omitempty"`
-	Concurrency                                     int     `json:"concurrency,omitempty"`
 	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
 	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
@@ -87,7 +86,6 @@ type IndexingPreDBRuntimeSettings struct {
 	Enabled            bool    `json:"enabled,omitempty"`
 	IntervalMinutes    float64 `json:"interval_minutes,omitempty"`
 	BatchSize          int     `json:"batch_size,omitempty"`
-	Concurrency        int     `json:"concurrency,omitempty"`
 	BackoffSeconds     int     `json:"backoff_seconds,omitempty"`
 	Provider           string  `json:"provider,omitempty"`
 	BaseURL            string  `json:"base_url,omitempty"`
@@ -102,7 +100,6 @@ type IndexingTMDBRuntimeSettings struct {
 	Enabled            bool    `json:"enabled,omitempty"`
 	IntervalMinutes    float64 `json:"interval_minutes,omitempty"`
 	BatchSize          int     `json:"batch_size,omitempty"`
-	Concurrency        int     `json:"concurrency,omitempty"`
 	BackoffSeconds     int     `json:"backoff_seconds,omitempty"`
 	HTTPTimeoutSeconds int     `json:"http_timeout_seconds,omitempty"`
 	TMDBAPIKey         string  `json:"tmdb_api_key,omitempty"`
