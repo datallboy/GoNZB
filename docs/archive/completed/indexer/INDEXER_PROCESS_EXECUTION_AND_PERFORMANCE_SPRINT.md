@@ -691,16 +691,33 @@ The final design must ensure:
 
 ## Working Validation Checklist
 
-- [ ] baseline metrics captured after instrumentation lands
-- [ ] new path A or replacement prioritization validated on the live dev backlog
-- [ ] `assemble.concurrency` used by real workers
-- [ ] no duplicate header processing under concurrency tests
-- [ ] no binary corruption or release-family summary drift under concurrency tests
+- [x] baseline metrics captured after instrumentation lands
+- [x] new path A or replacement prioritization validated on the live dev backlog
+- [x] `assemble.concurrency` used by real workers
+- [x] no duplicate header processing under concurrency tests
+- [x] no binary corruption or release-family summary drift under concurrency tests
 - [x] `release` concurrency evaluated after assemble improvements
 - [x] optional cross-process worker path either implemented or explicitly deferred with evidence
-- [ ] `inspect_archive.concurrency` used by real workers with database reservations
-- [ ] `inspect_media.concurrency` used by real workers with database reservations
-- [ ] no duplicate inspect processing under goroutine or multi-process tests
+- [x] `inspect_archive.concurrency` used by real workers with database reservations
+- [x] `inspect_media.concurrency` used by real workers with database reservations
+- [x] no duplicate inspect processing under goroutine or multi-process tests
+
+## Final Sprint Sign-Off
+
+Status:
+
+- [x] complete
+
+Decision:
+
+- This performance and process-execution sprint is complete.
+- Assemble throughput, release batching, and inspect concurrency were implemented with database-backed ownership.
+- Cross-process assemble/release topology remains deferred because the measured bottlenecks were addressed by in-process workers and query/write batching.
+
+Archive note:
+
+- Future performance work should start from new measurements, not by extending this completed sprint checklist.
+- Likely next areas are database storage retention/offloading, inspect runtime tuning after real workload measurements, and any release-family claim work only if release again becomes a measured bottleneck.
 
 ## References
 

@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-04-29
 
-This file continues the prior indexer foundation doc and keeps the indexer docs organized as execution focus moves into the next performance and process-execution phase.
+This file continues the prior indexer foundation doc and keeps the indexer docs organized as execution focus moves beyond the completed performance and process-execution phase.
 
 We currently have several planning and reference documents. This file defines which ones are the current execution guides, which older docs remain useful as reference, and which docs should not drive the current backlog.
 
@@ -12,7 +12,8 @@ We currently have several planning and reference documents. This file defines wh
 - the stabilization, schema, and runtime pass is done
 - the backlog burn-down performance pass and assemble/release refinement loop are done
 - the first API/UI expansion phase is done
-- the active indexer execution focus is now process execution and performance, with primary emphasis on assemble throughput and safe concurrency
+- the process execution and performance sprint is complete and archived
+- the next active indexer execution focus should be opened in a new active doc when work begins
 
 ## Current Active Docs
 
@@ -24,53 +25,27 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_PROCESS_EXECUTION_AND_PERFORMANCE_SPRINT.md`
+## Current Execution Focus
+
+No focused indexer execution sprint is currently active.
+
+Recent completed focus:
+
+- assemble throughput and safe concurrency
+- release query/write batching
+- inspect archive/media concurrency with database reservations
+- deferring cross-process topology until measurements justify it
+
+## Prior Execution And Reference Docs
+
+### `docs/archive/completed/indexer/INDEXER_PROCESS_EXECUTION_AND_PERFORMANCE_SPRINT.md`
 
 Use for:
 
-- the current performance sprint backlog
-- milestone-by-milestone execution tracking
-- baseline measurements and acceptance criteria
-- assemble-first concurrency and execution-model decisions
-
-## Current Execution Focus
-
-The current focus is performance and execution-model hardening for the indexer runtime, with primary emphasis on:
-
-- assemble throughput
-- assemble candidate selection quality, especially path A
-- safe concurrency for assemble and release stages
-- optional multi-worker and multi-process execution without abandoning the single-binary architecture
-
-## Process Execution And Performance Sprint
-
-The next active workstream is an indexer performance sprint.
-
-Current direction:
-
-- keep the single-binary modular-monolith architecture as the default
-- make the existing indexer `concurrency` settings real, starting with `assemble`
-- use goroutine-based worker fan-out inside the current process before introducing cross-process worker scaling
-- make concurrency database-safe through explicit claiming or leasing rather than optimistic in-memory coordination
-- evaluate `release` multi-worker concurrency during the same sprint, but keep the main implementation focus on `assemble`
-
-Current known baseline:
-
-- pending unassembled headers are in the `18M+` range on the live dev database
-- recent successful `assemble` runs are still roughly `34s` to `39s` for `2500`-header batches
-- recent successful `release` runs are usually sub-`5s`
-- current path A selection contributes only a tiny share of recent assemble batches, so it needs reevaluation
-
-Use `docs/active/INDEXER_PROCESS_EXECUTION_AND_PERFORMANCE_SPRINT.md` as the day-to-day execution guide for:
-
-- instrumentation and baseline capture
-- path A selection redesign
-- assemble worker concurrency
-- assemble write-path and refresh-path scaling
-- release concurrency evaluation
-- optional cross-process worker topology
-
-## Prior Execution And Reference Docs
+- the completed process-execution and performance sprint history
+- assemble/release/inspect concurrency decisions
+- measured baseline and throughput comparisons from the 2026-04-29 sprint
+- reasoning for deferring cross-process assemble/release worker topology
 
 ### `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
 
@@ -165,9 +140,9 @@ Do not let this drive the current process-execution sprint.
 
 ## Guideline Rules
 
-1. Treat `docs/active/INDEXER_PROCESS_EXECUTION_AND_PERFORMANCE_SPRINT.md` as the active backlog for the current sprint.
+1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
 2. Use prior completed docs as reference when they help current work, but not as the active checklist.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
-5. Keep assemble performance and safe concurrency ahead of broader architectural change.
+5. Keep measured bottlenecks ahead of speculative architectural change.
 6. Keep milestone docs as context, not as the active source of truth when a more focused active execution doc exists.
