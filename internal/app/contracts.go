@@ -140,23 +140,29 @@ type UsenetIndexStore interface {
 
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
+	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
+	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
+	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
 
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
-	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, releaseKey string) ([]pgindex.BinarySummary, error)
+	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
+	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
+	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error

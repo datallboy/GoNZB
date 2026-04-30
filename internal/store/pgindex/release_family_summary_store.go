@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -52,6 +53,21 @@ func appendReleaseFamilySummaryKey(keys []releaseFamilySummaryKey, seen map[rele
 	}
 	seen[key] = struct{}{}
 	return append(keys, key)
+}
+
+func sortReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].ProviderID != keys[j].ProviderID {
+			return keys[i].ProviderID < keys[j].ProviderID
+		}
+		if keys[i].NewsgroupID != keys[j].NewsgroupID {
+			return keys[i].NewsgroupID < keys[j].NewsgroupID
+		}
+		if keys[i].KeyKind != keys[j].KeyKind {
+			return keys[i].KeyKind < keys[j].KeyKind
+		}
+		return keys[i].FamilyKey < keys[j].FamilyKey
+	})
 }
 
 func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFamilySummaryKey) error {

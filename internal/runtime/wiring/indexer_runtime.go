@@ -136,7 +136,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		inspectFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize: runtimeCfg.Assemble.BatchSize,
+			BatchSize:   runtimeCfg.Assemble.BatchSize,
+			ClaimOwner:  "assemble",
+			ClaimLease:  5 * time.Minute,
+			Concurrency: runtimeCfg.Assemble.Concurrency,
 		},
 	)
 
@@ -156,9 +159,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
 	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPAR2.BatchSize))
 	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
-	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectArchive.BatchSize))
+	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectArchive, stageOwner))
 	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectMedia.BatchSize))
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger)
@@ -169,7 +172,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.ScrapeLatest.Interval,
 			Enabled:     scrapeLatestSvc != nil && runtimeCfg.ScrapeLatest.Enabled,
 			BatchSize:   runtimeCfg.ScrapeLatest.BatchSize,
-			Concurrency: runtimeCfg.ScrapeLatest.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.ScrapeLatest.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeLatestSvc.RunLatestOnceWithMetrics(ctx))
@@ -180,7 +183,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.ScrapeBackfill.Interval,
 			Enabled:     scrapeBackfillSvc != nil && runtimeCfg.ScrapeBackfill.Enabled,
 			BatchSize:   runtimeCfg.ScrapeBackfill.BatchSize,
-			Concurrency: runtimeCfg.ScrapeBackfill.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
@@ -202,7 +205,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.ReleaseStage.Interval,
 			Enabled:     releaseSvc != nil && runtimeCfg.ReleaseStage.Enabled,
 			BatchSize:   runtimeCfg.ReleaseStage.BatchSize,
-			Concurrency: runtimeCfg.ReleaseStage.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.ReleaseStage.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(releaseSvc.RunOnceWithMetrics(ctx))
@@ -213,7 +216,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.InspectDiscovery.Interval,
 			Enabled:     runtimeCfg.InspectDiscovery.Enabled,
 			BatchSize:   runtimeCfg.InspectDiscovery.BatchSize,
-			Concurrency: runtimeCfg.InspectDiscovery.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.InspectDiscovery.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(inspectDiscoverySvc.RunOnceWithMetrics(ctx))
@@ -224,7 +227,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.InspectPAR2.Interval,
 			Enabled:     runtimeCfg.InspectPAR2.Enabled,
 			BatchSize:   runtimeCfg.InspectPAR2.BatchSize,
-			Concurrency: runtimeCfg.InspectPAR2.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.InspectPAR2.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(inspectPAR2Svc.RunOnceWithMetrics(ctx))
@@ -235,7 +238,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.InspectNFO.Interval,
 			Enabled:     runtimeCfg.InspectNFO.Enabled,
 			BatchSize:   runtimeCfg.InspectNFO.BatchSize,
-			Concurrency: runtimeCfg.InspectNFO.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.InspectNFO.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(inspectNFOSvc.RunOnceWithMetrics(ctx))
@@ -257,7 +260,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.InspectPassword.Interval,
 			Enabled:     runtimeCfg.InspectPassword.Enabled,
 			BatchSize:   runtimeCfg.InspectPassword.BatchSize,
-			Concurrency: runtimeCfg.InspectPassword.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.InspectPassword.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(inspectPasswordSvc.RunOnceWithMetrics(ctx))
@@ -279,7 +282,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.EnrichPreDBStage.Interval,
 			Enabled:     runtimeCfg.EnrichPreDBStage.Enabled,
 			BatchSize:   runtimeCfg.EnrichPreDBStage.BatchSize,
-			Concurrency: runtimeCfg.EnrichPreDBStage.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.EnrichPreDBStage.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(enrichPreDBSvc.RunOnceWithMetrics(ctx))
@@ -290,7 +293,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.EnrichTMDBStage.Interval,
 			Enabled:     runtimeCfg.EnrichTMDBStage.Enabled,
 			BatchSize:   runtimeCfg.EnrichTMDBStage.BatchSize,
-			Concurrency: runtimeCfg.EnrichTMDBStage.Concurrency,
+			Concurrency: 1,
 			Backoff:     runtimeCfg.EnrichTMDBStage.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(enrichTMDBSvc.RunOnceWithMetrics(ctx))
@@ -409,7 +412,6 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			Enabled:         indexingCfg.Release.Enabled,
 			IntervalMinutes: indexingCfg.Release.IntervalMinutes,
 			BatchSize:       indexingCfg.Release.BatchSize,
-			Concurrency:     indexingCfg.Release.Concurrency,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
 		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectDiscovery),
@@ -455,12 +457,19 @@ func withInspectBatch(in inspectpkg.Options, batchSize int) inspectpkg.Options {
 	return out
 }
 
+func withInspectStage(in inspectpkg.Options, stage indexerStageConfig, owner string) inspectpkg.Options {
+	out := withInspectBatch(in, stage.BatchSize)
+	out.Concurrency = stage.Concurrency
+	out.ClaimOwner = owner
+	out.ClaimLease = 15 * time.Minute
+	return out
+}
+
 func IndexingStageRuntimeSettingsFromPredb(in app.IndexingPreDBRuntimeSettings) app.IndexingStageRuntimeSettings {
 	return app.IndexingStageRuntimeSettings{
 		Enabled:         in.Enabled,
 		IntervalMinutes: in.IntervalMinutes,
 		BatchSize:       in.BatchSize,
-		Concurrency:     in.Concurrency,
 		BackoffSeconds:  in.BackoffSeconds,
 	}
 }
@@ -470,7 +479,6 @@ func IndexingStageRuntimeSettingsFromTMDB(in app.IndexingTMDBRuntimeSettings) ap
 		Enabled:         in.Enabled,
 		IntervalMinutes: in.IntervalMinutes,
 		BatchSize:       in.BatchSize,
-		Concurrency:     in.Concurrency,
 		BackoffSeconds:  in.BackoffSeconds,
 	}
 }

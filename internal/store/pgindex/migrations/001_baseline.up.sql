@@ -249,6 +249,8 @@ CREATE TABLE public.binary_inspections (
     tool_provenance_json jsonb DEFAULT '{}'::jsonb NOT NULL,
     summary_json jsonb DEFAULT '{}'::jsonb NOT NULL,
     source_updated_at timestamp with time zone,
+    inspection_claimed_by text DEFAULT ''::text NOT NULL,
+    inspection_claimed_until timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1586,6 +1588,8 @@ CREATE INDEX idx_binary_inspections_release_id ON public.binary_inspections USIN
 --
 
 CREATE INDEX idx_binary_inspections_stage_status ON public.binary_inspections USING btree (stage_name, status, updated_at DESC);
+
+CREATE INDEX idx_binary_inspections_claims ON public.binary_inspections USING btree (stage_name, inspection_claimed_until, binary_id) WHERE (inspection_claimed_by <> ''::text);
 
 
 --

@@ -95,6 +95,10 @@ func (f *fakeMediaRepository) ListBinaryInspectionCandidates(context.Context, st
 	return f.candidates, nil
 }
 
+func (f *fakeMediaRepository) ClaimBinaryInspectionCandidates(context.Context, pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error) {
+	return f.candidates, nil
+}
+
 func (f *fakeMediaRepository) StartBinaryInspection(context.Context, string, int64, string, *time.Time) error {
 	return nil
 }
