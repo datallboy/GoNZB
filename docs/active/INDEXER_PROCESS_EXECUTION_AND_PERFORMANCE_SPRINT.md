@@ -550,20 +550,103 @@ Goal:
 
 Status:
 
-- [ ] not started
+- [x] signed off as deferred
 
 Tasks:
 
-- [ ] keep the internal supervisor as the default all-in-one runtime
-- [ ] make sure the claim model from Milestones 3 and 5 is process-safe, not just goroutine-safe
-- [ ] support running dedicated `assemble` or `release` worker processes using the same binary and config
-- [ ] define operator rules for when single-process is sufficient and when separate worker processes are useful
-- [ ] document the recommended topology choices for dev, lower-end self-hosted, and stronger production environments
+- [x] keep the internal supervisor as the default all-in-one runtime
+- [x] decide whether dedicated `assemble` or `release` worker processes are needed in this sprint
+- [x] document the reason for deferring cross-process `assemble` and `release` topology work
+- [x] preserve the database-backed claim/reservation requirement for any future multi-process stage workers
 
 Acceptance criteria:
 
-- the same binary can run either all-in-one or with dedicated worker processes
-- concurrency safety comes from the database claim model, not from assumptions about process boundaries
+- [x] all-in-one remains the default runtime shape
+- [x] cross-process `assemble` and `release` worker topology is explicitly deferred with evidence
+- [x] future multi-process worker support must use database-backed ownership, not process-local coordination
+
+### Milestone 6 sign-off
+
+Decision:
+
+- Do not add dedicated cross-process `assemble` or `release` workers in this sprint.
+- The measured bottlenecks were fixed by in-process assemble workers, query improvements, and batched release writes.
+- Adding separate OS-process topology now would add operational surface area without a current measured need.
+
+Reason:
+
+- `assemble` already has process-safe header leases, but the current all-in-one runtime with goroutine workers is sufficient for the measured workload.
+- `release` improved materially after query and write batching, and release family claims are still deferred until release concurrency is justified by new measurements.
+- The next likely bottleneck is inspect work, not cross-process assemble/release execution.
+
+Sign-off:
+
+- Complete as deferred. Reopen only if a later measurement shows one process cannot keep up even after stage-specific goroutine workers and batching are exhausted.
+
+## Milestone 7. Inspect Concurrency With Database Reservations
+
+Goal:
+
+- make `inspect_archive` and `inspect_media` process-safe concurrent stages using goroutine workers backed by database reservations
+
+Status:
+
+- [x] complete
+
+Scope:
+
+- primary focus: `inspect_archive`
+- secondary focus: `inspect_media`
+- keep discovery, PAR2, NFO, and password inspection sequential unless measurements show they become material bottlenecks
+
+Tasks:
+
+- [x] add database-backed reservation fields for binary inspection work
+- [x] reserve inspect candidates before workers process them
+- [x] make reservations stage-specific so `inspect_archive` and `inspect_media` do not block unrelated inspect stages
+- [x] include owner and lease expiry so crashed workers or canceled commands do not leave candidates stuck
+- [x] update candidate selection to exclude actively reserved rows and include expired reservations
+- [x] make `StartBinaryInspection` compatible with reserved candidates and avoid stealing work reserved by another owner through normal candidate selection
+- [x] add goroutine worker pools for `inspect_archive` and `inspect_media`
+- [x] wire worker count from the existing `indexing.inspect_archive.concurrency` and `indexing.inspect_media.concurrency` settings
+- [x] keep each candidate workspace isolated per worker
+- [x] make cancellation stop workers cleanly while leaving unfinished reservations retryable after lease expiry
+- [x] add metrics for `worker_count`, `reserved_count`, `processed_count`, and `failed_count`
+- [x] add maintenance cleanup or repair behavior for expired/stale inspection reservations
+- [x] validate in code that same-stage claims are serialized and active reservations are excluded across processes
+
+Acceptance criteria:
+
+- [x] `inspect_archive.concurrency > 1` performs real parallel inspection work
+- [x] `inspect_media.concurrency > 1` performs real parallel inspection work
+- [x] two goroutines in one process cannot process the same `(stage_name, binary_id)` candidate
+- [x] two separate processes cannot process the same `(stage_name, binary_id)` candidate while a reservation is active
+- [x] expired reservations become retryable without manual cleanup
+- [x] completed and failed inspection semantics remain unchanged
+- [x] archive/media inspection throughput improves without corrupting artifacts, media rows, inspection rows, or release summary updates
+
+### Milestone 7 sign-off
+
+Implemented:
+
+- `binary_inspections` now carries stage-specific claim owner and lease expiry fields.
+- `ClaimBinaryInspectionCandidates` serializes same-stage claim batches with a short advisory transaction lock, excludes active reservations, and returns only reserved candidates to workers.
+- `inspect_archive` and `inspect_media` use worker pools driven by their stage `concurrency` settings.
+- completion, failure, and stale-running maintenance clear inspection claims so retries remain automatic.
+- admin runtime UI/API/config now expose concurrency only where real worker support exists: `assemble`, `inspect_archive`, and `inspect_media`.
+
+Validation:
+
+- Go tests passed for `pgindex`, inspect packages, app settings, API controllers, runtime wiring, and config.
+- UI production build passed.
+
+Implementation notes:
+
+- Prefer a reservation model on `binary_inspections` if it stays simple, because `(stage_name, binary_id)` already identifies inspection work.
+- If reservation state makes `binary_inspections` too overloaded, use a side table keyed by `(stage_name, binary_id)` with owner, lease expiry, and reserved-at metadata.
+- A safe claim query should mirror assemble's ownership rule: select a bounded batch, atomically reserve it, then fan out only reserved candidates to workers.
+- Do not rely on `StartBinaryInspection` alone as the claim boundary. It marks work running after selection, but it does not currently prevent two processes from selecting the same candidate first.
+- Start conservative runtime trials with `inspect_archive.concurrency=2` and `inspect_media.concurrency=2`; archive extraction, media probing, NNTP fetches, and workspace I/O can saturate shared resources quickly.
 
 ## Concurrency Strategy Notes
 
@@ -600,6 +683,7 @@ That means:
 The final design must ensure:
 
 - each pending header is claimed once per attempt window
+- each inspect candidate is reserved once per lease window
 - claims expire or can be repaired after worker crashes
 - release-family work is acknowledged exactly once after successful handling
 - stale claims can be repaired by maintenance
@@ -613,7 +697,10 @@ The final design must ensure:
 - [ ] no duplicate header processing under concurrency tests
 - [ ] no binary corruption or release-family summary drift under concurrency tests
 - [x] `release` concurrency evaluated after assemble improvements
-- [ ] optional cross-process worker path either implemented or explicitly deferred with evidence
+- [x] optional cross-process worker path either implemented or explicitly deferred with evidence
+- [ ] `inspect_archive.concurrency` used by real workers with database reservations
+- [ ] `inspect_media.concurrency` used by real workers with database reservations
+- [ ] no duplicate inspect processing under goroutine or multi-process tests
 
 ## References
 

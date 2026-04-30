@@ -63,6 +63,8 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		    	WHEN error_text = '' THEN 'maintenance marked stale running inspection'
 		    	ELSE error_text
 		    END,
+		    inspection_claimed_by = '',
+		    inspection_claimed_until = NULL,
 		    updated_at = NOW()
 		WHERE status = 'running'
 		  AND updated_at < NOW() - INTERVAL '15 minutes'`); err != nil {

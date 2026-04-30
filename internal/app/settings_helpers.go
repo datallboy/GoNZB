@@ -66,12 +66,11 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 
 	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
-	out.Assemble = indexStageRuntimeFromConfig(cfg.Assemble, true, 10, 5000)
+	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
 	out.Release = IndexingReleaseRuntimeSettings{
 		Enabled:          boolValue(cfg.Release.Enabled, true),
 		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, 10),
 		BatchSize:        intValue(cfg.Release.BatchSize, 1000),
-		Concurrency:      intValue(cfg.Release.Concurrency, 1),
 		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
 		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
 		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
@@ -95,14 +94,13 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
 	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
 	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
-	out.InspectArchive = indexStageRuntimeFromConfig(cfg.InspectArchive, true, 10, 100)
+	out.InspectArchive = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectArchive, true, 10, 100)
 	out.InspectPassword = indexStageRuntimeFromConfig(cfg.InspectPassword, true, 10, 100)
-	out.InspectMedia = indexStageRuntimeFromConfig(cfg.InspectMedia, true, 10, 100)
+	out.InspectMedia = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectMedia, true, 10, 100)
 	out.EnrichPreDB = IndexingPreDBRuntimeSettings{
 		Enabled:            boolValue(cfg.EnrichPreDB.Enabled, true),
 		IntervalMinutes:    float64Value(cfg.EnrichPreDB.IntervalMinutes, 10),
 		BatchSize:          intValue(cfg.EnrichPreDB.BatchSize, 100),
-		Concurrency:        intValue(cfg.EnrichPreDB.Concurrency, 1),
 		BackoffSeconds:     intValue(cfg.EnrichPreDB.BackoffSeconds, 0),
 		Provider:           firstNonEmpty(cfg.EnrichPreDB.Provider, "club,me"),
 		BaseURL:            firstNonEmpty(cfg.EnrichPreDB.BaseURL, "https://predb.club/api/v1"),
@@ -116,7 +114,6 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		Enabled:            boolValue(cfg.EnrichTMDB.Enabled, true),
 		IntervalMinutes:    float64Value(cfg.EnrichTMDB.IntervalMinutes, 10),
 		BatchSize:          intValue(cfg.EnrichTMDB.BatchSize, 100),
-		Concurrency:        intValue(cfg.EnrichTMDB.Concurrency, 1),
 		BackoffSeconds:     intValue(cfg.EnrichTMDB.BackoffSeconds, 0),
 		HTTPTimeoutSeconds: intValue(cfg.EnrichTMDB.HTTPTimeoutSeconds, 15),
 		TMDBAPIKey:         firstNonEmpty(cfg.EnrichTMDB.TMDBAPIKey),
@@ -199,14 +196,13 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			effective.Indexing.Newsgroups = append([]string(nil), indexing.Newsgroups...)
 		}
 
-		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
-		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
+		effective.Indexing.ScrapeLatest = toStageConfigNoConcurrency(indexing.ScrapeLatest)
+		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
 		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
 			Enabled:          boolPtr(indexing.Release.Enabled),
 			IntervalMinutes:  float64Ptr(indexing.Release.IntervalMinutes),
 			BatchSize:        intPtr(indexing.Release.BatchSize),
-			Concurrency:      intPtr(indexing.Release.Concurrency),
 			BackoffSeconds:   intPtr(indexing.Release.BackoffSeconds),
 			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
 			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
@@ -227,17 +223,16 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			UnrarPath:       indexing.Inspect.UnrarPath,
 			PAR2Path:        indexing.Inspect.PAR2Path,
 		}
-		effective.Indexing.InspectDiscovery = toStageConfig(indexing.InspectDiscovery)
-		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
-		effective.Indexing.InspectNFO = toStageConfig(indexing.InspectNFO)
+		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
+		effective.Indexing.InspectPAR2 = toStageConfigNoConcurrency(indexing.InspectPAR2)
+		effective.Indexing.InspectNFO = toStageConfigNoConcurrency(indexing.InspectNFO)
 		effective.Indexing.InspectArchive = toStageConfig(indexing.InspectArchive)
-		effective.Indexing.InspectPassword = toStageConfig(indexing.InspectPassword)
+		effective.Indexing.InspectPassword = toStageConfigNoConcurrency(indexing.InspectPassword)
 		effective.Indexing.InspectMedia = toStageConfig(indexing.InspectMedia)
 		effective.Indexing.EnrichPreDB = config.IndexingPreDBConfig{
 			Enabled:            boolPtr(indexing.EnrichPreDB.Enabled),
 			IntervalMinutes:    float64Ptr(indexing.EnrichPreDB.IntervalMinutes),
 			BatchSize:          intPtr(indexing.EnrichPreDB.BatchSize),
-			Concurrency:        intPtr(indexing.EnrichPreDB.Concurrency),
 			BackoffSeconds:     intPtr(indexing.EnrichPreDB.BackoffSeconds),
 			Provider:           indexing.EnrichPreDB.Provider,
 			BaseURL:            indexing.EnrichPreDB.BaseURL,
@@ -251,7 +246,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			Enabled:            boolPtr(indexing.EnrichTMDB.Enabled),
 			IntervalMinutes:    float64Ptr(indexing.EnrichTMDB.IntervalMinutes),
 			BatchSize:          intPtr(indexing.EnrichTMDB.BatchSize),
-			Concurrency:        intPtr(indexing.EnrichTMDB.Concurrency),
 			BackoffSeconds:     intPtr(indexing.EnrichTMDB.BackoffSeconds),
 			HTTPTimeoutSeconds: intPtr(indexing.EnrichTMDB.HTTPTimeoutSeconds),
 			TMDBAPIKey:         indexing.EnrichTMDB.TMDBAPIKey,
@@ -300,6 +294,7 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 		next.ArrIntegrations = append([]ArrIntegrationRuntimeSettings(nil), (*patch.ArrIntegrations)...)
 	}
 
+	dropUnsupportedIndexingConcurrency(next)
 	return next
 }
 
@@ -309,7 +304,7 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 		return &RuntimeSettings{}
 	}
 
-	return &RuntimeSettings{
+	out := &RuntimeSettings{
 		Servers:         append([]ServerRuntimeSettings(nil), in.Servers...),
 		Indexers:        append([]IndexerRuntimeSettings(nil), in.Indexers...),
 		ArrIntegrations: append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
@@ -317,6 +312,8 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 		Indexing:        cloneIndexing(in.Indexing),
 		Revision:        in.Revision,
 	}
+	dropUnsupportedIndexingConcurrency(out)
+	return out
 }
 
 // RedactedCopy removes secrets before returning settings externally.
@@ -332,12 +329,25 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 		out.ArrIntegrations[i].APIKey = ""
 	}
 	if out.Indexing != nil {
+		dropUnsupportedIndexingConcurrency(out)
 		out.Indexing.EnrichTMDB.TMDBAPIKey = ""
 		out.Indexing.EnrichTMDB.TMDBAccessToken = ""
 		out.Indexing.EnrichTMDB.TVDBAPIKey = ""
 		out.Indexing.EnrichTMDB.TVDBPIN = ""
 	}
 	return out
+}
+
+func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
+	if in == nil || in.Indexing == nil {
+		return
+	}
+	in.Indexing.ScrapeLatest.Concurrency = 0
+	in.Indexing.ScrapeBackfill.Concurrency = 0
+	in.Indexing.InspectDiscovery.Concurrency = 0
+	in.Indexing.InspectPAR2.Concurrency = 0
+	in.Indexing.InspectNFO.Concurrency = 0
+	in.Indexing.InspectPassword.Concurrency = 0
 }
 
 func ValidateArrIntegrations(integrations []ArrIntegrationRuntimeSettings) error {
@@ -411,19 +421,33 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		Enabled:         boolValue(cfg.Enabled, defaultEnabled),
 		IntervalMinutes: float64Value(cfg.IntervalMinutes, defaultInterval),
 		BatchSize:       intValue(cfg.BatchSize, defaultBatch),
-		Concurrency:     intValue(cfg.Concurrency, 1),
 		BackoffSeconds:  intValue(cfg.BackoffSeconds, 0),
 	}
 }
 
+func indexStageRuntimeFromConfigWithConcurrency(cfg config.IndexingStageConfig, defaultEnabled bool, defaultInterval float64, defaultBatch int) IndexingStageRuntimeSettings {
+	out := indexStageRuntimeFromConfig(cfg, defaultEnabled, defaultInterval, defaultBatch)
+	out.Concurrency = intValue(cfg.Concurrency, 1)
+	return out
+}
+
 func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
-	return config.IndexingStageConfig{
+	out := config.IndexingStageConfig{
 		Enabled:         boolPtr(in.Enabled),
 		IntervalMinutes: float64Ptr(in.IntervalMinutes),
 		BatchSize:       intPtr(in.BatchSize),
-		Concurrency:     intPtr(in.Concurrency),
 		BackoffSeconds:  intPtr(in.BackoffSeconds),
 	}
+	if in.Concurrency > 0 {
+		out.Concurrency = intPtr(in.Concurrency)
+	}
+	return out
+}
+
+func toStageConfigNoConcurrency(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
+	out := toStageConfig(in)
+	out.Concurrency = nil
+	return out
 }
 
 func boolValue(v *bool, fallback bool) bool {

@@ -11,7 +11,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	disabled := false
 	interval := 2.5
 	batch := 42
-	concurrency := 3
 	backoff := 17
 	high := 0.91
 	probable := 0.63
@@ -46,7 +45,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			Enabled:         &disabled,
 			IntervalMinutes: &interval,
 			BatchSize:       &batch,
-			Concurrency:     &concurrency,
 			BackoffSeconds:  &backoff,
 		},
 		Match: config.IndexingMatchConfig{
@@ -61,7 +59,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			Enabled:            &enabled,
 			IntervalMinutes:    &interval,
 			BatchSize:          &batch,
-			Concurrency:        &concurrency,
 			BackoffSeconds:     &backoff,
 			Provider:           "club",
 			BaseURL:            "https://predb.example/api",

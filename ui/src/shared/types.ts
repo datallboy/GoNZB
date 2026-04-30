@@ -118,7 +118,8 @@ export type AdminStage = {
   paused: boolean
   interval_seconds: number
   batch_size: number
-  concurrency: number
+  concurrency?: number
+  supports_concurrency: boolean
   backoff_seconds: number
   lease_owner: string
   lease_expires_at?: string
