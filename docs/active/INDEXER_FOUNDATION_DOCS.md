@@ -13,7 +13,7 @@ We currently have several planning and reference documents. This file defines wh
 - the backlog burn-down performance pass and assemble/release refinement loop are done
 - the first API/UI expansion phase is done
 - the process execution and performance sprint is complete and archived
-- the next active indexer execution focus should be opened in a new active doc when work begins
+- the active indexer execution focus is now database storage retention, maintenance reporting, and NZB/offload options
 
 ## Current Active Docs
 
@@ -25,9 +25,27 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
+### `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
+
+Use for:
+
+- the active database space-reduction and retention backlog
+- table/index size findings from the live dev database
+- maintenance configurability and frontend reporting requirements
+- NZB blob-cache/offload planning
+- evaluating whether `release_file_articles` can be consolidated into `binary_parts`
+
 ## Current Execution Focus
 
-No focused indexer execution sprint is currently active.
+The current focus is database storage retention and reclaim planning for the indexer runtime.
+
+Primary workstream:
+
+- make maintenance retention windows configurable
+- add maintenance reporting and admin UI controls
+- reduce `article_header_ingest_payloads` retention safely
+- evaluate and implement `release_file_articles` consolidation into `binary_parts` if invariants hold
+- design NZB blob caching/offload so article mappings can eventually be pruned more aggressively
 
 Recent completed focus:
 
@@ -141,7 +159,7 @@ Do not let this drive the current process-execution sprint.
 ## Guideline Rules
 
 1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
-2. Use prior completed docs as reference when they help current work, but not as the active checklist.
+2. Treat `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md` as the current active checklist for storage and retention work.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
 5. Keep measured bottlenecks ahead of speculative architectural change.
