@@ -230,20 +230,20 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
-	v.SetDefault("indexing.scrape_latest.enabled", true)
+	v.SetDefault("indexing.scrape_latest.enabled", false)
 	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
 	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
-	v.SetDefault("indexing.scrape_backfill.enabled", true)
+	v.SetDefault("indexing.scrape_backfill.enabled", false)
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.enabled", true)
+	v.SetDefault("indexing.assemble.enabled", false)
 	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
 	v.SetDefault("indexing.assemble.batch_size", 5000)
 	v.SetDefault("indexing.assemble.concurrency", 1)
 	v.SetDefault("indexing.assemble.backoff_seconds", 0)
-	v.SetDefault("indexing.release.enabled", true)
+	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
 	v.SetDefault("indexing.release.backoff_seconds", 0)
@@ -261,33 +261,33 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
-	v.SetDefault("indexing.inspect_discovery.enabled", true)
+	v.SetDefault("indexing.inspect_discovery.enabled", false)
 	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
 	v.SetDefault("indexing.inspect_discovery.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_par2.enabled", true)
+	v.SetDefault("indexing.inspect_par2.enabled", false)
 	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_par2.batch_size", 100)
 	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_nfo.enabled", true)
+	v.SetDefault("indexing.inspect_nfo.enabled", false)
 	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_nfo.batch_size", 100)
 	v.SetDefault("indexing.inspect_nfo.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_archive.enabled", true)
+	v.SetDefault("indexing.inspect_archive.enabled", false)
 	v.SetDefault("indexing.inspect_archive.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_archive.batch_size", 100)
 	v.SetDefault("indexing.inspect_archive.concurrency", 1)
 	v.SetDefault("indexing.inspect_archive.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_password.enabled", true)
+	v.SetDefault("indexing.inspect_password.enabled", false)
 	v.SetDefault("indexing.inspect_password.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_password.batch_size", 100)
 	v.SetDefault("indexing.inspect_password.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_media.enabled", true)
+	v.SetDefault("indexing.inspect_media.enabled", false)
 	v.SetDefault("indexing.inspect_media.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_media.batch_size", 100)
 	v.SetDefault("indexing.inspect_media.concurrency", 1)
 	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
-	v.SetDefault("indexing.enrich_predb.enabled", true)
+	v.SetDefault("indexing.enrich_predb.enabled", false)
 	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_predb.batch_size", 100)
 	v.SetDefault("indexing.enrich_predb.backoff_seconds", 0)
@@ -298,7 +298,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enrich_predb.http_timeout_seconds", 10)
 	v.SetDefault("indexing.enrich_predb.backfill_page_size", 1000)
 	v.SetDefault("indexing.enrich_predb.max_backfill_pages", 250)
-	v.SetDefault("indexing.enrich_tmdb.enabled", true)
+	v.SetDefault("indexing.enrich_tmdb.enabled", false)
 	v.SetDefault("indexing.enrich_tmdb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_tmdb.batch_size", 100)
 	v.SetDefault("indexing.enrich_tmdb.backoff_seconds", 0)
@@ -485,45 +485,8 @@ func (c *Config) validate() error {
 		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
 	}
 
-	if c.Modules.Aggregator.Enabled {
-		hasNewznabSource := false
-		for _, idx := range c.Indexers {
-			if strings.TrimSpace(idx.ID) != "" || strings.TrimSpace(idx.BaseUrl) != "" {
-				hasNewznabSource = true
-				break
-			}
-		}
-		if !hasNewznabSource &&
-			!c.Aggregator.Sources.LocalBlob.Enabled &&
-			!c.Aggregator.Sources.UsenetIndexer.Enabled {
-			return errors.New("modules.aggregator.enabled requires at least one aggregator source: aggregator.sources.local_blob, aggregator.sources.usenet_indexer, or indexers")
-		}
-		if c.Aggregator.Sources.UsenetIndexer.Enabled && !c.Modules.UsenetIndexer.Enabled {
-			return errors.New("aggregator.sources.usenet_indexer.enabled requires modules.usenet_indexer.enabled")
-		}
-	}
-
-	// validate configured newsgroups only when Usenet/NZB Indexer is enabled.
-	if c.Modules.UsenetIndexer.Enabled {
-		hasGroups := false
-		for _, g := range c.Indexing.Newsgroups {
-			if strings.TrimSpace(g) != "" {
-				hasGroups = true
-				break
-			}
-		}
-		if !hasGroups {
-			return errors.New("indexing.newsgroups is required when modules.usenet_indexer.enabled is true")
-		}
-	}
-
-	// NNTP servers are required only when downloader or usenet indexer is enabled.
-	if c.Modules.Downloader.Enabled || c.Modules.UsenetIndexer.Enabled {
-		if len(c.Servers) == 0 {
-			return errors.New("at least one server must be configured when downloader or usenet_indexer is enabled")
-		}
-
-		for i, s := range c.Servers {
+	for i, s := range c.Servers {
+		if strings.TrimSpace(s.ID) != "" || strings.TrimSpace(s.Host) != "" || s.Port != 0 {
 			if s.ID == "" {
 				return fmt.Errorf("server[%d] requires a unique ID", i)
 			}

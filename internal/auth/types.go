@@ -3,20 +3,26 @@ package auth
 import "time"
 
 const (
-	PermissionIndexerReleasesRead     = "indexer.releases.read"
-	PermissionIndexerReleasesOverride = "indexer.releases.override"
-	PermissionIndexerReleasesHide     = "indexer.releases.hide"
-	PermissionIndexerReleasesPurge    = "indexer.releases.purge"
-	PermissionIndexerRuntimeRead      = "indexer.runtime.read"
-	PermissionIndexerRuntimeRun       = "indexer.runtime.run"
-	PermissionIndexerRuntimePause     = "indexer.runtime.pause"
-	PermissionIndexerRuntimeConfigure = "indexer.runtime.configure"
-	PermissionAuthUsersRead           = "auth.users.read"
-	PermissionAuthUsersWrite          = "auth.users.write"
-	PermissionAuthRolesRead           = "auth.roles.read"
-	PermissionAuthRolesWrite          = "auth.roles.write"
-	PermissionAuthTokensRead          = "auth.tokens.read"
-	PermissionAuthTokensWrite         = "auth.tokens.write"
+	PermissionIndexerReleasesRead        = "indexer.releases.read"
+	PermissionIndexerReleasesOverride    = "indexer.releases.override"
+	PermissionIndexerReleasesHide        = "indexer.releases.hide"
+	PermissionIndexerReleasesPurge       = "indexer.releases.purge"
+	PermissionIndexerRuntimeRead         = "indexer.runtime.read"
+	PermissionIndexerRuntimeRun          = "indexer.runtime.run"
+	PermissionIndexerRuntimePause        = "indexer.runtime.pause"
+	PermissionIndexerRuntimeConfigure    = "indexer.runtime.configure"
+	PermissionAdminSettingsRead          = "admin.settings.read"
+	PermissionAdminSettingsWrite         = "admin.settings.write"
+	PermissionAggregatorRuntimeRead      = "aggregator.runtime.read"
+	PermissionAggregatorRuntimeConfigure = "aggregator.runtime.configure"
+	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
+	PermissionDownloaderRuntimeConfigure = "downloader.runtime.configure"
+	PermissionAuthUsersRead              = "auth.users.read"
+	PermissionAuthUsersWrite             = "auth.users.write"
+	PermissionAuthRolesRead              = "auth.roles.read"
+	PermissionAuthRolesWrite             = "auth.roles.write"
+	PermissionAuthTokensRead             = "auth.tokens.read"
+	PermissionAuthTokensWrite            = "auth.tokens.write"
 )
 
 type User struct {
@@ -85,6 +91,9 @@ func DefaultRoles() []Role {
 				PermissionIndexerRuntimeRead,
 				PermissionIndexerRuntimeRun,
 				PermissionIndexerRuntimePause,
+				PermissionAdminSettingsRead,
+				PermissionAggregatorRuntimeRead,
+				PermissionDownloaderRuntimeRead,
 			},
 		},
 		{
@@ -100,6 +109,12 @@ func DefaultRoles() []Role {
 				PermissionIndexerRuntimeRun,
 				PermissionIndexerRuntimePause,
 				PermissionIndexerRuntimeConfigure,
+				PermissionAdminSettingsRead,
+				PermissionAdminSettingsWrite,
+				PermissionAggregatorRuntimeRead,
+				PermissionAggregatorRuntimeConfigure,
+				PermissionDownloaderRuntimeRead,
+				PermissionDownloaderRuntimeConfigure,
 				PermissionAuthUsersRead,
 				PermissionAuthUsersWrite,
 				PermissionAuthRolesRead,

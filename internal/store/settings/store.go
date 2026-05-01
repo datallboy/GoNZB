@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
 	_ "modernc.org/sqlite"
 )
 
-const usenetIndexerModuleName = "usenet_indexer"
-const expectedSchemaVersion = 5
+const (
+	usenetIndexerModuleName = "usenet_indexer"
+	aggregatorModuleName    = "aggregator"
+)
+const expectedSchemaVersion = 6
 
 type Store struct {
 	db *sql.DB
@@ -140,7 +144,7 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		if revErr == nil {
 			runtime.Revision = revisionID
 		}
-		return runtime, nil
+		return WithRuntimeDefaults(runtime), nil
 	}
 
 	legacyRevision, err := s.readLatestRevisionSnapshot(ctx)
@@ -148,16 +152,12 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		return nil, fmt.Errorf("read latest settings revision: %w", err)
 	}
 	if err == nil && legacyRevision != nil {
-		return legacyRevision, nil
+		return WithRuntimeDefaults(legacyRevision), nil
 	}
 
-	if len(base) > 0 && base[0] != nil {
-		out := FromConfig(base[0])
-		out.Revision = 0
-		return out, nil
-	}
-
-	return &RuntimeSettings{}, nil
+	out := DefaultRuntimeSettings()
+	out.Revision = 0
+	return out, nil
 }
 
 // patch and persist the latest runtime settings state as a new atomic revision.
@@ -182,11 +182,14 @@ func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error
 		_ = tx.Rollback()
 	}()
 
-	if err := s.writeServers(ctx, tx, next.Servers); err != nil {
+	if err := s.writeServers(ctx, tx, next); err != nil {
 		return fmt.Errorf("write settings_nntp_servers: %w", err)
 	}
 	if err := s.writeIndexers(ctx, tx, next.Indexers); err != nil {
 		return fmt.Errorf("write settings_indexers: %w", err)
+	}
+	if err := s.writeAggregatorOptions(ctx, tx, next.Aggregator); err != nil {
+		return fmt.Errorf("write aggregator module options: %w", err)
 	}
 	if err := s.writeDownload(ctx, tx, next.Download); err != nil {
 		return fmt.Errorf("write settings_download: %w", err)
@@ -294,9 +297,11 @@ func (s *Store) readLatestRevisionSnapshot(ctx context.Context) (*RuntimeSetting
 
 func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, bool, error) {
 	out := &RuntimeSettings{
-		Servers:         make([]ServerRuntimeSettings, 0),
-		Indexers:        make([]IndexerRuntimeSettings, 0),
-		ArrIntegrations: make([]ArrIntegrationRuntimeSettings, 0),
+		Servers:           make([]ServerRuntimeSettings, 0),
+		DownloaderServers: make([]ServerRuntimeSettings, 0),
+		IndexerServers:    make([]ServerRuntimeSettings, 0),
+		Indexers:          make([]IndexerRuntimeSettings, 0),
+		ArrIntegrations:   make([]ArrIntegrationRuntimeSettings, 0),
 	}
 
 	hasState := false
@@ -304,9 +309,9 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 	serverRows, err := s.db.QueryContext(ctx, `
 		SELECT id, host, port, username, password_ciphertext, tls, max_connections, priority,
 		       dial_timeout_seconds, tcp_keepalive_seconds, pool_idle_timeout_seconds, pool_max_age_seconds,
-		       enable_pool_logging
+		       enable_pool_logging, scope
 		FROM settings_nntp_servers
-		ORDER BY priority, id`)
+		ORDER BY scope, priority, id`)
 	if err != nil {
 		return nil, false, err
 	}
@@ -316,6 +321,7 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		hasState = true
 
 		var item ServerRuntimeSettings
+		var scope string
 		if err := serverRows.Scan(
 			&item.ID,
 			&item.Host,
@@ -330,10 +336,20 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 			&item.PoolIdleTimeoutSeconds,
 			&item.PoolMaxAgeSeconds,
 			&item.EnablePoolLogging,
+			&scope,
 		); err != nil {
 			return nil, false, err
 		}
-		out.Servers = append(out.Servers, item)
+		switch scope {
+		case "downloader":
+			item.ID = strings.TrimPrefix(item.ID, "downloader:")
+			out.DownloaderServers = append(out.DownloaderServers, item)
+		case "indexer":
+			item.ID = strings.TrimPrefix(item.ID, "indexer:")
+			out.IndexerServers = append(out.IndexerServers, item)
+		default:
+			out.Servers = append(out.Servers, item)
+		}
 	}
 	if err := serverRows.Err(); err != nil {
 		return nil, false, err
@@ -439,38 +455,80 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		out.Indexing = &indexing
 	}
 
+	var aggregatorOptionsJSON string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT options_json
+		FROM settings_module_options
+		WHERE module_name = ?`, aggregatorModuleName).Scan(&aggregatorOptionsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	if err == nil {
+		hasState = true
+
+		var aggregator AggregatorRuntimeSettings
+		if aggregatorOptionsJSON == "" {
+			aggregatorOptionsJSON = "{}"
+		}
+		if unmarshalErr := json.Unmarshal([]byte(aggregatorOptionsJSON), &aggregator); unmarshalErr != nil {
+			return nil, false, fmt.Errorf("unmarshal aggregator module options: %w", unmarshalErr)
+		}
+		out.Aggregator = &aggregator
+	}
+
 	return out, hasState, nil
 }
 
-func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, servers []ServerRuntimeSettings) error {
+func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, runtime *RuntimeSettings) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_nntp_servers`); err != nil {
 		return err
 	}
 
-	for _, item := range servers {
-		// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO settings_nntp_servers (
-				id, host, port, username, password_ciphertext, tls, max_connections, priority,
-				dial_timeout_seconds, tcp_keepalive_seconds, pool_idle_timeout_seconds, pool_max_age_seconds,
-				enable_pool_logging, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-			item.ID,
-			item.Host,
-			item.Port,
-			item.Username,
-			item.Password,
-			item.TLS,
-			item.MaxConnection,
-			item.Priority,
-			item.DialTimeoutSeconds,
-			item.TCPKeepAliveSeconds,
-			item.PoolIdleTimeoutSeconds,
-			item.PoolMaxAgeSeconds,
-			item.EnablePoolLogging,
-		); err != nil {
-			return err
+	writeScoped := func(scope string, servers []ServerRuntimeSettings) error {
+		for _, item := range servers {
+			id := item.ID
+			if scope != "shared" && id != "" {
+				id = scope + ":" + id
+			}
+			// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO settings_nntp_servers (
+					id, host, port, username, password_ciphertext, tls, max_connections, priority,
+					dial_timeout_seconds, tcp_keepalive_seconds, pool_idle_timeout_seconds, pool_max_age_seconds,
+					enable_pool_logging, scope, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+				id,
+				item.Host,
+				item.Port,
+				item.Username,
+				item.Password,
+				item.TLS,
+				item.MaxConnection,
+				item.Priority,
+				item.DialTimeoutSeconds,
+				item.TCPKeepAliveSeconds,
+				item.PoolIdleTimeoutSeconds,
+				item.PoolMaxAgeSeconds,
+				item.EnablePoolLogging,
+				scope,
+			); err != nil {
+				return err
+			}
 		}
+		return nil
+	}
+
+	if runtime == nil {
+		return nil
+	}
+	if err := writeScoped("shared", runtime.Servers); err != nil {
+		return err
+	}
+	if err := writeScoped("downloader", runtime.DownloaderServers); err != nil {
+		return err
+	}
+	if err := writeScoped("indexer", runtime.IndexerServers); err != nil {
+		return err
 	}
 
 	return nil
@@ -562,6 +620,31 @@ func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, index
 			module_name, options_json, updated_at
 		) VALUES (?, ?, CURRENT_TIMESTAMP)`,
 		usenetIndexerModuleName,
+		string(optionsJSON),
+	)
+	return err
+}
+
+func (s *Store) writeAggregatorOptions(ctx context.Context, tx *sql.Tx, aggregator *AggregatorRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM settings_module_options
+		WHERE module_name = ?`, aggregatorModuleName); err != nil {
+		return err
+	}
+	if aggregator == nil {
+		return nil
+	}
+
+	optionsJSON, err := json.Marshal(aggregator)
+	if err != nil {
+		return fmt.Errorf("marshal aggregator options: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO settings_module_options (
+			module_name, options_json, updated_at
+		) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+		aggregatorModuleName,
 		string(optionsJSON),
 	)
 	return err

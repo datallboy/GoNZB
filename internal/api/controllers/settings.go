@@ -30,6 +30,19 @@ func (ctrl *SettingsController) GetSettings(c *echo.Context) error {
 	return c.JSON(http.StatusOK, redactedSettingsCopy(runtime))
 }
 
+func (ctrl *SettingsController) GetCapabilities(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "runtime settings are not configured")
+	}
+
+	caps, err := ctrl.Service.Capabilities(c.Request().Context())
+	if err != nil {
+		return jsonError(c, settingsErrorStatus(err), err.Error())
+	}
+
+	return c.JSON(http.StatusOK, caps)
+}
+
 func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "runtime settings are not configured")
@@ -54,6 +67,7 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 func hasAnySettingsPatchField(patch *settingsPatch) bool {
 	return patch != nil && (patch.Servers != nil ||
 		patch.Indexers != nil ||
+		patch.Aggregator != nil ||
 		patch.Download != nil ||
 		patch.Indexing != nil ||
 		patch.ArrIntegrations != nil)

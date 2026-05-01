@@ -35,6 +35,15 @@ Use for:
 - NZB blob-cache/offload planning
 - evaluating whether `release_file_articles` can be consolidated into `binary_parts`
 
+### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
+
+Use for:
+
+- the completed runtime settings ownership split
+- deciding whether a setting belongs in bootstrap YAML or SQLite runtime state
+- control-plane UI and unified admin navigation work
+- first-run setup flow and module capability/readiness behavior
+
 ## Current Execution Focus
 
 The current focus is database storage retention and reclaim planning for the indexer runtime.

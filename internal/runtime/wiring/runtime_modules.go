@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
 const (
@@ -119,7 +120,7 @@ func (m *aggregatorRuntimeModule) ReadinessChecks(ctx context.Context) []app.Run
 
 	checks := []app.RuntimeCheck{
 		runtimeBoolCheck("aggregator_runtime", m.appCtx.Aggregator != nil, "aggregator runtime is required"),
-		runtimeBoolCheck("indexer_sources", len(m.appCtx.Config.Indexers) > 0, "at least one indexer source must be configured"),
+		runtimeBoolCheck("indexer_sources", aggregatorHasSource(m.appCtx.Config), "at least one aggregator source must be configured"),
 		runtimeBoolCheck("payload_store", m.appCtx.BlobStore != nil, "payload store is required"),
 	}
 
@@ -137,6 +138,15 @@ func (m *aggregatorRuntimeModule) ReadinessChecks(ctx context.Context) []app.Run
 	}
 
 	return checks
+}
+
+func aggregatorHasSource(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return len(cfg.Indexers) > 0 ||
+		cfg.Aggregator.Sources.LocalBlob.Enabled ||
+		cfg.Aggregator.Sources.UsenetIndexer.Enabled
 }
 
 type usenetIndexerRuntimeModule struct {

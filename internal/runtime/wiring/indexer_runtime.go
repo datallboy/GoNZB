@@ -80,7 +80,13 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		return nil, fmt.Errorf("usenet indexer is enabled but PGIndexStore is not initialized")
 	}
 
-	runtimeCfg, err := deriveUsenetIndexerConfig(appCtx.Config)
+	indexerConfig := appCtx.Config
+	if servers := scopedIndexerServers(appCtx); len(servers) > 0 {
+		cfg := *appCtx.Config
+		cfg.Servers = servers
+		indexerConfig = &cfg
+	}
+	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +334,18 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		supervisor:     supervisorSvc,
 		scrapeProvider: scrapeProvider,
 	}, nil
+}
+
+func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
+	if appCtx == nil || appCtx.SettingsStore == nil {
+		return nil
+	}
+	runtime, err := appCtx.SettingsStore.GetRuntimeSettings(context.Background(), appCtx.BootstrapConfig)
+	if err != nil {
+		appCtx.Logger.Warn("Failed to load indexer NNTP runtime settings: %v", err)
+		return nil
+	}
+	return app.ToConfigServers(app.IndexerNNTPServers(runtime))
 }
 
 func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, error) {
