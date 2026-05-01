@@ -100,6 +100,20 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	}
 }
 
+func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
+	runtime := DefaultRuntimeSettings()
+
+	if len(runtime.Servers) != 0 || len(runtime.Indexers) != 0 {
+		t.Fatalf("expected empty servers and external indexers, got %+v", runtime)
+	}
+	if runtime.Aggregator == nil || runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled {
+		t.Fatalf("expected disabled aggregator sources, got %+v", runtime.Aggregator)
+	}
+	if runtime.Indexing == nil || runtime.Indexing.ScrapeLatest.Enabled || runtime.Indexing.Release.Enabled || runtime.Indexing.EnrichTMDB.Enabled {
+		t.Fatalf("expected disabled indexer stages, got %+v", runtime.Indexing)
+	}
+}
+
 func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
 	current := &RuntimeSettings{
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{{

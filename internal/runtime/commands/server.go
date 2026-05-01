@@ -28,13 +28,14 @@ func (r *Runner) ExecuteServer() {
 	}
 	wiring.BindApplicationModules(appCtx)
 
-	// fail startup before serving traffic if enabled modules
-	// are already not ready or have schema/dependency issues.
+	// Server mode must stay reachable for the control plane even when
+	// operational modules are enabled but not configured yet. /readyz still
+	// reports module readiness for probes and operators.
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelStartup()
 
 	if err := telemetry.ValidateStartupReadiness(startupCtx, appCtx); err != nil {
-		appCtx.Logger.Fatal("%v", err)
+		appCtx.Logger.Warn("%v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

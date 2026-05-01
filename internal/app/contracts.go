@@ -51,6 +51,7 @@ type AggregatorModule interface {
 
 type SettingsAdmin interface {
 	Get(ctx context.Context) (*RuntimeSettings, error)
+	Capabilities(ctx context.Context) (*ControlPlaneCapabilities, error)
 	Update(ctx context.Context, patch *RuntimeSettingsPatch) (*RuntimeSettings, error)
 }
 

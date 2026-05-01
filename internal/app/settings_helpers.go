@@ -7,6 +7,99 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
+func DefaultRuntimeSettings() *RuntimeSettings {
+	return &RuntimeSettings{
+		Servers:           []ServerRuntimeSettings{},
+		DownloaderServers: []ServerRuntimeSettings{},
+		IndexerServers:    []ServerRuntimeSettings{},
+		Indexers:          []IndexerRuntimeSettings{},
+		Aggregator:        &AggregatorRuntimeSettings{},
+		Download: &DownloadRuntimeSettings{
+			OutDir:            "./downloads",
+			CompletedDir:      "./downloads/completed",
+			CleanupExtensions: []string{"nzb", "par2", "sfv", "nfo"},
+		},
+		Indexing: &IndexingRuntimeSettings{
+			Newsgroups:               []string{},
+			BackfillUntilDateByGroup: map[string]string{},
+			ScrapeLatest:             defaultStage(false, 10, 5000, 0),
+			ScrapeBackfill:           defaultStage(false, 10, 5000, 0),
+			Assemble:                 defaultStage(false, 10, 5000, 1),
+			Release:                  defaultReleaseStage(false),
+			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
+			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			InspectDiscovery:         defaultStage(false, 10, 100, 0),
+			InspectPAR2:              defaultStage(false, 10, 100, 0),
+			InspectNFO:               defaultStage(false, 10, 100, 0),
+			InspectArchive:           defaultStage(false, 10, 100, 1),
+			InspectPassword:          defaultStage(false, 10, 100, 0),
+			InspectMedia:             defaultStage(false, 10, 100, 1),
+			EnrichPreDB:              defaultPreDBStage(false),
+			EnrichTMDB:               defaultTMDBStage(false),
+		},
+		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
+	}
+}
+
+func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
+	defaults := DefaultRuntimeSettings()
+	if in == nil {
+		return defaults
+	}
+	out := CloneRuntimeSettings(in)
+	if out.Servers == nil {
+		out.Servers = []ServerRuntimeSettings{}
+	}
+	if out.DownloaderServers == nil {
+		out.DownloaderServers = []ServerRuntimeSettings{}
+	}
+	if out.IndexerServers == nil {
+		out.IndexerServers = []ServerRuntimeSettings{}
+	}
+	if out.Indexers == nil {
+		out.Indexers = []IndexerRuntimeSettings{}
+	}
+	if out.ArrIntegrations == nil {
+		out.ArrIntegrations = []ArrIntegrationRuntimeSettings{}
+	}
+	if out.Aggregator == nil {
+		out.Aggregator = defaults.Aggregator
+	}
+	if out.Download == nil {
+		out.Download = defaults.Download
+	}
+	if out.Indexing == nil {
+		out.Indexing = defaults.Indexing
+	}
+	return out
+}
+
+func defaultStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
+	return IndexingStageRuntimeSettings{Enabled: enabled, IntervalMinutes: interval, BatchSize: batch, Concurrency: concurrency}
+}
+
+func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
+	return IndexingReleaseRuntimeSettings{
+		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, MinConfidence: 0.55,
+		MinCompletionPct: 0, RequireExpectedFileCountForContextualObfuscated: true,
+	}
+}
+
+func defaultPreDBStage(enabled bool) IndexingPreDBRuntimeSettings {
+	return IndexingPreDBRuntimeSettings{
+		Enabled: enabled, IntervalMinutes: 10, BatchSize: 100, Provider: "club,me",
+		BaseURL: "https://predb.club/api/v1", FeedURL: "https://predb.me/?rss=1",
+		HTTPTimeoutSeconds: 10, BackfillPageSize: 1000, MaxBackfillPages: 250,
+	}
+}
+
+func defaultTMDBStage(enabled bool) IndexingTMDBRuntimeSettings {
+	return IndexingTMDBRuntimeSettings{
+		Enabled: enabled, IntervalMinutes: 10, BatchSize: 100, HTTPTimeoutSeconds: 15,
+		TMDBBaseURL: "https://api.themoviedb.org/3", TVDBBaseURL: "https://api4.thetvdb.com/v4",
+	}
+}
+
 // FromConfig derives editable runtime state from current effective config.
 func FromConfig(cfg *config.Config) *RuntimeSettings {
 	if cfg == nil {
@@ -14,9 +107,12 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 	}
 
 	out := &RuntimeSettings{
-		Servers:         make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
-		Indexers:        make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
-		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
+		Servers:           make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		DownloaderServers: make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		IndexerServers:    make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		Indexers:          make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
+		Aggregator:        aggregatorRuntimeFromConfig(cfg.Aggregator),
+		ArrIntegrations:   []ArrIntegrationRuntimeSettings{},
 		Download: &DownloadRuntimeSettings{
 			OutDir:            cfg.Download.OutDir,
 			CompletedDir:      cfg.Download.CompletedDir,
@@ -29,7 +125,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 	}
 
 	for _, s := range cfg.Servers {
-		out.Servers = append(out.Servers, ServerRuntimeSettings{
+		server := ServerRuntimeSettings{
 			ID:                     s.ID,
 			Host:                   s.Host,
 			Port:                   s.Port,
@@ -43,7 +139,10 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
 			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
 			EnablePoolLogging:      s.EnablePoolLogging,
-		})
+		}
+		out.Servers = append(out.Servers, server)
+		out.DownloaderServers = append(out.DownloaderServers, server)
+		out.IndexerServers = append(out.IndexerServers, server)
 	}
 
 	for _, idx := range cfg.Indexers {
@@ -61,7 +160,8 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 
 func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSettings {
 	out := IndexingRuntimeSettings{
-		Newsgroups: append([]string(nil), cfg.Newsgroups...),
+		Newsgroups:               append([]string(nil), cfg.Newsgroups...),
+		BackfillUntilDateByGroup: cloneStringMap(cfg.BackfillUntilDateByGroup),
 	}
 
 	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
@@ -127,6 +227,15 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	return out
 }
 
+func aggregatorRuntimeFromConfig(cfg config.AggregatorConfig) *AggregatorRuntimeSettings {
+	return &AggregatorRuntimeSettings{
+		Sources: AggregatorSourcesRuntimeSettings{
+			LocalBlob:     RuntimeToggle{Enabled: cfg.Sources.LocalBlob.Enabled},
+			UsenetIndexer: RuntimeToggle{Enabled: cfg.Sources.UsenetIndexer.Enabled},
+		},
+	}
+}
+
 // ApplyToConfig applies runtime-editable settings on top of bootstrap config.
 func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config {
 	if base == nil {
@@ -137,6 +246,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 	effective.Servers = append([]config.ServerConfig(nil), base.Servers...)
 	effective.Indexers = append([]config.IndexerConfig(nil), base.Indexers...)
+	effective.Aggregator = base.Aggregator
 	effective.Download.CleanupExtensions = append([]string(nil), base.Download.CleanupExtensions...)
 	effective.Indexing.Newsgroups = append([]string(nil), base.Indexing.Newsgroups...)
 
@@ -144,38 +254,22 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		return &effective
 	}
 
-	if len(runtime.Servers) > 0 {
-		effective.Servers = make([]config.ServerConfig, 0, len(runtime.Servers))
-		for _, s := range runtime.Servers {
-			effective.Servers = append(effective.Servers, config.ServerConfig{
-				ID:                     strings.TrimSpace(s.ID),
-				Host:                   strings.TrimSpace(s.Host),
-				Port:                   s.Port,
-				Username:               s.Username,
-				Password:               s.Password,
-				TLS:                    s.TLS,
-				MaxConnection:          s.MaxConnection,
-				Priority:               s.Priority,
-				DialTimeoutSeconds:     s.DialTimeoutSeconds,
-				TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
-				PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
-				PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
-				EnablePoolLogging:      s.EnablePoolLogging,
-			})
-		}
+	effective.Servers = toConfigServers(RuntimeServersForCompatibility(runtime))
+
+	effective.Indexers = make([]config.IndexerConfig, 0, len(runtime.Indexers))
+	for _, idx := range runtime.Indexers {
+		effective.Indexers = append(effective.Indexers, config.IndexerConfig{
+			ID:       strings.TrimSpace(idx.ID),
+			BaseUrl:  strings.TrimSpace(idx.BaseURL),
+			ApiPath:  strings.TrimSpace(idx.APIPath),
+			ApiKey:   idx.APIKey,
+			Redirect: idx.Redirect,
+		})
 	}
 
-	if len(runtime.Indexers) > 0 {
-		effective.Indexers = make([]config.IndexerConfig, 0, len(runtime.Indexers))
-		for _, idx := range runtime.Indexers {
-			effective.Indexers = append(effective.Indexers, config.IndexerConfig{
-				ID:       strings.TrimSpace(idx.ID),
-				BaseUrl:  strings.TrimSpace(idx.BaseURL),
-				ApiPath:  strings.TrimSpace(idx.APIPath),
-				ApiKey:   idx.APIKey,
-				Redirect: idx.Redirect,
-			})
-		}
+	if runtime.Aggregator != nil {
+		effective.Aggregator.Sources.LocalBlob.Enabled = runtime.Aggregator.Sources.LocalBlob.Enabled
+		effective.Aggregator.Sources.UsenetIndexer.Enabled = runtime.Aggregator.Sources.UsenetIndexer.Enabled
 	}
 
 	if runtime.Download != nil {
@@ -195,6 +289,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		if indexing.Newsgroups != nil {
 			effective.Indexing.Newsgroups = append([]string(nil), indexing.Newsgroups...)
 		}
+		effective.Indexing.BackfillUntilDateByGroup = cloneStringMap(indexing.BackfillUntilDateByGroup)
 
 		effective.Indexing.ScrapeLatest = toStageConfigNoConcurrency(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
@@ -270,19 +365,31 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 
 	next := &RuntimeSettings{
-		Servers:         append([]ServerRuntimeSettings(nil), current.Servers...),
-		Indexers:        append([]IndexerRuntimeSettings(nil), current.Indexers...),
-		ArrIntegrations: append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
-		Download:        cloneDownload(current.Download),
-		Indexing:        cloneIndexing(current.Indexing),
-		Revision:        current.Revision,
+		Servers:           append([]ServerRuntimeSettings(nil), current.Servers...),
+		DownloaderServers: append([]ServerRuntimeSettings(nil), current.DownloaderServers...),
+		IndexerServers:    append([]ServerRuntimeSettings(nil), current.IndexerServers...),
+		Indexers:          append([]IndexerRuntimeSettings(nil), current.Indexers...),
+		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
+		Aggregator:        cloneAggregator(current.Aggregator),
+		Download:          cloneDownload(current.Download),
+		Indexing:          cloneIndexing(current.Indexing),
+		Revision:          current.Revision,
 	}
 
 	if patch.Servers != nil {
 		next.Servers = append([]ServerRuntimeSettings(nil), (*patch.Servers)...)
 	}
+	if patch.DownloaderServers != nil {
+		next.DownloaderServers = append([]ServerRuntimeSettings(nil), (*patch.DownloaderServers)...)
+	}
+	if patch.IndexerServers != nil {
+		next.IndexerServers = append([]ServerRuntimeSettings(nil), (*patch.IndexerServers)...)
+	}
 	if patch.Indexers != nil {
 		next.Indexers = append([]IndexerRuntimeSettings(nil), (*patch.Indexers)...)
+	}
+	if patch.Aggregator != nil {
+		next.Aggregator = cloneAggregator(patch.Aggregator)
 	}
 	if patch.Download != nil {
 		next.Download = cloneDownload(patch.Download)
@@ -305,12 +412,15 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 	}
 
 	out := &RuntimeSettings{
-		Servers:         append([]ServerRuntimeSettings(nil), in.Servers...),
-		Indexers:        append([]IndexerRuntimeSettings(nil), in.Indexers...),
-		ArrIntegrations: append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
-		Download:        cloneDownload(in.Download),
-		Indexing:        cloneIndexing(in.Indexing),
-		Revision:        in.Revision,
+		Servers:           append([]ServerRuntimeSettings(nil), in.Servers...),
+		DownloaderServers: append([]ServerRuntimeSettings(nil), in.DownloaderServers...),
+		IndexerServers:    append([]ServerRuntimeSettings(nil), in.IndexerServers...),
+		Indexers:          append([]IndexerRuntimeSettings(nil), in.Indexers...),
+		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
+		Aggregator:        cloneAggregator(in.Aggregator),
+		Download:          cloneDownload(in.Download),
+		Indexing:          cloneIndexing(in.Indexing),
+		Revision:          in.Revision,
 	}
 	dropUnsupportedIndexingConcurrency(out)
 	return out
@@ -321,6 +431,12 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 	out := CloneRuntimeSettings(in)
 	for i := range out.Servers {
 		out.Servers[i].Password = ""
+	}
+	for i := range out.DownloaderServers {
+		out.DownloaderServers[i].Password = ""
+	}
+	for i := range out.IndexerServers {
+		out.IndexerServers[i].Password = ""
 	}
 	for i := range out.Indexers {
 		out.Indexers[i].APIKey = ""
@@ -336,6 +452,107 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 		out.Indexing.EnrichTMDB.TVDBPIN = ""
 	}
 	return out
+}
+
+func RuntimeConfigured(in *RuntimeSettings) bool {
+	if in == nil {
+		return false
+	}
+	return len(in.Servers) > 0 ||
+		len(in.DownloaderServers) > 0 ||
+		len(in.IndexerServers) > 0 ||
+		len(in.Indexers) > 0 ||
+		len(in.ArrIntegrations) > 0 ||
+		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled) ||
+		downloadConfigured(in.Download) ||
+		indexingConfigured(in.Indexing)
+}
+
+func DownloaderNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	if len(in.DownloaderServers) > 0 {
+		return in.DownloaderServers
+	}
+	return in.Servers
+}
+
+func IndexerNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	if len(in.IndexerServers) > 0 {
+		return in.IndexerServers
+	}
+	return in.Servers
+}
+
+func RuntimeServersForCompatibility(in *RuntimeSettings) []ServerRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	if len(in.Servers) > 0 {
+		return in.Servers
+	}
+	if len(in.DownloaderServers) > 0 {
+		return in.DownloaderServers
+	}
+	return in.IndexerServers
+}
+
+func ToConfigServers(servers []ServerRuntimeSettings) []config.ServerConfig {
+	return toConfigServers(servers)
+}
+
+func toConfigServers(servers []ServerRuntimeSettings) []config.ServerConfig {
+	out := make([]config.ServerConfig, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, config.ServerConfig{
+			ID:                     strings.TrimSpace(s.ID),
+			Host:                   strings.TrimSpace(s.Host),
+			Port:                   s.Port,
+			Username:               s.Username,
+			Password:               s.Password,
+			TLS:                    s.TLS,
+			MaxConnection:          s.MaxConnection,
+			Priority:               s.Priority,
+			DialTimeoutSeconds:     s.DialTimeoutSeconds,
+			TCPKeepAliveSeconds:    s.TCPKeepAliveSeconds,
+			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
+			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
+			EnablePoolLogging:      s.EnablePoolLogging,
+		})
+	}
+	return out
+}
+
+func downloadConfigured(in *DownloadRuntimeSettings) bool {
+	if in == nil {
+		return false
+	}
+	return strings.TrimSpace(in.OutDir) != "" && strings.TrimSpace(in.OutDir) != "./downloads" ||
+		strings.TrimSpace(in.CompletedDir) != "" && strings.TrimSpace(in.CompletedDir) != "./downloads/completed"
+}
+
+func indexingConfigured(in *IndexingRuntimeSettings) bool {
+	if in == nil {
+		return false
+	}
+	return len(in.Newsgroups) > 0 ||
+		len(in.BackfillUntilDateByGroup) > 0 ||
+		in.ScrapeLatest.Enabled ||
+		in.ScrapeBackfill.Enabled ||
+		in.Assemble.Enabled ||
+		in.Release.Enabled ||
+		in.InspectDiscovery.Enabled ||
+		in.InspectPAR2.Enabled ||
+		in.InspectNFO.Enabled ||
+		in.InspectArchive.Enabled ||
+		in.InspectPassword.Enabled ||
+		in.InspectMedia.Enabled ||
+		in.EnrichPreDB.Enabled ||
+		in.EnrichTMDB.Enabled
 }
 
 func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
@@ -393,27 +610,47 @@ func cloneDownload(in *DownloadRuntimeSettings) *DownloadRuntimeSettings {
 	}
 }
 
+func cloneAggregator(in *AggregatorRuntimeSettings) *AggregatorRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
 func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	if in == nil {
 		return nil
 	}
 	return &IndexingRuntimeSettings{
-		Newsgroups:       append([]string(nil), in.Newsgroups...),
-		ScrapeLatest:     in.ScrapeLatest,
-		ScrapeBackfill:   in.ScrapeBackfill,
-		Assemble:         in.Assemble,
-		Release:          in.Release,
-		Match:            in.Match,
-		Inspect:          in.Inspect,
-		InspectDiscovery: in.InspectDiscovery,
-		InspectPAR2:      in.InspectPAR2,
-		InspectNFO:       in.InspectNFO,
-		InspectArchive:   in.InspectArchive,
-		InspectPassword:  in.InspectPassword,
-		InspectMedia:     in.InspectMedia,
-		EnrichPreDB:      in.EnrichPreDB,
-		EnrichTMDB:       in.EnrichTMDB,
+		Newsgroups:               append([]string(nil), in.Newsgroups...),
+		BackfillUntilDateByGroup: cloneStringMap(in.BackfillUntilDateByGroup),
+		ScrapeLatest:             in.ScrapeLatest,
+		ScrapeBackfill:           in.ScrapeBackfill,
+		Assemble:                 in.Assemble,
+		Release:                  in.Release,
+		Match:                    in.Match,
+		Inspect:                  in.Inspect,
+		InspectDiscovery:         in.InspectDiscovery,
+		InspectPAR2:              in.InspectPAR2,
+		InspectNFO:               in.InspectNFO,
+		InspectArchive:           in.InspectArchive,
+		InspectPassword:          in.InspectPassword,
+		InspectMedia:             in.InspectMedia,
+		EnrichPreDB:              in.EnrichPreDB,
+		EnrichTMDB:               in.EnrichTMDB,
 	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled bool, defaultInterval float64, defaultBatch int) IndexingStageRuntimeSettings {
