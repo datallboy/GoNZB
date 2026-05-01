@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
@@ -11,9 +11,11 @@ import { AdminSettingsPage } from './modules/admin/AdminSettingsPage'
 import { AdminStagesPage } from './modules/admin/AdminStagesPage'
 import { AdminUserDetailPage } from './modules/admin/AdminUserDetailPage'
 import { AdminUsersPage } from './modules/admin/AdminUsersPage'
+import { ControlPlanePage } from './modules/admin/ControlPlanePage'
 import { IndexerReleaseDetailPage } from './modules/indexer/IndexerReleaseDetailPage'
 import { IndexerReleaseListPage } from './modules/indexer/IndexerReleaseListPage'
 import { AccountTokensPage } from './modules/auth/AccountTokensPage'
+import { RootRedirect } from './modules/RootRedirect'
 import { AuthProvider } from './shared/auth/AuthContext'
 import { RequireAuth } from './shared/auth/RequireAuth'
 import { AdminAppShell, PublicAppShell } from './shared/layout/AppShell'
@@ -43,7 +45,7 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Navigate to="/indexer/releases" replace />} />
+          <Route index element={<RootRedirect />} />
           <Route path="indexer/releases" element={<IndexerReleaseListPage />} />
           <Route path="indexer/browse/:category" element={<IndexerReleaseListPage />} />
           <Route path="indexer/browse/:category/:subcategory" element={<IndexerReleaseListPage />} />
@@ -58,7 +60,7 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Navigate to="/admin/indexer/dashboard" replace />} />
+          <Route index element={<ControlPlanePage />} />
           <Route
             path="indexer/dashboard"
             element={
@@ -108,9 +110,9 @@ export default function App() {
             }
           />
           <Route
-            path="indexer/settings"
+            path="settings"
             element={
-              <RequireAuth permission="indexer.runtime.configure">
+              <RequireAuth permission="admin.settings.read">
                 <AdminSettingsPage />
               </RequireAuth>
             }

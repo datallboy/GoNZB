@@ -13,6 +13,7 @@ type RuntimeSettings = app.RuntimeSettings
 type RuntimeSettingsPatch = app.RuntimeSettingsPatch
 type ServerRuntimeSettings = app.ServerRuntimeSettings
 type IndexerRuntimeSettings = app.IndexerRuntimeSettings
+type AggregatorRuntimeSettings = app.AggregatorRuntimeSettings
 type DownloadRuntimeSettings = app.DownloadRuntimeSettings
 type IndexingRuntimeSettings = app.IndexingRuntimeSettings
 type ArrIntegrationRuntimeSettings = app.ArrIntegrationRuntimeSettings
@@ -20,6 +21,14 @@ type ArrIntegrationRuntimeSettings = app.ArrIntegrationRuntimeSettings
 // derive editable runtime state from current effective config.
 func FromConfig(cfg *config.Config) *RuntimeSettings {
 	return app.FromConfig(cfg)
+}
+
+func DefaultRuntimeSettings() *RuntimeSettings {
+	return app.DefaultRuntimeSettings()
+}
+
+func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
+	return app.WithRuntimeDefaults(in)
 }
 
 // apply runtime-editable settings on top of bootstrap config.

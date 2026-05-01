@@ -45,6 +45,9 @@ type Options struct {
 	UnrarPath          string
 	PAR2Path           string
 	CandidateBatchSize int
+	Concurrency        int
+	ClaimOwner         string
+	ClaimLease         time.Duration
 }
 
 func NewService(log logger, runners map[string]Runner) *Service {
@@ -109,6 +112,15 @@ func DefaultOptions(opts Options) Options {
 	}
 	if opts.CandidateBatchSize <= 0 {
 		opts.CandidateBatchSize = 100
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 1
+	}
+	if strings.TrimSpace(opts.ClaimOwner) == "" {
+		opts.ClaimOwner = "inspect"
+	}
+	if opts.ClaimLease <= 0 {
+		opts.ClaimLease = 15 * time.Minute
 	}
 	return opts
 }

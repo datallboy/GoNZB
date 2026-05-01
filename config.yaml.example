@@ -3,7 +3,7 @@
 # The port the HTTP server will listen on
 port: "8080"
 
-# Default example remains all-in-one.
+# Hard module gates. These decide which backend/UI surfaces are loaded.
 modules:
   downloader:
     enabled: true
@@ -23,52 +23,13 @@ api:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
 
-# Usenet Server Configuration (NNTP)
-servers:
-  - id: "Primary"
-    host: "news.example.com"
-    port: 563
-    username: "username"
-    password: "password"
-    tls: true
-    max_connections: 20
-    priority: 1 # Lower number = Higher priority
-    dial_timeout_seconds: 10
-    tcp_keepalive_seconds: 30
-    pool_idle_timeout_seconds: 45
-    pool_max_age_seconds: 600
-    enable_pool_logging: false
-  - id: "Backup"
-    host: "news.backup.com"
-    port: 563
-    username: "username"
-    password: "password"
-    tls: true
-    max_connections: 10
-    priority: 2
-    dial_timeout_seconds: 10
-    tcp_keepalive_seconds: 30
-    pool_idle_timeout_seconds: 45
-    pool_max_age_seconds: 600
-    enable_pool_logging: false
-
-# Newznab compatible indexers for searching
-indexers:
-  - id: "IndexerName"
-    base_url: "https://api.indexer.com"
-    api_path: "/api"
-    api_key: "your_api_key_here"
-    redirect: false # If true, redirects download requests directly to the indexer's URL
-
-# Download and Post-Processing settings
-download:
-  out_dir: "/downloads"             # Temporary directory for active downloads
-  completed_dir: "/downloads/completed" # Final destination for extracted/verified files
-  cleanup_extensions:                # List of file extensions to remove after success
-    - ".nzb"
-    - ".par2"
-    - ".sfv"
-    - ".nfo"
+# Operational settings are managed in the Admin UI and persisted to SQLite runtime settings.
+# The legacy YAML keys below are intentionally omitted from the normal bootstrap example:
+# - servers
+# - indexers
+# - aggregator.sources
+# - download paths/options
+# - indexing stage schedules/newsgroups/enrichment settings
 
 # Application Logging
 log:
@@ -76,101 +37,15 @@ log:
   level: "info"     # debug, info, warn, error
   include_stdout: true
 
-# Metadata and Blob Storage
+# Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir stores NZB payload cache files.
 store:
   sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
   blob_dir: "/store/nzbs"                # Directory to store cached NZB files
   payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
   
-  # PostgreSQL DSN for Usenet/NZB Indexer milestone work.
+  # PostgreSQL DSN for the Usenet/NZB Indexer module when modules.usenet_indexer.enabled is true.
   pg_dsn: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
 
-# Milestone 5 scrape/indexing settings.
-indexing:
-  newsgroups:
-    - "alt.binaries.test"
-  backfill_until_date_by_group:
-    alt.binaries.test: "2025-01-01"
-  scrape_latest:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 5000
-    concurrency: 1
-    backoff_seconds: 0
-  scrape_backfill:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 5000
-  assemble:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 5000
-  release:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 1000
-    concurrency: 1
-    backoff_seconds: 0
-    min_confidence: 0.55
-    min_completion_pct: 0
-    require_expected_file_count_for_contextual_obfuscated: true
-  match:
-    high_confidence_threshold: 0.85
-    probable_confidence_threshold: 0.55
-    article_bucket_size: 5000
-  inspect:
-    work_dir: "/store/indexer/inspect"
-    max_bytes: 2147483648
-    max_archive_depth: 3
-    tool_timeout_seconds: 30
-    ffprobe_path: "ffprobe"
-    seven_zip_path: "7z"
-    unrar_path: "unrar"
-    par2_path: "par2"
-  inspect_par2:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-  inspect_nfo:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-  inspect_archive:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-  inspect_password:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-  inspect_media:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-  enrich_predb:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-    concurrency: 1
-    backoff_seconds: 0
-    provider: "club,me"
-    base_url: "https://predb.club/api/v1"
-    feed_url: "https://predb.me/?rss=1"
-    dump_url: ""
-    http_timeout_seconds: 10
-    backfill_page_size: 1000
-    max_backfill_pages: 250
-  enrich_tmdb:
-    enabled: true
-    interval_minutes: 10
-    batch_size: 100
-    concurrency: 1
-    backoff_seconds: 0
-    http_timeout_seconds: 15
-    tmdb_api_key: ""
-    tmdb_access_token: ""
-    tmdb_base_url: "https://api.themoviedb.org/3"
-    tvdb_api_key: ""
-    tvdb_pin: ""
-    tvdb_base_url: "https://api4.thetvdb.com/v4"
+# After first launch, create the initial admin user at /setup, then configure NNTP,
+# aggregator sources, downloader paths, and indexer stages in /admin/settings.

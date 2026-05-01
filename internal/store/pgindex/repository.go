@@ -64,6 +64,13 @@ type BinaryInspectionCandidate struct {
 	ArchiveSummaryJSON json.RawMessage
 }
 
+type BinaryInspectionClaimRequest struct {
+	StageName     string
+	Limit         int
+	Owner         string
+	LeaseDuration time.Duration
+}
+
 type BinaryInspectionRecord struct {
 	StageName         string
 	BinaryID          int64

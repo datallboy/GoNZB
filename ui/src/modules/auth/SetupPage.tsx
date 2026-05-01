@@ -43,7 +43,7 @@ export function SetupPage() {
     try {
       await createInitialUser({ username, password })
       await refreshSession()
-      navigate('/indexer/releases', { replace: true })
+      navigate('/admin', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create initial user')
     } finally {

@@ -38,21 +38,22 @@ type indexerService interface {
 }
 
 type indexerStageView struct {
-	StageName       string                   `json:"stage_name"`
-	Enabled         bool                     `json:"enabled"`
-	Paused          bool                     `json:"paused"`
-	IntervalSeconds int                      `json:"interval_seconds"`
-	BatchSize       int                      `json:"batch_size"`
-	Concurrency     int                      `json:"concurrency"`
-	BackoffSeconds  int                      `json:"backoff_seconds"`
-	LeaseOwner      string                   `json:"lease_owner"`
-	LeaseExpiresAt  *time.Time               `json:"lease_expires_at,omitempty"`
-	LastHeartbeatAt *time.Time               `json:"last_heartbeat_at,omitempty"`
-	LastRunID       int64                    `json:"last_run_id"`
-	LastSuccessAt   *time.Time               `json:"last_success_at,omitempty"`
-	LastError       string                   `json:"last_error"`
-	UpdatedAt       *time.Time               `json:"updated_at,omitempty"`
-	LatestRun       *pgindex.IndexerStageRun `json:"latest_run,omitempty"`
+	StageName           string                   `json:"stage_name"`
+	Enabled             bool                     `json:"enabled"`
+	Paused              bool                     `json:"paused"`
+	IntervalSeconds     int                      `json:"interval_seconds"`
+	BatchSize           int                      `json:"batch_size"`
+	Concurrency         int                      `json:"concurrency,omitempty"`
+	SupportsConcurrency bool                     `json:"supports_concurrency"`
+	BackoffSeconds      int                      `json:"backoff_seconds"`
+	LeaseOwner          string                   `json:"lease_owner"`
+	LeaseExpiresAt      *time.Time               `json:"lease_expires_at,omitempty"`
+	LastHeartbeatAt     *time.Time               `json:"last_heartbeat_at,omitempty"`
+	LastRunID           int64                    `json:"last_run_id"`
+	LastSuccessAt       *time.Time               `json:"last_success_at,omitempty"`
+	LastError           string                   `json:"last_error"`
+	UpdatedAt           *time.Time               `json:"updated_at,omitempty"`
+	LatestRun           *pgindex.IndexerStageRun `json:"latest_run,omitempty"`
 }
 
 type indexerStageConfigPatch struct {
@@ -492,7 +493,10 @@ func stageViewFromSettings(stageName string, runtime *app.RuntimeSettings) index
 	view.Enabled = stageConfig.Enabled
 	view.IntervalSeconds = int(stageConfig.IntervalMinutes * 60)
 	view.BatchSize = stageConfig.BatchSize
-	view.Concurrency = stageConfig.Concurrency
+	view.SupportsConcurrency = stageSupportsConcurrency(stageName)
+	if view.SupportsConcurrency {
+		view.Concurrency = stageConfig.Concurrency
+	}
 	view.BackoffSeconds = stageConfig.BackoffSeconds
 	return view
 }
@@ -520,7 +524,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			Enabled:         runtime.Indexing.Release.Enabled,
 			IntervalMinutes: runtime.Indexing.Release.IntervalMinutes,
 			BatchSize:       runtime.Indexing.Release.BatchSize,
-			Concurrency:     runtime.Indexing.Release.Concurrency,
 			BackoffSeconds:  runtime.Indexing.Release.BackoffSeconds,
 		}, true
 	case string(supervisor.StageInspectDiscovery):
@@ -540,7 +543,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			Enabled:         runtime.Indexing.EnrichPreDB.Enabled,
 			IntervalMinutes: runtime.Indexing.EnrichPreDB.IntervalMinutes,
 			BatchSize:       runtime.Indexing.EnrichPreDB.BatchSize,
-			Concurrency:     runtime.Indexing.EnrichPreDB.Concurrency,
 			BackoffSeconds:  runtime.Indexing.EnrichPreDB.BackoffSeconds,
 		}, true
 	case string(supervisor.StageEnrichTMDB):
@@ -548,7 +550,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			Enabled:         runtime.Indexing.EnrichTMDB.Enabled,
 			IntervalMinutes: runtime.Indexing.EnrichTMDB.IntervalMinutes,
 			BatchSize:       runtime.Indexing.EnrichTMDB.BatchSize,
-			Concurrency:     runtime.Indexing.EnrichTMDB.Concurrency,
 			BackoffSeconds:  runtime.Indexing.EnrichTMDB.BackoffSeconds,
 		}, true
 	case string(supervisor.StageMaintenance):
@@ -556,7 +557,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			Enabled:         true,
 			IntervalMinutes: 360,
 			BatchSize:       0,
-			Concurrency:     1,
 			BackoffSeconds:  0,
 		}, true
 	default:
@@ -598,6 +598,9 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 	if indexing == nil {
 		return fmt.Errorf("indexing settings are required")
 	}
+	if patch.Concurrency != nil && !stageSupportsConcurrency(stageName) {
+		return fmt.Errorf("stage %q does not support concurrency settings", stageName)
+	}
 	switch stageName {
 	case string(supervisor.StageScrapeLatest):
 		applyStagePatch(&indexing.ScrapeLatest, patch)
@@ -631,6 +634,15 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 	return nil
 }
 
+func stageSupportsConcurrency(stageName string) bool {
+	switch stageName {
+	case string(supervisor.StageAssemble), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
+		return true
+	default:
+		return false
+	}
+}
+
 func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageConfigPatch) {
 	if patch.Enabled != nil {
 		dst.Enabled = *patch.Enabled
@@ -659,9 +671,6 @@ func applyReleaseStagePatch(dst *app.IndexingReleaseRuntimeSettings, patch index
 	if patch.BatchSize != nil {
 		dst.BatchSize = *patch.BatchSize
 	}
-	if patch.Concurrency != nil {
-		dst.Concurrency = *patch.Concurrency
-	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds
 	}
@@ -677,9 +686,6 @@ func applyPreDBStagePatch(dst *app.IndexingPreDBRuntimeSettings, patch indexerSt
 	if patch.BatchSize != nil {
 		dst.BatchSize = *patch.BatchSize
 	}
-	if patch.Concurrency != nil {
-		dst.Concurrency = *patch.Concurrency
-	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds
 	}
@@ -694,9 +700,6 @@ func applyTMDBStagePatch(dst *app.IndexingTMDBRuntimeSettings, patch indexerStag
 	}
 	if patch.BatchSize != nil {
 		dst.BatchSize = *patch.BatchSize
-	}
-	if patch.Concurrency != nil {
-		dst.Concurrency = *patch.Concurrency
 	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds

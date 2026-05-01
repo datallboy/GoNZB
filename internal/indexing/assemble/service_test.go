@@ -128,19 +128,21 @@ func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) 
 		t.Fatalf("run once: %v", err)
 	}
 
-	if len(repo.upsertedBinaries) != 2 {
-		t.Fatalf("expected two upserted binaries, got %d", len(repo.upsertedBinaries))
+	if len(repo.upsertedBinaries) != 1 {
+		t.Fatalf("expected one batch-local binary upsert, got %d", len(repo.upsertedBinaries))
 	}
 	first := repo.upsertedBinaries[0]
-	second := repo.upsertedBinaries[1]
-	if first.BinaryKey != second.BinaryKey {
-		t.Fatalf("expected same binary key after yEnc recovery, got %q vs %q", first.BinaryKey, second.BinaryKey)
+	if first.FileName != "kuqn1sj0tdehymt5l4ba7u" {
+		t.Fatalf("expected yEnc name-backed file name, got %q", first.FileName)
 	}
-	if first.FileName != "kuqn1sj0tdehymt5l4ba7u" || second.FileName != "kuqn1sj0tdehymt5l4ba7u" {
-		t.Fatalf("expected yEnc name-backed file name, got %q / %q", first.FileName, second.FileName)
+	if first.TotalParts != 807 {
+		t.Fatalf("expected total parts 807, got %d", first.TotalParts)
 	}
-	if first.TotalParts != 807 || second.TotalParts != 807 {
-		t.Fatalf("expected total parts 807, got %d / %d", first.TotalParts, second.TotalParts)
+	if len(repo.upsertedParts) != 2 {
+		t.Fatalf("expected two batch-upserted parts, got %d", len(repo.upsertedParts))
+	}
+	if repo.upsertedParts[0].BinaryID != repo.upsertedParts[1].BinaryID {
+		t.Fatalf("expected parts to reuse the cached binary id, got %d / %d", repo.upsertedParts[0].BinaryID, repo.upsertedParts[1].BinaryID)
 	}
 }
 
@@ -207,6 +209,7 @@ func TestRunOnceSkipsYEncRecoveryWhenStructuredIdentityAlreadyMatchesExistingBin
 type fakeRepository struct {
 	headers          []pgindex.AssemblyCandidate
 	upsertedBinaries []pgindex.BinaryRecord
+	upsertedParts    []pgindex.BinaryPartRecord
 }
 
 func (f *fakeRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
@@ -214,6 +217,10 @@ func (f *fakeRepository) CountUnassembledArticleHeaders(context.Context) (int64,
 }
 
 func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
+	return f.headers, nil
+}
+
+func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, _ pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
 	return f.headers, nil
 }
 
@@ -226,11 +233,16 @@ func (f *fakeRepository) UpsertBinary(_ context.Context, in pgindex.BinaryRecord
 	return 77, nil
 }
 
-func (f *fakeRepository) UpsertBinaryPart(context.Context, pgindex.BinaryPartRecord) error {
+func (f *fakeRepository) UpsertBinaryParts(_ context.Context, records []pgindex.BinaryPartRecord) error {
+	f.upsertedParts = append(f.upsertedParts, records...)
 	return nil
 }
 
 func (f *fakeRepository) RefreshBinaryStats(context.Context, int64) error {
+	return nil
+}
+
+func (f *fakeRepository) RefreshBinaryStatsBatch(context.Context, []int64) error {
 	return nil
 }
 

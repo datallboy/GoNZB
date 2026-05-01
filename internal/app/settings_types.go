@@ -1,20 +1,26 @@
 package app
 
 type RuntimeSettings struct {
-	Servers         []ServerRuntimeSettings         `json:"servers,omitempty"`
-	Indexers        []IndexerRuntimeSettings        `json:"indexers,omitempty"`
-	Download        *DownloadRuntimeSettings        `json:"download,omitempty"`
-	Indexing        *IndexingRuntimeSettings        `json:"indexing,omitempty"`
-	ArrIntegrations []ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
-	Revision        int64                           `json:"revision,omitempty"`
+	Servers           []ServerRuntimeSettings         `json:"servers,omitempty"`
+	DownloaderServers []ServerRuntimeSettings         `json:"downloader_servers,omitempty"`
+	IndexerServers    []ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
+	Indexers          []IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	Aggregator        *AggregatorRuntimeSettings      `json:"aggregator,omitempty"`
+	Download          *DownloadRuntimeSettings        `json:"download,omitempty"`
+	Indexing          *IndexingRuntimeSettings        `json:"indexing,omitempty"`
+	ArrIntegrations   []ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
+	Revision          int64                           `json:"revision,omitempty"`
 }
 
 type RuntimeSettingsPatch struct {
-	Servers         *[]ServerRuntimeSettings         `json:"servers,omitempty"`
-	Indexers        *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
-	Download        *DownloadRuntimeSettings         `json:"download,omitempty"`
-	Indexing        *IndexingRuntimeSettings         `json:"indexing,omitempty"`
-	ArrIntegrations *[]ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
+	Servers           *[]ServerRuntimeSettings         `json:"servers,omitempty"`
+	DownloaderServers *[]ServerRuntimeSettings         `json:"downloader_servers,omitempty"`
+	IndexerServers    *[]ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
+	Indexers          *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	Aggregator        *AggregatorRuntimeSettings       `json:"aggregator,omitempty"`
+	Download          *DownloadRuntimeSettings         `json:"download,omitempty"`
+	Indexing          *IndexingRuntimeSettings         `json:"indexing,omitempty"`
+	ArrIntegrations   *[]ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
 }
 
 type ServerRuntimeSettings struct {
@@ -41,6 +47,19 @@ type IndexerRuntimeSettings struct {
 	Redirect bool   `json:"redirect"`
 }
 
+type AggregatorRuntimeSettings struct {
+	Sources AggregatorSourcesRuntimeSettings `json:"sources,omitempty"`
+}
+
+type AggregatorSourcesRuntimeSettings struct {
+	LocalBlob     RuntimeToggle `json:"local_blob,omitempty"`
+	UsenetIndexer RuntimeToggle `json:"usenet_indexer,omitempty"`
+}
+
+type RuntimeToggle struct {
+	Enabled bool `json:"enabled"`
+}
+
 type DownloadRuntimeSettings struct {
 	OutDir            string   `json:"out_dir"`
 	CompletedDir      string   `json:"completed_dir"`
@@ -59,7 +78,6 @@ type IndexingReleaseRuntimeSettings struct {
 	Enabled                                         bool    `json:"enabled,omitempty"`
 	IntervalMinutes                                 float64 `json:"interval_minutes,omitempty"`
 	BatchSize                                       int     `json:"batch_size,omitempty"`
-	Concurrency                                     int     `json:"concurrency,omitempty"`
 	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
 	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
@@ -87,7 +105,6 @@ type IndexingPreDBRuntimeSettings struct {
 	Enabled            bool    `json:"enabled,omitempty"`
 	IntervalMinutes    float64 `json:"interval_minutes,omitempty"`
 	BatchSize          int     `json:"batch_size,omitempty"`
-	Concurrency        int     `json:"concurrency,omitempty"`
 	BackoffSeconds     int     `json:"backoff_seconds,omitempty"`
 	Provider           string  `json:"provider,omitempty"`
 	BaseURL            string  `json:"base_url,omitempty"`
@@ -102,7 +119,6 @@ type IndexingTMDBRuntimeSettings struct {
 	Enabled            bool    `json:"enabled,omitempty"`
 	IntervalMinutes    float64 `json:"interval_minutes,omitempty"`
 	BatchSize          int     `json:"batch_size,omitempty"`
-	Concurrency        int     `json:"concurrency,omitempty"`
 	BackoffSeconds     int     `json:"backoff_seconds,omitempty"`
 	HTTPTimeoutSeconds int     `json:"http_timeout_seconds,omitempty"`
 	TMDBAPIKey         string  `json:"tmdb_api_key,omitempty"`
@@ -114,21 +130,22 @@ type IndexingTMDBRuntimeSettings struct {
 }
 
 type IndexingRuntimeSettings struct {
-	Newsgroups       []string                       `json:"newsgroups,omitempty"`
-	ScrapeLatest     IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
-	ScrapeBackfill   IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
-	Assemble         IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
-	Release          IndexingReleaseRuntimeSettings `json:"release,omitempty"`
-	Match            IndexingMatchRuntimeSettings   `json:"match,omitempty"`
-	Inspect          IndexingInspectRuntimeSettings `json:"inspect,omitempty"`
-	InspectDiscovery IndexingStageRuntimeSettings   `json:"inspect_discovery,omitempty"`
-	InspectPAR2      IndexingStageRuntimeSettings   `json:"inspect_par2,omitempty"`
-	InspectNFO       IndexingStageRuntimeSettings   `json:"inspect_nfo,omitempty"`
-	InspectArchive   IndexingStageRuntimeSettings   `json:"inspect_archive,omitempty"`
-	InspectPassword  IndexingStageRuntimeSettings   `json:"inspect_password,omitempty"`
-	InspectMedia     IndexingStageRuntimeSettings   `json:"inspect_media,omitempty"`
-	EnrichPreDB      IndexingPreDBRuntimeSettings   `json:"enrich_predb,omitempty"`
-	EnrichTMDB       IndexingTMDBRuntimeSettings    `json:"enrich_tmdb,omitempty"`
+	Newsgroups               []string                       `json:"newsgroups,omitempty"`
+	BackfillUntilDateByGroup map[string]string              `json:"backfill_until_date_by_group,omitempty"`
+	ScrapeLatest             IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
+	ScrapeBackfill           IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
+	Assemble                 IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
+	Release                  IndexingReleaseRuntimeSettings `json:"release,omitempty"`
+	Match                    IndexingMatchRuntimeSettings   `json:"match,omitempty"`
+	Inspect                  IndexingInspectRuntimeSettings `json:"inspect,omitempty"`
+	InspectDiscovery         IndexingStageRuntimeSettings   `json:"inspect_discovery,omitempty"`
+	InspectPAR2              IndexingStageRuntimeSettings   `json:"inspect_par2,omitempty"`
+	InspectNFO               IndexingStageRuntimeSettings   `json:"inspect_nfo,omitempty"`
+	InspectArchive           IndexingStageRuntimeSettings   `json:"inspect_archive,omitempty"`
+	InspectPassword          IndexingStageRuntimeSettings   `json:"inspect_password,omitempty"`
+	InspectMedia             IndexingStageRuntimeSettings   `json:"inspect_media,omitempty"`
+	EnrichPreDB              IndexingPreDBRuntimeSettings   `json:"enrich_predb,omitempty"`
+	EnrichTMDB               IndexingTMDBRuntimeSettings    `json:"enrich_tmdb,omitempty"`
 }
 
 type ArrIntegrationRuntimeSettings struct {
@@ -139,4 +156,23 @@ type ArrIntegrationRuntimeSettings struct {
 	APIKey     string `json:"api_key"`
 	ClientName string `json:"client_name,omitempty"`
 	Category   string `json:"category,omitempty"`
+}
+
+type ControlPlaneCapabilities struct {
+	Modules  map[string]ModuleCapability `json:"modules"`
+	Settings SettingsCapability          `json:"settings"`
+	Revision int64                       `json:"revision,omitempty"`
+}
+
+type ModuleCapability struct {
+	Enabled      bool     `json:"enabled"`
+	Configured   bool     `json:"configured"`
+	Ready        bool     `json:"ready"`
+	Visible      bool     `json:"visible"`
+	Reason       string   `json:"reason,omitempty"`
+	Requirements []string `json:"requirements,omitempty"`
+}
+
+type SettingsCapability struct {
+	RuntimeConfigured bool `json:"runtime_configured"`
 }
