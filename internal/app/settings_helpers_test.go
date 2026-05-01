@@ -11,7 +11,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	disabled := false
 	interval := 2.5
 	batch := 42
-	concurrency := 3
 	backoff := 17
 	high := 0.91
 	probable := 0.63
@@ -46,7 +45,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			Enabled:         &disabled,
 			IntervalMinutes: &interval,
 			BatchSize:       &batch,
-			Concurrency:     &concurrency,
 			BackoffSeconds:  &backoff,
 		},
 		Match: config.IndexingMatchConfig{
@@ -61,7 +59,6 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			Enabled:            &enabled,
 			IntervalMinutes:    &interval,
 			BatchSize:          &batch,
-			Concurrency:        &concurrency,
 			BackoffSeconds:     &backoff,
 			Provider:           "club",
 			BaseURL:            "https://predb.example/api",
@@ -100,6 +97,20 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	}
 	if runtime.EnrichTMDB.TMDBAPIKey != "tmdb-key" || runtime.EnrichTMDB.TVDBPIN != "1234" {
 		t.Fatalf("expected enrichment secrets to be mirrored, got %+v", runtime.EnrichTMDB)
+	}
+}
+
+func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
+	runtime := DefaultRuntimeSettings()
+
+	if len(runtime.Servers) != 0 || len(runtime.Indexers) != 0 {
+		t.Fatalf("expected empty servers and external indexers, got %+v", runtime)
+	}
+	if runtime.Aggregator == nil || runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled {
+		t.Fatalf("expected disabled aggregator sources, got %+v", runtime.Aggregator)
+	}
+	if runtime.Indexing == nil || runtime.Indexing.ScrapeLatest.Enabled || runtime.Indexing.Release.Enabled || runtime.Indexing.EnrichTMDB.Enabled {
+		t.Fatalf("expected disabled indexer stages, got %+v", runtime.Indexing)
 	}
 }
 

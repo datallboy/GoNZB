@@ -108,7 +108,7 @@ func decodeJSONBody(c *echo.Context, dst any) error {
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("request body is required")
 		}
-		return fmt.Errorf("invalid request body")
+		return formatJSONDecodeError(err)
 	}
 
 	var extra any
@@ -117,6 +117,29 @@ func decodeJSONBody(c *echo.Context, dst any) error {
 	}
 
 	return nil
+}
+
+func formatJSONDecodeError(err error) error {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Errorf("invalid request body: malformed JSON at byte offset %d", syntaxErr.Offset)
+	}
+
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		field := typeErr.Field
+		if field == "" {
+			field = "request body"
+		}
+		return fmt.Errorf("invalid request body: %s must be %s, got %s", field, typeErr.Type, typeErr.Value)
+	}
+
+	message := err.Error()
+	if strings.HasPrefix(message, "json: unknown field ") {
+		return fmt.Errorf("invalid request body: %s", message)
+	}
+
+	return fmt.Errorf("invalid request body: %s", message)
 }
 
 func parsePaginationParams(c *echo.Context, defaultLimit, maxLimit int) (int, int, error) {

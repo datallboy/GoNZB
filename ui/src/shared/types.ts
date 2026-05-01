@@ -118,7 +118,8 @@ export type AdminStage = {
   paused: boolean
   interval_seconds: number
   batch_size: number
-  concurrency: number
+  concurrency?: number
+  supports_concurrency: boolean
   backoff_seconds: number
   lease_owner: string
   lease_expires_at?: string
@@ -597,6 +598,7 @@ export type TokenCreateResponse = {
 
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
+  backfill_until_date_by_group: Record<string, string>
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
@@ -604,6 +606,11 @@ export type IndexingRuntimeSettings = {
     min_confidence: number
     min_completion_pct: number
     require_expected_file_count_for_contextual_obfuscated: boolean
+  }
+  match: {
+    high_confidence_threshold: number
+    probable_confidence_threshold: number
+    article_bucket_size: number
   }
   inspect: {
     work_dir: string
@@ -641,6 +648,82 @@ export type IndexingRuntimeSettings = {
   }
 }
 
+export type RuntimeToggle = {
+  enabled: boolean
+}
+
+export type AggregatorRuntimeSettings = {
+  sources?: {
+    local_blob?: RuntimeToggle
+    usenet_indexer?: RuntimeToggle
+  }
+}
+
+export type ServerRuntimeSettings = {
+  id: string
+  host: string
+  port: number
+  username: string
+  password: string
+  tls: boolean
+  max_connections: number
+  priority: number
+  dial_timeout_seconds: number
+  tcp_keepalive_seconds: number
+  pool_idle_timeout_seconds: number
+  pool_max_age_seconds: number
+  enable_pool_logging: boolean
+}
+
+export type IndexerRuntimeSettings = {
+  id: string
+  base_url: string
+  api_path: string
+  api_key: string
+  redirect: boolean
+}
+
+export type DownloadRuntimeSettings = {
+  out_dir: string
+  completed_dir: string
+  cleanup_extensions: string[]
+}
+
+export type ArrIntegrationRuntimeSettings = {
+  id: string
+  kind: string
+  enabled: boolean
+  base_url: string
+  api_key: string
+  client_name?: string
+  category?: string
+}
+
 export type RuntimeSettings = {
+  servers?: ServerRuntimeSettings[]
+  downloader_servers?: ServerRuntimeSettings[]
+  indexer_servers?: ServerRuntimeSettings[]
+  indexers?: IndexerRuntimeSettings[]
+  aggregator?: AggregatorRuntimeSettings
+  download?: DownloadRuntimeSettings
   indexing?: IndexingRuntimeSettings
+  arr_integrations?: ArrIntegrationRuntimeSettings[]
+  revision?: number
+}
+
+export type ModuleCapability = {
+  enabled: boolean
+  configured: boolean
+  ready: boolean
+  visible: boolean
+  reason?: string
+  requirements?: string[]
+}
+
+export type ControlPlaneCapabilities = {
+  modules: Record<string, ModuleCapability>
+  settings: {
+    runtime_configured: boolean
+  }
+  revision?: number
 }

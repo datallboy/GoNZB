@@ -14,6 +14,7 @@ type settingsPatch = app.RuntimeSettingsPatch
 
 type settingsService interface {
 	Get(ctx context.Context) (*settingsView, error)
+	Capabilities(ctx context.Context) (*app.ControlPlaneCapabilities, error)
 	Update(ctx context.Context, patch *settingsPatch) (*settingsView, error)
 }
 
@@ -30,6 +31,13 @@ func (s *runtimeSettingsService) Get(ctx context.Context) (*settingsView, error)
 		return nil, settingsadmin.ErrUnavailable
 	}
 	return s.admin.Get(ctx)
+}
+
+func (s *runtimeSettingsService) Capabilities(ctx context.Context) (*app.ControlPlaneCapabilities, error) {
+	if s == nil || s.admin == nil {
+		return nil, settingsadmin.ErrUnavailable
+	}
+	return s.admin.Capabilities(ctx)
 }
 
 func (s *runtimeSettingsService) Update(ctx context.Context, patch *settingsPatch) (*settingsView, error) {

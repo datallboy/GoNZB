@@ -1,11 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { browseCategories } from '../../modules/indexer/browse'
+import { getCapabilities } from '../api/settings'
+import type { ControlPlaneCapabilities } from '../types'
 
 function canOpenAdminPortal(permissions: string[]) {
   return permissions.some((permission) =>
-    permission.startsWith('indexer.runtime.') || permission.startsWith('auth.')
+    permission.startsWith('indexer.runtime.') ||
+    permission.startsWith('aggregator.runtime.') ||
+    permission.startsWith('downloader.runtime.') ||
+    permission.startsWith('admin.settings.') ||
+    permission.startsWith('auth.')
   )
 }
 
@@ -86,16 +92,26 @@ export function PublicAppShell() {
 
 export function AdminAppShell() {
   const { hasPermission } = useAuth()
+  const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
+
+  useEffect(() => {
+    void getCapabilities()
+      .then((response) => setCapabilities(response as ControlPlaneCapabilities))
+      .catch(() => setCapabilities(null))
+  }, [])
+
+  const moduleVisible = (name: string) => Boolean(capabilities?.modules?.[name]?.visible)
 
   return (
     <div className="shell-frame">
       <aside className="shell-sidebar">
-        <Link className="brand-mark" to="/admin/indexer/dashboard">
+        <Link className="brand-mark" to="/admin">
           <span>GoNZB</span>
-          <strong>Admin Portal</strong>
+          <strong>Control Plane</strong>
         </Link>
         <nav className="shell-nav">
-          {hasPermission('indexer.runtime.read') ? (
+          <NavLink to="/admin">Overview</NavLink>
+          {moduleVisible('usenet_indexer') && hasPermission('indexer.runtime.read') ? (
             <>
               <NavLink to="/admin/indexer/dashboard">Dashboard</NavLink>
               <NavLink to="/admin/indexer/stages">Stages</NavLink>
@@ -103,8 +119,8 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
             </>
           ) : null}
-          {hasPermission('indexer.runtime.configure') ? (
-            <NavLink to="/admin/indexer/settings">Runtime Settings</NavLink>
+          {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (
+            <NavLink to="/admin/settings">Runtime Settings</NavLink>
           ) : null}
           {hasPermission('auth.users.read') ? <NavLink to="/admin/security/users">Users</NavLink> : null}
           {hasPermission('auth.roles.read') ? <NavLink to="/admin/security/roles">Roles</NavLink> : null}
@@ -119,7 +135,7 @@ export function AdminAppShell() {
         <header className="admin-topbar">
           <div>
             <p className="eyebrow">Admin Portal</p>
-            <h1 className="admin-topbar__title">Indexer operations and security controls.</h1>
+            <h1 className="admin-topbar__title">Unified runtime settings, operations, and security controls.</h1>
           </div>
           <AccountMenu viewerLink />
         </header>

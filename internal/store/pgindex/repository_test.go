@@ -1700,6 +1700,192 @@ func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t
 	}
 }
 
+func TestSortReleaseFamilySummaryKeysUsesStableLockOrder(t *testing.T) {
+	keys := []releaseFamilySummaryKey{
+		{ProviderID: 2, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "b"},
+		{ProviderID: 1, NewsgroupID: 2, KeyKind: "release_family", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "z"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "b"},
+	}
+
+	sortReleaseFamilySummaryKeys(keys)
+
+	want := []releaseFamilySummaryKey{
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "b"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "z"},
+		{ProviderID: 1, NewsgroupID: 2, KeyKind: "release_family", FamilyKey: "a"},
+		{ProviderID: 2, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "b"},
+	}
+
+	if len(keys) != len(want) {
+		t.Fatalf("unexpected key count: got %d want %d", len(keys), len(want))
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("unexpected key at %d: got %+v want %+v", i, keys[i], want[i])
+		}
+	}
+}
+
+func TestUpsertBinaryPartsDeduplicatesConflictingBatchRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.parts.dedupe.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 1,
+			MessageID:     fmt.Sprintf("<dedupe-a-%d@test>", time.Now().UnixNano()),
+			Subject:       `"dedupe.part" yEnc (1/5)`,
+			Poster:        "dedupe-a@example.com",
+			DateUTC:       &now,
+			Bytes:         100,
+		},
+		{
+			ArticleNumber: 2,
+			MessageID:     fmt.Sprintf("<dedupe-b-%d@test>", time.Now().UnixNano()),
+			Subject:       `"dedupe.part" yEnc (1/5)`,
+			Poster:        "dedupe-b@example.com",
+			DateUTC:       &now,
+			Bytes:         200,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT id, message_id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		ORDER BY article_number`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query article headers: %v", err)
+	}
+	defer rows.Close()
+
+	type articleRow struct {
+		id        int64
+		messageID string
+	}
+	var articles []articleRow
+	for rows.Next() {
+		var row articleRow
+		if err := rows.Scan(&row.id, &row.messageID); err != nil {
+			t.Fatalf("scan article header: %v", err)
+		}
+		articles = append(articles, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate article headers: %v", err)
+	}
+	if len(articles) != 2 {
+		t.Fatalf("expected 2 article headers, got %d", len(articles))
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		SourceReleaseKey: "dedupe-family",
+		ReleaseFamilyKey: "dedupe-family",
+		FileFamilyKey:    "dedupe-family::file",
+		FamilyKind:       "archive_stem",
+		IsMainPayload:    true,
+		ReleaseKey:       "dedupe-family",
+		ReleaseName:      "Dedupe Family",
+		BinaryKey:        fmt.Sprintf("dedupe-binary::%d", time.Now().UnixNano()),
+		BinaryName:       "dedupe.part",
+		FileName:         "dedupe.part",
+		TotalParts:       5,
+		MatchConfidence:  0.90,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articles[0].id,
+			MessageID:       articles[0].messageID,
+			PartNumber:      1,
+			TotalParts:      5,
+			SegmentBytes:    100,
+			FileName:        "dedupe.part",
+		},
+		{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articles[1].id,
+			MessageID:       articles[1].messageID,
+			PartNumber:      1,
+			TotalParts:      5,
+			SegmentBytes:    200,
+			FileName:        "dedupe.part",
+		},
+	}); err != nil {
+		t.Fatalf("upsert binary parts batch with duplicate part number: %v", err)
+	}
+
+	var (
+		partCount          int
+		winningHeaderID    int64
+		winningSegmentSize int64
+		assembledCount     int
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MAX(article_header_id), 0), COALESCE(MAX(segment_bytes), 0)
+		FROM binary_parts
+		WHERE binary_id = $1`, binaryID,
+	).Scan(&partCount, &winningHeaderID, &winningSegmentSize); err != nil {
+		t.Fatalf("query binary parts: %v", err)
+	}
+	if partCount != 1 {
+		t.Fatalf("expected 1 deduped binary part row, got %d", partCount)
+	}
+	if winningHeaderID != articles[1].id {
+		t.Fatalf("expected newer/larger duplicate to win, got article_header_id %d want %d", winningHeaderID, articles[1].id)
+	}
+	if winningSegmentSize != 200 {
+		t.Fatalf("expected winning segment size 200, got %d", winningSegmentSize)
+	}
+
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		  AND assembled_at IS NOT NULL`, newsgroupID,
+	).Scan(&assembledCount); err != nil {
+		t.Fatalf("query assembled header count: %v", err)
+	}
+	if assembledCount != 2 {
+		t.Fatalf("expected both duplicate headers to be marked assembled, got %d", assembledCount)
+	}
+}
+
 func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinaries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

@@ -18,8 +18,9 @@ type Config struct {
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
-	Indexing IndexingConfig `mapstructure:"indexing" yaml:"indexing"`
-	Modules  ModulesConfig  `mapstructure:"modules" yaml:"modules"`
+	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
+	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
+	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
 	Port string `mapstructure:"port" yaml:"port"`
 }
@@ -75,6 +76,15 @@ type APIConfig struct {
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
 }
 
+type AggregatorConfig struct {
+	Sources AggregatorSourcesConfig `mapstructure:"sources" yaml:"sources"`
+}
+
+type AggregatorSourcesConfig struct {
+	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
+	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+}
+
 type IndexingConfig struct {
 	Newsgroups               []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
 	BackfillUntilDateByGroup map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
@@ -112,7 +122,6 @@ type IndexingReleaseConfig struct {
 	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency                                     *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
@@ -134,7 +143,6 @@ type IndexingPreDBConfig struct {
 	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	Provider           string   `mapstructure:"provider" yaml:"provider"`
 	BaseURL            string   `mapstructure:"base_url" yaml:"base_url"`
@@ -149,7 +157,6 @@ type IndexingTMDBConfig struct {
 	Enabled            *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes    *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize          *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency        *int     `mapstructure:"concurrency" yaml:"concurrency"`
 	BackoffSeconds     *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	HTTPTimeoutSeconds *int     `mapstructure:"http_timeout_seconds" yaml:"http_timeout_seconds"`
 	TMDBAPIKey         string   `mapstructure:"tmdb_api_key" yaml:"tmdb_api_key"`
@@ -223,25 +230,22 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
-	v.SetDefault("indexing.scrape_latest.enabled", true)
+	v.SetDefault("indexing.scrape_latest.enabled", false)
 	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
-	v.SetDefault("indexing.scrape_latest.concurrency", 1)
 	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
-	v.SetDefault("indexing.scrape_backfill.enabled", true)
+	v.SetDefault("indexing.scrape_backfill.enabled", false)
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
-	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.enabled", true)
+	v.SetDefault("indexing.assemble.enabled", false)
 	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
 	v.SetDefault("indexing.assemble.batch_size", 5000)
 	v.SetDefault("indexing.assemble.concurrency", 1)
 	v.SetDefault("indexing.assemble.backoff_seconds", 0)
-	v.SetDefault("indexing.release.enabled", true)
+	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
-	v.SetDefault("indexing.release.concurrency", 1)
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
@@ -257,40 +261,35 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
-	v.SetDefault("indexing.inspect_discovery.enabled", true)
+	v.SetDefault("indexing.inspect_discovery.enabled", false)
 	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
-	v.SetDefault("indexing.inspect_discovery.concurrency", 1)
 	v.SetDefault("indexing.inspect_discovery.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_par2.enabled", true)
+	v.SetDefault("indexing.inspect_par2.enabled", false)
 	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_par2.batch_size", 100)
-	v.SetDefault("indexing.inspect_par2.concurrency", 1)
 	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_nfo.enabled", true)
+	v.SetDefault("indexing.inspect_nfo.enabled", false)
 	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_nfo.batch_size", 100)
-	v.SetDefault("indexing.inspect_nfo.concurrency", 1)
 	v.SetDefault("indexing.inspect_nfo.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_archive.enabled", true)
+	v.SetDefault("indexing.inspect_archive.enabled", false)
 	v.SetDefault("indexing.inspect_archive.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_archive.batch_size", 100)
 	v.SetDefault("indexing.inspect_archive.concurrency", 1)
 	v.SetDefault("indexing.inspect_archive.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_password.enabled", true)
+	v.SetDefault("indexing.inspect_password.enabled", false)
 	v.SetDefault("indexing.inspect_password.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_password.batch_size", 100)
-	v.SetDefault("indexing.inspect_password.concurrency", 1)
 	v.SetDefault("indexing.inspect_password.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_media.enabled", true)
+	v.SetDefault("indexing.inspect_media.enabled", false)
 	v.SetDefault("indexing.inspect_media.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_media.batch_size", 100)
 	v.SetDefault("indexing.inspect_media.concurrency", 1)
 	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
-	v.SetDefault("indexing.enrich_predb.enabled", true)
+	v.SetDefault("indexing.enrich_predb.enabled", false)
 	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_predb.batch_size", 100)
-	v.SetDefault("indexing.enrich_predb.concurrency", 1)
 	v.SetDefault("indexing.enrich_predb.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_predb.provider", "club,me")
 	v.SetDefault("indexing.enrich_predb.base_url", "https://predb.club/api/v1")
@@ -299,10 +298,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enrich_predb.http_timeout_seconds", 10)
 	v.SetDefault("indexing.enrich_predb.backfill_page_size", 1000)
 	v.SetDefault("indexing.enrich_predb.max_backfill_pages", 250)
-	v.SetDefault("indexing.enrich_tmdb.enabled", true)
+	v.SetDefault("indexing.enrich_tmdb.enabled", false)
 	v.SetDefault("indexing.enrich_tmdb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_tmdb.batch_size", 100)
-	v.SetDefault("indexing.enrich_tmdb.concurrency", 1)
 	v.SetDefault("indexing.enrich_tmdb.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_tmdb.http_timeout_seconds", 15)
 	v.SetDefault("indexing.enrich_tmdb.tmdb_api_key", "")
@@ -317,6 +315,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.usenet_indexer.enabled", true)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
+	v.SetDefault("aggregator.sources.local_blob.enabled", false)
+	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
 
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
@@ -382,7 +382,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.Release.Enabled,
 		IntervalMinutes: c.Indexing.Release.IntervalMinutes,
 		BatchSize:       c.Indexing.Release.BatchSize,
-		Concurrency:     c.Indexing.Release.Concurrency,
 		BackoffSeconds:  c.Indexing.Release.BackoffSeconds,
 	}); err != nil {
 		return err
@@ -416,7 +415,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.EnrichPreDB.Enabled,
 		IntervalMinutes: c.Indexing.EnrichPreDB.IntervalMinutes,
 		BatchSize:       c.Indexing.EnrichPreDB.BatchSize,
-		Concurrency:     c.Indexing.EnrichPreDB.Concurrency,
 		BackoffSeconds:  c.Indexing.EnrichPreDB.BackoffSeconds,
 	}); err != nil {
 		return err
@@ -425,7 +423,6 @@ func (c *Config) validate() error {
 		Enabled:         c.Indexing.EnrichTMDB.Enabled,
 		IntervalMinutes: c.Indexing.EnrichTMDB.IntervalMinutes,
 		BatchSize:       c.Indexing.EnrichTMDB.BatchSize,
-		Concurrency:     c.Indexing.EnrichTMDB.Concurrency,
 		BackoffSeconds:  c.Indexing.EnrichTMDB.BackoffSeconds,
 	}); err != nil {
 		return err
@@ -488,27 +485,8 @@ func (c *Config) validate() error {
 		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
 	}
 
-	// validate configured newsgroups only when Usenet/NZB Indexer is enabled.
-	if c.Modules.UsenetIndexer.Enabled {
-		hasGroups := false
-		for _, g := range c.Indexing.Newsgroups {
-			if strings.TrimSpace(g) != "" {
-				hasGroups = true
-				break
-			}
-		}
-		if !hasGroups {
-			return errors.New("indexing.newsgroups is required when modules.usenet_indexer.enabled is true")
-		}
-	}
-
-	// NNTP servers are required only when downloader or usenet indexer is enabled.
-	if c.Modules.Downloader.Enabled || c.Modules.UsenetIndexer.Enabled {
-		if len(c.Servers) == 0 {
-			return errors.New("at least one server must be configured when downloader or usenet_indexer is enabled")
-		}
-
-		for i, s := range c.Servers {
+	for i, s := range c.Servers {
+		if strings.TrimSpace(s.ID) != "" || strings.TrimSpace(s.Host) != "" || s.Port != 0 {
 			if s.ID == "" {
 				return fmt.Errorf("server[%d] requires a unique ID", i)
 			}

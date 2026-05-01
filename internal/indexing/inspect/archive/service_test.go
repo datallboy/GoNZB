@@ -100,15 +100,16 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 	}
 
 	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
-	if err := svc.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run once: %v", err)
+	candidates, err := svc.dedupeCandidates(context.Background(), repo.candidates)
+	if err != nil {
+		t.Fatalf("dedupe candidates: %v", err)
 	}
 
-	if len(repo.completed) != 1 {
-		t.Fatalf("expected one deduped archive inspection, got %d", len(repo.completed))
+	if len(candidates) != 1 {
+		t.Fatalf("expected one deduped archive candidate, got %d", len(candidates))
 	}
-	if repo.completed[0].BinaryID != 41 {
-		t.Fatalf("expected part01 representative to win, got %+v", repo.completed[0])
+	if candidates[0].BinaryID != 41 {
+		t.Fatalf("expected part01 representative to win, got %+v", candidates[0])
 	}
 }
 
@@ -123,6 +124,10 @@ type fakeArchiveRepository struct {
 }
 
 func (f *fakeArchiveRepository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
+	return f.candidates, nil
+}
+
+func (f *fakeArchiveRepository) ClaimBinaryInspectionCandidates(context.Context, pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error) {
 	return f.candidates, nil
 }
 

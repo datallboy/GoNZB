@@ -90,8 +90,9 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.Use(csrfProtectionMiddleware())
 		v1Admin.Use(auditLogMiddleware(appCtx, "admin.settings"))
-		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
-		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
+		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsRead))
+		v1Admin.GET("/capabilities", settingsCtrl.GetCapabilities, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsRead))
+		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsWrite))
 	}
 
 	if modules.API.Enabled && authSvc != nil {
