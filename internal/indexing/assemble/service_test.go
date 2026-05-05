@@ -212,10 +212,6 @@ type fakeRepository struct {
 	upsertedParts    []pgindex.BinaryPartRecord
 }
 
-func (f *fakeRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
-	return int64(len(f.headers)), nil
-}
-
 func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
 	return f.headers, nil
 }
