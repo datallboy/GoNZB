@@ -628,7 +628,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 	return nil
 }
 
-// CHANGED: fetch article ids/part numbers for one binary to build release_file_articles.
+// CHANGED: fetch article ids/part numbers for one binary so release file article refs can be derived on demand.
 func (s *Store) ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]ReleaseFileArticleRecord, error) {
 	if binaryID <= 0 {
 		return nil, fmt.Errorf("binary id is required")

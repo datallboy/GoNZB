@@ -159,7 +159,7 @@ Tasks:
   - release file to binary uniqueness
   - article ordering by `part_number`
   - NZB equivalence before and after the change
-- [ ] add a cleanup migration later to drop `release_file_articles` and its indexes after validation
+- [x] add a cleanup migration later to drop `release_file_articles` and its indexes after validation
 
 Acceptance criteria:
 
@@ -173,7 +173,7 @@ Workstream 3 sign-off:
 - current runtime read paths were switched from `release_file_articles` to `binary_parts`
 - release formation no longer reads batch article refs just to copy them into `release_file_articles`
 - live validation showed newly written `release_files` with `0` `release_file_articles` rows while matching `binary_parts` counts remained present and ordered
-- the destructive schema drop migration is intentionally deferred until after soak validation; that follow-up remains open as the final unchecked task in this workstream
+- the destructive schema cleanup was completed on `2026-05-05` with migration `011_drop_release_file_articles.up.sql` after confirming runtime aggregator, resolver, inspect, and downloader paths all derive article refs from `binary_parts`
 
 ## Workstream 4. Inspection Claim And Write Batching
 

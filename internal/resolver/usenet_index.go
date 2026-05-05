@@ -44,7 +44,7 @@ func (r *usenetIndexResolver) GetRelease(ctx context.Context, sourceReleaseID st
 	return r.catalog.GetCatalogReleaseByID(ctx, sourceReleaseID)
 }
 
-// build NZB on demand from PG release_files + release_file_articles.
+// build NZB on demand from PG release_files plus article refs derived via binary_parts.
 func (r *usenetIndexResolver) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error) {
 	if r.catalog == nil {
 		return nil, fmt.Errorf("usenet index catalog is not configured")
