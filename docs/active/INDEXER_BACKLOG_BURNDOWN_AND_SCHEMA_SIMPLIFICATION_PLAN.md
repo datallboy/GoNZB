@@ -183,14 +183,21 @@ Goal:
 
 Tasks:
 
-- [ ] batch binary inspection claims instead of inserting/updating one candidate at a time
-- [ ] review archive/media/par2/nfo/password persistence helpers for row-at-a-time writes that can become set-based
-- [ ] keep stage claim correctness under concurrency
+- [x] batch binary inspection claims instead of inserting/updating one candidate at a time
+- [x] review archive/media/par2/nfo/password persistence helpers for row-at-a-time writes that can become set-based
+- [x] keep stage claim correctness under concurrency
 
 Acceptance criteria:
 
 - inspection claim writes are batched
 - no stage behavior regresses under concurrency
+
+Workstream 4 sign-off:
+
+- complete on `2026-05-05`
+- binary inspection claiming now uses one set-based `INSERT ... ON CONFLICT` for the reserved candidate batch instead of one write per candidate
+- focused store and inspect tests passed, and a live `indexer inspect archive --once` run completed normally with the expected reservation metrics
+- the follow-up review found additional per-binary artifact replace helpers that could be batched later, but they are downstream persistence helpers rather than the shared claim hot path that every inspection worker contends on
 
 ## Workstream 5. Scrape Insert Batching
 
