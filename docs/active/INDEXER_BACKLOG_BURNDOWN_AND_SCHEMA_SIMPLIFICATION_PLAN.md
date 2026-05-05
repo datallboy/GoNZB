@@ -151,11 +151,11 @@ Current code path:
 
 Tasks:
 
-- [ ] verify all current `release_file_articles` read paths
-- [ ] switch `ListCatalogReleaseFileArticles` to derive from `release_files -> binary_parts -> article_headers`
-- [ ] switch public/admin file article counts away from `release_file_articles`
-- [ ] stop writing `release_file_articles` in `ReplaceReleaseFiles`
-- [ ] add invariant coverage for:
+- [x] verify all current `release_file_articles` read paths
+- [x] switch `ListCatalogReleaseFileArticles` to derive from `release_files -> binary_parts -> article_headers`
+- [x] switch public/admin file article counts away from `release_file_articles`
+- [x] stop writing `release_file_articles` in `ReplaceReleaseFiles`
+- [x] add invariant coverage for:
   - release file to binary uniqueness
   - article ordering by `part_number`
   - NZB equivalence before and after the change
@@ -166,6 +166,14 @@ Acceptance criteria:
 - no runtime path depends on `release_file_articles`
 - release writes no longer copy article refs out of `binary_parts`
 - NZB and inspect behavior stays correct
+
+Workstream 3 sign-off:
+
+- runtime consolidation complete on `2026-05-05`
+- current runtime read paths were switched from `release_file_articles` to `binary_parts`
+- release formation no longer reads batch article refs just to copy them into `release_file_articles`
+- live validation showed newly written `release_files` with `0` `release_file_articles` rows while matching `binary_parts` counts remained present and ordered
+- the destructive schema drop migration is intentionally deferred until after soak validation; that follow-up remains open as the final unchecked task in this workstream
 
 ## Workstream 4. Inspection Claim And Write Batching
 

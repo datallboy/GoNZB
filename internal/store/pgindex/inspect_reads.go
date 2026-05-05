@@ -721,13 +721,13 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			rf.subject,
 			rf.poster,
 			rf.posted_at,
-			COUNT(rfa.id) AS article_count,
+			COUNT(bp.id) AS article_count,
 			COALESCE(b.total_parts, 0),
 			COALESCE(b.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, '')
 		FROM release_files rf
-		LEFT JOIN release_file_articles rfa ON rfa.release_file_id = rf.id
+		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
 		LEFT JOIN binaries b ON b.id = rf.binary_id
 		WHERE rf.release_id = $1
 		GROUP BY rf.id, rf.binary_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, b.total_parts, b.observed_parts, b.match_confidence, b.match_status
@@ -948,7 +948,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
 			COALESCE(bge.payload_json, '{}'::jsonb),
-			(SELECT COUNT(*) FROM release_file_articles WHERE release_file_id = rf.id)
+			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
 		FROM release_files rf
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binaries b ON b.id = rf.binary_id
