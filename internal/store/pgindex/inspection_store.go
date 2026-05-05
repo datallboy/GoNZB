@@ -954,79 +954,85 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		return candidates, nil
 	}
 
+	args := make([]any, 0, len(candidates)*4+3)
+	args = append(args, req.StageName, req.Owner, req.LeaseDuration.Seconds())
+	values := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
+		base := len(args)
 		var sourceUpdated any
 		if candidate.SourceUpdatedAt != nil {
 			sourceUpdated = candidate.SourceUpdatedAt.UTC()
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO binary_inspections (
-				stage_name,
-				binary_id,
-				release_id,
-				status,
-				started_at,
-				finished_at,
-				error_text,
-				materialized_bytes,
-				tool_provenance_json,
-				summary_json,
-				source_updated_at,
-				inspection_claimed_by,
-				inspection_claimed_until,
-				updated_at
-			)
-			VALUES (
-				$1,
-				$2,
-				COALESCE(
-					CASE
-						WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
-						THEN $3
-						ELSE NULL
-					END,
-					(
-						SELECT rf.release_id
-						FROM release_files rf
-						WHERE rf.binary_id = $2
-						ORDER BY rf.release_id
-						LIMIT 1
-					)
-				),
-				'running',
-				NOW(),
-				NULL,
-				'',
-				0,
-				'{}'::jsonb,
-				'{}'::jsonb,
-				$4,
-				$5,
-				NOW() + ($6::DOUBLE PRECISION * INTERVAL '1 second'),
-				NOW()
-			)
-			ON CONFLICT (stage_name, binary_id) DO UPDATE
-			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
-			    status = 'running',
-			    started_at = NOW(),
-			    finished_at = NULL,
-			    error_text = '',
-			    materialized_bytes = 0,
-			    tool_provenance_json = '{}'::jsonb,
-			    summary_json = '{}'::jsonb,
-			    source_updated_at = EXCLUDED.source_updated_at,
-			    inspection_claimed_by = EXCLUDED.inspection_claimed_by,
-			    inspection_claimed_until = EXCLUDED.inspection_claimed_until,
-			    updated_at = NOW()`,
-			req.StageName,
-			candidate.BinaryID,
-			strings.TrimSpace(candidate.ReleaseID),
-			sourceUpdated,
-			req.Owner,
-			req.LeaseDuration.Seconds(),
-		); err != nil {
-			return nil, fmt.Errorf("claim binary inspection %s/%d: %w", req.StageName, candidate.BinaryID, err)
-		}
+		args = append(args, candidate.BinaryID, strings.TrimSpace(candidate.ReleaseID), sourceUpdated, candidate.BinaryID)
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::text,$%d::timestamptz,$%d::bigint)", base+1, base+2, base+3, base+4))
+	}
+
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id, requested_release_id, source_updated_at, lookup_binary_id) AS (
+			VALUES %s
+		)
+		INSERT INTO binary_inspections (
+			stage_name,
+			binary_id,
+			release_id,
+			status,
+			started_at,
+			finished_at,
+			error_text,
+			materialized_bytes,
+			tool_provenance_json,
+			summary_json,
+			source_updated_at,
+			inspection_claimed_by,
+			inspection_claimed_until,
+			updated_at
+		)
+		SELECT
+			$1,
+			req.binary_id,
+			COALESCE(
+				CASE
+					WHEN req.requested_release_id <> '' AND EXISTS (
+						SELECT 1
+						FROM releases r
+						WHERE r.release_id = req.requested_release_id
+					) THEN req.requested_release_id
+					ELSE NULL
+				END,
+				(
+					SELECT rf.release_id
+					FROM release_files rf
+					WHERE rf.binary_id = req.lookup_binary_id
+					ORDER BY rf.release_id
+					LIMIT 1
+				)
+			),
+			'running',
+			NOW(),
+			NULL,
+			'',
+			0,
+			'{}'::jsonb,
+			'{}'::jsonb,
+			req.source_updated_at,
+			$2,
+			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
+			NOW()
+		FROM requested req
+		ON CONFLICT (stage_name, binary_id) DO UPDATE
+		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+		    status = 'running',
+		    started_at = NOW(),
+		    finished_at = NULL,
+		    error_text = '',
+		    materialized_bytes = 0,
+		    tool_provenance_json = '{}'::jsonb,
+		    summary_json = '{}'::jsonb,
+		    source_updated_at = EXCLUDED.source_updated_at,
+		    inspection_claimed_by = EXCLUDED.inspection_claimed_by,
+		    inspection_claimed_until = EXCLUDED.inspection_claimed_until,
+		    updated_at = NOW()`, strings.Join(values, ",")), args...); err != nil {
+		return nil, fmt.Errorf("claim %d binary inspections for %s: %w", len(candidates), req.StageName, err)
 	}
 
 	if err := tx.Commit(); err != nil {
