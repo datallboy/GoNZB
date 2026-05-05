@@ -1002,6 +1002,115 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 }
 
+func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.batch.duplicates.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 5, 5, 15, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<scrape-batch-duplicate-%d@test>", time.Now().UnixNano())
+	inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 501,
+			MessageID:     messageID,
+			Subject:       `Duplicate Batch [1/1] - "batch.first.rar" yEnc (1/10)`,
+			Poster:        "poster-batch-first@example.com",
+			DateUTC:       &now,
+			Bytes:         1000,
+			Lines:         10,
+			Xref:          "xref-first",
+			RawOverview: map[string]any{
+				"Bytes": int64(1000),
+			},
+		},
+		{
+			ArticleNumber: 501,
+			MessageID:     messageID,
+			Subject:       `Duplicate Batch [1/1] - "batch.second.rar" yEnc (2/10)`,
+			Poster:        "poster-batch-second@example.com",
+			DateUTC:       &now,
+			Bytes:         2000,
+			Lines:         20,
+			Xref:          "xref-second",
+			RawOverview: map[string]any{
+				"Bytes": int64(2000),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert duplicate article headers batch: %v", err)
+	}
+	if inserted != 2 {
+		t.Fatalf("expected 2 processed headers, got %d", inserted)
+	}
+
+	var headerCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_headers
+		WHERE newsgroup_id = $1`, newsgroupID,
+	).Scan(&headerCount); err != nil {
+		t.Fatalf("count article headers: %v", err)
+	}
+	if headerCount != 1 {
+		t.Fatalf("expected 1 stored article header after duplicate batch, got %d", headerCount)
+	}
+
+	var (
+		subject         string
+		posterText      string
+		subjectFileName string
+		yencPartNumber  int
+		xref            string
+		rawBytes        int64
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			p.subject,
+			p.poster,
+			p.subject_file_name,
+			p.yenc_part_number,
+			p.xref,
+			COALESCE((p.raw_overview_json->>'Bytes')::bigint, 0)
+		FROM article_header_ingest_payloads p
+		JOIN article_headers ah ON ah.id = p.article_header_id
+		WHERE ah.newsgroup_id = $1`, newsgroupID,
+	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref, &rawBytes); err != nil {
+		t.Fatalf("query duplicate batch payload: %v", err)
+	}
+
+	if subject != `Duplicate Batch [1/1] - "batch.second.rar" yEnc (2/10)` {
+		t.Fatalf("expected last duplicate subject to win, got %q", subject)
+	}
+	if posterText != "" {
+		t.Fatalf("expected poster text normalized away after duplicate batch, got %q", posterText)
+	}
+	if subjectFileName != "batch.second.rar" || yencPartNumber != 2 {
+		t.Fatalf("expected last duplicate parsed metadata to win, got name=%q part=%d", subjectFileName, yencPartNumber)
+	}
+	if xref != "xref-second" {
+		t.Fatalf("expected last duplicate xref to win, got %q", xref)
+	}
+	if rawBytes != 2000 {
+		t.Fatalf("expected last duplicate raw overview bytes to win, got %d", rawBytes)
+	}
+}
+
 func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

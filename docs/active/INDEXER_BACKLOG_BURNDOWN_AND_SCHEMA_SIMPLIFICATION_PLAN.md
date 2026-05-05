@@ -207,17 +207,25 @@ Goal:
 
 Tasks:
 
-- [ ] review `InsertArticleHeaders` for set-based insert opportunities on:
+- [x] review `InsertArticleHeaders` for set-based insert opportunities on:
   - `article_headers`
   - `article_header_ingest_payloads`
   - poster normalization
-- [ ] preserve idempotency and uniqueness semantics
-- [ ] measure scrape throughput before and after
+- [x] preserve idempotency and uniqueness semantics
+- [x] measure scrape throughput before and after
 
 Acceptance criteria:
 
 - scrape remains correct under duplicate/overlapping overview fetches
 - insert overhead is reduced without sacrificing clarity or recoverability
+
+Workstream 5 sign-off:
+
+- complete on `2026-05-05`
+- `InsertArticleHeaders` now preprocesses valid overview rows once, then writes posters, `article_headers`, and `article_header_ingest_payloads` in chunked set-based batches inside the same transaction
+- duplicate or overlapping overview rows still resolve onto the same `article_headers` row, and payload semantics remain last-write-wins for a repeated header within the same scrape batch
+- focused Go tests passed, and direct PostgreSQL integration validation passed via `TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins`
+- a live `indexer scrape --once` stage timing comparison was not available because the existing `scrape_latest` stage state is currently disabled in the local runtime, but the new path was validated against the live Postgres store and removes the old per-header insert/update loop that previously executed one poster write, one header write, and one payload write per row
 
 ## Execution Order
 
