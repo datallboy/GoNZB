@@ -119,16 +119,23 @@ Goal:
 
 Tasks:
 
-- [ ] confirm all current uses of `pending_headers`
-- [ ] make pending-header counting optional or move it out of `RunOnceWithMetrics`
-- [ ] keep assemble metrics valid when the count is skipped
-- [ ] add a separate read path for UI/operator backlog visibility if needed
+- [x] confirm all current uses of `pending_headers`
+- [x] make pending-header counting optional or move it out of `RunOnceWithMetrics`
+- [x] keep assemble metrics valid when the count is skipped
+- [x] add a separate read path for UI/operator backlog visibility if needed
 
 Acceptance criteria:
 
 - assemble can run without blocking on a full pending count
 - pipeline correctness is unchanged
 - UI or operator metrics still have a supported way to query backlog size
+
+Workstream 2 sign-off:
+
+- complete on `2026-05-05`
+- current source usage of `pending_headers` was confirmed to be stage metrics/logging plus operator SQL, not a pipeline correctness dependency
+- assemble no longer performs the blocking `COUNT(*)` during `RunOnceWithMetrics`
+- the latest live assemble run persisted metrics without `pending_headers` or `pending_count_duration_ms`, while operator/UI backlog visibility remains available through direct query paths such as [INDEXER_TEST_QUERIES.md](/mnt/home-datallboy/Projects/github.com/datallboy/gonzb/docs/INDEXER_TEST_QUERIES.md:122)
 
 ## Workstream 3. Release Article Lineage Consolidation
 

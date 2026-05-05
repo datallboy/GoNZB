@@ -22,7 +22,6 @@ type logger interface {
 
 // local interface only, scoped to assembly service.
 type repository interface {
-	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
@@ -101,13 +100,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	started := time.Now()
-	countStarted := time.Now()
-	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count unassembled article headers: %w", err)
-	}
-	countDuration := time.Since(countStarted)
-
 	selectionStarted := time.Now()
 	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
 		Limit:         s.opts.BatchSize,
@@ -120,13 +112,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	selectionDuration := time.Since(selectionStarted)
 	if len(headers) == 0 {
 		return map[string]any{
-			"pending_headers":                 pendingCount,
 			"selected_headers":                0,
 			"processed_headers":               0,
 			"binaries_refreshed":              0,
 			"batch_size":                      s.opts.BatchSize,
 			"worker_count":                    s.opts.Concurrency,
-			"pending_count_duration_ms":       durationMillis(countDuration),
 			"candidate_selection_duration_ms": durationMillis(selectionDuration),
 			"total_duration_ms":               durationMillis(time.Since(started)),
 			"headers_per_second":              0.0,
@@ -166,9 +156,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			defer wg.Done()
 			workerSvc := *s
 			workerSvc.repo = claimedBatchRepository{
-				delegate:     s.repo,
-				pendingCount: pendingCount,
-				headers:      workerHeaders,
+				delegate: s.repo,
+				headers:   workerHeaders,
 			}
 			metrics, err := workerSvc.runOnceWithMetricsSingle(ctx, workerBatch, fmt.Sprintf("%s-worker-%d", s.opts.ClaimOwner, workerID))
 			mu.Lock()
@@ -184,9 +173,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	totalDuration := time.Since(started)
 	processed, _ := numericMetricInt64(combined, "processed_headers")
 	refreshed, _ := numericMetricInt64(combined, "binaries_refreshed")
-	combined["pending_headers"] = pendingCount
 	combined["selected_headers"] = len(headers)
-	combined["pending_count_duration_ms"] = durationMillis(countDuration)
 	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
 	combined["total_duration_ms"] = durationMillis(totalDuration)
 	combined["headers_per_second"] = throughputPerSecond(int(processed), totalDuration)
@@ -196,13 +183,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 }
 
 type claimedBatchRepository struct {
-	delegate     repository
-	pendingCount int64
-	headers      []pgindex.AssemblyCandidate
-}
-
-func (r claimedBatchRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
-	return r.pendingCount, nil
+	delegate repository
+	headers   []pgindex.AssemblyCandidate
 }
 
 func (r claimedBatchRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
@@ -242,13 +224,6 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 
 	started := time.Now()
-	countStarted := time.Now()
-	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count unassembled article headers: %w", err)
-	}
-	countDuration := time.Since(countStarted)
-
 	selectionStarted := time.Now()
 	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
 		Limit:         batchSize,
@@ -260,14 +235,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 	selectionDuration := time.Since(selectionStarted)
 	metrics := map[string]any{
-		"pending_headers":                 pendingCount,
 		"selected_headers":                len(headers),
 		"batch_size":                      batchSize,
-		"pending_count_duration_ms":       durationMillis(countDuration),
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
 	}
 	if len(headers) == 0 {
-		s.log.Debug("assemble: no unassembled article headers found pending_headers=%d", pendingCount)
+		s.log.Debug("assemble: no unassembled article headers found")
 		metrics["processed_headers"] = 0
 		metrics["binaries_refreshed"] = 0
 		metrics["total_duration_ms"] = durationMillis(time.Since(started))
@@ -453,8 +426,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: pending_headers=%d lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
-		pendingCount,
+		"assemble: lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
 		laneASelected,
 		laneBSelected,
 		assembledCount,
@@ -479,7 +451,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
 	for key, value := range src {
 		switch key {
-		case "batch_size", "pending_headers", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
+		case "batch_size", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
 			continue
 		}
 		switch tv := value.(type) {
