@@ -227,6 +227,99 @@ Workstream 5 sign-off:
 - focused Go tests passed, and direct PostgreSQL integration validation passed via `TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins`
 - a live `indexer scrape --once` stage timing comparison was not available because the existing `scrape_latest` stage state is currently disabled in the local runtime, but the new path was validated against the live Postgres store and removes the old per-header insert/update loop that previously executed one poster write, one header write, and one payload write per row
 
+## Workstream 6. Assemble Batch Size Tuning
+
+Goal:
+
+- increase backlog burn-down throughput by amortizing assemble fixed per-run costs across larger claimed batches
+
+Tasks:
+
+- [ ] measure current live `assemble --once` behavior at the baseline configured batch size
+- [ ] test larger assemble batch sizes starting with `25,000`
+- [ ] test a larger follow-up size such as `50,000` if memory, lock duration, and transaction times remain healthy
+- [ ] compare:
+  - `total_duration_ms`
+  - `headers_per_second`
+  - `candidate_selection_duration_ms`
+  - `header_match_duration_ms`
+  - `binary_part_upsert_duration_ms`
+  - `binary_refresh_duration_ms`
+- [ ] keep the best-performing size only if throughput improves without unacceptable memory or contention side effects
+
+Acceptance criteria:
+
+- assemble throughput improves measurably on live runs or the current batch size is explicitly confirmed as near-optimal
+- the chosen batch size does not introduce stability regressions or materially worse lock/claim behavior
+
+## Workstream 7. Inspection Artifact Replace Batching
+
+Goal:
+
+- remove remaining row-at-a-time delete-and-reinsert loops from per-binary inspection persistence helpers
+
+Scope:
+
+- `ReplaceBinaryInspectionArtifacts`
+- `ReplaceBinaryArchiveEntries`
+- `ReplaceBinaryMediaStreams`
+- `ReplaceBinaryTextEvidence`
+- `ReplaceBinaryPAR2Sets`
+
+Tasks:
+
+- [ ] batch inserts after the existing per-binary delete step for each helper
+- [ ] preserve current JSON sanitization and normalization behavior
+- [ ] keep replace semantics identical for empty and non-empty row sets
+- [ ] validate archive, media, par2, nfo, and password inspection flows after the change
+
+Acceptance criteria:
+
+- no helper performs one insert statement per persisted row in normal operation
+- inspection outputs remain byte-for-byte or field-for-field equivalent for the same probe results
+
+## Workstream 8. Enrichment Match And Entry Batching
+
+Goal:
+
+- reduce row-at-a-time write amplification in release enrichment persistence
+
+Scope:
+
+- `ReplaceReleaseTMDBMatches`
+- `ReplaceReleasePredbMatches`
+- `UpsertPredbEntries`
+- `ReplaceReleaseTVDBMatches`
+
+Tasks:
+
+- [ ] batch replace inserts for TMDB, predb, and TVDB release match rows
+- [ ] batch predb entry upserts where possible while preserving normalized-title conflict semantics
+- [ ] preserve chosen-match flags, payload JSON, and fallback normalization behavior
+- [ ] validate enrichment stages against the live dev database after the change
+
+Acceptance criteria:
+
+- enrichment replace paths no longer issue one insert per row in the common case
+- release enrichment state remains correct for duplicate and overlapping match sets
+
+## Workstream 9. Release File Insert Batching
+
+Goal:
+
+- finish reducing release-stage write amplification by batching `release_files` replacement inserts
+
+Tasks:
+
+- [ ] batch `ReplaceReleaseFiles` inserts after the current delete and cross-release cleanup steps
+- [ ] preserve `release_files.binary_id` uniqueness and current file ordering semantics
+- [ ] validate release formation and NZB generation after the change
+
+Acceptance criteria:
+
+- `ReplaceReleaseFiles` no longer inserts one row at a time for normal release batches
+- release and NZB behavior remains unchanged for the same candidate set
+
 ## Execution Order
 
 1. Workstream 1: assemble hot-path payload reduction
@@ -234,6 +327,10 @@ Workstream 5 sign-off:
 3. Workstream 3: release article lineage consolidation
 4. Workstream 4: inspection claim and write batching
 5. Workstream 5: scrape insert batching
+6. Workstream 6: assemble batch size tuning
+7. Workstream 7: inspection artifact replace batching
+8. Workstream 8: enrichment match and entry batching
+9. Workstream 9: release file insert batching
 
 ## Validation
 

@@ -622,21 +622,14 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 		  	OR ah.assembly_claimed_until < NOW()
 		  )`
 	if len(excludeIDs) > 0 {
-		values := make([]string, 0, len(excludeIDs))
 		ids := make([]int64, 0, len(excludeIDs))
 		for id := range excludeIDs {
 			ids = append(ids, id)
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		for _, id := range ids {
-			args = append(args, id)
-			values = append(values, fmt.Sprintf("($%d::bigint)", len(args)))
-		}
+		args = append(args, ids)
 		query += fmt.Sprintf(`
-		  AND ah.id NOT IN (
-		  	SELECT excluded.id
-		  	FROM (VALUES %s) AS excluded(id)
-		  )`, strings.Join(values, ","))
+		  AND NOT (ah.id = ANY($%d::bigint[]))`, len(args))
 	}
 	query += `
 		ORDER BY ah.id DESC
@@ -668,17 +661,19 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		return nil, nil
 	}
 
-	args := make([]any, 0, len(selected)*3)
-	values := make([]string, 0, len(selected))
+	ids := make([]int64, 0, len(selected))
+	ords := make([]int32, 0, len(selected))
+	structuredMatches := make([]bool, 0, len(selected))
 	for idx, item := range selected {
-		base := (idx * 3) + 1
-		values = append(values, fmt.Sprintf("($%d::bigint,$%d::integer,$%d::boolean)", base, base+1, base+2))
-		args = append(args, item.ID, idx, item.StructuredIdentityBinaryMatched)
+		ids = append(ids, item.ID)
+		ords = append(ords, int32(idx))
+		structuredMatches = append(structuredMatches, item.StructuredIdentityBinaryMatched)
 	}
 
-	rows, err := q.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := q.QueryContext(ctx, `
 		WITH requested(id, ord, structured_identity_binary_matched) AS (
-			VALUES %s
+			SELECT *
+			FROM UNNEST($1::bigint[], $2::integer[], $3::boolean[])
 		)
 		SELECT
 			ah.id,
@@ -707,7 +702,7 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 		LEFT JOIN posters po ON po.id = p.poster_id
-		ORDER BY requested.ord ASC`, strings.Join(values, ",")), args...)
+		ORDER BY requested.ord ASC`, ids, ords, structuredMatches)
 	if err != nil {
 		return nil, fmt.Errorf("hydrate assembly candidates: %w", err)
 	}
