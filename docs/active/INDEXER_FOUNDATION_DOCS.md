@@ -13,7 +13,7 @@ We currently have several planning and reference documents. This file defines wh
 - the backlog burn-down performance pass and assemble/release refinement loop are done
 - the first API/UI expansion phase is done
 - the process execution and performance sprint is complete and archived
-- the active indexer execution focus is now database storage retention, maintenance reporting, and NZB/offload options
+- the active indexer execution focus now includes backlog burn-down follow-up work on assemble hot-path cost, release lineage simplification, and remaining write amplification
 
 ## Current Active Docs
 
@@ -35,6 +35,16 @@ Use for:
 - NZB blob-cache/offload planning
 - evaluating whether `release_file_articles` can be consolidated into `binary_parts`
 
+### `docs/active/INDEXER_BACKLOG_BURNDOWN_AND_SCHEMA_SIMPLIFICATION_PLAN.md`
+
+Use for:
+
+- the active backlog burn-down follow-up sprint after the assemble selector rewrite
+- removing remaining assemble hot-path payload work
+- removing the blocking pending-header count from assemble
+- consolidating `release_file_articles` into `binary_parts` if invariants hold
+- batching remaining inspection and scrape write paths
+
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
 Use for:
@@ -46,7 +56,7 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database storage retention and reclaim planning for the indexer runtime.
+The current focus is database storage retention and reclaim planning plus the next backlog-burn-down throughput pass.
 
 Primary workstream:
 
@@ -55,6 +65,8 @@ Primary workstream:
 - reduce `article_header_ingest_payloads` retention safely
 - evaluate and implement `release_file_articles` consolidation into `binary_parts` if invariants hold
 - design NZB blob caching/offload so article mappings can eventually be pruned more aggressively
+- remove remaining assemble hot-path payload work and blocking metrics queries
+- batch remaining inspection and scrape row-at-a-time write paths
 
 Recent completed focus:
 
