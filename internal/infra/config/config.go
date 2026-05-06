@@ -129,14 +129,16 @@ type IndexingReleaseConfig struct {
 }
 
 type IndexingInspectConfig struct {
-	WorkDir         string `mapstructure:"work_dir" yaml:"work_dir"`
-	MaxBytes        int64  `mapstructure:"max_bytes" yaml:"max_bytes"`
-	MaxArchiveDepth int    `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
-	ToolTimeoutSecs int    `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
-	FFProbePath     string `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
-	SevenZipPath    string `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
-	UnrarPath       string `mapstructure:"unrar_path" yaml:"unrar_path"`
-	PAR2Path        string `mapstructure:"par2_path" yaml:"par2_path"`
+	WorkDir          string `mapstructure:"work_dir" yaml:"work_dir"`
+	WorkspaceBackend string `mapstructure:"workspace_backend" yaml:"workspace_backend"`
+	MemoryWorkDir    string `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
+	MaxBytes         int64  `mapstructure:"max_bytes" yaml:"max_bytes"`
+	MaxArchiveDepth  int    `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
+	ToolTimeoutSecs  int    `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFProbePath      string `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath     string `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath        string `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path         string `mapstructure:"par2_path" yaml:"par2_path"`
 }
 
 type IndexingPreDBConfig struct {
@@ -254,6 +256,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
 	v.SetDefault("indexing.inspect.work_dir", "/store/indexer/inspect")
+	v.SetDefault("indexing.inspect.workspace_backend", "disk")
+	v.SetDefault("indexing.inspect.memory_work_dir", "/dev/shm/gonzb-inspect")
 	v.SetDefault("indexing.inspect.max_bytes", int64(2*1024*1024*1024))
 	v.SetDefault("indexing.inspect.max_archive_depth", 3)
 	v.SetDefault("indexing.inspect.tool_timeout_seconds", 30)

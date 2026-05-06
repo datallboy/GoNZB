@@ -88,14 +88,16 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		TMDBAccessToken:    "tmdb-token",
 	}
 	cfg.Indexing.Inspect = config.IndexingInspectConfig{
-		WorkDir:         "/tmp/inspect",
-		FFProbePath:     "ffprobe",
-		SevenZipPath:    "7z",
-		UnrarPath:       "unrar",
-		PAR2Path:        "par2",
-		MaxBytes:        1024,
-		MaxArchiveDepth: 2,
-		ToolTimeoutSecs: 15,
+		WorkDir:          "/tmp/inspect",
+		WorkspaceBackend: "memory",
+		MemoryWorkDir:    "/dev/shm/gonzb-inspect-test",
+		FFProbePath:      "ffprobe",
+		SevenZipPath:     "7z",
+		UnrarPath:        "unrar",
+		PAR2Path:         "par2",
+		MaxBytes:         1024,
+		MaxArchiveDepth:  2,
+		ToolTimeoutSecs:  15,
 	}
 
 	got, err := deriveUsenetIndexerConfig(cfg)
@@ -120,6 +122,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.InspectMedia.Concurrency != concurrency {
 		t.Fatalf("expected inspect_media concurrency %d, got %+v", concurrency, got.InspectMedia)
+	}
+	if got.Inspect.WorkspaceBackend != "memory" || got.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect-test" {
+		t.Fatalf("expected inspect workspace backend settings, got %+v", got.Inspect)
 	}
 	if got.EnrichPreDB.Limit != batch || got.EnrichPreDB.HTTPTimeout != 22*time.Second {
 		t.Fatalf("unexpected predb options: %+v", got.EnrichPreDB)
