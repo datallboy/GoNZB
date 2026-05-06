@@ -37,6 +37,10 @@ func (s *stubIndexerService) BacklogStats(ctx context.Context) (*pgindex.Indexer
 	return s.backlog, nil
 }
 
+func (s *stubIndexerService) RefreshBacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error) {
+	return s.backlog, nil
+}
+
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
 	return s.stages, nil
 }

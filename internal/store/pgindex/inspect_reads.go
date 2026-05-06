@@ -32,8 +32,9 @@ type IndexerOverview struct {
 }
 
 type IndexerBacklogStats struct {
-	UnassembledHeaders int64     `json:"unassembled_headers"`
-	QueriedAt          time.Time `json:"queried_at"`
+	UnassembledHeaders int64      `json:"unassembled_headers"`
+	QueriedAt          *time.Time `json:"queried_at,omitempty"`
+	Available          bool       `json:"available"`
 }
 
 type IndexerReleaseSummary struct {
@@ -386,13 +387,48 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 }
 
 func (s *Store) GetIndexerBacklogStats(ctx context.Context) (*IndexerBacklogStats, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT int_value, updated_at
+		FROM indexer_dashboard_stats
+		WHERE stat_key = 'unassembled_headers'`)
+
+	var (
+		item      IndexerBacklogStats
+		updatedAt sql.NullTime
+	)
+	if err := row.Scan(&item.UnassembledHeaders, &updatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return &IndexerBacklogStats{}, nil
+		}
+		return nil, fmt.Errorf("get indexer backlog stats: %w", err)
+	}
+	if updatedAt.Valid {
+		ts := updatedAt.Time.UTC()
+		item.QueriedAt = &ts
+		item.Available = true
+	}
+	return &item, nil
+}
+
+func (s *Store) RefreshIndexerBacklogStats(ctx context.Context) (*IndexerBacklogStats, error) {
 	count, err := s.CountUnassembledArticleHeaders(ctx)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO indexer_dashboard_stats (stat_key, int_value, updated_at)
+		VALUES ('unassembled_headers', $1, $2)
+		ON CONFLICT (stat_key)
+		DO UPDATE SET
+			int_value = EXCLUDED.int_value,
+			updated_at = EXCLUDED.updated_at`, count, now); err != nil {
+		return nil, fmt.Errorf("refresh indexer backlog stats: %w", err)
+	}
 	return &IndexerBacklogStats{
 		UnassembledHeaders: count,
-		QueriedAt:          time.Now().UTC(),
+		QueriedAt:          &now,
+		Available:          true,
 	}, nil
 }
 

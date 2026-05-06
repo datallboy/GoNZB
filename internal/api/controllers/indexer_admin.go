@@ -41,6 +41,19 @@ func (ctrl *IndexerAdminController) GetBacklogStats(c *echo.Context) error {
 	return c.JSON(http.StatusOK, stats)
 }
 
+func (ctrl *IndexerAdminController) RefreshBacklogStats(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	stats, err := ctrl.Service.RefreshBacklogStats(c.Request().Context())
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, stats)
+}
+
 func (ctrl *IndexerAdminController) ListStages(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

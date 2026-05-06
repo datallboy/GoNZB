@@ -21,6 +21,10 @@ export function getAdminBacklogStats() {
   return apiRequest<IndexerBacklogStats>('/api/v1/admin/indexer/overview/backlog')
 }
 
+export function refreshAdminBacklogStats() {
+  return apiRequest<IndexerBacklogStats>('/api/v1/admin/indexer/overview/backlog/actions/refresh', { method: 'POST' })
+}
+
 export async function getAdminStages() {
   const response = await apiRequest<AdminStagesResponse>('/api/v1/admin/indexer/stages')
   return response.items
