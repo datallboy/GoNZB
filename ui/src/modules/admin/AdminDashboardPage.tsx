@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBacklogStats, getAdminOverview } from '../../shared/api/admin'
+import { getAdminBacklogStats, getAdminOverview, refreshAdminBacklogStats } from '../../shared/api/admin'
 import type { IndexerBacklogStats, IndexerOverview } from '../../shared/types'
 
 export function AdminDashboardPage() {
@@ -14,12 +14,15 @@ export function AdminDashboardPage() {
     void getAdminOverview()
       .then(setOverview)
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load overview'))
+    void getAdminBacklogStats()
+      .then(setBacklog)
+      .catch((err) => setBacklogError(err instanceof Error ? err.message : 'Failed to load backlog'))
   }, [])
 
   function refreshBacklog() {
     setBacklogLoading(true)
     setBacklogError(null)
-    void getAdminBacklogStats()
+    void refreshAdminBacklogStats()
       .then(setBacklog)
       .catch((err) => setBacklogError(err instanceof Error ? err.message : 'Failed to load backlog'))
       .finally(() => setBacklogLoading(false))
@@ -67,13 +70,13 @@ export function AdminDashboardPage() {
         ))}
         <div className="stat-card">
           <span>Unassembled Headers</span>
-          <strong>{backlog ? backlog.unassembled_headers.toLocaleString() : 'Manual'}</strong>
+          <strong>{backlog?.available ? backlog.unassembled_headers.toLocaleString() : 'Not Cached'}</strong>
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={refreshBacklog} disabled={backlogLoading}>
               {backlogLoading ? 'Refreshing...' : 'Refresh Count'}
             </button>
           </div>
-          {backlog ? <small>As of {new Date(backlog.queried_at).toLocaleString()}</small> : null}
+          {backlog?.available && backlog.queried_at ? <small>As of {new Date(backlog.queried_at).toLocaleString()}</small> : <small>Uses the last persisted snapshot.</small>}
           {backlogError ? <small>{backlogError}</small> : null}
         </div>
       </div>

@@ -114,7 +114,8 @@ export type IndexerOverview = {
 
 export type IndexerBacklogStats = {
   unassembled_headers: number
-  queried_at: string
+  queried_at?: string
+  available: boolean
 }
 
 export type AdminStage = {
