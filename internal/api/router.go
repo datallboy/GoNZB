@@ -169,6 +169,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.Use(csrfProtectionMiddleware())
 		v1AdminIndexer.Use(auditLogMiddleware(appCtx, "admin.indexer"))
 		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
+		v1AdminIndexer.GET("/overview/backlog", indexerAdminCtrl.GetBacklogStats)
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
 		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
 		v1AdminIndexer.GET("/releases", indexerAdminCtrl.ListReleases)

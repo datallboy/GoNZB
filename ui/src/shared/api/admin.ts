@@ -1,5 +1,6 @@
 import { apiRequest } from './http'
 import type {
+  IndexerBacklogStats,
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
@@ -14,6 +15,10 @@ import type {
 
 export function getAdminOverview() {
   return apiRequest<IndexerOverview>('/api/v1/admin/indexer/overview')
+}
+
+export function getAdminBacklogStats() {
+  return apiRequest<IndexerBacklogStats>('/api/v1/admin/indexer/overview/backlog')
 }
 
 export async function getAdminStages() {
