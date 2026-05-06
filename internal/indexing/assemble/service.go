@@ -2,6 +2,7 @@ package assemble
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
+	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -29,6 +31,7 @@ type repository interface {
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
+	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 }
 
 // narrow matcher dependency.
@@ -49,11 +52,12 @@ type Options struct {
 }
 
 type recoveryCounters struct {
-	attempts      int
-	successes     int
-	noops         int
-	fetchFailures int
-	skippedByCap  int
+	attempts         int
+	successes        int
+	noops            int
+	fetchFailures    int
+	skippedByCap     int
+	skippedByBackoff int
 }
 
 type Service struct {
@@ -220,6 +224,10 @@ func (r claimedBatchRepository) RefreshBinaryStatsBatch(ctx context.Context, bin
 	return r.delegate.RefreshBinaryStatsBatch(ctx, binaryIDs)
 }
 
+func (r claimedBatchRepository) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
+	return r.delegate.RecordYEncRecoveryNotFound(ctx, articleHeaderID)
+}
+
 func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("assembly repo is required")
@@ -296,7 +304,9 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		}
 		matchStarted := time.Now()
 		matched := s.matcher.Match(candidate)
-		if s.shouldAttemptYEncRecovery(header, matched) {
+		if header.YEncRecoveryRetryAfter != nil && header.YEncRecoveryRetryAfter.After(time.Now().UTC()) {
+			recovery.skippedByBackoff++
+		} else if s.shouldAttemptYEncRecovery(header, matched) {
 			if recovery.attempts >= s.opts.MaxYEncRecoveryAttempts {
 				recovery.skippedByCap++
 			} else {
@@ -433,10 +443,11 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	metrics["recovery_noops"] = recovery.noops
 	metrics["recovery_fetch_failures"] = recovery.fetchFailures
 	metrics["recovery_skipped_by_cap"] = recovery.skippedByCap
+	metrics["recovery_skipped_by_backoff"] = recovery.skippedByBackoff
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d",
+		"assemble: lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneASelected,
 		laneBSelected,
 		assembledCount,
@@ -454,6 +465,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		recovery.noops,
 		recovery.fetchFailures,
 		recovery.skippedByCap,
+		recovery.skippedByBackoff,
 	)
 
 	return metrics, nil
@@ -536,6 +548,9 @@ func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, ma
 	if header.MessageID == "" {
 		return false
 	}
+	if header.YEncRecoveryRetryAfter != nil && header.YEncRecoveryRetryAfter.After(time.Now().UTC()) {
+		return false
+	}
 	// If scrape/XOVER already exposed a structured file name from the subject,
 	// inline body-header recovery is rarely worth it on the hot path.
 	if strings.TrimSpace(header.FileName) != "" {
@@ -568,6 +583,11 @@ func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.Asse
 
 	reader, err := s.fetcher.Fetch(ctx, header.MessageID, groups)
 	if err != nil {
+		if errors.Is(err, nntp.ErrArticleNotFound) && s.repo != nil {
+			if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, header.ID); markErr != nil && s.log != nil {
+				s.log.Warn("assemble: failed to persist yenc not_found backoff article=%d err=%v", header.ID, markErr)
+			}
+		}
 		return match.Result{}, recoveryAttemptResult{fetchFailed: true}, nil
 	}
 	if closer, ok := reader.(io.Closer); ok {

@@ -343,6 +343,7 @@ Tasks:
 - [x] confirm whether scrape/XOVER already provides the structured metadata needed for normal assemble matching
 - [x] narrow inline yEnc recovery so it does not run when the subject already exposed a structured file name
 - [x] add a per-batch cap on yEnc recovery attempts
+- [x] persist `430` / not-found yEnc recovery misses with retry backoff so the same missing article is not re-fetched every assemble pass
 - [x] re-test live assemble at `20,000` batch size after the guardrails
 
 Acceptance criteria:
@@ -350,6 +351,14 @@ Acceptance criteria:
 - inline yEnc recovery remains available for true opaque last-resort cases
 - pathological batches cannot spend thousands of body fetch attempts in one assemble run
 - recent live `20,000`-header assemble runs remain in the fast range after the change
+
+Workstream 10 sign-off:
+
+- complete on `2026-05-06`
+- confirmed that scrape/XOVER plus persisted structured fields already cover the normal hot path, while inline yEnc recovery is only needed for true opaque last-resort cases
+- assemble now skips inline recovery when a subject-derived file name is already present, caps yEnc recovery attempts per batch, and persists `430` / not-found misses onto the article ingest payload with escalating retry backoff
+- focused assemble and store tests cover subject-name skips, per-batch cap behavior, persisted backoff skips, and not-found backoff recording
+- recent post-restart live `20,000`-header assemble runs returned to the fast range with `0` recovery attempts in the normal case, while the earlier pathological `33 minute` run was explained by `12,924` failed recovery fetches
 
 ## Execution Order
 

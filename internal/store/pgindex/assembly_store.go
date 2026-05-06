@@ -43,6 +43,8 @@ type AssemblyCandidate struct {
 	YEncPart                        int
 	YEncTotal                       int
 	YEncFileSize                    int64
+	YEncRecoveryMissingCount        int
+	YEncRecoveryRetryAfter          *time.Time
 	StructuredIdentityBinaryMatched bool
 	RawOverview                     map[string]any
 }
@@ -695,6 +697,8 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 			COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
 			COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 			COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+			COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
+			p.yenc_recovery_retry_after,
 			requested.structured_identity_binary_matched,
 			'' AS raw_overview
 		FROM requested
@@ -733,12 +737,13 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	Scan(dest ...any) error
 }, binaryID *int64) (AssemblyCandidate, error) {
 	var (
-		item AssemblyCandidate
-		date sql.NullTime
-		raw  string
+		item       AssemblyCandidate
+		date       sql.NullTime
+		retryAfter sql.NullTime
+		raw        string
 	)
 
-	dest := make([]any, 0, 22)
+	dest := make([]any, 0, 24)
 	if binaryID != nil {
 		dest = append(dest, binaryID)
 	}
@@ -762,6 +767,8 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 		&item.YEncPart,
 		&item.YEncTotal,
 		&item.YEncFileSize,
+		&item.YEncRecoveryMissingCount,
+		&retryAfter,
 		&item.StructuredIdentityBinaryMatched,
 		&raw,
 	)
@@ -773,6 +780,10 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	if date.Valid {
 		t := date.Time.UTC()
 		item.DateUTC = &t
+	}
+	if retryAfter.Valid {
+		t := retryAfter.Time.UTC()
+		item.YEncRecoveryRetryAfter = &t
 	}
 
 	if item.RawOverview == nil {
@@ -801,6 +812,29 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	}
 
 	return item, nil
+}
+
+func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
+	if articleHeaderID <= 0 {
+		return fmt.Errorf("article header id is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads
+		SET yenc_recovery_missing_count = article_header_ingest_payloads.yenc_recovery_missing_count + 1,
+		    yenc_recovery_last_missing_at = NOW(),
+		    yenc_recovery_retry_after = NOW() + CASE
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '1 hour'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '6 hours'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '24 hours'
+		    	ELSE INTERVAL '72 hours'
+		    END
+		WHERE article_header_id = $1`, articleHeaderID,
+	)
+	if err != nil {
+		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
+	}
+	return nil
 }
 
 func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, error) {
