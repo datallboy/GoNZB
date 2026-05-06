@@ -93,10 +93,10 @@ func DefaultOptions(opts Options) Options {
 	}
 	opts.WorkspaceBackend = strings.ToLower(strings.TrimSpace(opts.WorkspaceBackend))
 	if opts.WorkspaceBackend == "" {
-		opts.WorkspaceBackend = "disk"
+		opts.WorkspaceBackend = "auto"
 	}
-	if opts.WorkspaceBackend != "disk" && opts.WorkspaceBackend != "memory" {
-		opts.WorkspaceBackend = "disk"
+	if opts.WorkspaceBackend != "disk" && opts.WorkspaceBackend != "memory" && opts.WorkspaceBackend != "auto" {
+		opts.WorkspaceBackend = "auto"
 	}
 	if strings.TrimSpace(opts.MemoryWorkDir) == "" {
 		opts.MemoryWorkDir = "/dev/shm/gonzb-inspect"

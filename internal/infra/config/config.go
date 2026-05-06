@@ -256,7 +256,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
 	v.SetDefault("indexing.inspect.work_dir", "/store/indexer/inspect")
-	v.SetDefault("indexing.inspect.workspace_backend", "disk")
+	v.SetDefault("indexing.inspect.workspace_backend", "auto")
 	v.SetDefault("indexing.inspect.memory_work_dir", "/dev/shm/gonzb-inspect")
 	v.SetDefault("indexing.inspect.max_bytes", int64(2*1024*1024*1024))
 	v.SetDefault("indexing.inspect.max_archive_depth", 3)
