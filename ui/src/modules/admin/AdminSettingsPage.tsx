@@ -80,6 +80,8 @@ function defaultSettings(): RuntimeSettings {
       },
       inspect: {
         work_dir: '/store/indexer/inspect',
+        workspace_backend: 'auto',
+        memory_work_dir: '/dev/shm/gonzb-inspect',
         max_bytes: 2147483648,
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
@@ -613,6 +615,18 @@ export function AdminSettingsPage() {
         <SettingsSection title="Inspection tools">
           <div className="toolbar-grid">
             <TextField label="Work dir" value={indexing.inspect.work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, work_dir: value } })} />
+            <label>
+              <span>Workspace backend</span>
+              <select
+                value={indexing.inspect.workspace_backend}
+                onChange={(event) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, workspace_backend: event.target.value } })}
+              >
+                <option value="auto">Auto</option>
+                <option value="memory">Memory</option>
+                <option value="disk">Disk</option>
+              </select>
+            </label>
+            <TextField label="Memory work dir" value={indexing.inspect.memory_work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, memory_work_dir: value } })} />
             <NumberField label="Max bytes" value={indexing.inspect.max_bytes} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })} />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
