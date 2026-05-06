@@ -58,6 +58,18 @@ Current recommendation:
 - narrow the trigger conditions if measurements show it is too eager
 - if needed later, consider a deferred repair/recovery pass for the worst opaque cases instead of doing everything inline in assemble
 
+Updated finding on `2026-05-06`:
+
+- a pathological `20,000`-header assemble run took about `33 minutes` with `12,924` yEnc recovery attempts and `12,924` fetch failures
+- recent fast `20,000`-header runs stayed around `10` to `15` seconds with only a handful of recovery attempts
+- this confirmed that inline yEnc recovery is not a normal-path requirement and needs explicit hot-path guardrails
+
+Updated recommendation:
+
+- keep inline yEnc recovery only for last-resort opaque headers where scrape/XOVER did not already expose a subject-derived file name
+- cap yEnc recovery attempts per assemble batch so one pathological slice of backlog cannot monopolize the stage
+- retain the option to build a deferred repair pass later for deeper recovery on the remaining opaque failures
+
 ### Decision 3. Remove non-essential metrics work from the assemble hot path
 
 Current behavior:
@@ -319,6 +331,25 @@ Acceptance criteria:
 
 - `ReplaceReleaseFiles` no longer inserts one row at a time for normal release batches
 - release and NZB behavior remains unchanged for the same candidate set
+
+## Workstream 10. Assemble yEnc Recovery Guardrails
+
+Goal:
+
+- prevent pathological opaque-header slices from turning inline yEnc recovery into the dominant assemble cost
+
+Tasks:
+
+- [x] confirm whether scrape/XOVER already provides the structured metadata needed for normal assemble matching
+- [x] narrow inline yEnc recovery so it does not run when the subject already exposed a structured file name
+- [x] add a per-batch cap on yEnc recovery attempts
+- [x] re-test live assemble at `20,000` batch size after the guardrails
+
+Acceptance criteria:
+
+- inline yEnc recovery remains available for true opaque last-resort cases
+- pathological batches cannot spend thousands of body fetch attempts in one assemble run
+- recent live `20,000`-header assemble runs remain in the fast range after the change
 
 ## Execution Order
 
