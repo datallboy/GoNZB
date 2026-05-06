@@ -31,6 +31,11 @@ type IndexerOverview struct {
 	FailedRunCount        int64 `json:"failed_run_count"`
 }
 
+type IndexerBacklogStats struct {
+	UnassembledHeaders int64     `json:"unassembled_headers"`
+	QueriedAt          time.Time `json:"queried_at"`
+}
+
 type IndexerReleaseSummary struct {
 	ReleaseID               string     `json:"release_id"`
 	GUID                    string     `json:"guid"`
@@ -378,6 +383,17 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	}
 
 	return &item, nil
+}
+
+func (s *Store) GetIndexerBacklogStats(ctx context.Context) (*IndexerBacklogStats, error) {
+	count, err := s.CountUnassembledArticleHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &IndexerBacklogStats{
+		UnassembledHeaders: count,
+		QueriedAt:          time.Now().UTC(),
+	}, nil
 }
 
 func normalizeAdminReleaseSort(sort string) string {

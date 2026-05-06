@@ -116,6 +116,7 @@ type UsenetIndexStore interface {
 	ListIndexerStageRunsFiltered(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
 	GetIndexerStageRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error)
 	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)
+	GetIndexerBacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)

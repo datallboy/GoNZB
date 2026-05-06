@@ -14,6 +14,7 @@ import (
 
 type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
+	backlog      *pgindex.IndexerBacklogStats
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
 	run          *pgindex.IndexerStageRun
@@ -30,6 +31,10 @@ type stubIndexerService struct {
 
 func (s *stubIndexerService) Overview(ctx context.Context) (*pgindex.IndexerOverview, error) {
 	return s.overview, nil
+}
+
+func (s *stubIndexerService) BacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error) {
+	return s.backlog, nil
 }
 
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

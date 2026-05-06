@@ -18,6 +18,7 @@ var errIndexerUnavailable = errors.New("indexer runtime is unavailable")
 
 type indexerService interface {
 	Overview(ctx context.Context) (*pgindex.IndexerOverview, error)
+	BacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
 	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
@@ -116,6 +117,13 @@ func (s *runtimeIndexerService) Overview(ctx context.Context) (*pgindex.IndexerO
 		return nil, errIndexerUnavailable
 	}
 	return s.store.GetIndexerOverview(ctx)
+}
+
+func (s *runtimeIndexerService) BacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetIndexerBacklogStats(ctx)
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

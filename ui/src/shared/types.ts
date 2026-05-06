@@ -112,6 +112,11 @@ export type IndexerOverview = {
   failed_run_count: number
 }
 
+export type IndexerBacklogStats = {
+  unassembled_headers: number
+  queried_at: string
+}
+
 export type AdminStage = {
   stage_name: string
   enabled: boolean
