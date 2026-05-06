@@ -1,31 +1,54 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBacklogStats, getAdminOverview, refreshAdminBacklogStats } from '../../shared/api/admin'
-import type { IndexerBacklogStats, IndexerOverview } from '../../shared/types'
+import { getAdminDashboardStats, getAdminOverview, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerDashboardStat, IndexerDashboardStats, IndexerOverview } from '../../shared/types'
+
+function formatTimestamp(value?: string) {
+  if (!value) {
+    return null
+  }
+  return new Date(value).toLocaleString()
+}
+
+function statFootnote(stat: IndexerDashboardStat) {
+  if (stat.last_error) {
+    const attemptedAt = formatTimestamp(stat.refresh_attempted_at)
+    const snapshotAt = formatTimestamp(stat.updated_at)
+    if (snapshotAt) {
+      return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. Showing last good snapshot from ${snapshotAt}.`
+    }
+    return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. No cached snapshot yet.`
+  }
+  const updatedAt = formatTimestamp(stat.updated_at)
+  if (updatedAt) {
+    return `As of ${updatedAt}${stat.exact ? ' · exact count' : ''}`
+  }
+  return 'Uses the last persisted snapshot.'
+}
 
 export function AdminDashboardPage() {
   const [overview, setOverview] = useState<IndexerOverview | null>(null)
-  const [backlog, setBacklog] = useState<IndexerBacklogStats | null>(null)
-  const [backlogLoading, setBacklogLoading] = useState(false)
-  const [backlogError, setBacklogError] = useState<string | null>(null)
+  const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [statsError, setStatsError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     void getAdminOverview()
       .then(setOverview)
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load overview'))
-    void getAdminBacklogStats()
-      .then(setBacklog)
-      .catch((err) => setBacklogError(err instanceof Error ? err.message : 'Failed to load backlog'))
+    void getAdminDashboardStats()
+      .then(setStats)
+      .catch((err) => setStatsError(err instanceof Error ? err.message : 'Failed to load dashboard stats'))
   }, [])
 
-  function refreshBacklog() {
-    setBacklogLoading(true)
-    setBacklogError(null)
-    void refreshAdminBacklogStats()
-      .then(setBacklog)
-      .catch((err) => setBacklogError(err instanceof Error ? err.message : 'Failed to load backlog'))
-      .finally(() => setBacklogLoading(false))
+  function refreshStats() {
+    setStatsLoading(true)
+    setStatsError(null)
+    void refreshAdminDashboardStats()
+      .then(setStats)
+      .catch((err) => setStatsError(err instanceof Error ? err.message : 'Failed to refresh dashboard stats'))
+      .finally(() => setStatsLoading(false))
   }
 
   if (error) {
@@ -68,16 +91,30 @@ export function AdminDashboardPage() {
             <strong>{value}</strong>
           </div>
         ))}
-        <div className="stat-card">
-          <span>Unassembled Headers</span>
-          <strong>{backlog?.available ? backlog.unassembled_headers.toLocaleString() : 'Not Cached'}</strong>
-          <div className="button-row">
-            <button className="secondary-button" type="button" onClick={refreshBacklog} disabled={backlogLoading}>
-              {backlogLoading ? 'Refreshing...' : 'Refresh Count'}
-            </button>
+      </div>
+
+      <div className="page-card stack">
+        <div className="toolbar-row">
+          <div>
+            <h2 className="section-title">Cached Backlog Stats</h2>
+            <p className="muted-copy">
+              Heavy counts stay decoupled from stage runs and normal dashboard loads. Refresh them explicitly when you need a current snapshot.
+            </p>
           </div>
-          {backlog?.available && backlog.queried_at ? <small>As of {new Date(backlog.queried_at).toLocaleString()}</small> : <small>Uses the last persisted snapshot.</small>}
-          {backlogError ? <small>{backlogError}</small> : null}
+          <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
+            {statsLoading ? 'Refreshing...' : 'Refresh All Stats'}
+          </button>
+        </div>
+        {statsError ? <div className="banner error">{statsError}</div> : null}
+        <div className="hero-stat-grid">
+          {(stats?.items ?? []).map((stat) => (
+            <div className="stat-card" key={stat.key}>
+              <span>{stat.label}</span>
+              <strong>{stat.available ? stat.value.toLocaleString() : 'Not Cached'}</strong>
+              <small>{statFootnote(stat)}</small>
+              {stat.last_error ? <small>{stat.last_error}</small> : null}
+            </div>
+          ))}
         </div>
       </div>
     </div>

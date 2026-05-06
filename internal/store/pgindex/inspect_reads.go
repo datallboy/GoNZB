@@ -31,10 +31,21 @@ type IndexerOverview struct {
 	FailedRunCount        int64 `json:"failed_run_count"`
 }
 
-type IndexerBacklogStats struct {
-	UnassembledHeaders int64      `json:"unassembled_headers"`
-	QueriedAt          *time.Time `json:"queried_at,omitempty"`
+type IndexerDashboardStat struct {
+	Key                string     `json:"key"`
+	Label              string     `json:"label"`
+	Description        string     `json:"description"`
+	Value              int64      `json:"value"`
 	Available          bool       `json:"available"`
+	Exact              bool       `json:"exact"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+	RefreshAttemptedAt *time.Time `json:"refresh_attempted_at,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+}
+
+type IndexerDashboardStats struct {
+	Items []IndexerDashboardStat `json:"items"`
+	Count int                    `json:"count"`
 }
 
 type IndexerReleaseSummary struct {
@@ -386,50 +397,229 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	return &item, nil
 }
 
-func (s *Store) GetIndexerBacklogStats(ctx context.Context) (*IndexerBacklogStats, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT int_value, updated_at
-		FROM indexer_dashboard_stats
-		WHERE stat_key = 'unassembled_headers'`)
-
-	var (
-		item      IndexerBacklogStats
-		updatedAt sql.NullTime
-	)
-	if err := row.Scan(&item.UnassembledHeaders, &updatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return &IndexerBacklogStats{}, nil
-		}
-		return nil, fmt.Errorf("get indexer backlog stats: %w", err)
-	}
-	if updatedAt.Valid {
-		ts := updatedAt.Time.UTC()
-		item.QueriedAt = &ts
-		item.Available = true
-	}
-	return &item, nil
+type indexerDashboardStatDefinition struct {
+	Key         string
+	Label       string
+	Description string
+	Exact       bool
 }
 
-func (s *Store) RefreshIndexerBacklogStats(ctx context.Context) (*IndexerBacklogStats, error) {
-	count, err := s.CountUnassembledArticleHeaders(ctx)
+var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
+	{
+		Key:         "unassembled_headers",
+		Label:       "Unassembled Headers",
+		Description: "Article headers still waiting for assemble processing.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_media_inspection_binaries",
+		Label:       "Pending Media Inspection",
+		Description: "Binaries that inspect_media would claim if it ran now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_release_candidate_families",
+		Label:       "Pending Release Families",
+		Description: "Dirty release families still waiting for release processing.",
+		Exact:       true,
+	},
+}
+
+func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT stat_key, int_value, updated_at, refresh_attempted_at, last_error
+		FROM indexer_dashboard_stats
+		WHERE stat_key = ANY($1)
+		ORDER BY stat_key`, dashboardStatKeys())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get indexer dashboard stats: %w", err)
 	}
-	now := time.Now().UTC()
+	defer rows.Close()
+
+	type statRow struct {
+		value              int64
+		updatedAt          sql.NullTime
+		refreshAttemptedAt sql.NullTime
+		lastError          sql.NullString
+	}
+	rowByKey := make(map[string]statRow, len(indexerDashboardStatDefinitions))
+	for rows.Next() {
+		var (
+			key string
+			row statRow
+		)
+		if err := rows.Scan(&key, &row.value, &row.updatedAt, &row.refreshAttemptedAt, &row.lastError); err != nil {
+			return nil, fmt.Errorf("scan indexer dashboard stat: %w", err)
+		}
+		rowByKey[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer dashboard stats: %w", err)
+	}
+
+	items := make([]IndexerDashboardStat, 0, len(indexerDashboardStatDefinitions))
+	for _, def := range indexerDashboardStatDefinitions {
+		row, ok := rowByKey[def.Key]
+		item := IndexerDashboardStat{
+			Key:         def.Key,
+			Label:       def.Label,
+			Description: def.Description,
+			Exact:       def.Exact,
+		}
+		if ok {
+			item.Value = row.value
+			if row.updatedAt.Valid {
+				ts := row.updatedAt.Time.UTC()
+				item.UpdatedAt = &ts
+				item.Available = true
+			}
+			if row.refreshAttemptedAt.Valid {
+				ts := row.refreshAttemptedAt.Time.UTC()
+				item.RefreshAttemptedAt = &ts
+			}
+			if row.lastError.Valid {
+				item.LastError = strings.TrimSpace(row.lastError.String)
+			}
+		}
+		items = append(items, item)
+	}
+
+	return &IndexerDashboardStats{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
+	for _, def := range indexerDashboardStatDefinitions {
+		now := time.Now().UTC()
+		value, err := s.computeIndexerDashboardStat(ctx, def.Key)
+		if err != nil {
+			if persistErr := s.persistIndexerDashboardStatFailure(ctx, def.Key, now, err); persistErr != nil {
+				return nil, persistErr
+			}
+			continue
+		}
+		if err := s.persistIndexerDashboardStatSuccess(ctx, def.Key, value, now); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.GetIndexerDashboardStats(ctx)
+}
+
+func dashboardStatKeys() []string {
+	keys := make([]string, 0, len(indexerDashboardStatDefinitions))
+	for _, def := range indexerDashboardStatDefinitions {
+		keys = append(keys, def.Key)
+	}
+	return keys
+}
+
+func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (int64, error) {
+	switch key {
+	case "unassembled_headers":
+		return s.CountUnassembledArticleHeaders(ctx)
+	case "pending_media_inspection_binaries":
+		return s.CountPendingInspectMediaBinaries(ctx)
+	case "pending_release_candidate_families":
+		return s.CountPendingReleaseCandidateFamilies(ctx)
+	default:
+		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
+	}
+}
+
+func (s *Store) persistIndexerDashboardStatSuccess(ctx context.Context, key string, value int64, now time.Time) error {
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO indexer_dashboard_stats (stat_key, int_value, updated_at)
-		VALUES ('unassembled_headers', $1, $2)
+		INSERT INTO indexer_dashboard_stats (stat_key, int_value, updated_at, refresh_attempted_at, last_error)
+		VALUES ($1, $2, $3, $3, '')
 		ON CONFLICT (stat_key)
 		DO UPDATE SET
 			int_value = EXCLUDED.int_value,
-			updated_at = EXCLUDED.updated_at`, count, now); err != nil {
-		return nil, fmt.Errorf("refresh indexer backlog stats: %w", err)
+			updated_at = EXCLUDED.updated_at,
+			refresh_attempted_at = EXCLUDED.refresh_attempted_at,
+			last_error = ''`, key, value, now); err != nil {
+		return fmt.Errorf("persist dashboard stat %s: %w", key, err)
 	}
-	return &IndexerBacklogStats{
-		UnassembledHeaders: count,
-		QueriedAt:          &now,
-		Available:          true,
-	}, nil
+	return nil
+}
+
+func (s *Store) persistIndexerDashboardStatFailure(ctx context.Context, key string, now time.Time, cause error) error {
+	msg := strings.TrimSpace(cause.Error())
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO indexer_dashboard_stats (stat_key, refresh_attempted_at, last_error)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (stat_key)
+		DO UPDATE SET
+			refresh_attempted_at = EXCLUDED.refresh_attempted_at,
+			last_error = EXCLUDED.last_error`, key, now, msg); err != nil {
+		return fmt.Errorf("persist dashboard stat failure %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_stage_dirty_families`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending release candidate families: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
+	filter, err := inspectCandidateFilter("inspect_media")
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				bi.inspection_claimed_until IS NOT NULL AND
+				bi.inspection_claimed_until < NOW()
+			) OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate + `
+			OR (
+				abi.updated_at IS NOT NULL AND (
+					bi.id IS NULL OR
+					abi.updated_at > bi.updated_at
+				)
+			)`
+
+	var count int64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT b.id)
+		FROM binaries b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = 'inspect_media'
+			AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+			ON abi.stage_name = 'inspect_archive'
+			AND abi.binary_id = b.id
+		WHERE `+filter+`
+		  AND (
+			`+rerunPredicate+`
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
+		  )`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending inspect_media binaries: %w", err)
+	}
+	return count, nil
 }
 
 func normalizeAdminReleaseSort(sort string) string {

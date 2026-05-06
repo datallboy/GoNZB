@@ -541,25 +541,43 @@ Principles:
 
 Candidate stats:
 
-- [ ] pending media inspection count
-- [ ] pending release candidate families count
+- [x] pending media inspection count
+- [x] pending release candidate families count
 - [ ] unreleased eligible binaries or a better-defined release backlog count
 - [ ] optional enrich backlog counts if they prove useful operationally
 
 Tasks:
 
-- [ ] define which backlog stats are worth surfacing and what each one means operationally
-- [ ] add a shared cached stats model and API shape that mirrors the persisted `unassembled_headers` snapshot pattern
-- [ ] add a dashboard refresh action that refreshes all configured cached stats in one standalone request
-- [ ] keep the refresh path independent from assemble, release, inspect, and enrich stage hot paths
-- [ ] persist snapshot timestamps and partial-failure status so the dashboard can show stale vs fresh data clearly
-- [ ] document which stats are exact counts and which are approximations if any expensive count needs a cheaper proxy later
+- [x] define which backlog stats are worth surfacing and what each one means operationally
+- [x] add a shared cached stats model and API shape that mirrors the persisted `unassembled_headers` snapshot pattern
+- [x] add a dashboard refresh action that refreshes all configured cached stats in one standalone request
+- [x] keep the refresh path independent from assemble, release, inspect, and enrich stage hot paths
+- [x] persist snapshot timestamps and partial-failure status so the dashboard can show stale vs fresh data clearly
+- [x] document which stats are exact counts and which are approximations if any expensive count needs a cheaper proxy later
 
 Acceptance criteria:
 
 - dashboard backlog stats load from cached persisted values by default
 - operators can refresh all supported stats explicitly without tying up stage runs
 - no stage command regains blocking count queries as a side effect of the dashboard expansion
+
+Workstream 13 sign-off:
+
+- complete on `2026-05-06`
+- the dashboard stats surface was expanded from a single `unassembled_headers` snapshot into a shared cached model backed by `indexer_dashboard_stats`
+- the current shipped stats are all exact counts:
+  - `unassembled_headers`: article headers still waiting for assemble processing
+  - `pending_media_inspection_binaries`: binaries that `inspect_media` would claim if it ran now, using the same candidate predicates as the stage itself
+  - `pending_release_candidate_families`: dirty release families still waiting for release processing
+- the refresh path now runs as one explicit standalone action through `/api/v1/admin/indexer/overview/stats/actions/refresh`, while normal dashboard loads read only persisted cached snapshots
+- cached rows now persist:
+  - last successful snapshot time
+  - last refresh attempt time
+  - last error text
+- partial refresh failures no longer break the whole dashboard view; the UI can show a stale last-good value alongside the failed refresh attempt metadata for that stat
+- focused Go tests passed for controller, store, and runtime wiring packages
+- the new PostgreSQL-backed integration test `TestRefreshIndexerDashboardStatsPersistsCachedCounts` passed against the local Postgres environment
+- the admin dashboard UI now exposes one `Refresh All Stats` action and renders per-stat freshness/error notes without re-coupling those counts to assemble, release, inspect, or enrich stage execution
 
 ## Execution Order
 

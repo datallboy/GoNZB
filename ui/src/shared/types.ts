@@ -112,10 +112,21 @@ export type IndexerOverview = {
   failed_run_count: number
 }
 
-export type IndexerBacklogStats = {
-  unassembled_headers: number
-  queried_at?: string
+export type IndexerDashboardStat = {
+  key: string
+  label: string
+  description: string
+  value: number
   available: boolean
+  exact: boolean
+  updated_at?: string
+  refresh_attempted_at?: string
+  last_error?: string
+}
+
+export type IndexerDashboardStats = {
+  items: IndexerDashboardStat[]
+  count: number
 }
 
 export type AdminStage = {

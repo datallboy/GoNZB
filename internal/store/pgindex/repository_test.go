@@ -3194,6 +3194,134 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 }
 
+func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	before, err := store.RefreshIndexerDashboardStats(ctx)
+	if err != nil {
+		t.Fatalf("refresh baseline dashboard stats: %v", err)
+	}
+	beforeByKey := make(map[string]IndexerDashboardStat, len(before.Items))
+	for _, item := range before.Items {
+		beforeByKey[item.Key] = item
+	}
+
+	groupName := fmt.Sprintf("alt.test.dashboard.stats.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-dashboard-stats-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("dashboard-stats-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Dashboard Stats Test",
+		SourceTitle:             "Dashboard.Stats.Test",
+		SearchTitle:             "dashboard stats test",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  posterName,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::video",
+		FamilyKind:        "file_name",
+		BaseStem:          "dashboard.stats",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Dashboard Stats Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "dashboard.stats.sample.mkv",
+		FileName:          "dashboard.stats.sample.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "dashboard.stats.sample.mkv",
+		SizeBytes: 734003200,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_stage_dirty_families (provider_id, newsgroup_id, key_kind, family_key, updated_at)
+		VALUES ($1, $2, 'release_key', $3, NOW())`,
+		1, newsgroupID, baseKey,
+	); err != nil {
+		t.Fatalf("insert dirty family: %v", err)
+	}
+
+	after, err := store.RefreshIndexerDashboardStats(ctx)
+	if err != nil {
+		t.Fatalf("refresh updated dashboard stats: %v", err)
+	}
+	afterByKey := make(map[string]IndexerDashboardStat, len(after.Items))
+	for _, item := range after.Items {
+		afterByKey[item.Key] = item
+	}
+
+	mediaBefore := beforeByKey["pending_media_inspection_binaries"].Value
+	mediaAfter, ok := afterByKey["pending_media_inspection_binaries"]
+	if !ok {
+		t.Fatalf("missing pending_media_inspection_binaries stat")
+	}
+	if !mediaAfter.Available || mediaAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_media_inspection_binaries to be cached, got %#v", mediaAfter)
+	}
+	if mediaAfter.Value < mediaBefore+1 {
+		t.Fatalf("expected media backlog to increase by at least 1, before=%d after=%d", mediaBefore, mediaAfter.Value)
+	}
+
+	releaseBefore := beforeByKey["pending_release_candidate_families"].Value
+	releaseAfter, ok := afterByKey["pending_release_candidate_families"]
+	if !ok {
+		t.Fatalf("missing pending_release_candidate_families stat")
+	}
+	if !releaseAfter.Available || releaseAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_release_candidate_families to be cached, got %#v", releaseAfter)
+	}
+	if releaseAfter.Value < releaseBefore+1 {
+		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
+	}
+}
+
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
