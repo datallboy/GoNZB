@@ -352,14 +352,22 @@ Goal:
 
 Tasks:
 
-- [ ] batch `ReplaceReleaseFiles` inserts after the current delete and cross-release cleanup steps
-- [ ] preserve `release_files.binary_id` uniqueness and current file ordering semantics
-- [ ] validate release formation and NZB generation after the change
+- [x] batch `ReplaceReleaseFiles` inserts after the current delete and cross-release cleanup steps
+- [x] preserve `release_files.binary_id` uniqueness and current file ordering semantics
+- [x] validate release formation and NZB generation after the change
 
 Acceptance criteria:
 
 - `ReplaceReleaseFiles` no longer inserts one row at a time for normal release batches
 - release and NZB behavior remains unchanged for the same candidate set
+
+Workstream 9 sign-off:
+
+- complete on `2026-05-06`
+- `ReplaceReleaseFiles` now keeps the existing delete-and-cross-release-cleanup logic but inserts replacement `release_files` rows through one batched multi-row insert instead of one `INSERT ... RETURNING` per file
+- `release_files.binary_id` uniqueness and ordering behavior were preserved because the existing cross-release binary eviction step is unchanged and the inserted rows still carry the original `file_index` values used by downstream ordering queries
+- focused Go tests passed for pgindex plus the release stage package, and existing pgindex coverage for release-file-driven public/catalog behavior remained green after the batching change
+- a live `go run ./cmd/gonzb --config config.yaml indexer release --once` sanity run completed successfully after the patch
 
 ## Workstream 10. Assemble yEnc Recovery Guardrails
 

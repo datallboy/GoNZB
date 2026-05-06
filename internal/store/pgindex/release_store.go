@@ -1056,14 +1056,35 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		}
 	}
 
+	args := make([]any, 0, len(files)*10)
+	placeholders := make([]string, 0, len(files))
 	for _, f := range files {
 		var postedAt any
 		if f.PostedAt != nil {
 			postedAt = f.PostedAt.UTC()
 		}
+		base := len(args)
+		args = append(args,
+			releaseID,
+			nullIfZero(f.BinaryID),
+			strings.TrimSpace(f.FileName),
+			f.SizeBytes,
+			f.FileIndex,
+			f.IsPars,
+			strings.TrimSpace(f.Subject),
+			strings.TrimSpace(f.Poster),
+			postedAt,
+			time.Now().UTC(),
+		)
+		placeholders = append(placeholders, fmt.Sprintf(
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5,
+			base+6, base+7, base+8, base+9, base+10,
+		))
+	}
 
-		var releaseFileID int64
-		if err := tx.QueryRowContext(ctx, `
+	if len(placeholders) > 0 {
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO release_files (
 				release_id,
 				binary_id,
@@ -1076,19 +1097,10 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 				posted_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-			RETURNING id`,
-			releaseID,
-			nullIfZero(f.BinaryID),
-			strings.TrimSpace(f.FileName),
-			f.SizeBytes,
-			f.FileIndex,
-			f.IsPars,
-			strings.TrimSpace(f.Subject),
-			strings.TrimSpace(f.Poster),
-			postedAt,
-		).Scan(&releaseFileID); err != nil {
-			return fmt.Errorf("insert release file %q for %s: %w", f.FileName, releaseID, err)
+			VALUES `+strings.Join(placeholders, ","),
+			args...,
+		); err != nil {
+			return fmt.Errorf("insert release files for %s: %w", releaseID, err)
 		}
 	}
 
