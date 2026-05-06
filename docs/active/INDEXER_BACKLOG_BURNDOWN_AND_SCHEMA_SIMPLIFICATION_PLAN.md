@@ -273,9 +273,23 @@ Workstream 6 sign-off:
 - observed results:
   - `20,000`: about `10.11s`, about `1,978` headers/sec, `candidate_selection_duration_ms=7,715`, `header_match_duration_ms=5,609`
   - `25,000`: about `11.64s`, about `2,148` headers/sec, `candidate_selection_duration_ms=8,551`, `header_match_duration_ms=6,910`
-  - `50,000`: about `17.55s`, about `2,849` headers/sec, `candidate_selection_duration_ms=11,881`, `header_match_duration_ms=12,607`
+- `50,000`: about `17.55s`, about `2,849` headers/sec, `candidate_selection_duration_ms=11,881`, `header_match_duration_ms=12,607`
 - none of the measured runs showed yEnc recovery churn, lease instability, or claim/lock regressions during the test window
 - the local persisted runtime setting was updated to keep `assemble.batch_size=50000` because it delivered the best measured throughput while remaining well below the current `5 minute` claim lease in this environment
+
+Workstream 6 follow-up tuning note on `2026-05-06`:
+
+- a broader live sweep was run with `3` manual `assemble --once` runs per setting and averages taken from persisted stage metrics
+- tested settings and averages:
+  - `25,000 / 4 workers`: about `11.11s`, about `2,252` headers/sec, `candidate_selection_duration_ms=8,615`, `header_match_duration_ms=5,570`
+  - `50,000 / 4 workers`: about `18.20s`, about `2,756` headers/sec, `candidate_selection_duration_ms=12,318`, `header_match_duration_ms=12,919`
+  - `50,000 / 6 workers`: about `18.42s`, about `2,716` headers/sec, `candidate_selection_duration_ms=12,884`, `header_match_duration_ms=18,126`
+  - `50,000 / 8 workers`: about `18.16s`, about `2,755` headers/sec, `candidate_selection_duration_ms=12,782`, `header_match_duration_ms=23,924`
+  - `60,000 / 4 workers`: about `21.59s`, about `2,779` headers/sec, `candidate_selection_duration_ms=14,004`, `header_match_duration_ms=18,425`
+  - `65,000 / 4 workers`: about `22.52s`, about `2,887` headers/sec, `candidate_selection_duration_ms=14,532`, `header_match_duration_ms=18,288`
+- `75,000 / 6 workers` failed immediately with `extended protocol limited to 65535 parameters`, confirming that the current claim/hydration path still has a remaining parameter ceiling above the `65,000` range
+- in this local environment, `65,000 / 4 workers` produced the best average throughput of the tested settings, while pushing concurrency above `4` at `50,000` did not improve throughput and substantially increased aggregate match/upsert worker time
+- the local runtime setting was updated to keep `assemble.batch_size=65000` and `assemble.concurrency=4` after the sweep
 
 ## Workstream 7. Inspection Artifact Replace Batching
 
