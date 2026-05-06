@@ -416,7 +416,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	}
 
 	candidateSelector := `
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.release_family_key = $2`
@@ -427,11 +427,11 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	switch keyKind {
 	case "base_stem":
 		candidateSelector = `
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.expected_file_count > 1
-			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -441,11 +441,11 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	default:
 		candidateSelector += `
 			UNION
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.expected_file_count > 1
-			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -490,7 +490,8 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status
-		FROM candidate_binaries b
+		FROM candidate_binaries cb
+		JOIN binaries b ON b.id = cb.id
 		LEFT JOIN posters p ON p.id = b.poster_id`
 	args := []any{providerID, releaseFamilyKey}
 	if newsgroupID > 0 {
