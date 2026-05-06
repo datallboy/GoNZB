@@ -326,15 +326,23 @@ Scope:
 
 Tasks:
 
-- [ ] batch replace inserts for TMDB, predb, and TVDB release match rows
-- [ ] batch predb entry upserts where possible while preserving normalized-title conflict semantics
-- [ ] preserve chosen-match flags, payload JSON, and fallback normalization behavior
-- [ ] validate enrichment stages against the live dev database after the change
+- [x] batch replace inserts for TMDB, predb, and TVDB release match rows
+- [x] batch predb entry upserts where possible while preserving normalized-title conflict semantics
+- [x] preserve chosen-match flags, payload JSON, and fallback normalization behavior
+- [x] validate enrichment stages against the live dev database after the change
 
 Acceptance criteria:
 
 - enrichment replace paths no longer issue one insert per row in the common case
 - release enrichment state remains correct for duplicate and overlapping match sets
+
+Workstream 8 sign-off:
+
+- complete on `2026-05-06`
+- `ReplaceReleaseTMDBMatches`, `ReplaceReleasePredbMatches`, `UpsertPredbEntries`, and `ReplaceReleaseTVDBMatches` now batch their common-case insert/upsert work instead of issuing one write per row
+- the predb path keeps the prior normalized-title conflict semantics by deduping repeated normalized titles within one batch using last-write-wins behavior before issuing the multi-row upsert
+- chosen flags, payload JSON, and normalized-title fallback behavior were preserved and covered by a new pgindex integration test that exercises TMDB, TVDB, predb entry, and release-predb-match persistence together
+- focused Go tests passed for pgindex plus the predb and tmdb enrich packages, the new Postgres-backed integration test passed, and live `go run ./cmd/gonzb --config config.yaml indexer enrich predb --once` plus `... enrich tmdb --once` sanity runs completed successfully after temporarily enabling those stages in the local runtime settings
 
 ## Workstream 9. Release File Insert Batching
 
