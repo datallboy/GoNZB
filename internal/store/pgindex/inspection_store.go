@@ -12,6 +12,50 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/releasetitle"
 )
 
+const inspectionReplaceInsertBatchSize = 200
+
+func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix string, rows [][]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	for start := 0; start < len(rows); start += inspectionReplaceInsertBatchSize {
+		end := start + inspectionReplaceInsertBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[start:end]
+
+		var (
+			query strings.Builder
+			args  []any
+		)
+		query.WriteString(insertPrefix)
+		args = make([]any, 0, len(batch)*len(batch[0]))
+
+		for i, row := range batch {
+			if i > 0 {
+				query.WriteByte(',')
+			}
+			query.WriteByte('(')
+			for j, value := range row {
+				if j > 0 {
+					query.WriteByte(',')
+				}
+				args = append(args, value)
+				query.WriteString(fmt.Sprintf("$%d", len(args)))
+			}
+			query.WriteByte(')')
+		}
+
+		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]ReleaseTitleCandidate, error) {
 	if len(binaryIDs) == 0 {
 		return nil, nil
@@ -1595,6 +1639,7 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
 		if err != nil {
@@ -1604,7 +1649,23 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 		if strings.TrimSpace(row.ReleaseID) != "" {
 			releaseID = strings.TrimSpace(row.ReleaseID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.ArtifactRole),
+			strings.TrimSpace(row.ArtifactName),
+			strings.TrimSpace(row.ArtifactPath),
+			row.BytesTotal,
+			strings.TrimSpace(row.MIMEType),
+			strings.TrimSpace(row.Signature),
+			strings.TrimSpace(row.SourceKind),
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_inspection_artifacts (
 				binary_id,
 				release_id,
@@ -1619,21 +1680,8 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 				metadata_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
-			binaryID,
-			releaseID,
-			stageName,
-			strings.TrimSpace(row.ArtifactRole),
-			strings.TrimSpace(row.ArtifactName),
-			strings.TrimSpace(row.ArtifactPath),
-			row.BytesTotal,
-			strings.TrimSpace(row.MIMEType),
-			strings.TrimSpace(row.Signature),
-			strings.TrimSpace(row.SourceKind),
-			string(metadataJSON),
-		); err != nil {
-			return fmt.Errorf("insert inspection artifact %s/%d: %w", stageName, binaryID, err)
-		}
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1657,6 +1705,7 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
 		if err != nil {
@@ -1666,7 +1715,23 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		if strings.TrimSpace(row.ReleaseID) != "" {
 			releaseID = strings.TrimSpace(row.ReleaseID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.EntryName),
+			row.IsDir,
+			row.UncompressedBytes,
+			row.CompressedBytes,
+			row.Encrypted,
+			strings.TrimSpace(row.Comment),
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Signature),
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_archive_entries (
 				binary_id,
 				release_id,
@@ -1681,21 +1746,8 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 				metadata_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())`,
-			binaryID,
-			releaseID,
-			strings.TrimSpace(row.EntryName),
-			row.IsDir,
-			row.UncompressedBytes,
-			row.CompressedBytes,
-			row.Encrypted,
-			strings.TrimSpace(row.Comment),
-			strings.TrimSpace(row.MediaType),
-			strings.TrimSpace(row.Signature),
-			string(metadataJSON),
-		); err != nil {
-			return fmt.Errorf("insert archive entry %d/%s: %w", binaryID, row.EntryName, err)
-		}
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert archive entries %d: %w", binaryID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1719,6 +1771,7 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
 		if err != nil {
@@ -1728,7 +1781,28 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		if strings.TrimSpace(row.ReleaseID) != "" {
 			releaseID = strings.TrimSpace(row.ReleaseID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			row.StreamIndex,
+			strings.TrimSpace(row.StreamType),
+			strings.TrimSpace(row.CodecName),
+			strings.TrimSpace(row.CodecLongName),
+			strings.TrimSpace(row.Profile),
+			row.Width,
+			row.Height,
+			row.Channels,
+			strings.TrimSpace(row.Language),
+			row.DurationSeconds,
+			row.BitRate,
+			row.DefaultDisposition,
+			row.ForcedDisposition,
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_media_streams (
 				binary_id,
 				release_id,
@@ -1748,26 +1822,8 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 				metadata_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())`,
-			binaryID,
-			releaseID,
-			row.StreamIndex,
-			strings.TrimSpace(row.StreamType),
-			strings.TrimSpace(row.CodecName),
-			strings.TrimSpace(row.CodecLongName),
-			strings.TrimSpace(row.Profile),
-			row.Width,
-			row.Height,
-			row.Channels,
-			strings.TrimSpace(row.Language),
-			row.DurationSeconds,
-			row.BitRate,
-			row.DefaultDisposition,
-			row.ForcedDisposition,
-			string(metadataJSON),
-		); err != nil {
-			return fmt.Errorf("insert media stream %d/%d: %w", binaryID, row.StreamIndex, err)
-		}
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert media streams %d: %w", binaryID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1800,6 +1856,7 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 		return fmt.Errorf("delete text evidence %s/%d: %w", stageName, binaryID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		tokensJSON, err := json.Marshal(sanitizeStringSlice(row.Tokens))
 		if err != nil {
@@ -1813,7 +1870,19 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 		if strings.TrimSpace(row.ReleaseID) != "" {
 			releaseID = strings.TrimSpace(row.ReleaseID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.EvidenceKind),
+			row.TextValue,
+			string(tokensJSON),
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_text_evidence (
 				binary_id,
 				release_id,
@@ -1824,17 +1893,8 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 				metadata_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
-			binaryID,
-			releaseID,
-			stageName,
-			strings.TrimSpace(row.EvidenceKind),
-			row.TextValue,
-			string(tokensJSON),
-			string(metadataJSON),
-		); err != nil {
-			return fmt.Errorf("insert text evidence %s/%d: %w", stageName, binaryID, err)
-		}
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert text evidence %s/%d: %w", stageName, binaryID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1858,6 +1918,7 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
 		if err != nil {
@@ -1867,7 +1928,21 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 		if strings.TrimSpace(row.ReleaseID) != "" {
 			releaseID = strings.TrimSpace(row.ReleaseID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			strings.TrimSpace(row.SetName),
+			strings.TrimSpace(row.BaseName),
+			row.IsVolume,
+			row.VolumeNumber,
+			row.RecoveryBlocks,
+			row.SignatureOK,
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_sets (
 				binary_id,
 				release_id,
@@ -1880,19 +1955,8 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 				metadata_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
-			binaryID,
-			releaseID,
-			strings.TrimSpace(row.SetName),
-			strings.TrimSpace(row.BaseName),
-			row.IsVolume,
-			row.VolumeNumber,
-			row.RecoveryBlocks,
-			row.SignatureOK,
-			string(metadataJSON),
-		); err != nil {
-			return fmt.Errorf("insert par2 set %d/%s: %w", binaryID, row.SetName, err)
-		}
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert par2 sets %d: %w", binaryID, err)
 	}
 
 	if err := tx.Commit(); err != nil {

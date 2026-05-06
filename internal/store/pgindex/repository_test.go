@@ -707,6 +707,142 @@ func TestUpsertBinaryMirrorsReleaseFamilyKeyIntoLegacyReleaseKey(t *testing.T) {
 	}
 }
 
+func TestReplaceBinaryInspectionPersistenceHelpersBatchAndClearRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.replace.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_inspection_artifacts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup inspection artifacts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_archive_entries WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup archive entries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_media_streams WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup media streams: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_text_evidence WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup text evidence: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_par2_sets WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup par2 sets: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "inspect-replace-source",
+		ReleaseFamilyKey:  "inspect-replace-family",
+		BinaryKey:         fmt.Sprintf("inspect-replace-%d", time.Now().UnixNano()),
+		BinaryName:        "inspect.replace.sample.bin",
+		FileName:          "inspect.replace.sample.bin",
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.99,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, []BinaryInspectionArtifactRecord{
+		{ReleaseID: "", ArtifactRole: "primary", ArtifactName: "sample.7z", ArtifactPath: "/tmp/sample.7z", BytesTotal: 100, MIMEType: "application/x-7z-compressed", Signature: "7z", SourceKind: "archive", Metadata: map[string]any{"kind": "archive"}},
+		{ReleaseID: "", ArtifactRole: "secondary", ArtifactName: "sample.nfo", ArtifactPath: "/tmp/sample.nfo", BytesTotal: 50, MIMEType: "text/plain", Signature: "nfo", SourceKind: "sidecar", Metadata: map[string]any{"kind": "text"}},
+	}); err != nil {
+		t.Fatalf("replace inspection artifacts: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{
+		{EntryName: "video.mkv", IsDir: false, UncompressedBytes: 1000, CompressedBytes: 800, Encrypted: false, Comment: "main", MediaType: "video", Signature: "mkv", Metadata: map[string]any{"track": 1}},
+		{EntryName: "proof/", IsDir: true, UncompressedBytes: 0, CompressedBytes: 0, Encrypted: false, Comment: "", MediaType: "", Signature: "", Metadata: map[string]any{"dir": true}},
+	}); err != nil {
+		t.Fatalf("replace archive entries: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{
+		{StreamIndex: 0, StreamType: "video", CodecName: "h264", CodecLongName: "H.264", Profile: "High", Width: 1920, Height: 1080, Channels: 0, Language: "eng", DurationSeconds: 10.5, BitRate: 1000, DefaultDisposition: true, ForcedDisposition: false, Metadata: map[string]any{"title": "video"}},
+		{StreamIndex: 1, StreamType: "audio", CodecName: "aac", CodecLongName: "AAC", Profile: "LC", Width: 0, Height: 0, Channels: 2, Language: "eng", DurationSeconds: 10.5, BitRate: 192000, DefaultDisposition: true, ForcedDisposition: false, Metadata: map[string]any{"title": "audio"}},
+	}); err != nil {
+		t.Fatalf("replace media streams: %v", err)
+	}
+	if err := store.ReplaceBinaryTextEvidence(ctx, "inspect_nfo", binaryID, []BinaryTextEvidenceRecord{
+		{EvidenceKind: "nfo_text", TextValue: "Example Release", Tokens: []string{"Example", "Release", "Example"}, Metadata: map[string]any{"source": "nfo"}},
+		{EvidenceKind: "tag", TextValue: "x264", Tokens: []string{"x264"}, Metadata: map[string]any{"source": "scan"}},
+	}); err != nil {
+		t.Fatalf("replace text evidence: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{
+		{SetName: "sample.par2", BaseName: "sample", IsVolume: false, VolumeNumber: 0, RecoveryBlocks: 0, SignatureOK: true, Metadata: map[string]any{"kind": "index"}},
+		{SetName: "sample.vol00+01.par2", BaseName: "sample", IsVolume: true, VolumeNumber: 1, RecoveryBlocks: 1, SignatureOK: true, Metadata: map[string]any{"kind": "volume"}},
+	}); err != nil {
+		t.Fatalf("replace par2 sets: %v", err)
+	}
+
+	assertTableCount := func(table string, want int) {
+		t.Helper()
+		var got int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE binary_id = $1`, binaryID).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("expected %d rows in %s for binary %d, got %d", want, table, binaryID, got)
+		}
+	}
+
+	assertTableCount("binary_inspection_artifacts", 2)
+	assertTableCount("binary_archive_entries", 2)
+	assertTableCount("binary_media_streams", 2)
+	assertTableCount("binary_text_evidence", 2)
+	assertTableCount("binary_par2_sets", 2)
+
+	var tokensJSON []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT tokens_json
+		FROM binary_text_evidence
+		WHERE binary_id = $1 AND stage_name = 'inspect_nfo' AND evidence_kind = 'nfo_text'`,
+		binaryID,
+	).Scan(&tokensJSON); err != nil {
+		t.Fatalf("query text evidence tokens: %v", err)
+	}
+	if got := decodeJSONStringSlice(tokensJSON); len(got) != 2 || got[0] != "Example" || got[1] != "Release" {
+		t.Fatalf("expected deduped token slice, got %#v", got)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, nil); err != nil {
+		t.Fatalf("clear inspection artifacts: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear archive entries: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear media streams: %v", err)
+	}
+	if err := store.ReplaceBinaryTextEvidence(ctx, "inspect_nfo", binaryID, nil); err != nil {
+		t.Fatalf("clear text evidence: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear par2 sets: %v", err)
+	}
+
+	assertTableCount("binary_inspection_artifacts", 0)
+	assertTableCount("binary_archive_entries", 0)
+	assertTableCount("binary_media_streams", 0)
+	assertTableCount("binary_text_evidence", 0)
+	assertTableCount("binary_par2_sets", 0)
+}
+
 func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
