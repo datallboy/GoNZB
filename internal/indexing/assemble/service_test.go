@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
+	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -331,10 +332,89 @@ func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsYEncRecoveryDuringPersistedBackoff(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 13, 0, 0, 0, time.UTC)
+	retryAfter := time.Now().UTC().Add(2 * time.Hour)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:                     61,
+				ProviderID:             1,
+				NewsgroupID:            2,
+				NewsgroupName:          "alt.binaries.test",
+				ArticleNumber:          5001,
+				MessageID:              "<opaque-backoff@test.example>",
+				Subject:                "ABCDEF1234567890opaquebackoff",
+				Poster:                 `Poster <poster@example.com>`,
+				DateUTC:                &postedAt,
+				Bytes:                  1024,
+				Lines:                  100,
+				Xref:                   `alt.binaries.test:5001`,
+				YEncRecoveryRetryAfter: &retryAfter,
+			},
+		},
+	}
+	matcher := &fakeMatcher{dynamic: true}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<opaque-backoff@test.example>": "=ybegin part=1 total=10 line=128 size=1234 name=opaque.backoff.file\r\n",
+		},
+	}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("expected no yEnc fetch during persisted backoff, got %d calls", fetcher.calls)
+	}
+	if got := intValue(metrics["recovery_skipped_by_backoff"]); got != 1 {
+		t.Fatalf("expected 1 recovery skip due to backoff, got %d", got)
+	}
+}
+
+func TestRunOncePersistsYEncNotFoundBackoff(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 13, 30, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:            71,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 6001,
+				MessageID:     "<opaque-notfound@test.example>",
+				Subject:       "ABCDEF1234567890opaquenotfound",
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         1024,
+				Lines:         100,
+				Xref:          `alt.binaries.test:6001`,
+			},
+		},
+	}
+	matcher := &fakeMatcher{dynamic: true}
+	fetcher := &errorArticleFetcher{err: nntp.ErrArticleNotFound}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if len(repo.yencNotFoundRecorded) != 1 || repo.yencNotFoundRecorded[0] != 71 {
+		t.Fatalf("expected yEnc not-found backoff to be recorded for header 71, got %#v", repo.yencNotFoundRecorded)
+	}
+	if got := intValue(metrics["recovery_fetch_failures"]); got != 1 {
+		t.Fatalf("expected 1 recovery fetch failure, got %d", got)
+	}
+}
+
 type fakeRepository struct {
-	headers          []pgindex.AssemblyCandidate
-	upsertedBinaries []pgindex.BinaryRecord
-	upsertedParts    []pgindex.BinaryPartRecord
+	headers              []pgindex.AssemblyCandidate
+	upsertedBinaries     []pgindex.BinaryRecord
+	upsertedParts        []pgindex.BinaryPartRecord
+	yencNotFoundRecorded []int64
 }
 
 func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
@@ -364,6 +444,11 @@ func (f *fakeRepository) RefreshBinaryStats(context.Context, int64) error {
 }
 
 func (f *fakeRepository) RefreshBinaryStatsBatch(context.Context, []int64) error {
+	return nil
+}
+
+func (f *fakeRepository) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {
+	f.yencNotFoundRecorded = append(f.yencNotFoundRecorded, articleHeaderID)
 	return nil
 }
 
@@ -424,6 +509,14 @@ func (f fakeArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (
 type countingArticleFetcher struct {
 	payloads map[string]string
 	calls    int
+}
+
+type errorArticleFetcher struct {
+	err error
+}
+
+func (f *errorArticleFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+	return nil, f.err
 }
 
 func (f *countingArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (io.Reader, error) {
