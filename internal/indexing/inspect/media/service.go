@@ -233,6 +233,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	artifactRows := make([]pgindex.BinaryInspectionArtifactRecord, 0)
 	streamRows := make([]pgindex.BinaryMediaStreamRecord, 0)
 
+	strongArchiveHeuristics := archiveBacked && shouldSkipArchiveProbe(isVideo, isAudio, resolution, videoCodec, audioCodec)
+	if strongArchiveHeuristics {
+		probeMode = "heuristic_archive_entry"
+	}
+
 	if (isVideo || isAudio) && s.fetcher != nil && s.runner != nil && !archiveBacked {
 		materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
 		if err == nil {
@@ -327,7 +332,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ffprobeError = err.Error()
 		}
 	}
-	if (isVideo || isAudio) && archiveBacked && s.fetcher != nil {
+	if (isVideo || isAudio) && archiveBacked && s.fetcher != nil && !strongArchiveHeuristics {
 		extractedPath := filepath.Join(workspace.Dir, filepath.Base(mediaEntry))
 		archiveMedia, err := inspectpkg.MaterializeArchiveMediaToWorkspace(ctx, s.repo, s.fetcher, candidate, mediaEntry, workspace.Dir, s.opts, s.log)
 		if err == nil {
@@ -507,6 +512,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 
 func normalizeMatch(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func shouldSkipArchiveProbe(isVideo, isAudio bool, resolution, videoCodec, audioCodec string) bool {
+	if isAudio && audioCodec != "" {
+		return true
+	}
+	if isVideo && resolution != "" && (videoCodec != "" || audioCodec != "") {
+		return true
+	}
+	return false
 }
 
 func mediaTier(score float64) string {

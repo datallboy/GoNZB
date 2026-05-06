@@ -82,6 +82,57 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsArchiveProbeWhenArchiveEntryAlreadyHasStrongMediaSignals(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:           77,
+			ReleaseID:          "rel-archive-media",
+			ReleaseTitle:       "Obfuscated.Release",
+			FileName:           "archive.7z.001",
+			SourceUpdatedAt:    &now,
+			TotalBytes:         1024,
+			ArchiveSummaryJSON: []byte(`{"archive_entries":["Example.Movie.2026.1080p.BluRay.x265.DTS-HD.mkv"]}`),
+		}},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		nil,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.mediaStreams) != 0 {
+		t.Fatalf("expected no media streams when archive probe is skipped, got %d", len(repo.mediaStreams))
+	}
+	if len(repo.artifacts) != 0 {
+		t.Fatalf("expected no artifact rows when archive probe is skipped, got %+v", repo.artifacts)
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
+	}
+
+	update := repo.releaseUpdates[0]
+	if update.PrimaryResolution != "1080p" || update.PrimaryVideoCodec != "x265" || update.PrimaryAudioCodec != "dts-hd" {
+		t.Fatalf("unexpected heuristic archive media facts, got %+v", update)
+	}
+	if intValueMedia(update.VideoCount) != 1 || intValueMedia(update.AudioCount) != 0 {
+		t.Fatalf("unexpected heuristic media counts, got %+v", update)
+	}
+	if len(repo.completed) != 1 || repo.completed[0].Summary["probe_mode"] != "heuristic_archive_entry" {
+		t.Fatalf("expected heuristic_archive_entry summary, got %+v", repo.completed)
+	}
+	if _, ok := repo.completed[0].Summary["probe_skip_reason"]; ok {
+		t.Fatalf("expected no probe_skip_reason on heuristic archive completion, got %+v", repo.completed[0].Summary)
+	}
+}
+
 type fakeMediaRepository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile

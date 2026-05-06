@@ -411,6 +411,120 @@ Workstream 10 sign-off:
 - focused assemble and store tests cover subject-name skips, per-batch cap behavior, persisted backoff skips, and not-found backoff recording
 - recent post-restart live `20,000`-header assemble runs returned to the fast range with `0` recovery attempts in the normal case, while the earlier pathological `33 minute` run was explained by `12,924` failed recovery fetches
 
+## Workstream 11. Inspect Media Throughput And Backlog Profiling
+
+Goal:
+
+- determine whether the current long-tail backlog bottleneck is media inspection reservation/query work, artifact materialization, external probe tooling, or conservative runtime settings
+
+Why this is next:
+
+- on `2026-05-06`, live stage metrics showed `unassembled_headers=0` and recent `assemble` runs averaging well under a second when little residual work remained
+- recent `release` runs stayed sub-second to low-second on the same environment
+- the last five completed `inspect_media` runs averaged about `1,705s`, making media inspection the clearest remaining backlog drain
+
+Tasks:
+
+- [x] capture baseline live `inspect_media` timing and per-run metrics for at least three runs at the current `batch_size` and `concurrency`
+- [x] profile where wall time is spent across:
+  - candidate reservation
+  - artifact materialization
+  - media probe execution
+  - persistence writes
+- [x] verify whether there are repeated per-binary reads or re-materialization steps that can be cached or skipped
+- [ ] test higher `inspect_media` concurrency and, if safe, larger batch sizes with multiple runs per setting
+- [x] determine whether the practical bottleneck is database-bound, tool/IO-bound, or CPU-bound and document the conclusion
+- [x] implement the highest-signal improvement if it is low-risk and clearly supported by the measurements
+
+Acceptance criteria:
+
+- the dominant `inspect_media` bottleneck is identified with live measurements
+- at least one tuning or code change is either implemented or explicitly ruled out with evidence
+- the plan records the chosen next operating point for `inspect_media`
+
+Workstream 11 sign-off:
+
+- partial completion on `2026-05-06`
+- baseline live measurements identified the dominant bottleneck as archive-backed media probing, not candidate reservation or persistence writes
+- completed `inspect_media` history showed `ffprobe_archive` dominating volume at `3,195` rows, with about `112MB` average materialized bytes per binary and about `35.5s` average per-binary elapsed time
+- the hot cost came from materializing large archive prefixes and extracted member prefixes before `ffprobe`, while the batched DB claim path itself remained lightweight
+- a targeted fast path was implemented for archive-backed media when the archive entry name already exposes strong media signals:
+  - keep the existing archive summary and filename heuristics
+  - skip `7z` extraction and `ffprobe` when the archive entry already yields resolution plus codec for video, or codec for audio
+  - persist completion as `probe_mode=heuristic_archive_entry`
+- focused Go tests passed for media inspection plus related inspect/store packages
+- live validation with the existing `inspect_media` runtime setting of `batch_size=100` and `concurrency=2` improved one completed run from about `1,569.48s` before the patch to about `75.22s` after the patch
+- the post-patch run completed `95` binaries via `heuristic_archive_entry` and only `5` via heavy `ffprobe_archive`, confirming that repeated archive materialization was the main backlog drain
+- next tuning step remains open:
+  - measure larger `inspect_media` concurrency and batch sizes now that the worst archive probe cost is mostly out of the hot path
+  - if more throughput is needed later, consider loosening the heuristic fast path further for archive entry names that expose codec but not explicit resolution, or introducing a lighter partial-container probe strategy for the remaining heavy cases
+
+## Workstream 12. Release Candidate Listing And `list_binaries` Query Optimization
+
+Goal:
+
+- profile and, if warranted, optimize the remaining dominant release-stage query work around candidate-family binary listing
+
+Why this is next:
+
+- recent live `release` runs are healthy overall, but a representative run still spent most of its time in `list_binaries_duration_ms`
+- current release metrics also show many `fragment_only_families`, so we need to separate query cost from eligibility/data-shape effects before making broader schema changes
+
+Tasks:
+
+- [ ] capture baseline live `release --once` metrics across multiple non-empty runs
+- [ ] identify the current SQL path behind `list_binaries_duration_ms`
+- [ ] run `EXPLAIN (ANALYZE, BUFFERS)` against the live dev database for the dominant release listing query
+- [ ] check for:
+  - unnecessary row width
+  - looped query patterns
+  - poor join order
+  - missing or low-value indexes
+  - opportunities to claim/select IDs first and hydrate later
+- [ ] determine whether `fragment_only_families` is mainly a release throughput issue or an input-quality / eligibility issue
+- [ ] implement the best supported optimization if the query is still materially expensive
+
+Acceptance criteria:
+
+- the dominant release-stage query path is measured and documented
+- any meaningful SQL optimization opportunity is either implemented or explicitly ruled out with evidence
+- the plan clearly states whether release is still a backlog bottleneck after profiling
+
+## Workstream 13. Standalone Cached Dashboard Stats Expansion
+
+Goal:
+
+- expand operator-visible backlog stats without coupling expensive counts to stage hot paths or normal dashboard loads
+
+Principles:
+
+- expensive stats must remain standalone
+- stage runs must not block on dashboard/operator count queries
+- dashboard reads should prefer persisted cached snapshots
+- manual refresh should fan out through one explicit operator action rather than being tied to unrelated stage execution
+
+Candidate stats:
+
+- [ ] pending media inspection count
+- [ ] pending release candidate families count
+- [ ] unreleased eligible binaries or a better-defined release backlog count
+- [ ] optional enrich backlog counts if they prove useful operationally
+
+Tasks:
+
+- [ ] define which backlog stats are worth surfacing and what each one means operationally
+- [ ] add a shared cached stats model and API shape that mirrors the persisted `unassembled_headers` snapshot pattern
+- [ ] add a dashboard refresh action that refreshes all configured cached stats in one standalone request
+- [ ] keep the refresh path independent from assemble, release, inspect, and enrich stage hot paths
+- [ ] persist snapshot timestamps and partial-failure status so the dashboard can show stale vs fresh data clearly
+- [ ] document which stats are exact counts and which are approximations if any expensive count needs a cheaper proxy later
+
+Acceptance criteria:
+
+- dashboard backlog stats load from cached persisted values by default
+- operators can refresh all supported stats explicitly without tying up stage runs
+- no stage command regains blocking count queries as a side effect of the dashboard expansion
+
 ## Execution Order
 
 1. Workstream 1: assemble hot-path payload reduction
@@ -422,6 +536,10 @@ Workstream 10 sign-off:
 7. Workstream 7: inspection artifact replace batching
 8. Workstream 8: enrichment match and entry batching
 9. Workstream 9: release file insert batching
+10. Workstream 10: assemble yEnc recovery guardrails
+11. Workstream 11: inspect media throughput and backlog profiling
+12. Workstream 12: release candidate listing and `list_binaries` query optimization
+13. Workstream 13: standalone cached dashboard stats expansion
 
 ## Validation
 
