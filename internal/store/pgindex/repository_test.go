@@ -3,6 +3,7 @@ package pgindex
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -841,6 +842,122 @@ func TestReplaceBinaryInspectionPersistenceHelpersBatchAndClearRows(t *testing.T
 	assertTableCount("binary_media_streams", 0)
 	assertTableCount("binary_text_evidence", 0)
 	assertTableCount("binary_par2_sets", 0)
+}
+
+func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID := seedTestRelease(t, store, "enrichment-batch")
+	normalizedA := normalizePredbTitle("Scene.Release.2026-GRP")
+	normalizedB := normalizePredbTitle("Another.Release.2026-GRP")
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_tmdb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup tmdb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_tvdb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup tvdb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_predb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup predb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM predb_entries WHERE normalized_title IN ($1,$2)`, normalizedA, normalizedB); err != nil {
+			t.Fatalf("cleanup predb entries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if err := store.ReplaceReleaseTMDBMatches(ctx, releaseID, []ReleaseTMDBMatchRecord{
+		{TMDBID: 101, MediaType: "movie", Title: "Example Movie", OriginalTitle: "Original Movie", Year: 2026, Confidence: 0.91, Chosen: true, Payload: map[string]any{"provider": "tmdb"}},
+		{TMDBID: 102, MediaType: "movie", Title: "Backup Movie", OriginalTitle: "Backup Original", Year: 2025, Confidence: 0.55, Chosen: false, Payload: map[string]any{"provider": "tmdb"}},
+	}); err != nil {
+		t.Fatalf("replace tmdb matches: %v", err)
+	}
+
+	if err := store.ReplaceReleaseTVDBMatches(ctx, releaseID, []ReleaseTVDBMatchRecord{
+		{TVDBID: 201, MediaType: "tv", Title: "Example Show", OriginalTitle: "Example Show", Year: 2026, Confidence: 0.88, Chosen: true, Payload: map[string]any{"provider": "tvdb"}},
+		{TVDBID: 202, MediaType: "tv", Title: "Backup Show", OriginalTitle: "Backup Show", Year: 2024, Confidence: 0.42, Chosen: false, Payload: map[string]any{"provider": "tvdb"}},
+	}); err != nil {
+		t.Fatalf("replace tvdb matches: %v", err)
+	}
+
+	if err := store.UpsertPredbEntries(ctx, []PredbEntryRecord{
+		{Title: "Scene.Release.2026-GRP", Category: "TV", Source: "predb", ExternalID: 5001, Team: "GRP", Genre: "Drama", URL: "https://predb.example/a", SizeKB: 1024, FileCount: 12, Payload: map[string]any{"source": "initial"}},
+		{NormalizedTitle: normalizedA, Title: "Scene.Release.2026-GRP", Category: "", Source: "", ExternalID: 0, Team: "", Genre: "", URL: "", SizeKB: 0, FileCount: 0, Payload: map[string]any{}},
+	}); err != nil {
+		t.Fatalf("upsert predb entries: %v", err)
+	}
+
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, []ReleasePredbMatchRecord{
+		{Title: "Scene.Release.2026-GRP", Category: "TV", Source: "predb", ExternalID: 5001, Team: "GRP", Genre: "Drama", URL: "https://predb.example/a", SizeKB: 1024, FileCount: 12, Confidence: 0.77, Chosen: true, Payload: map[string]any{"kind": "scene"}},
+		{NormalizedTitle: normalizedB, Title: "Another.Release.2026-GRP", Category: "Movies", Source: "predb", ExternalID: 5002, Team: "GRP2", Genre: "Action", URL: "https://predb.example/b", SizeKB: 2048, FileCount: 20, Confidence: 0.44, Chosen: false, Payload: map[string]any{"kind": "backup"}},
+	}); err != nil {
+		t.Fatalf("replace predb matches: %v", err)
+	}
+
+	assertReleaseCount := func(table string, want int) {
+		t.Helper()
+		var got int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE release_id = $1`, releaseID).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("expected %d rows in %s for release %s, got %d", want, table, releaseID, got)
+		}
+	}
+
+	assertReleaseCount("release_tmdb_matches", 2)
+	assertReleaseCount("release_tvdb_matches", 2)
+	assertReleaseCount("release_predb_matches", 2)
+
+	var tmdbChosen bool
+	var tmdbPayload []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT chosen, payload_json
+		FROM release_tmdb_matches
+		WHERE release_id = $1 AND tmdb_id = 101`, releaseID,
+	).Scan(&tmdbChosen, &tmdbPayload); err != nil {
+		t.Fatalf("query tmdb match: %v", err)
+	}
+	var tmdbPayloadMap map[string]any
+	if err := json.Unmarshal(tmdbPayload, &tmdbPayloadMap); err != nil {
+		t.Fatalf("decode tmdb payload: %v", err)
+	}
+	if !tmdbChosen || tmdbPayloadMap["provider"] != "tmdb" {
+		t.Fatalf("expected chosen tmdb payload to be preserved, got chosen=%v payload=%s", tmdbChosen, string(tmdbPayload))
+	}
+
+	var category string
+	var source string
+	var fileCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT category, source, file_count
+		FROM predb_entries
+		WHERE normalized_title = $1`, normalizedA,
+	).Scan(&category, &source, &fileCount); err != nil {
+		t.Fatalf("query normalized predb entry: %v", err)
+	}
+	if category != "TV" || source != "predb" || fileCount != 12 {
+		t.Fatalf("expected predb fallback fields to be preserved, got category=%q source=%q file_count=%d", category, source, fileCount)
+	}
+
+	if err := store.ReplaceReleaseTMDBMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear tmdb matches: %v", err)
+	}
+	if err := store.ReplaceReleaseTVDBMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear tvdb matches: %v", err)
+	}
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear predb matches: %v", err)
+	}
+
+	assertReleaseCount("release_tmdb_matches", 0)
+	assertReleaseCount("release_tvdb_matches", 0)
+	assertReleaseCount("release_predb_matches", 0)
 }
 
 func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
