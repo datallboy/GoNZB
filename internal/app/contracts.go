@@ -141,6 +141,7 @@ type UsenetIndexStore interface {
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
