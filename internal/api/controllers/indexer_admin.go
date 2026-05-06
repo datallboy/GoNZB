@@ -28,26 +28,26 @@ func (ctrl *IndexerAdminController) GetOverview(c *echo.Context) error {
 	return c.JSON(http.StatusOK, overview)
 }
 
-func (ctrl *IndexerAdminController) GetBacklogStats(c *echo.Context) error {
+func (ctrl *IndexerAdminController) GetDashboardStats(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
 	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
-	stats, err := ctrl.Service.BacklogStats(c.Request().Context())
+	stats, err := ctrl.Service.DashboardStats(c.Request().Context())
 	if err != nil {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, stats)
 }
 
-func (ctrl *IndexerAdminController) RefreshBacklogStats(c *echo.Context) error {
+func (ctrl *IndexerAdminController) RefreshDashboardStats(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
 	}
 	setIndexerContractScope(c, indexerContractScopeInternalDebug)
 
-	stats, err := ctrl.Service.RefreshBacklogStats(c.Request().Context())
+	stats, err := ctrl.Service.RefreshDashboardStats(c.Request().Context())
 	if err != nil {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}

@@ -1,6 +1,6 @@
 import { apiRequest } from './http'
 import type {
-  IndexerBacklogStats,
+  IndexerDashboardStats,
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
@@ -17,12 +17,12 @@ export function getAdminOverview() {
   return apiRequest<IndexerOverview>('/api/v1/admin/indexer/overview')
 }
 
-export function getAdminBacklogStats() {
-  return apiRequest<IndexerBacklogStats>('/api/v1/admin/indexer/overview/backlog')
+export function getAdminDashboardStats() {
+  return apiRequest<IndexerDashboardStats>('/api/v1/admin/indexer/overview/stats')
 }
 
-export function refreshAdminBacklogStats() {
-  return apiRequest<IndexerBacklogStats>('/api/v1/admin/indexer/overview/backlog/actions/refresh', { method: 'POST' })
+export function refreshAdminDashboardStats() {
+  return apiRequest<IndexerDashboardStats>('/api/v1/admin/indexer/overview/stats/actions/refresh', { method: 'POST' })
 }
 
 export async function getAdminStages() {

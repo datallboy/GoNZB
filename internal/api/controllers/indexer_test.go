@@ -14,7 +14,7 @@ import (
 
 type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
-	backlog      *pgindex.IndexerBacklogStats
+	dashboard    *pgindex.IndexerDashboardStats
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
 	run          *pgindex.IndexerStageRun
@@ -33,12 +33,12 @@ func (s *stubIndexerService) Overview(ctx context.Context) (*pgindex.IndexerOver
 	return s.overview, nil
 }
 
-func (s *stubIndexerService) BacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error) {
-	return s.backlog, nil
+func (s *stubIndexerService) DashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error) {
+	return s.dashboard, nil
 }
 
-func (s *stubIndexerService) RefreshBacklogStats(ctx context.Context) (*pgindex.IndexerBacklogStats, error) {
-	return s.backlog, nil
+func (s *stubIndexerService) RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error) {
+	return s.dashboard, nil
 }
 
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
@@ -244,6 +244,44 @@ func TestIndexerControllerListRunsMarksResponseAsInternalDebug(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, needle := range []string{`"count":1`, `"stage":"inspect_archive"`, `"stage_name":"inspect_archive"`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerAdminControllerGetDashboardStats(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/stats", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{
+		Service: &stubIndexerService{
+			dashboard: &pgindex.IndexerDashboardStats{
+				Items: []pgindex.IndexerDashboardStat{{
+					Key:       "unassembled_headers",
+					Label:     "Unassembled Headers",
+					Value:     42,
+					Available: true,
+					Exact:     true,
+				}},
+				Count: 1,
+			},
+		},
+	}
+
+	if err := ctrl.GetDashboardStats(c); err != nil {
+		t.Fatalf("GetDashboardStats returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"count":1`, `"key":"unassembled_headers"`, `"value":42`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
