@@ -117,6 +117,9 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing == nil || runtime.Indexing.ScrapeLatest.Enabled || runtime.Indexing.Release.Enabled || runtime.Indexing.EnrichTMDB.Enabled {
 		t.Fatalf("expected disabled indexer stages, got %+v", runtime.Indexing)
 	}
+	if runtime.Indexing.Inspect.WorkspaceBackend != "auto" || runtime.Indexing.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect" {
+		t.Fatalf("expected auto inspect workspace defaults, got %+v", runtime.Indexing.Inspect)
+	}
 }
 
 func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {

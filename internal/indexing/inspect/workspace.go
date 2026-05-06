@@ -80,7 +80,7 @@ func (m *WorkspaceManager) workspaceRoot() string {
 	if m == nil {
 		return ""
 	}
-	if m.opts.WorkspaceBackend == "memory" {
+	if m.opts.WorkspaceBackend == "memory" || m.opts.WorkspaceBackend == "auto" {
 		path := strings.TrimSpace(m.opts.MemoryWorkDir)
 		if path != "" {
 			if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -89,6 +89,9 @@ func (m *WorkspaceManager) workspaceRoot() string {
 			if err := os.MkdirAll(path, 0755); err == nil {
 				return path
 			}
+		}
+		if m.opts.WorkspaceBackend == "memory" {
+			return m.opts.WorkDir
 		}
 	}
 	return m.opts.WorkDir
