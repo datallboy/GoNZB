@@ -394,6 +394,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		},
 		Inspect: inspectpkg.DefaultOptions(inspectpkg.Options{
 			WorkDir:            indexingCfg.Inspect.WorkDir,
+			WorkspaceBackend:   indexingCfg.Inspect.WorkspaceBackend,
+			MemoryWorkDir:      indexingCfg.Inspect.MemoryWorkDir,
 			MaxBytes:           indexingCfg.Inspect.MaxBytes,
 			MaxArchiveDepth:    indexingCfg.Inspect.MaxArchiveDepth,
 			ToolTimeout:        time.Duration(indexingCfg.Inspect.ToolTimeoutSecs) * time.Second,

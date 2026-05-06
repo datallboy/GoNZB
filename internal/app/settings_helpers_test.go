@@ -32,14 +32,16 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			RequireExpectedFileCountForContextualObfuscated: func() *bool { v := false; return &v }(),
 		},
 		Inspect: config.IndexingInspectConfig{
-			WorkDir:         "/tmp/inspect",
-			MaxBytes:        1024,
-			MaxArchiveDepth: 5,
-			ToolTimeoutSecs: 45,
-			FFProbePath:     "/usr/bin/ffprobe",
-			SevenZipPath:    "/usr/bin/7z",
-			UnrarPath:       "/usr/bin/unrar",
-			PAR2Path:        "/usr/bin/par2",
+			WorkDir:          "/tmp/inspect",
+			WorkspaceBackend: "memory",
+			MemoryWorkDir:    "/dev/shm/custom-inspect",
+			MaxBytes:         1024,
+			MaxArchiveDepth:  5,
+			ToolTimeoutSecs:  45,
+			FFProbePath:      "/usr/bin/ffprobe",
+			SevenZipPath:     "/usr/bin/7z",
+			UnrarPath:        "/usr/bin/unrar",
+			PAR2Path:         "/usr/bin/par2",
 		},
 		ScrapeLatest: config.IndexingStageConfig{
 			Enabled:         &disabled,
@@ -91,6 +93,9 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	}
 	if runtime.Inspect.WorkDir != "/tmp/inspect" {
 		t.Fatalf("expected inspect work dir to be mirrored, got %+v", runtime.Inspect)
+	}
+	if runtime.Inspect.WorkspaceBackend != "memory" || runtime.Inspect.MemoryWorkDir != "/dev/shm/custom-inspect" {
+		t.Fatalf("expected inspect workspace settings to be mirrored, got %+v", runtime.Inspect)
 	}
 	if runtime.EnrichPreDB.Provider != "club" || runtime.EnrichPreDB.HTTPTimeoutSeconds != httpTimeout {
 		t.Fatalf("unexpected predb config: %+v", runtime.EnrichPreDB)
