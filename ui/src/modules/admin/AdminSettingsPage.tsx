@@ -614,19 +614,6 @@ export function AdminSettingsPage() {
 
         <SettingsSection title="Inspection tools">
           <div className="toolbar-grid">
-            <TextField label="Work dir" value={indexing.inspect.work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, work_dir: value } })} />
-            <label>
-              <span>Workspace backend</span>
-              <select
-                value={indexing.inspect.workspace_backend}
-                onChange={(event) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, workspace_backend: event.target.value } })}
-              >
-                <option value="auto">Auto</option>
-                <option value="memory">Memory</option>
-                <option value="disk">Disk</option>
-              </select>
-            </label>
-            <TextField label="Memory work dir" value={indexing.inspect.memory_work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, memory_work_dir: value } })} />
             <NumberField label="Max bytes" value={indexing.inspect.max_bytes} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })} />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
@@ -634,6 +621,32 @@ export function AdminSettingsPage() {
             <TextField label="7z path" value={indexing.inspect.seven_zip_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, seven_zip_path: value } })} />
             <TextField label="unrar path" value={indexing.inspect.unrar_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, unrar_path: value } })} />
             <TextField label="par2 path" value={indexing.inspect.par2_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, par2_path: value } })} />
+          </div>
+          <div className="stack">
+            <div className="banner">
+              Archive/media inspection workspaces can use RAM or disk. `Auto` prefers RAM when available and falls back to disk.
+            </div>
+            <div className="page-card stack">
+              <h3 className="section-subtitle">Workspace Storage</h3>
+              <p className="muted-copy">
+                Use `Work dir` for normal disk-backed workspaces and fallback storage. Use `Memory work dir` only for RAM-backed workspaces.
+              </p>
+              <div className="toolbar-grid">
+                <label>
+                  <span>Workspace backend</span>
+                  <select
+                    value={indexing.inspect.workspace_backend}
+                    onChange={(event) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, workspace_backend: event.target.value } })}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="memory">Memory</option>
+                    <option value="disk">Disk</option>
+                  </select>
+                </label>
+                <TextField label="Work dir" value={indexing.inspect.work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, work_dir: value } })} />
+                <TextField label="Memory work dir" value={indexing.inspect.memory_work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, memory_work_dir: value } })} />
+              </div>
+            </div>
           </div>
         </SettingsSection>
 
