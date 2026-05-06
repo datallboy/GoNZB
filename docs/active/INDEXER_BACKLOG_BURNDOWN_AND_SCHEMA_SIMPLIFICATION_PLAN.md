@@ -293,15 +293,23 @@ Scope:
 
 Tasks:
 
-- [ ] batch inserts after the existing per-binary delete step for each helper
-- [ ] preserve current JSON sanitization and normalization behavior
-- [ ] keep replace semantics identical for empty and non-empty row sets
-- [ ] validate archive, media, par2, nfo, and password inspection flows after the change
+- [x] batch inserts after the existing per-binary delete step for each helper
+- [x] preserve current JSON sanitization and normalization behavior
+- [x] keep replace semantics identical for empty and non-empty row sets
+- [x] validate archive, media, par2, nfo, and password inspection flows after the change
 
 Acceptance criteria:
 
 - no helper performs one insert statement per persisted row in normal operation
 - inspection outputs remain byte-for-byte or field-for-field equivalent for the same probe results
+
+Workstream 7 sign-off:
+
+- complete on `2026-05-06`
+- `ReplaceBinaryInspectionArtifacts`, `ReplaceBinaryArchiveEntries`, `ReplaceBinaryMediaStreams`, `ReplaceBinaryTextEvidence`, and `ReplaceBinaryPAR2Sets` now keep their existing delete-then-replace semantics but write new rows through chunked multi-row inserts instead of one statement per row
+- the existing JSON sanitization and token normalization paths were preserved because the batched write path still marshals through the same `sanitizeJSONMap` and `sanitizeStringSlice` helpers before insert
+- a new pgindex integration test covers non-empty persistence plus empty replace clearing across all five helpers on a real Postgres-backed binary
+- focused tests passed for pgindex plus archive/media/par2/nfo/password inspect packages, and a live `go run ./cmd/gonzb --config config.yaml indexer inspect --once` sanity run completed successfully
 
 ## Workstream 8. Enrichment Match And Entry Batching
 
