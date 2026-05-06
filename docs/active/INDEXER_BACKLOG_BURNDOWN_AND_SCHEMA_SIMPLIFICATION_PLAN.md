@@ -482,23 +482,49 @@ Why this is next:
 
 Tasks:
 
-- [ ] capture baseline live `release --once` metrics across multiple non-empty runs
-- [ ] identify the current SQL path behind `list_binaries_duration_ms`
-- [ ] run `EXPLAIN (ANALYZE, BUFFERS)` against the live dev database for the dominant release listing query
-- [ ] check for:
+- [x] capture baseline live `release --once` metrics across multiple non-empty runs
+- [x] identify the current SQL path behind `list_binaries_duration_ms`
+- [x] run `EXPLAIN (ANALYZE, BUFFERS)` against the live dev database for the dominant release listing query
+- [x] check for:
   - unnecessary row width
   - looped query patterns
   - poor join order
   - missing or low-value indexes
   - opportunities to claim/select IDs first and hydrate later
-- [ ] determine whether `fragment_only_families` is mainly a release throughput issue or an input-quality / eligibility issue
-- [ ] implement the best supported optimization if the query is still materially expensive
+- [x] determine whether `fragment_only_families` is mainly a release throughput issue or an input-quality / eligibility issue
+- [x] implement the best supported optimization if the query is still materially expensive
 
 Acceptance criteria:
 
 - the dominant release-stage query path is measured and documented
 - any meaningful SQL optimization opportunity is either implemented or explicitly ruled out with evidence
 - the plan clearly states whether release is still a backlog bottleneck after profiling
+
+Workstream 12 sign-off:
+
+- complete on `2026-05-06`
+- baseline live release metrics showed that release was already healthy overall, but non-empty formation runs still spent the majority of their time in `list_binaries_duration_ms`
+- representative pre-patch runs included:
+  - run `107176`: about `1.04s` elapsed with `list_binaries_duration_ms=899.98`
+  - run `107207`: about `0.96s` elapsed with `list_binaries_duration_ms=465.05`
+  - run `107243`: about `0.59s` elapsed with `list_binaries_duration_ms=474.67`
+- `EXPLAIN (ANALYZE, BUFFERS)` on a live actionable `base_stem` release family showed the main issue was not a missing join or N+1 loop; it was an index-mismatch predicate:
+  - the old `base_stem` branch used `NULLIF(BTRIM(base_stem), '') IS NOT NULL`
+  - Postgres chose `idx_binaries_release_family_key`, then filtered out about `73k` rows per worker
+  - the live explain for the old shape took about `318.63ms`
+- a predicate rewrite to match the partial `base_stem` index directly (`BTRIM(base_stem) <> ''`) dropped the live sample lookup to about `0.30ms` using `idx_binaries_base_stem_family_lookup`
+- `ListBinariesForReleaseCandidate` was updated to:
+  - use index-friendly `BTRIM(base_stem) <> ''` predicates for `base_stem` matching
+  - claim candidate binary ids first, then hydrate full binary rows afterward
+  - keep the existing family semantics while reducing row width inside the candidate CTE
+- focused tests passed for pgindex, release, and resolver packages
+- live validation after the patch showed release run `107273` completing in about `0.05s` with:
+  - `formed=2`
+  - `binaries_listed=123`
+  - `list_binaries_duration_ms=4.941`
+- conclusion:
+  - the remaining `list_binaries` query had a real but narrow optimization opportunity, and it is now largely resolved
+  - the high `fragment_only_families` counts are mainly an input-quality / eligibility characteristic of the queued families, not the current release-stage throughput bottleneck
 
 ## Workstream 13. Standalone Cached Dashboard Stats Expansion
 
