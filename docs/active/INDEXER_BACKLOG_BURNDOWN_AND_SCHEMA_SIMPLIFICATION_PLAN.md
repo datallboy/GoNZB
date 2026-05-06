@@ -249,22 +249,33 @@ Goal:
 
 Tasks:
 
-- [ ] measure current live `assemble --once` behavior at the baseline configured batch size
-- [ ] test larger assemble batch sizes starting with `25,000`
-- [ ] test a larger follow-up size such as `50,000` if memory, lock duration, and transaction times remain healthy
-- [ ] compare:
+- [x] measure current live `assemble --once` behavior at the baseline configured batch size
+- [x] test larger assemble batch sizes starting with `25,000`
+- [x] test a larger follow-up size such as `50,000` if memory, lock duration, and transaction times remain healthy
+- [x] compare:
   - `total_duration_ms`
   - `headers_per_second`
   - `candidate_selection_duration_ms`
   - `header_match_duration_ms`
   - `binary_part_upsert_duration_ms`
   - `binary_refresh_duration_ms`
-- [ ] keep the best-performing size only if throughput improves without unacceptable memory or contention side effects
+- [x] keep the best-performing size only if throughput improves without unacceptable memory or contention side effects
 
 Acceptance criteria:
 
 - assemble throughput improves measurably on live runs or the current batch size is explicitly confirmed as near-optimal
 - the chosen batch size does not introduce stability regressions or materially worse lock/claim behavior
+
+Workstream 6 sign-off:
+
+- complete on `2026-05-06`
+- live manual assemble stage runs were measured at `20,000`, `25,000`, and `50,000` headers with the current `4` workers and the new yEnc recovery guardrails active
+- observed results:
+  - `20,000`: about `10.11s`, about `1,978` headers/sec, `candidate_selection_duration_ms=7,715`, `header_match_duration_ms=5,609`
+  - `25,000`: about `11.64s`, about `2,148` headers/sec, `candidate_selection_duration_ms=8,551`, `header_match_duration_ms=6,910`
+  - `50,000`: about `17.55s`, about `2,849` headers/sec, `candidate_selection_duration_ms=11,881`, `header_match_duration_ms=12,607`
+- none of the measured runs showed yEnc recovery churn, lease instability, or claim/lock regressions during the test window
+- the local persisted runtime setting was updated to keep `assemble.batch_size=50000` because it delivered the best measured throughput while remaining well below the current `5 minute` claim lease in this environment
 
 ## Workstream 7. Inspection Artifact Replace Batching
 
