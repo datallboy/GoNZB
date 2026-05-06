@@ -459,6 +459,16 @@ Workstream 11 sign-off:
   - measure larger `inspect_media` concurrency and batch sizes now that the worst archive probe cost is mostly out of the hot path
   - if more throughput is needed later, consider loosening the heuristic fast path further for archive entry names that expose codec but not explicit resolution, or introducing a lighter partial-container probe strategy for the remaining heavy cases
 
+Workstream 11 follow-up on `2026-05-06`:
+
+- the remaining heavy archive-media path was refined to stream `7z x -so ... entry` directly into `ffprobe -i pipe:0` instead of writing an extracted media prefix file back to the workspace first
+- this keeps real media metadata probing for obfuscated archive-backed posts while removing one large category of SSD writes from the hot path
+- inspect workspaces also gained a configurable backend:
+  - `workspace_backend=disk`
+  - `workspace_backend=memory`
+  - `memory_work_dir=/dev/shm/gonzb-inspect` by default
+- a live `indexer inspect media --once` sanity run completed successfully after the stream-path change; it still materializes the sparse archive container for the remaining hard cases, but no longer writes the extracted member prefix file before probing
+
 ## Workstream 12. Release Candidate Listing And `list_binaries` Query Optimization
 
 Goal:

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -25,16 +24,18 @@ const (
 
 type ArchiveMediaMaterialization struct {
 	ArchivePath       string
-	OutputPath        string
 	ArchiveBytes      int64
 	ExtractedBytes    int64
 	Signature         string
 	MIMEType          string
 	ExtractStderr     string
 	PartialExtraction bool
+	FFProbeResult     *FFProbeResult
+	FFProbeOutput     []byte
+	FFProbeError      string
 }
 
-func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, candidate pgindex.BinaryInspectionCandidate, entryName string, workspaceDir string, opts Options, log logger) (*ArchiveMediaMaterialization, error) {
+func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, runner CommandRunner, candidate pgindex.BinaryInspectionCandidate, entryName string, workspaceDir string, opts Options, log logger) (*ArchiveMediaMaterialization, error) {
 	entryName = strings.TrimSpace(entryName)
 	if entryName == "" {
 		return nil, fmt.Errorf("archive entry name is required")
@@ -63,13 +64,7 @@ func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader,
 		return nil, fmt.Errorf("archive-backed media probing is not implemented for %s", candidate.FileName)
 	}
 
-	outputPath := filepath.Join(workspaceDir, filepath.Base(entryName))
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return nil, fmt.Errorf("create archive media output dir %s: %w", filepath.Dir(outputPath), err)
-	}
-
-	outputLimit := archiveMediaOutputLimit(entryName, opts.MaxBytes)
-	extractedBytes, firstBytes, stderrText, partial, err := extractArchiveEntryPrefix(ctx, opts.SevenZipPath, archivePath, entryName, outputPath, outputLimit, opts.ToolTimeout)
+	extractedBytes, firstBytes, stderrText, partial, ffprobeResult, ffprobeOutput, ffprobeError, err := probeArchiveEntryStream(ctx, runner, opts.FFProbePath, opts.SevenZipPath, archivePath, entryName, opts.ToolTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -79,13 +74,15 @@ func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader,
 
 	return &ArchiveMediaMaterialization{
 		ArchivePath:       archivePath,
-		OutputPath:        outputPath,
 		ArchiveBytes:      archiveBytes,
 		ExtractedBytes:    extractedBytes,
 		Signature:         DetectSignature(firstBytes, entryName),
 		MIMEType:          DetectMIMEType(firstBytes, entryName),
 		ExtractStderr:     strings.TrimSpace(stderrText),
 		PartialExtraction: partial,
+		FFProbeResult:     ffprobeResult,
+		FFProbeOutput:     ffprobeOutput,
+		FFProbeError:      strings.TrimSpace(ffprobeError),
 	}, nil
 }
 
@@ -206,12 +203,12 @@ func materializeArchiveMediaSevenZip(ctx context.Context, repo CatalogReader, fe
 	return totalWritten, nil
 }
 
-func extractArchiveEntryPrefix(ctx context.Context, sevenZipPath, archivePath, entryName, outputPath string, outputLimit int64, timeout time.Duration) (int64, []byte, string, bool, error) {
+func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobePath, sevenZipPath, archivePath, entryName string, timeout time.Duration) (int64, []byte, string, bool, *FFProbeResult, []byte, string, error) {
 	if strings.TrimSpace(sevenZipPath) == "" {
-		return 0, nil, "", false, fmt.Errorf("7z path is required")
+		return 0, nil, "", false, nil, nil, "", fmt.Errorf("7z path is required")
 	}
-	if outputLimit <= 0 {
-		outputLimit = defaultArchiveMediaOutputBytes
+	if runner == nil {
+		return 0, nil, "", false, nil, nil, "", fmt.Errorf("ffprobe runner is required")
 	}
 
 	toolCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -220,88 +217,54 @@ func extractArchiveEntryPrefix(ctx context.Context, sevenZipPath, archivePath, e
 	cmd := exec.CommandContext(toolCtx, sevenZipPath, "x", "-so", "-y", archivePath, entryName)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return 0, nil, "", false, fmt.Errorf("open archive extraction stdout: %w", err)
+		return 0, nil, "", false, nil, nil, "", fmt.Errorf("open archive extraction stdout: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return 0, nil, "", false, fmt.Errorf("start archive extraction: %w", err)
+		return 0, nil, "", false, nil, nil, "", fmt.Errorf("start archive extraction: %w", err)
 	}
 
-	f, err := os.Create(outputPath)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return 0, nil, "", false, fmt.Errorf("create archive media output %s: %w", outputPath, err)
-	}
-	defer f.Close()
-
-	buf := make([]byte, 128*1024)
-	firstBytes := make([]byte, 0, 128)
-	var written int64
-	partial := false
-
-	for {
-		if err := ctx.Err(); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return written, firstBytes, stderr.String(), partial, err
-		}
-
-		n, readErr := stdout.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			remaining := outputLimit - written
-			if remaining <= 0 {
-				partial = true
-				cancel()
-			} else {
-				if int64(len(chunk)) > remaining {
-					chunk = chunk[:remaining]
-					partial = true
-					cancel()
-				}
-				if len(firstBytes) < cap(firstBytes) {
-					needed := cap(firstBytes) - len(firstBytes)
-					if needed > len(chunk) {
-						needed = len(chunk)
-					}
-					firstBytes = append(firstBytes, chunk[:needed]...)
-				}
-				if _, err := f.Write(chunk); err != nil {
-					_ = cmd.Process.Kill()
-					_ = cmd.Wait()
-					return written, firstBytes, stderr.String(), partial, fmt.Errorf("write archive media output %s: %w", outputPath, err)
-				}
-				written += int64(len(chunk))
-				if written >= outputLimit {
-					partial = true
-					cancel()
-				}
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return written, firstBytes, stderr.String(), partial, fmt.Errorf("read archive extraction output: %w", readErr)
-		}
-	}
-
-	if err := f.Sync(); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return written, firstBytes, stderr.String(), partial, fmt.Errorf("sync archive media output %s: %w", outputPath, err)
-	}
-
+	sampler := &countingPreviewReader{r: stdout}
+	ffprobeResult, ffprobeOutput, probeErr := RunFFProbeInput(toolCtx, runner, ffprobePath, sampler)
 	waitErr := cmd.Wait()
-	if waitErr != nil && written == 0 {
-		return written, firstBytes, stderr.String(), partial, fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+	if probeErr != nil && waitErr == nil {
+		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
 	}
-	return written, firstBytes, stderr.String(), partial, nil
+	if waitErr != nil && sampler.n == 0 {
+		return sampler.n, sampler.preview(), stderr.String(), false, nil, ffprobeOutput, "", fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+	}
+	if probeErr != nil {
+		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
+	}
+	return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, "", nil
+}
+
+type countingPreviewReader struct {
+	r   io.Reader
+	n   int64
+	buf [128]byte
+	got int
+}
+
+func (r *countingPreviewReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		if r.got < len(r.buf) {
+			copied := copy(r.buf[r.got:], p[:n])
+			r.got += copied
+		}
+		r.n += int64(n)
+	}
+	return n, err
+}
+
+func (r *countingPreviewReader) preview() []byte {
+	if r == nil || r.got == 0 {
+		return nil
+	}
+	return append([]byte(nil), r.buf[:r.got]...)
 }
 
 func archiveMediaPrefixLimit(entryName string, totalArchiveSize, maxBytes int64) int64 {

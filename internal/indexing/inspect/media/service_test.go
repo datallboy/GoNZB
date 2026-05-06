@@ -208,6 +208,10 @@ func (f mediaRunner) Run(context.Context, string, ...string) ([]byte, error) {
 	return f.output, nil
 }
 
+func (f mediaRunner) RunInput(context.Context, io.Reader, string, ...string) ([]byte, error) {
+	return f.output, nil
+}
+
 type testMediaLogger struct{}
 
 func (testMediaLogger) Debug(string, ...interface{}) {}

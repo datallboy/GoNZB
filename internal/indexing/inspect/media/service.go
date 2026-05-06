@@ -333,12 +333,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 	}
 	if (isVideo || isAudio) && archiveBacked && s.fetcher != nil && !strongArchiveHeuristics {
-		extractedPath := filepath.Join(workspace.Dir, filepath.Base(mediaEntry))
-		archiveMedia, err := inspectpkg.MaterializeArchiveMediaToWorkspace(ctx, s.repo, s.fetcher, candidate, mediaEntry, workspace.Dir, s.opts, s.log)
+		archiveMedia, err := inspectpkg.MaterializeArchiveMediaToWorkspace(ctx, s.repo, s.fetcher, s.runner, candidate, mediaEntry, workspace.Dir, s.opts, s.log)
 		if err == nil {
 			probeMode = "ffprobe_archive"
 			materializedBytes += archiveMedia.ArchiveBytes + archiveMedia.ExtractedBytes
-			extractedPath = archiveMedia.OutputPath
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
 				ReleaseID:    candidate.ReleaseID,
@@ -350,16 +348,20 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				Signature:    archiveMedia.Signature,
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
-					"probe_mode":         "ffprobe_archive",
-					"archive_entry":      mediaEntry,
-					"extract_stderr":     archiveMedia.ExtractStderr,
-					"partial_extraction": archiveMedia.PartialExtraction,
+					"probe_mode":          "ffprobe_archive",
+					"archive_entry":       mediaEntry,
+					"extract_stderr":      archiveMedia.ExtractStderr,
+					"partial_extraction":  archiveMedia.PartialExtraction,
+					"streamed_to_ffprobe": true,
 				},
 			}}
 
-			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(probeCtx, s.runner, s.opts.FFProbePath, extractedPath)
-			cancel()
+			ffprobeResult, ffprobeOutput, probeErr := archiveMedia.FFProbeResult, archiveMedia.FFProbeOutput, error(nil)
+			if archiveMedia.FFProbeError != "" {
+				probeErr = fmt.Errorf("%s", archiveMedia.FFProbeError)
+			} else if ffprobeResult == nil && len(ffprobeOutput) == 0 {
+				probeErr = fmt.Errorf("ffprobe archive probe returned no result")
+			}
 			if ffprobeResult != nil {
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
