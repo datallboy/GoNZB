@@ -620,6 +620,8 @@ export type IndexingRuntimeSettings = {
   }
   inspect: {
     work_dir: string
+    workspace_backend: string
+    memory_work_dir: string
     max_bytes: number
     max_archive_depth: number
     tool_timeout_seconds: number
