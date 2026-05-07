@@ -81,6 +81,7 @@ type IndexingReleaseRuntimeSettings struct {
 	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
 	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
+	MinExpectedFileCoveragePct                      float64 `json:"min_expected_file_coverage_pct,omitempty"`
 	RequireExpectedFileCountForContextualObfuscated bool    `json:"require_expected_file_count_for_contextual_obfuscated,omitempty"`
 }
 

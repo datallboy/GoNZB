@@ -81,7 +81,7 @@ func defaultStage(enabled bool, interval float64, batch, concurrency int) Indexi
 func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 	return IndexingReleaseRuntimeSettings{
 		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, MinConfidence: 0.55,
-		MinCompletionPct: 0, RequireExpectedFileCountForContextualObfuscated: true,
+		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
 	}
 }
 
@@ -168,12 +168,13 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
 	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
 	out.Release = IndexingReleaseRuntimeSettings{
-		Enabled:          boolValue(cfg.Release.Enabled, true),
-		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, 10),
-		BatchSize:        intValue(cfg.Release.BatchSize, 1000),
-		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
-		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
-		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
+		Enabled:                    boolValue(cfg.Release.Enabled, true),
+		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
+		BatchSize:                  intValue(cfg.Release.BatchSize, 1000),
+		BackoffSeconds:             intValue(cfg.Release.BackoffSeconds, 0),
+		MinConfidence:              float64Value(cfg.Release.MinConfidence, 0.55),
+		MinCompletionPct:           float64Value(cfg.Release.MinCompletionPct, 0),
+		MinExpectedFileCoveragePct: float64Value(cfg.Release.MinExpectedFileCoveragePct, 90),
 		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
 	}
 	out.Match = IndexingMatchRuntimeSettings{
@@ -297,12 +298,13 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
 		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
-			Enabled:          boolPtr(indexing.Release.Enabled),
-			IntervalMinutes:  float64Ptr(indexing.Release.IntervalMinutes),
-			BatchSize:        intPtr(indexing.Release.BatchSize),
-			BackoffSeconds:   intPtr(indexing.Release.BackoffSeconds),
-			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
-			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
+			Enabled:                    boolPtr(indexing.Release.Enabled),
+			IntervalMinutes:            float64Ptr(indexing.Release.IntervalMinutes),
+			BatchSize:                  intPtr(indexing.Release.BatchSize),
+			BackoffSeconds:             intPtr(indexing.Release.BackoffSeconds),
+			MinConfidence:              float64Ptr(indexing.Release.MinConfidence),
+			MinCompletionPct:           float64Ptr(indexing.Release.MinCompletionPct),
+			MinExpectedFileCoveragePct: float64Ptr(indexing.Release.MinExpectedFileCoveragePct),
 			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
 		}
 		effective.Indexing.Match = config.IndexingMatchConfig{

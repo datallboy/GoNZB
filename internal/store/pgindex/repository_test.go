@@ -1497,7 +1497,7 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 		t.Fatalf("age complete queue row: %v", err)
 	}
 
-	candidates, err := store.ListReleaseCandidates(ctx, 2)
+	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
 	if err != nil {
 		t.Fatalf("list release candidates: %v", err)
 	}
@@ -1580,7 +1580,7 @@ func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFami
 		t.Fatalf("align queue row ages: %v", err)
 	}
 
-	candidates, err := store.ListReleaseCandidates(ctx, 2)
+	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
 	if err != nil {
 		t.Fatalf("list release candidates: %v", err)
 	}
@@ -1626,7 +1626,7 @@ func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *
 		t.Fatalf("insert stale cleanup family: %v", err)
 	}
 
-	candidates, err := store.ListReleaseCandidates(ctx, 1)
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
 	if err != nil {
 		t.Fatalf("list release candidates: %v", err)
 	}
@@ -1888,11 +1888,14 @@ func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 
 	for _, keyKind := range []string{"release_family", "base_stem"} {
 		var (
-			binaryCount           int
-			completeBinaryCount   int
-			incompleteBinaryCount int
-			hasExpectedFileCount  bool
-			readinessBucket       string
+			binaryCount                    int
+			completeBinaryCount            int
+			completeMainPayloadBinaryCount int
+			incompleteBinaryCount          int
+			expectedFileCount              int
+			expectedFileCoveragePct        float64
+			hasExpectedFileCount           bool
+			readinessBucket                string
 		)
 		familyKey := family
 		if keyKind == "base_stem" {
@@ -1902,7 +1905,10 @@ func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 			SELECT
 				binary_count,
 				complete_binary_count,
+				complete_main_payload_binary_count,
 				incomplete_binary_count,
+				expected_file_count,
+				expected_file_coverage_pct,
 				has_expected_file_count,
 				readiness_bucket
 			FROM release_family_readiness_summaries
@@ -1916,7 +1922,10 @@ func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 		).Scan(
 			&binaryCount,
 			&completeBinaryCount,
+			&completeMainPayloadBinaryCount,
 			&incompleteBinaryCount,
+			&expectedFileCount,
+			&expectedFileCoveragePct,
 			&hasExpectedFileCount,
 			&readinessBucket,
 		); err != nil {
@@ -1927,6 +1936,9 @@ func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 		}
 		if !hasExpectedFileCount {
 			t.Fatalf("expected expected-file-count evidence for %s summary", keyKind)
+		}
+		if completeMainPayloadBinaryCount != 1 || expectedFileCount != 3 || expectedFileCoveragePct < 33 || expectedFileCoveragePct > 34 {
+			t.Fatalf("unexpected expected-file coverage stats for %s: complete_main=%d expected=%d coverage=%v", keyKind, completeMainPayloadBinaryCount, expectedFileCount, expectedFileCoveragePct)
 		}
 		if readinessBucket != releaseReadinessActionable {
 			t.Fatalf("expected actionable readiness for %s summary, got %q", keyKind, readinessBucket)

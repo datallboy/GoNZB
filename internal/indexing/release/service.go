@@ -17,7 +17,7 @@ type logger interface {
 }
 
 type repository interface {
-	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
@@ -35,6 +35,7 @@ type Options struct {
 	BatchSize                                          int
 	ReleaseMinConfidence                               float64
 	ReleaseMinCompletion                               float64
+	ReleaseMinExpectedFileCoveragePct                  float64
 	RequireExpectedFileCountForContextualObfuscated    bool
 	RequireExpectedFileCountForContextualObfuscatedSet bool
 }
@@ -54,6 +55,12 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 	if opts.ReleaseMinCompletion < 0 {
 		opts.ReleaseMinCompletion = 0
+	}
+	if opts.ReleaseMinExpectedFileCoveragePct <= 0 {
+		opts.ReleaseMinExpectedFileCoveragePct = 90
+	}
+	if opts.ReleaseMinExpectedFileCoveragePct > 100 {
+		opts.ReleaseMinExpectedFileCoveragePct = 100
 	}
 	if !opts.RequireExpectedFileCountForContextualObfuscatedSet {
 		opts.RequireExpectedFileCountForContextualObfuscated = true
@@ -119,24 +126,28 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		}
 	} else {
 		start := time.Now()
-		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize)
+		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize, pgindex.ReleaseCandidateSelectionOptions{
+			MinExpectedFileCoveragePct: s.opts.ReleaseMinExpectedFileCoveragePct,
+		})
 		timings.candidateList += time.Since(start)
 		if err != nil {
 			return nil, fmt.Errorf("list release candidates: %w", err)
 		}
 	}
 	metrics := map[string]any{
-		"reform":                 reform,
-		"batch_size":             s.opts.BatchSize,
-		"min_confidence":         s.opts.ReleaseMinConfidence,
-		"min_completion_pct":     s.opts.ReleaseMinCompletion,
-		"candidate_families":     len(candidates),
-		"formed":                 0,
-		"skipped_fragments":      0,
-		"skipped_confidence":     0,
-		"skipped_completion":     0,
-		"stale_cleanup_families": 0,
-		"fragment_only_families": 0,
+		"reform":                            reform,
+		"batch_size":                        s.opts.BatchSize,
+		"min_confidence":                    s.opts.ReleaseMinConfidence,
+		"min_completion_pct":                s.opts.ReleaseMinCompletion,
+		"min_expected_file_coverage_pct":    s.opts.ReleaseMinExpectedFileCoveragePct,
+		"candidate_families":                len(candidates),
+		"formed":                            0,
+		"skipped_fragments":                 0,
+		"skipped_confidence":                0,
+		"skipped_completion":                0,
+		"cooled_down_low_coverage_families": 0,
+		"stale_cleanup_families":            0,
+		"fragment_only_families":            0,
 	}
 	if len(candidates) == 0 {
 		if reform {
@@ -150,6 +161,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	formed := 0
 	candidateFamiliesInspected := 0
 	cooledDownFragmentOnly := 0
+	cooledDownLowCoverage := 0
 	staleCleanupOnly := 0
 	skippedFragments := 0
 	skippedConfidence := 0
@@ -172,6 +184,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			metrics["candidate_families_inspected"] = candidateFamiliesInspected
 			metrics["formed"] = formed
 			metrics["fragment_only_families"] = cooledDownFragmentOnly
+			metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
 			metrics["stale_cleanup_families"] = staleCleanupOnly
 			metrics["skipped_fragments"] = skippedFragments
 			metrics["skipped_confidence"] = skippedConfidence
@@ -180,6 +193,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		}
 		formed += outcome.formed
 		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
+		cooledDownLowCoverage += outcome.cooledDownLowCoverage
 		staleCleanupOnly += outcome.staleCleanupOnly
 		skippedFragments += outcome.skippedFragments
 		skippedConfidence += outcome.skippedConfidence
@@ -200,6 +214,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics["candidate_families_inspected"] = candidateFamiliesInspected
 	metrics["formed"] = formed
 	metrics["fragment_only_families"] = cooledDownFragmentOnly
+	metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
 	metrics["stale_cleanup_families"] = staleCleanupOnly
 	metrics["skipped_fragments"] = skippedFragments
 	metrics["skipped_confidence"] = skippedConfidence
@@ -207,10 +222,11 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	timings.addMetrics(metrics)
 
 	s.log.Info(
-		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f reform=%t",
+		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
 		candidateFamiliesInspected,
 		formed,
 		cooledDownFragmentOnly,
+		cooledDownLowCoverage,
 		staleCleanupOnly,
 		skippedFragments,
 		skippedConfidence,
@@ -218,6 +234,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		s.opts.BatchSize,
 		s.opts.ReleaseMinConfidence,
 		s.opts.ReleaseMinCompletion,
+		s.opts.ReleaseMinExpectedFileCoveragePct,
 		reform,
 	)
 	return metrics, nil
@@ -263,6 +280,7 @@ func durationMillis(d time.Duration) float64 {
 type candidateOutcome struct {
 	formed                 int
 	cooledDownFragmentOnly int
+	cooledDownLowCoverage  int
 	staleCleanupOnly       int
 	skippedFragments       int
 	skippedConfidence      int
@@ -301,6 +319,20 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		return candidateOutcome{
 			cooledDownFragmentOnly: 1,
 			deferredAck:            buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ExpectedFileCount > 0 && candidate.ExpectedFileCoveragePct < s.opts.ReleaseMinExpectedFileCoveragePct {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete low-coverage stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			cooledDownLowCoverage: 1,
+			deferredAck:           buildDeferredReleaseAck(candidate, familyKey),
 		}, nil
 	}
 

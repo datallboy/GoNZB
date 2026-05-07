@@ -41,6 +41,7 @@ type usenetIndexerConfig struct {
 	ScrapeServer                                    *config.ServerConfig
 	ReleaseMinConfidence                            float64
 	ReleaseMinCompletion                            float64
+	ReleaseMinExpectedFileCoveragePct               float64
 	RequireExpectedFileCountForContextualObfuscated bool
 	Match                                           match.Options
 	Inspect                                         inspectpkg.Options
@@ -153,9 +154,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		appCtx.Logger,
 		release.Options{
-			BatchSize:            runtimeCfg.ReleaseStage.BatchSize,
-			ReleaseMinConfidence: runtimeCfg.ReleaseMinConfidence,
-			ReleaseMinCompletion: runtimeCfg.ReleaseMinCompletion,
+			BatchSize:                         runtimeCfg.ReleaseStage.BatchSize,
+			ReleaseMinConfidence:              runtimeCfg.ReleaseMinConfidence,
+			ReleaseMinCompletion:              runtimeCfg.ReleaseMinCompletion,
+			ReleaseMinExpectedFileCoveragePct: runtimeCfg.ReleaseMinExpectedFileCoveragePct,
 			RequireExpectedFileCountForContextualObfuscated:    runtimeCfg.RequireExpectedFileCountForContextualObfuscated,
 			RequireExpectedFileCountForContextualObfuscatedSet: true,
 		},
@@ -382,10 +384,11 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	}
 
 	out := usenetIndexerConfig{
-		Newsgroups:               append([]string(nil), indexingCfg.Newsgroups...),
-		BackfillUntilDateByGroup: backfillCutoffs,
-		ReleaseMinConfidence:     indexingCfg.Release.MinConfidence,
-		ReleaseMinCompletion:     indexingCfg.Release.MinCompletionPct,
+		Newsgroups:                                      append([]string(nil), indexingCfg.Newsgroups...),
+		BackfillUntilDateByGroup:                        backfillCutoffs,
+		ReleaseMinConfidence:                            indexingCfg.Release.MinConfidence,
+		ReleaseMinCompletion:                            indexingCfg.Release.MinCompletionPct,
+		ReleaseMinExpectedFileCoveragePct:               indexingCfg.Release.MinExpectedFileCoveragePct,
 		RequireExpectedFileCountForContextualObfuscated: indexingCfg.Release.RequireExpectedFileCountForContextualObfuscated,
 		Match: match.Options{
 			HighConfidenceThreshold:     indexingCfg.Match.HighConfidenceThreshold,

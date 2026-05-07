@@ -125,6 +125,7 @@ type IndexingReleaseConfig struct {
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
+	MinExpectedFileCoveragePct                      *float64 `mapstructure:"min_expected_file_coverage_pct" yaml:"min_expected_file_coverage_pct"`
 	RequireExpectedFileCountForContextualObfuscated *bool    `mapstructure:"require_expected_file_count_for_contextual_obfuscated" yaml:"require_expected_file_count_for_contextual_obfuscated"`
 }
 
@@ -251,6 +252,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
+	v.SetDefault("indexing.release.min_expected_file_coverage_pct", 90.0)
 	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
@@ -398,6 +400,11 @@ func (c *Config) validate() error {
 	if c.Indexing.Release.MinCompletionPct != nil {
 		if *c.Indexing.Release.MinCompletionPct < 0 || *c.Indexing.Release.MinCompletionPct > 100 {
 			return errors.New("indexing.release.min_completion_pct must be between 0 and 100")
+		}
+	}
+	if c.Indexing.Release.MinExpectedFileCoveragePct != nil {
+		if *c.Indexing.Release.MinExpectedFileCoveragePct < 0 || *c.Indexing.Release.MinExpectedFileCoveragePct > 100 {
+			return errors.New("indexing.release.min_expected_file_coverage_pct must be between 0 and 100")
 		}
 	}
 	if err := validateIndexingStageConfig("indexing.inspect_par2", c.Indexing.InspectPAR2); err != nil {
