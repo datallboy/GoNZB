@@ -69,7 +69,7 @@ Treat the database as a local low-latency workload and tune it accordingly.
 Status:
 
 - initial WorkStream 1 baseline completed and signed off on `2026-04-22`
-- reference doc: `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- reference doc: `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md`
 
 Planned tuning direction:
 
@@ -135,7 +135,7 @@ Use:
 
 - `SHOW ALL` or focused `SHOW` commands for PostgreSQL settings
 - `EXPLAIN (ANALYZE, BUFFERS)` on the current assemble and release hot paths
-- `docs/INDEXER_TEST_QUERIES.md` for the release/backlog state queries already in active use
+- `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md` for the release/backlog state queries already in active use
 - `VACUUM (ANALYZE)` only after the before-state is captured
 
 Success criteria for this baseline step:
@@ -311,7 +311,7 @@ WorkStream 1 completion note:
   - `binaries`
   - `release_stage_dirty_families`
 - a fresh `VACUUM (ANALYZE)` pass completed on the hot tables
-- before/after settings, stage timings, backlog snapshot, and `EXPLAIN (ANALYZE, BUFFERS)` observations were recorded in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- before/after settings, stage timings, backlog snapshot, and `EXPLAIN (ANALYZE, BUFFERS)` observations were recorded in `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md`
 - isolated manual reruns after clearing background schedulers produced a cleaner validation sample:
   - `assemble --once` average `20.07s` across `3` runs
   - `release --once` average `64.92s` across `3` runs
@@ -664,7 +664,7 @@ Operator loop:
   - completed binaries per hour
   - formed releases per hour
   - dirty-family composition by readiness bucket
-- continue using operator queries from `docs/INDEXER_TEST_QUERIES.md` to inspect:
+- continue using operator queries from `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md` to inspect:
   - near-complete releases
   - missing binary parts
   - pending matching headers
@@ -707,7 +707,7 @@ What this workstream must answer:
 Documentation changes expected from this workstream:
 
 - record a concrete before/after snapshot and repeated-run evidence directly in this plan
-- update `docs/INDEXER_TEST_QUERIES.md` if any operator queries are still missing for:
+- update `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md` if any operator queries are still missing for:
   - backlog rate checks
   - summary-backed dirty-queue composition
   - near-complete release follow-up
@@ -787,7 +787,7 @@ WorkStream 4 completion note:
   - top-level sequencing and Phase 3 gate
 - `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
   - baseline refinement history and previously landed work
-- `docs/INDEXER_TEST_QUERIES.md`
+- `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md`
   - operator validation commands and DB inspection queries
 
 ## Exit Direction

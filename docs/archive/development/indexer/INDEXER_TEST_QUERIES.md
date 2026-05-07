@@ -1,6 +1,10 @@
 # Indexer Test Queries
 
-Saved commands and SQL for checking scrape, assemble, release, and inspect behavior while the indexer backend is being built out.
+Status: archived development reference
+
+Saved commands and SQL for checking scrape, assemble, release, and inspect behavior while the indexer backend was being built out.
+
+This file is intentionally kept as a developer/operator troubleshooting reference rather than public end-user documentation.
 
 ## Continuous Backfill
 

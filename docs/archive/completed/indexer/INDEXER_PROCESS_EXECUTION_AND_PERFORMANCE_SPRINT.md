@@ -723,7 +723,7 @@ Archive note:
 
 - `docs/ARCHITECTURE.md`
 - `docs/INDEXER_HOW_IT_WORKS.md`
-- `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
-- `docs/INDEXER_TEST_QUERIES.md`
+- `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md`
 - `docs/archive/completed/indexer/INDEXER_ASSEMBLE_AND_RELEASE_REFINEMENT_PLAN.md`
 - `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md`

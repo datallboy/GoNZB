@@ -1,102 +1,70 @@
 # GoNZB Architecture
 
-GoNZB is a modular monolith for Usenet downloading, aggregated indexer search, and provider-header indexing.
+GoNZB is a modular monolith for Usenet downloading, aggregated search, and local Usenet/NZB indexing.
 
-This document describes the current architecture after the modular stabilization work. It is the main reference for how modules are organized, how runtime wiring works, how API and CLI behavior map to module ownership, and how new features should be added without reintroducing cross-module coupling.
+This document is the high-level reference for how the main modules fit together, what each module owns, and how the current bootstrap-plus-runtime-settings model works.
 
-## Core Design Rules
+## Core Rules
 
-1. Downloader, Aggregator, and Usenet/NZB Indexer are separate ownership domains.
-2. The Aggregator must not require PostgreSQL for normal operation.
-3. The Downloader must not couple to PostgreSQL indexing internals.
-4. The Web UI consumes API surfaces; it does not own storage or runtime internals.
-5. The API layer stays transport-focused and talks to module-facing facades.
-6. Optional module combinations must keep working:
+1. Downloader, aggregator, and usenet indexer are separate ownership domains.
+2. The aggregator must work without PostgreSQL unless the local usenet indexer is explicitly used as a source.
+3. The downloader must not depend on PostgreSQL-backed indexer internals.
+4. The web UI uses API surfaces instead of talking to storage directly.
+5. Route registration, readiness, and runtime behavior are module-aware.
+6. These deployment shapes must keep working:
    - downloader-only
    - aggregator-only
    - usenet-indexer-only
    - all-in-one
 
-## Design Pattern
+## Architecture Shape
 
-GoNZB now follows a consistent modular-monolith pattern:
+GoNZB uses a pragmatic modular-monolith pattern:
 
-1. Runtime wiring builds concrete implementations.
-2. `app.Context` holds shared runtime state and module registrations.
-3. Module facades expose use cases to transport or other modules.
-4. Commands and queries are separated where practical.
-5. Long-running runtime behavior is managed through runtime modules.
-6. Controllers and CLI commands call facades or module services; they do not assemble internals.
+1. `internal/runtime/wiring` is the composition root.
+2. `internal/app/context.go` holds shared process state and module registrations.
+3. Module facades expose behavior to HTTP, CLI, and runtime adapters.
+4. Long-running services are managed through runtime modules.
+5. Storage, transport, and external integrations stay at the edges.
 
-This is not a full framework-heavy DDD system. It is a pragmatic ports-and-adapters shape:
+Important module-facing contracts live in `internal/app/contracts.go`.
 
-- domain types live near the center
-- use-case code lives in module packages
-- storage/network/transport are adapters
-- `internal/runtime/wiring` is the composition root
-
-## Runtime Composition
-
-### `app.Context`
-
-`internal/app/context.go` is the shared runtime container.
-
-It now carries:
-
-- bootstrap config
-- effective config
-- logger
-- shared runtime dependencies
-- module facades
-- runtime module registry
-- resource closers
-
-`app.Context` still exists because GoNZB runs as one process, but new feature code should avoid taking `*app.Context` directly unless it is part of runtime wiring.
-
-### Runtime Modules
-
-`internal/app/contracts.go` defines a runtime module contract:
-
-- `Name()`
-- `Enabled()`
-- `Build(ctx)`
-- `Start(ctx)`
-- `Reload(ctx)`
-- `Close()`
-- `ReadinessChecks(ctx)`
-
-`internal/runtime/wiring/runtime_modules.go` registers the current runtime modules:
-
-- downloader
-- aggregator
-- usenet-indexer
-- arr-notifier
-
-Current behavior:
-
-- startup calls `Build`
-- long-running server behavior calls `Start`
-- settings reload calls `Reload`
-- shutdown calls `Close`
-- readiness probes call `ReadinessChecks`
-
-This keeps startup, reload, readiness, and shutdown using the same module boundary instead of separate ad hoc logic paths.
-
-### Module Facades
-
-`app.Context` now exposes module-facing facades instead of asking transport code to construct concrete services itself.
-
-Current facades:
+Current facades include:
 
 - `DownloaderModule`
 - `AggregatorModule`
 - `SettingsAdmin`
 
-This keeps transport code dependent on module behavior, not internal package wiring.
+## Bootstrap Config Vs Runtime Settings
 
-## Current Modules
+GoNZB now keeps `config.yaml` intentionally small.
 
-## Downloader Module
+Bootstrap config is for values needed before the app can start:
+
+- HTTP port
+- hard module gates
+- logging
+- SQLite/blob/PostgreSQL bootstrap paths
+- API key and CORS
+
+Operational settings are stored in SQLite runtime settings and are edited through the control plane:
+
+- NNTP servers and credentials
+- downloader output paths and behavior
+- aggregator sources
+- indexer newsgroups, stages, schedules, and enrichment settings
+- maintenance and retention settings
+
+That means a fresh install usually follows this flow:
+
+1. copy `config.yaml.example`
+2. start `gonzb serve`
+3. create the initial admin user at `/setup`
+4. finish module configuration in `/admin/settings`
+
+## Module Overview
+
+### Downloader
 
 Primary packages:
 
@@ -107,54 +75,26 @@ Primary packages:
 - `internal/nzb`
 - `internal/store/sqlitejob`
 
-Responsibilities:
+What it owns:
 
-- queueing jobs
 - manual NZB enqueue
-- release-based enqueue
-- queue lifecycle and status transitions
-- NZB hydration and task preparation
-- segment download
-- repair/extraction/post-processing
-- downloader queue/history/files/events APIs
+- enqueue by release ID
+- queue lifecycle
+- NNTP download execution
+- extraction and post-processing
+- queue/history/files/events APIs
 - SAB-compatible downloader behavior
-
-Internal structure:
-
-- `internal/downloader/commands.go`
-  - enqueue
-  - cancel
-  - clear history
-  - delete terminal jobs
-  - pause/resume
-- `internal/downloader/queries.go`
-  - list queue
-  - list history
-  - get queue item
-  - get files
-  - get events
-  - paused state
-- `internal/engine/manager.go`
-  - owns queue state
-  - owns scheduling
-  - owns live active-item tracking
-- `internal/engine/workflow.go`
-  - owns per-job execution flow:
-    - hydrate
-    - download
-    - post-process
-    - finalize handoff
 
 Storage:
 
-- SQLite for queue/job/history/event metadata
-- filesystem working/output directories
+- SQLite queue/job/history/event metadata
+- filesystem work and output directories
 
-Key rule:
+Boundary rule:
 
-- downloader features must not depend on PostgreSQL release/indexing internals
+- downloader features must not reach into PostgreSQL-backed indexer storage
 
-## Indexer Manager / Aggregator Module
+### Aggregator
 
 Primary packages:
 
@@ -162,31 +102,32 @@ Primary packages:
 - `internal/aggregator/sources/*`
 - `internal/resolver`
 - `internal/store/blob`
-- optional cache metadata in `internal/store/sqlitejob`
 
-Responsibilities:
+What it owns:
 
-- search configured external indexer sources
-- merge and normalize search results
-- retrieve NZB payloads
-- optionally cache payloads
-- serve native aggregated release search
-- serve Newznab-compatible search/get behavior
+- searching configured sources
+- merging and normalizing release results
+- resolving NZB payloads
+- caching payloads
+- native aggregated search
+- Newznab-compatible search/get behavior
 
-Current facade:
+Current source types:
 
-- `AggregatorModule`
+- external Newznab sources
+- local blob-backed releases
+- the local usenet indexer when `aggregator.sources.usenet_indexer.enabled` is enabled
 
 Storage:
 
 - filesystem blob store for NZB payloads
-- optional SQLite cache metadata for search/cache state
+- optional SQLite-backed cache/search persistence
 
-Key rule:
+Boundary rule:
 
-- the aggregator can use filesystem cache and optional SQLite metadata, but must not require PostgreSQL
+- aggregator behavior may use the local indexer as a source, but it should still depend on module contracts rather than indexer storage internals
 
-## Usenet/NZB Indexer Module
+### Usenet Indexer
 
 Primary packages:
 
@@ -194,37 +135,33 @@ Primary packages:
 - `internal/indexing/scrape`
 - `internal/indexing/assemble`
 - `internal/indexing/release`
+- `internal/indexing/inspect`
+- `internal/indexing/enrich`
 - `internal/indexing/scheduler`
 - `internal/store/pgindex`
 
-Responsibilities:
+What it owns:
 
-- scrape provider article/header data
-- track checkpoints
-- assemble grouped binaries
-- form releases
-- maintain PostgreSQL-backed release catalog state
-- run scheduled indexing pipelines
+- scraping article headers from NNTP
+- assembling binaries
+- forming releases
+- inspection and enrichment passes
+- PostgreSQL-backed catalog and operational reporting
+- public and admin indexer APIs
 
 Storage:
 
-- PostgreSQL catalog/index state
+- PostgreSQL catalog/index data
 
-Indexer engineering reference:
+Reference:
 
-- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage indexer pipeline, core tables, release/inspect/enrich update flow, and current rough edges around file-name recovery and inspection coverage
+- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage pipeline
 
-Runtime notes:
+Boundary rule:
 
-- the usenet indexer runtime now derives a dedicated runtime config before runtime construction
-- scrape transport selection is isolated in runtime config derivation
-- the current default still uses the first configured NNTP server as the scrape transport
+- PostgreSQL-backed catalog ownership stays inside the usenet indexer module
 
-Key rule:
-
-- this module owns PostgreSQL-backed catalog/index behavior
-
-## API Module
+### API
 
 Primary packages:
 
@@ -232,56 +169,77 @@ Primary packages:
 - `internal/api/controllers`
 - `internal/telemetry`
 
-Responsibilities:
+What it owns:
 
-- register routes based on enabled modules
-- bind and validate requests
-- map transport DTOs
-- call module facades
-- expose health and readiness endpoints
+- route registration based on enabled modules
+- request binding and validation
+- transport DTO mapping
+- auth, audit, and request middleware
+- health and readiness endpoints
 
 Controller rule:
 
-- controllers should bind, validate, map, and call facades
-- controllers should not build runtimes, stores, or queue/aggregator internals
+- controllers should call facades or module services, not build internals directly
 
-## Web UI Module
+### Web UI
 
 Primary packages:
 
 - `internal/webui`
 - `ui/`
 
-Responsibilities:
+What it owns:
 
-- serve frontend assets when enabled
-- consume API routes
+- serving frontend assets when enabled
+- setup, admin, and operator workflows on top of the API
 
-Key rule:
+Boundary rule:
 
-- Web UI does not bypass API and should not couple directly to stores or runtime internals
+- the UI should not bypass the API layer
 
-## ARR Notifier Runtime Support
+### ARR Notifier
 
 Primary packages:
 
 - `internal/integrations/arr`
 - `internal/runtime/wiring/arr.go`
 
-Responsibilities:
+This is a runtime support module that reacts to terminal downloader outcomes and notifies external ARR tools when configured.
 
-- react to terminal downloader outcomes
-- notify external ARR tools when configured
+## Runtime Modules
 
-This is treated as a runtime support module, not a primary ownership domain like downloader or indexer.
+Runtime module contracts define:
 
-## API Behavior
+- `Name()`
+- `Enabled()`
+- `Build(ctx)`
+- `Start(ctx)`
+- `Reload(ctx)`
+- `Close()`
+- `ReadinessChecks(ctx)`
 
-The API surface remains module-owned even though transport lives under `internal/api`.
+Current runtime modules:
 
-### Native API
+- downloader
+- aggregator
+- usenet_indexer
+- arr_notifier
 
-Downloader-owned:
+Runtime lifecycle behavior:
+
+- startup builds enabled modules
+- server mode starts long-running runtimes
+- settings changes trigger reload where supported
+- readiness probes call module-owned checks
+- shutdown closes module resources
+
+This keeps startup, reload, readiness, and shutdown on the same module boundaries instead of scattering that logic across the app.
+
+## API Surface Ownership
+
+Routes are registered only when the owning module is enabled.
+
+### Downloader-Owned Routes
 
 - `GET /api/v1/queue`
 - `GET /api/v1/queue/history`
@@ -294,238 +252,125 @@ Downloader-owned:
 - `POST /api/v1/queue/bulk/delete`
 - `POST /api/v1/queue/history/clear`
 - `GET /api/v1/events/queue`
+- `/api/sab?mode=...`
 
-Aggregator-owned:
+### Aggregator-Owned Routes
 
 - `GET /api/v1/releases/search`
+- `/api?t=...`
 - `GET /nzb/:id`
 
-Admin/runtime settings:
+### Indexer-Owned Routes
+
+- `GET /api/v1/indexer/overview`
+- `GET /api/v1/indexer/stages`
+- `GET /api/v1/indexer/runs`
+- `POST /api/v1/indexer/stages/:stage/run`
+- `POST /api/v1/indexer/stages/:stage/pause`
+- `POST /api/v1/indexer/stages/:stage/resume`
+- `GET /api/v1/indexer/releases`
+- `GET /api/v1/indexer/releases/:id`
+- `GET /api/v1/indexer/binaries/:id`
+- `GET /api/v1/indexer/files/:id`
+- `GET /api/v1/admin/indexer/*`
+
+### Shared Control-Plane And Auth Routes
 
 - `GET /api/v1/admin/settings`
+- `GET /api/v1/admin/capabilities`
 - `PUT /api/v1/admin/settings`
+- `/api/v1/auth/*`
+- `/api/v1/admin/auth/*`
 
-Telemetry:
+### Shared Compatibility Multiplexer
+
+- `/api?mode=...` routes to SAB-compatible downloader behavior
+- `/api?t=...` routes to Newznab-compatible aggregator behavior
+
+### Probes
 
 - `GET /healthz`
 - `GET /readyz`
 
-### Compatibility API
+## Readiness Model
 
-Explicit compatibility surfaces:
-
-- `/api?mode=...` => SAB-compatible downloader behavior
-- `/api/sab?mode=...` => explicit SAB-compatible downloader behavior
-- `/api?t=...` => Newznab-compatible aggregator behavior
-- `/nzb/:id` => direct NZB fetch under aggregator ownership
-
-### Route Registration Rules
-
-Routes are only registered when their owning modules are enabled.
+Readiness is reported through module-owned checks rather than ad hoc global inspection.
 
 Examples:
 
-- downloader-only mode exposes queue and SAB routes, but not release search
-- aggregator-only mode exposes search/get routes, but not queue routes
-- usenet-indexer-only does not automatically expose downloader or aggregator transport
+- downloader checks queue manager, SQLite store, parser, and NNTP runtime
+- aggregator checks that it has a runtime, a payload store, and at least one enabled source
+- usenet indexer checks PostgreSQL availability and settings store health
 
-## CLI Behavior
+This is why an enabled module can start but still report a not-ready state until its runtime settings are configured.
 
-Primary command entrypoint:
+## CLI Shape
+
+Primary entrypoint:
 
 - `cmd/gonzb/main.go`
 
-Runtime command wiring:
-
-- `internal/runtime/commands`
-
-Current CLI behavior:
+Common commands:
 
 - `gonzb serve`
-  - starts server/API mode
-  - builds enabled runtimes
-  - validates readiness before serving
 - `gonzb --file <nzb>`
-  - runs manual downloader flow for a single NZB
 - `gonzb indexer scrape`
-  - compatibility scrape command
 - `gonzb indexer scrape latest`
-  - latest scrape mode
 - `gonzb indexer scrape backfill --once`
-  - backfill scrape mode
 - `gonzb indexer assemble --once`
-  - assemble pass
 - `gonzb indexer release --once`
-  - release pass
 - `gonzb indexer pipeline --once`
-  - full scrape/assemble/release pipeline
+- `gonzb indexer inspect ...`
+- `gonzb indexer enrich ...`
+- `gonzb indexer maintenance`
 
-CLI rules:
+CLI rule:
 
-- CLI commands should call runtime commands or module services
-- CLI should not duplicate business logic that already exists in a module
-- if a new feature needs CLI support, add the use case first, then add the command adapter
+- CLI adapters should call runtime commands or module services instead of duplicating business logic
 
-## Storage Model
+## Storage Overview
 
 ### SQLite
 
 Used for:
 
-- downloader queue/job/history/event state
-- runtime settings state
-- optional aggregator cache metadata
-
-Primary packages:
-
-- `internal/store/sqlitejob`
-- `internal/store/settings`
+- downloader metadata
+- auth state
+- runtime settings
+- optional aggregator cache/search persistence
 
 ### Filesystem Blob Store
 
 Used for:
 
-- cached NZB payloads
-- payload durability for downloader/aggregator flows
-
-Primary packages:
-
-- `internal/store/blob`
+- NZB payload cache files
 
 ### PostgreSQL
 
 Used for:
 
-- usenet indexer catalog/index state
+- usenet indexer catalog and pipeline state
 
-Primary package:
+## Extension Guidelines
 
-- `internal/store/pgindex`
+When adding new work:
 
-## Health, Readiness, and Settings Reload
+1. decide which module owns the behavior
+2. add or extend the module use case first
+3. add storage or integration adapters only where needed
+4. keep HTTP, CLI, and UI adapters thin
+5. preserve optional deployment combinations
 
-### Health and Readiness
+Avoid:
 
-`internal/telemetry/readiness.go` now reads module-owned readiness checks from the runtime module registry.
+- putting business logic directly in controllers
+- passing `*app.Context` deep into feature code outside runtime wiring
+- creating direct cross-module storage dependencies
 
-That means readiness is now reported by module contracts rather than by hand-inspecting raw fields everywhere.
+For indexer-specific work:
 
-Examples:
-
-- downloader checks queue manager, downloader runtime, parser, NNTP manager, and SQLite store health
-- aggregator checks runtime presence, payload store, and optional cache/store readiness
-- usenet indexer checks runtime presence, PostgreSQL readiness, and settings store readiness
-
-### Settings Reload
-
-`internal/runtime/wiring/settings.go` watches runtime settings changes and asks runtime modules to reload themselves.
-
-Current behavior:
-
-- effective config is recalculated
-- runtime modules are reloaded through the registry
-- downloader reload may still defer while work is active
-- readiness continues to use the same runtime module layer
-
-## How To Add New Features
-
-## Adding A Feature To An Existing Module
-
-Use this order:
-
-1. Decide which module owns the feature.
-2. Add or extend a module use case first.
-3. Add storage/network adapters only where needed.
-4. Call the use case from HTTP, CLI, scheduler, or integration code.
-5. Add tests at the module seam.
-
-Do:
-
-- add downloader writes to downloader commands
-- add downloader reads to downloader queries
-- add aggregator search/get features behind aggregator facade logic
-- add indexer scrape/assemble/release features inside `internal/indexing/*`
-
-Do not:
-
-- put new feature logic directly in controllers
-- pass `*app.Context` into new feature logic outside runtime wiring
-- add cross-module shortcuts to reach another module’s storage directly
-
-## Adding A New Module
-
-If GoNZB gains a new major module:
-
-1. Define its ownership clearly.
-2. Decide whether it needs:
-   - a facade
-   - a runtime module
-   - storage
-   - API routes
-   - CLI commands
-3. Register it through `internal/runtime/wiring`.
-4. Add readiness checks through the runtime module contract.
-5. Keep API/CLI adapters thin.
-
-A new module should be able to answer:
-
-- what it owns
-- what it depends on
-- what storage it needs
-- what routes/commands it exposes
-- whether it can be enabled independently
-
-## Adding Features To The Usenet Indexer
-
-New indexing features should follow the existing indexing stages instead of mixing concerns:
-
-- scrape
-- assemble
-- release
-- scheduler/runtime
-
-Examples:
-
-- new article/header ingestion behavior belongs in `internal/indexing/scrape`
-- binary grouping or matching changes belong in `internal/indexing/assemble` or `internal/indexing/match`
-- release formation changes belong in `internal/indexing/release`
-- schedule/restart behavior belongs in `internal/indexing/scheduler` or runtime wiring
-- PG schema/repository changes belong in `internal/store/pgindex`
-
-Rules for new usenet indexing work:
-
-1. Keep PostgreSQL ownership inside the usenet indexer module.
-2. Do not leak PG catalog assumptions into downloader or aggregator code.
-3. If a feature needs API exposure later, add a module use case first, then a transport adapter.
-4. If a feature needs runtime configuration, add it to indexer runtime config derivation instead of hardcoding it inside deep runtime assembly.
-
-## Code Writing Rules For Future Work
-
-1. Start with the owning module.
-2. Add a use case before adding adapters.
-3. Keep transport code transport-only.
-4. Keep commands and queries separate where it improves ownership clarity.
-5. Keep runtime behavior behind runtime modules.
-6. Preserve optional deployment combinations.
-7. Prefer explicit interfaces at module boundaries, not generic shared helpers.
-
-## Current Testing Direction
-
-The current architecture now has coverage for:
-
-- downloader command/query seams
-- route registration behavior
-- runtime-module readiness behavior
-
-Future coverage that is still valuable:
-
-- module-combination startup tests
-- settings reload tests
-- more queue workflow tests
-- more usenet indexer runtime tests
-
-## Related Documents
-
-- [archive/MODULAR_REFACTOR.md](archive/MODULAR_REFACTOR.md)
-- [README.md](../README.md)
-- [INDEXER_PLAN.md](archive/INDEXER_PLAN.md)
+- scrape behavior belongs in `internal/indexing/scrape`
+- binary matching and grouping belongs in assemble or match code
+- release formation belongs in `internal/indexing/release`
+- inspection and enrichment belong in their dedicated stage packages
+- schema and repository changes belong in `internal/store/pgindex`

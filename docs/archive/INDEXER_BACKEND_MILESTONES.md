@@ -1424,7 +1424,7 @@ Measure why the PostgreSQL indexer catalog is growing quickly, decide what raw a
 
 - `internal/store/pgindex/migrations`
 - `internal/store/pgindex/repository.go`
-- `docs/INDEXER_TEST_QUERIES.md`
+- `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md`
 - runtime/operator docs if retention settings or maintenance commands are added
 
 ### Acceptance Criteria

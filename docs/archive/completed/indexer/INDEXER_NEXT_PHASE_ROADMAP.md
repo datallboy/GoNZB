@@ -16,7 +16,7 @@ Current reference docs:
 
 - `docs/active/INDEXER_FOUNDATION_DOCS.md`
 - `docs/INDEXER_HOW_IT_WORKS.md`
-- `docs/INDEXER_TEST_QUERIES.md`
+- `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md`
 - `docs/ARCHITECTURE.md`
 
 ## Why A New Phase Exists

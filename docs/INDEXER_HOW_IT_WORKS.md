@@ -1,6 +1,8 @@
 # Indexer How It Works
 
-This is the engineering reference for the current Usenet/NZB indexer pipeline.
+This is the technical reference for the current Usenet/NZB indexer pipeline.
+
+It is meant for engineering and operator-level understanding of how the local indexer works. It is not the quick-start or end-user setup guide.
 
 It explains:
 
@@ -9,7 +11,7 @@ It explains:
 3. how binaries, files, and releases are formed
 4. how inspect and enrich update release metadata
 5. how later scraped articles or metadata updates propagate back into the catalog
-6. where the current rough edges are
+6. where important implementation constraints still matter
 
 This document reflects the current implementation after the stabilization and migration squash work.
 
@@ -247,7 +249,7 @@ What it means:
 
 ## Stage By Stage
 
-## `indexer scrape latest`
+### `indexer scrape latest`
 
 Purpose:
 
@@ -280,7 +282,7 @@ Important note:
 - scrape does not create binaries or releases directly
 - it only creates raw article inventory for later stages
 
-## `indexer scrape backfill`
+### `indexer scrape backfill`
 
 Purpose:
 
@@ -306,7 +308,7 @@ Backfill cutoff behavior:
 
 This is restart-safe.
 
-## `indexer assemble`
+### `indexer assemble`
 
 Purpose:
 
@@ -442,7 +444,7 @@ Important rules:
 
 That is why a release can look like many `.bin` files if assembly does not respect yEnc metadata. The current assembly path now uses yEnc metadata as first-class identity evidence to avoid that regression.
 
-## `indexer release`
+### `indexer release`
 
 Purpose:
 
@@ -569,7 +571,7 @@ Current rules:
 
 This prevents obfuscated multipart slices from being mislabeled as complete single-file releases.
 
-## `indexer inspect discovery`
+### `indexer inspect discovery`
 
 Purpose:
 
@@ -605,7 +607,7 @@ Why this stage exists:
 - archive/media inspect stages are filename-gated
 - discovery bridges that gap so later inspect stages can see more of the complete catalog
 
-## `indexer inspect archive`
+### `indexer inspect archive`
 
 Purpose:
 
@@ -631,7 +633,7 @@ Important consequence:
 - without `inspect_discovery`, a release that is 100% complete but still all `.bin` will not be an archive candidate
 - with `inspect_discovery`, recovered archive families can be renamed into archive-like file names first, then `inspect_archive` can process them normally
 
-## `indexer inspect media`
+### `indexer inspect media`
 
 Purpose:
 
@@ -660,7 +662,7 @@ Important consequence:
 - archive-backed media inspection depends on archive inspection having run first
 - opaque `.bin` release files block both paths until `inspect_discovery` recovers a usable extension or archive family shape
 
-## `indexer inspect nfo`, `inspect par2`, `inspect password`
+### `indexer inspect nfo`, `inspect par2`, `inspect password`
 
 These stages use narrower file filters:
 
@@ -673,7 +675,7 @@ These stages use narrower file filters:
 
 They all feed metadata back into `releases` through `ApplyReleaseInspectionUpdate`.
 
-## `indexer enrich predb`
+### `indexer enrich predb`
 
 Purpose:
 
@@ -693,7 +695,7 @@ Important behavior:
 - recovery/fallback commands try to improve weak release identity
 - they are more likely to help weakly named releases than archive/media inspection when filenames are opaque
 
-## `indexer enrich tmdb`
+### `indexer enrich tmdb`
 
 Purpose:
 
@@ -710,7 +712,7 @@ Important behavior:
 - this stage depends on the release already having a usable title/query shape
 - it improves releases after formation and inspection, not before
 
-## `indexer_maintenance`
+### `indexer_maintenance`
 
 Purpose:
 
@@ -726,7 +728,7 @@ It currently:
 
 ## How Metadata Flows Back Into Releases
 
-## From inspect
+### From inspect
 
 Inspect stages update releases through:
 
@@ -757,7 +759,7 @@ Important note:
 - inspect does not rebuild releases from scratch
 - it patches release metadata after formation
 
-## From enrich
+### From enrich
 
 Enrichment updates release metadata similarly, but from external metadata sources.
 

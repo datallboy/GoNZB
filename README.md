@@ -2,142 +2,133 @@
 
 GoNZB is a modular Usenet application written in Go.
 
-It can run in several combinations depending on which modules you enable:
+It can run as:
 
-- Downloader module
-- Indexer Manager / Aggregator module
-- Usenet/NZB Indexer module
-- API module
-- Web UI module
+- a downloader
+- an aggregator for external and local sources
+- a Usenet/NZB indexer
+- an all-in-one server with API and web UI
 
-The project is designed as a modular monolith: modules run in one process, but ownership boundaries are explicit so downloader, aggregator, and indexing features can evolve independently.
+The project is intentionally built as a modular monolith. Downloader, aggregator, and indexer live in one process, but they keep clear ownership boundaries so each module can be enabled independently.
 
-## Module Overview
+## What It Does
 
-### Downloader module
-The downloader module owns:
+### Downloader
 
-- queueing NZB jobs
-- fetching Usenet segments from NNTP providers
-- post-processing and extraction
-- queue/history/files/events APIs
-- SAB-compatible downloader API behavior
+The downloader module handles:
 
-This module persists queue and job metadata in SQLite.
+- manual NZB enqueue
+- release-based enqueue from search results
+- NNTP download execution
+- extraction and post-processing
+- queue, history, files, and event APIs
+- SAB-compatible downloader behavior
 
-### Indexer Manager / Aggregator module
-The aggregator module owns:
+### Aggregator
 
-- searching configured external indexer sources
-- serving Newznab-compatible search/get behavior
-- payload caching for NZBs
-- native aggregated search APIs
+The aggregator module handles:
 
-The aggregator can run without PostgreSQL.
+- searching external Newznab sources
+- searching the local indexer as a source when enabled
+- serving Newznab-compatible search and get behavior
+- caching NZB payloads
+- native aggregated release search
 
-### Usenet/NZB Indexer module
-The usenet indexer module owns:
+The aggregator does not require PostgreSQL unless you explicitly use the local usenet indexer as one of its sources.
 
-- scraping provider headers
-- grouping/assembly/release formation
-- PostgreSQL-backed catalog/index pipelines
+### Usenet/NZB Indexer
 
-This module requires PostgreSQL.
+The usenet indexer module handles:
 
-### API module
-The API module exposes:
+- scraping article headers from NNTP providers
+- assembling binaries and forming releases
+- inspection and enrichment passes
+- PostgreSQL-backed release catalog APIs
+- feeding the aggregator when the local indexer source is enabled
 
-- native `/api/v1/*` endpoints
-- shared compatibility `/api`
-- explicit `/api/sab`
-- direct `/nzb/:id`
-- `/healthz` and `/readyz`
+### API And Web UI
 
-### Web UI module
-The web UI module serves the frontend when enabled. It should consume the API module rather than bypassing it.
+The API module exposes native APIs, compatibility routes, health/readiness probes, and admin/runtime settings endpoints.  
+The web UI sits on top of those APIs and provides first-run setup, operations, and admin tooling.
 
-## Supported Module Combinations
+## Common Deployment Shapes
 
-GoNZB is intended to support these combinations:
+GoNZB is designed to support these combinations:
 
 1. downloader-only
 2. aggregator-only
 3. usenet-indexer-only
 4. all-in-one
 
-Do not assume that enabling one module requires all others.
+Do not assume one module requires the others.
 
-## API Surfaces
+## How The Modules Work Together
 
-### Native API
-Native APIs live under `/api/v1/*`.
+- The aggregator can search external indexers, the local blob cache, and the local usenet indexer.
+- The downloader can enqueue NZBs directly or queue releases discovered through the aggregator or local indexer.
+- The local usenet indexer can act as a catalog source for the aggregator without collapsing module boundaries.
 
-Current major native surfaces include:
+## Storage
 
-- downloader queue APIs
-- downloader queue event stream
-- aggregator search API
-- admin runtime settings API
+GoNZB uses different storage backends depending on which modules are enabled:
 
-### Compatibility API
-Compatibility APIs are explicit and stable:
+- SQLite for downloader metadata, auth, runtime settings, and optional aggregator cache/search persistence
+- filesystem blob storage for cached NZB payloads
+- PostgreSQL for the usenet indexer catalog and indexing pipeline
 
-- `/api?mode=...` => SAB-compatible downloader API
-- `/api/sab?mode=...` => explicit SAB-compatible downloader API
-- `/api?t=...` => Newznab-compatible aggregator API
-- `/nzb/:id` => direct NZB fetch/download under aggregator ownership
+## Configuration Model
 
-## Storage Overview
+`config.yaml` is now intentionally minimal.
 
-GoNZB uses multiple storage backends depending on enabled modules:
+Bootstrap config covers:
 
-- SQLite:
-  - downloader queue/job/history state
-  - runtime settings state
-  - optional aggregator cache metadata
-- filesystem blob store:
-  - cached NZB payloads
-- PostgreSQL:
-  - usenet indexer catalog/index data
+- port and HTTP/bootstrap behavior
+- hard module enablement flags
+- logging
+- storage bootstrap paths
+- API key and CORS
 
-The aggregator does not require PostgreSQL for basic operation.
+Operational settings are managed at runtime and stored in SQLite:
 
-## Runtime Safety
+- NNTP servers and credentials
+- downloader paths and options
+- aggregator sources
+- indexer newsgroups, stages, schedules, and enrichment settings
+- maintenance and retention settings
 
-Server mode includes baseline hardening:
-
-- request ID middleware
-- panic recovery middleware
-- request body size limits
-- explicit read/write/idle timeouts
-- startup readiness validation
-- `/healthz` and `/readyz` endpoints
-
-## Configuration
-
-GoNZB uses a `config.yaml` file:
+Start from the example:
 
 ```bash
 cp config.yaml.example config.yaml
 ```
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural split and runtime ownership model.
+Then launch GoNZB and complete setup in the UI:
 
-## Usage
-**Start API/server mode**
+- create the initial admin user at `/setup`
+- configure enabled modules in `/admin/settings`
+
+## Quick Start
+
+### Run The Server
 
 ```bash
 make build
 ./bin/gonzb serve
 ```
 
-**Manual NZB download**
+If `/config/config.yaml` exists, GoNZB will use it automatically in container-style environments. Otherwise pass the path explicitly:
+
+```bash
+./bin/gonzb --config /config/config.yaml serve
+```
+
+### Manual NZB Download
 
 ```bash
 ./bin/gonzb --file my_file.nzb
 ```
 
-**Docker**
+### Docker
 
 ```bash
 docker build \
@@ -156,8 +147,30 @@ docker run -d \
   gonzb:latest serve
 ```
 
-If the config is mounted under /config, pass it explicitly:
+## API Surfaces
 
-```bash
-gonzb --config /config/config.yaml serve
-```
+### Native
+
+- downloader routes under `/api/v1/queue` and `/api/v1/events/queue`
+- aggregator release search under `/api/v1/releases/search`
+- indexer catalog and operations under `/api/v1/indexer/*`
+- admin settings and control-plane routes under `/api/v1/admin/*`
+- auth routes under `/api/v1/auth/*`
+
+### Compatibility
+
+- `/api?mode=...` for SAB-compatible downloader behavior
+- `/api/sab?mode=...` for explicit SAB-compatible downloader behavior
+- `/api?t=...` for Newznab-compatible aggregator behavior
+- `/nzb/:id` for direct NZB fetch/download
+
+### Probes
+
+- `/healthz`
+- `/readyz`
+
+## Docs
+
+- [Docs Index](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Indexer How It Works](docs/INDEXER_HOW_IT_WORKS.md)
