@@ -2,6 +2,7 @@ import { apiRequest } from './http'
 import type {
   IndexerBackfillProgress,
   IndexerDashboardStats,
+  IndexerStageThroughput,
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
@@ -28,6 +29,10 @@ export function refreshAdminDashboardStats() {
 
 export function getAdminBackfillProgress() {
   return apiRequest<IndexerBackfillProgress>('/api/v1/admin/indexer/overview/backfill-progress')
+}
+
+export function getAdminStageThroughput() {
+  return apiRequest<IndexerStageThroughput>('/api/v1/admin/indexer/overview/throughput')
 }
 
 export async function getAdminStages() {

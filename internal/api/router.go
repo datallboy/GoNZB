@@ -172,6 +172,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/overview/stats", indexerAdminCtrl.GetDashboardStats)
 		v1AdminIndexer.POST("/overview/stats/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.GET("/overview/backfill-progress", indexerAdminCtrl.GetBackfillProgress)
+		v1AdminIndexer.GET("/overview/throughput", indexerAdminCtrl.GetStageThroughput)
 		v1AdminIndexer.GET("/overview/backlog", indexerAdminCtrl.GetDashboardStats)
 		v1AdminIndexer.POST("/overview/backlog/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)

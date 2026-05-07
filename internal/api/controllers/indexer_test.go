@@ -16,6 +16,7 @@ type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
 	dashboard    *pgindex.IndexerDashboardStats
 	backfill     *pgindex.IndexerBackfillProgress
+	throughput   *pgindex.IndexerStageThroughput
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
 	run          *pgindex.IndexerStageRun
@@ -44,6 +45,10 @@ func (s *stubIndexerService) RefreshDashboardStats(ctx context.Context) (*pginde
 
 func (s *stubIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
 	return s.backfill, nil
+}
+
+func (s *stubIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
+	return s.throughput, nil
 }
 
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
@@ -325,6 +330,48 @@ func TestIndexerAdminControllerGetBackfillProgress(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, needle := range []string{`"count":1`, `"group_name":"alt.binaries.wood"`, `"cutoff_reached":true`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/throughput", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{
+		Service: &stubIndexerService{
+			throughput: &pgindex.IndexerStageThroughput{
+				Items: []pgindex.IndexerStageThroughputItem{{
+					StageName: "assemble",
+					Label:     "Assemble",
+					ItemLabel: "headers",
+					Windows: []pgindex.IndexerStageThroughputWindow{{
+						WindowHours:    1,
+						CompletedRuns:  2,
+						ItemsProcessed: 20000,
+						ItemsPerSecond: 500,
+					}},
+				}},
+				Count: 1,
+			},
+		},
+	}
+
+	if err := ctrl.GetStageThroughput(c); err != nil {
+		t.Fatalf("GetStageThroughput returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"count":1`, `"stage_name":"assemble"`, `"items_per_second":500`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}

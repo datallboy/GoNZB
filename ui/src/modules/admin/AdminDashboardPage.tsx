@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminOverview, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerOverview } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -15,6 +15,31 @@ function formatDate(value?: string) {
     return 'Not observed'
   }
   return new Date(value).toLocaleDateString()
+}
+
+function formatRate(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0'
+  }
+  if (value >= 100) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+  }
+  if (value >= 10) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function formatDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return '0s'
+  }
+  const seconds = ms / 1000
+  if (seconds < 60) {
+    return `${formatRate(seconds)}s`
+  }
+  const minutes = seconds / 60
+  return `${formatRate(minutes)}m`
 }
 
 function statFootnote(stat: IndexerDashboardStat) {
@@ -37,9 +62,11 @@ export function AdminDashboardPage() {
   const [overview, setOverview] = useState<IndexerOverview | null>(null)
   const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
+  const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
+  const [throughputError, setThroughputError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -52,6 +79,9 @@ export function AdminDashboardPage() {
     void getAdminBackfillProgress()
       .then(setBackfill)
       .catch((err) => setBackfillError(err instanceof Error ? err.message : 'Failed to load backfill progress'))
+    void getAdminStageThroughput()
+      .then(setThroughput)
+      .catch((err) => setThroughputError(err instanceof Error ? err.message : 'Failed to load stage throughput'))
   }, [])
 
   function refreshStats() {
@@ -127,6 +157,55 @@ export function AdminDashboardPage() {
               {stat.last_error ? <small>{stat.last_error}</small> : null}
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">Recent Stage Throughput</h2>
+          <p className="muted-copy">
+            Recent persisted run speed across the last 1, 6, and 24 hours. This helps show where throughput is strong and where a stage is slowing down.
+          </p>
+        </div>
+        {throughputError ? <div className="banner error">{throughputError}</div> : null}
+        <div className="table-shell">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Last 1h</th>
+                <th>Last 6h</th>
+                <th>Last 24h</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(throughput?.items ?? []).map((item) => (
+                <tr key={item.stage_name}>
+                  <td>
+                    <strong>{item.label}</strong>
+                    <div className="muted-copy">Tracks {item.item_label} processed.</div>
+                  </td>
+                  {item.windows.map((window) => (
+                    <td key={`${item.stage_name}-${window.window_hours}`}>
+                      <div>
+                        <strong>{window.items_processed.toLocaleString()}</strong> {item.item_label}
+                      </div>
+                      <div className="muted-copy">{formatRate(window.items_per_second)}/sec</div>
+                      <div className="muted-copy">{window.completed_runs} completed · {window.failed_runs} failed</div>
+                      <div className="muted-copy">Avg run {formatDuration(window.avg_run_duration_ms)}</div>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {!throughputError && (throughput?.items.length ?? 0) === 0 ? (
+                <tr>
+                  <td colSpan={4} className="muted-copy">
+                    No recent stage throughput data yet.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
       </div>
 
