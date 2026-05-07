@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
 import type {
@@ -238,8 +238,24 @@ function parseCleanupExtensions(value: string) {
 function serversForSave(servers: ServerRuntimeSettings[], prefix: string) {
   return servers.map((server, index) => ({
     ...server,
-    id: server.id?.trim() || `${prefix}-${index + 1}`,
+    id: deriveServerID(server, index, prefix),
   }))
+}
+
+function deriveServerID(server: ServerRuntimeSettings, index: number, prefix: string) {
+  const hostID = server.host.trim().toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+  if (hostID) {
+    return hostID
+  }
+  return server.id?.trim() || `${prefix}-${index + 1}`
+}
+
+function serverTitle(server: ServerRuntimeSettings, index: number) {
+  const host = server.host.trim()
+  if (host) {
+    return host
+  }
+  return `Server ${index + 1}`
 }
 
 function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRuntimeSettings {
@@ -429,7 +445,7 @@ export function AdminSettingsPage() {
             {downloaderServers.map((server, index) => (
               <ServerFields
                 key={index}
-                title={`Server ${index + 1}`}
+                title={serverTitle(server, index)}
                 server={server}
                 locked={lockDownloaderServers}
                 onRemove={() => setSettings((current) => ({ ...current, downloader_servers: downloaderServers.filter((_, i) => i !== index) }))}
@@ -520,7 +536,7 @@ export function AdminSettingsPage() {
             {indexerServers.map((server, index) => (
               <ServerFields
                 key={index}
-                title={`Server ${index + 1}`}
+                title={serverTitle(server, index)}
                 server={server}
                 locked={lockIndexerServers}
                 onRemove={() => setSettings((current) => ({ ...current, indexer_servers: indexerServers.filter((_, i) => i !== index) }))}
@@ -548,15 +564,12 @@ export function AdminSettingsPage() {
                   required
                   onChange={(value) => updateNewsgroup(index, { group: value })}
                 />
-                <label>
-                  <span>Backfill until date</span>
-                  <input
-                    type="date"
-                    value={row.until}
-                    onChange={(event) => updateNewsgroup(index, { until: event.target.value })}
-                  />
-                  <small>Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date.</small>
-                </label>
+                <DateField
+                  label="Backfill until date"
+                  value={row.until}
+                  onChange={(value) => updateNewsgroup(index, { until: value })}
+                  helpText="Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date."
+                />
                 <button
                   className="secondary-button align-end"
                   type="button"
@@ -835,6 +848,47 @@ function TextField({
     <label className="field">
       <span>{label}</span>
       <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  )
+}
+
+function DateField({
+  label,
+  value,
+  required,
+  helpText,
+  onChange,
+}: {
+  label: string
+  value: string
+  required?: boolean
+  helpText?: string
+  onChange: (value: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  function openPicker() {
+    inputRef.current?.showPicker?.()
+  }
+
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div className="button-row">
+        <input
+          ref={inputRef}
+          type="date"
+          value={value}
+          required={required}
+          onFocus={openPicker}
+          onClick={openPicker}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button className="secondary-button" type="button" onClick={openPicker}>
+          Pick Date
+        </button>
+      </div>
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
