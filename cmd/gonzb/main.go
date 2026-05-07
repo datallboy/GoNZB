@@ -15,6 +15,8 @@ var (
 	nzbPath   string
 	cfgFile   string = "config.yaml"
 
+	serveWithoutIndexerSupervisor bool
+
 	scrapeOnce    bool
 	assembleOnce  bool
 	releaseOnce   bool
@@ -52,7 +54,9 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Starts GoNZB in server mode. Start HTTP server.",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteServer()
+		commands.New(cfgFile).ExecuteServerWithOptions(commands.ServerOptions{
+			DisableIndexerSupervisor: serveWithoutIndexerSupervisor,
+		})
 	},
 }
 
@@ -243,6 +247,7 @@ func init() {
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
+	serveCmd.Flags().BoolVar(&serveWithoutIndexerSupervisor, "no-indexer-supervisor", false, "serve API/UI without starting the built-in indexer supervisor")
 
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
