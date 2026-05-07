@@ -65,6 +65,29 @@ type IndexerBackfillProgress struct {
 	Count int                           `json:"count"`
 }
 
+type IndexerStageThroughputWindow struct {
+	WindowHours      int     `json:"window_hours"`
+	CompletedRuns    int     `json:"completed_runs"`
+	FailedRuns       int     `json:"failed_runs"`
+	ItemsProcessed   int64   `json:"items_processed"`
+	ItemsPerSecond   float64 `json:"items_per_second"`
+	ItemsPerMinute   float64 `json:"items_per_minute"`
+	ItemsPerHour     float64 `json:"items_per_hour"`
+	AvgRunDurationMS float64 `json:"avg_run_duration_ms"`
+}
+
+type IndexerStageThroughputItem struct {
+	StageName string                         `json:"stage_name"`
+	Label     string                         `json:"label"`
+	ItemLabel string                         `json:"item_label"`
+	Windows   []IndexerStageThroughputWindow `json:"windows"`
+}
+
+type IndexerStageThroughput struct {
+	Items []IndexerStageThroughputItem `json:"items"`
+	Count int                          `json:"count"`
+}
+
 type IndexerReleaseSummary struct {
 	ReleaseID               string     `json:"release_id"`
 	GUID                    string     `json:"guid"`
@@ -604,6 +627,200 @@ func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfil
 		Items: items,
 		Count: len(items),
 	}, nil
+}
+
+type stageThroughputDefinition struct {
+	StageName string
+	Label     string
+	ItemLabel string
+}
+
+var stageThroughputDefinitions = []stageThroughputDefinition{
+	{StageName: "scrape_latest", Label: "Scrape Latest", ItemLabel: "headers"},
+	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
+	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
+	{StageName: "release", Label: "Release", ItemLabel: "families"},
+	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
+	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
+	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
+	{StageName: "inspect_archive", Label: "Inspect Archive", ItemLabel: "binaries"},
+	{StageName: "inspect_password", Label: "Inspect Password", ItemLabel: "binaries"},
+	{StageName: "inspect_media", Label: "Inspect Media", ItemLabel: "binaries"},
+	{StageName: "enrich_predb", Label: "Enrich Predb", ItemLabel: "releases"},
+	{StageName: "enrich_tmdb", Label: "Enrich TMDB", ItemLabel: "releases"},
+}
+
+type stageThroughputAccumulator struct {
+	completedRuns   int
+	failedRuns      int
+	itemsProcessed  int64
+	totalDurationMS float64
+}
+
+func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThroughput, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT stage_name, status, started_at, finished_at, metrics_json
+		FROM indexer_stage_runs
+		WHERE started_at >= NOW() - INTERVAL '24 hours'
+		ORDER BY started_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("get indexer stage throughput: %w", err)
+	}
+	defer rows.Close()
+
+	windows := []int{1, 6, 24}
+	now := time.Now().UTC()
+	accumulators := make(map[string]map[int]*stageThroughputAccumulator, len(stageThroughputDefinitions))
+	defByStage := make(map[string]stageThroughputDefinition, len(stageThroughputDefinitions))
+	for _, def := range stageThroughputDefinitions {
+		defByStage[def.StageName] = def
+		accumulators[def.StageName] = make(map[int]*stageThroughputAccumulator, len(windows))
+		for _, windowHours := range windows {
+			accumulators[def.StageName][windowHours] = &stageThroughputAccumulator{}
+		}
+	}
+
+	for rows.Next() {
+		var (
+			stageName  string
+			status     string
+			startedAt  time.Time
+			finishedAt sql.NullTime
+			metricsRaw []byte
+		)
+		if err := rows.Scan(&stageName, &status, &startedAt, &finishedAt, &metricsRaw); err != nil {
+			return nil, fmt.Errorf("scan indexer stage throughput row: %w", err)
+		}
+		if _, ok := defByStage[stageName]; !ok {
+			continue
+		}
+		age := now.Sub(startedAt.UTC())
+		var items int64
+		var durationMS float64
+		if strings.EqualFold(status, "completed") {
+			items = stageThroughputMetricValue(stageName, metricsRaw)
+			if finishedAt.Valid {
+				durationMS = finishedAt.Time.Sub(startedAt).Seconds() * 1000
+			}
+		}
+		for _, windowHours := range windows {
+			if age > time.Duration(windowHours)*time.Hour {
+				continue
+			}
+			acc := accumulators[stageName][windowHours]
+			switch strings.ToLower(strings.TrimSpace(status)) {
+			case "completed":
+				acc.completedRuns++
+				acc.itemsProcessed += items
+				if durationMS > 0 {
+					acc.totalDurationMS += durationMS
+				}
+			case "failed":
+				acc.failedRuns++
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer stage throughput rows: %w", err)
+	}
+
+	items := make([]IndexerStageThroughputItem, 0, len(stageThroughputDefinitions))
+	for _, def := range stageThroughputDefinitions {
+		windowsOut := make([]IndexerStageThroughputWindow, 0, len(windows))
+		for _, windowHours := range windows {
+			acc := accumulators[def.StageName][windowHours]
+			window := IndexerStageThroughputWindow{
+				WindowHours:    windowHours,
+				CompletedRuns:  acc.completedRuns,
+				FailedRuns:     acc.failedRuns,
+				ItemsProcessed: acc.itemsProcessed,
+			}
+			if acc.totalDurationMS > 0 {
+				window.ItemsPerSecond = float64(acc.itemsProcessed) / (acc.totalDurationMS / 1000.0)
+				window.ItemsPerMinute = window.ItemsPerSecond * 60.0
+				window.ItemsPerHour = window.ItemsPerMinute * 60.0
+				window.AvgRunDurationMS = acc.totalDurationMS / float64(maxInt(acc.completedRuns, 1))
+			}
+			windowsOut = append(windowsOut, window)
+		}
+		items = append(items, IndexerStageThroughputItem{
+			StageName: def.StageName,
+			Label:     def.Label,
+			ItemLabel: def.ItemLabel,
+			Windows:   windowsOut,
+		})
+	}
+
+	return &IndexerStageThroughput{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+func stageThroughputMetricValue(stageName string, metricsRaw []byte) int64 {
+	if len(metricsRaw) == 0 {
+		return 0
+	}
+	var metrics map[string]any
+	if err := json.Unmarshal(metricsRaw, &metrics); err != nil {
+		return 0
+	}
+	for _, key := range stageThroughputMetricKeys(stageName) {
+		if value, ok := metricInt64(metrics[key]); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func stageThroughputMetricKeys(stageName string) []string {
+	switch stageName {
+	case "scrape_latest", "scrape_backfill":
+		return []string{"articles_inserted", "article_headers_seen"}
+	case "assemble":
+		return []string{"processed_headers"}
+	case "release":
+		return []string{"candidate_families_inspected", "candidate_families"}
+	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
+		return []string{"processed_count", "candidate_count"}
+	case "enrich_predb", "enrich_tmdb":
+		return []string{"processed_count", "candidate_count"}
+	default:
+		return nil
+	}
+}
+
+func metricInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err == nil {
+			return n, true
+		}
+		f, err := v.Float64()
+		if err == nil {
+			return int64(f), true
+		}
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func maxInt(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {

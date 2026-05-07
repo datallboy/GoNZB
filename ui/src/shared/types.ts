@@ -146,6 +146,29 @@ export type IndexerBackfillProgress = {
   count: number
 }
 
+export type IndexerStageThroughputWindow = {
+  window_hours: number
+  completed_runs: number
+  failed_runs: number
+  items_processed: number
+  items_per_second: number
+  items_per_minute: number
+  items_per_hour: number
+  avg_run_duration_ms: number
+}
+
+export type IndexerStageThroughputItem = {
+  stage_name: string
+  label: string
+  item_label: string
+  windows: IndexerStageThroughputWindow[]
+}
+
+export type IndexerStageThroughput = {
+  items: IndexerStageThroughputItem[]
+  count: number
+}
+
 export type AdminStage = {
   stage_name: string
   enabled: boolean
