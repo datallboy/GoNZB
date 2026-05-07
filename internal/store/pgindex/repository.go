@@ -607,6 +607,28 @@ func (s *Store) GetBackfillCheckpointState(ctx context.Context, providerID, news
 	return &item, nil
 }
 
+func (s *Store) HasBackfillCutoffReachedForGroup(ctx context.Context, newsgroupID int64, untilDate time.Time) (bool, error) {
+	if newsgroupID <= 0 {
+		return false, fmt.Errorf("newsgroup id is required")
+	}
+
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM scrape_checkpoints
+			WHERE newsgroup_id = $1
+			  AND backfill_cutoff_reached = TRUE
+			  AND backfill_until_date = $2
+		)`,
+		newsgroupID, untilDate.UTC(),
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check backfill cutoff reached for group %d: %w", newsgroupID, err)
+	}
+	return exists, nil
+}
+
 func (s *Store) SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error {
 	if providerID <= 0 {
 		return fmt.Errorf("provider id is required")
