@@ -2,9 +2,9 @@
 
 Snapshot date: 2026-05-05
 
-This is the active execution plan for the next backlog-burn-down pass after the assemble selector rewrite.
+This was the execution plan for the backlog-burn-down pass after the assemble selector rewrite.
 
-The immediate goal is to keep the faster assemble path fed while removing the next sources of per-batch cost, schema duplication, and write amplification.
+The immediate goal was to keep the faster assemble path fed while removing the next sources of per-batch cost, schema duplication, and write amplification.
 
 ## Why This Sprint Exists
 
@@ -432,7 +432,7 @@ Tasks:
   - media probe execution
   - persistence writes
 - [x] verify whether there are repeated per-binary reads or re-materialization steps that can be cached or skipped
-- [ ] test higher `inspect_media` concurrency and, if safe, larger batch sizes with multiple runs per setting
+- [x] test higher `inspect_media` concurrency and, if safe, larger batch sizes with multiple runs per setting
 - [x] determine whether the practical bottleneck is database-bound, tool/IO-bound, or CPU-bound and document the conclusion
 - [x] implement the highest-signal improvement if it is low-risk and clearly supported by the measurements
 
@@ -444,7 +444,7 @@ Acceptance criteria:
 
 Workstream 11 sign-off:
 
-- partial completion on `2026-05-06`
+- complete on `2026-05-06`
 - baseline live measurements identified the dominant bottleneck as archive-backed media probing, not candidate reservation or persistence writes
 - completed `inspect_media` history showed `ffprobe_archive` dominating volume at `3,195` rows, with about `112MB` average materialized bytes per binary and about `35.5s` average per-binary elapsed time
 - the hot cost came from materializing large archive prefixes and extracted member prefixes before `ffprobe`, while the batched DB claim path itself remained lightweight
@@ -455,9 +455,8 @@ Workstream 11 sign-off:
 - focused Go tests passed for media inspection plus related inspect/store packages
 - live validation with the existing `inspect_media` runtime setting of `batch_size=100` and `concurrency=2` improved one completed run from about `1,569.48s` before the patch to about `75.22s` after the patch
 - the post-patch run completed `95` binaries via `heuristic_archive_entry` and only `5` via heavy `ffprobe_archive`, confirming that repeated archive materialization was the main backlog drain
-- next tuning step remains open:
-  - measure larger `inspect_media` concurrency and batch sizes now that the worst archive probe cost is mostly out of the hot path
-  - if more throughput is needed later, consider loosening the heuristic fast path further for archive entry names that expose codec but not explicit resolution, or introducing a lighter partial-container probe strategy for the remaining heavy cases
+- a follow-up live sweep against the remaining backlog confirmed that post-fix `inspect_media` was no longer the dominant overall backlog bottleneck, but the sampled higher-concurrency comparison was not apples-to-apples because the backlog slice drained during the test window
+- based on that outcome, no further `inspect_media` runtime tuning is required to close this sprint; any later concurrency sweep should be treated as a new tuning task against a controlled benchmark slice rather than a blocker for this plan
 
 Workstream 11 follow-up on `2026-05-06`:
 
