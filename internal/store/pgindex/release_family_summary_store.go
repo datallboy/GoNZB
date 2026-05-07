@@ -197,7 +197,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			expected_file_coverage_pct,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
