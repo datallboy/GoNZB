@@ -548,11 +548,15 @@ export function AdminSettingsPage() {
                   required
                   onChange={(value) => updateNewsgroup(index, { group: value })}
                 />
-                <TextField
-                  label="Scrape until"
-                  value={row.until}
-                  onChange={(value) => updateNewsgroup(index, { until: value })}
-                />
+                <label>
+                  <span>Backfill until date</span>
+                  <input
+                    type="date"
+                    value={row.until}
+                    onChange={(event) => updateNewsgroup(index, { until: event.target.value })}
+                  />
+                  <small>Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date.</small>
+                </label>
                 <button
                   className="secondary-button align-end"
                   type="button"
