@@ -2103,6 +2103,35 @@ func TestSortReleaseFamilySummaryKeysUsesStableLockOrder(t *testing.T) {
 	}
 }
 
+func TestSortReleaseCandidateAcksUsesStableLockOrder(t *testing.T) {
+	acks := []ReleaseCandidateAck{
+		{ProviderID: 2, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "b"},
+		{ProviderID: 1, NewsgroupID: 2, KeyKind: "release_family", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "z"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "b"},
+	}
+
+	sortReleaseCandidateAcks(acks)
+
+	want := []ReleaseCandidateAck{
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "a"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "base_stem", FamilyKey: "b"},
+		{ProviderID: 1, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "z"},
+		{ProviderID: 1, NewsgroupID: 2, KeyKind: "release_family", FamilyKey: "a"},
+		{ProviderID: 2, NewsgroupID: 1, KeyKind: "release_family", FamilyKey: "b"},
+	}
+
+	if len(acks) != len(want) {
+		t.Fatalf("unexpected ack count: got %d want %d", len(acks), len(want))
+	}
+	for i := range want {
+		if acks[i] != want[i] {
+			t.Fatalf("unexpected ack at %d: got %+v want %+v", i, acks[i], want[i])
+		}
+	}
+}
+
 func TestUpsertBinaryPartsDeduplicatesConflictingBatchRows(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
