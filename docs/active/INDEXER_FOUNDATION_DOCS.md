@@ -36,6 +36,15 @@ Use for:
 - NZB blob-cache/offload planning
 - evaluating whether `release_file_articles` can be consolidated into `binary_parts`
 
+### `docs/active/INDEXER_ASSEMBLE_RELEASE_QUEUE_AND_LANE_SPLIT_EVALUATION.md`
+
+Use for:
+
+- the active assemble/release stabilization sprint
+- measured before/after live backlog benchmarks
+- deciding whether assemble lane A and lane B should become separate runtime-controlled stages
+- the current baseline for release queue coordination changes
+
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
 Use for:

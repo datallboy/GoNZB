@@ -1247,7 +1247,7 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'test-release-family'
-		  AND (processed_at IS NULL OR updated_at > processed_at)`, newsgroupID,
+		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query release summary queue state: %v", err)
 	}
@@ -1492,8 +1492,8 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
 		)
 		VALUES
-			(1, $1, 'release_family', $2, $2, $2, $2, 1, 0, 0, 1, 1, true, 12345, NOW(), 'fragment_only', 0, NOW() - INTERVAL '2 minutes', NULL),
-			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 1, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '1 minute', NULL)
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 0, 0, 1, 1, true, 12345, NOW(), 'fragment_only', 0, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 1, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '1 minute', TIMESTAMPTZ 'epoch')
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET binary_count = EXCLUDED.binary_count,
 		    complete_binary_count = EXCLUDED.complete_binary_count,
@@ -1595,8 +1595,8 @@ func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFami
 			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
 		)
 		VALUES
-			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 3, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', NULL),
-			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 0, false, 12345, NOW(), 'actionable', 0, NOW() - INTERVAL '2 minutes', NULL)
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 3, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 0, false, 12345, NOW(), 'actionable', 0, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET binary_count = EXCLUDED.binary_count,
 		    complete_binary_count = EXCLUDED.complete_binary_count,
@@ -1661,7 +1661,7 @@ func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *
 			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
 			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
 		)
-		VALUES (1, $1, 'release_family', $2, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW() - INTERVAL '5 minutes', NULL)`, newsgroupID, staleFamily,
+		VALUES (1, $1, 'release_family', $2, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW() - INTERVAL '5 minutes', TIMESTAMPTZ 'epoch')`, newsgroupID, staleFamily,
 	); err != nil {
 		t.Fatalf("insert stale cleanup family: %v", err)
 	}
@@ -1796,7 +1796,7 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'requeue-family'
-		  AND (processed_at IS NULL OR updated_at > processed_at)`, newsgroupID,
+		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query requeued summary family: %v", err)
 	}
@@ -2104,7 +2104,7 @@ func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t
 			  AND newsgroup_id = $1
 			  AND key_kind = $2
 			  AND family_key = $3
-			  AND (processed_at IS NULL OR updated_at > processed_at)`,
+			  AND updated_at > COALESCE(processed_at, updated_at)`,
 			newsgroupID,
 			row.keyKind,
 			row.familyKey,
@@ -3393,7 +3393,7 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
 			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
 		)
-		VALUES ($1, $2, 'release_key', $3, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW(), NULL)
+		VALUES ($1, $2, 'release_key', $3, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW(), TIMESTAMPTZ 'epoch')
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET updated_at = NOW(),
 		    processed_at = NULL`,

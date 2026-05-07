@@ -161,9 +161,10 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				earliest_posted_at,
 				readiness_bucket,
 				expected_file_coverage_pct,
+				processed_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,NOW())
+			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,TIMESTAMPTZ 'epoch',NOW())
 			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -178,6 +179,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			    earliest_posted_at = EXCLUDED.earliest_posted_at,
 			    readiness_bucket = EXCLUDED.readiness_bucket,
 			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+			    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 			    updated_at = NOW()`,
 			key.ProviderID,
 			key.NewsgroupID,
@@ -227,9 +229,10 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			earliest_posted_at,
 			readiness_bucket,
 			expected_file_coverage_pct,
+			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -244,6 +247,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		    earliest_posted_at = EXCLUDED.earliest_posted_at,
 		    readiness_bucket = EXCLUDED.readiness_bucket,
 		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,
 		key.ProviderID,
 		key.NewsgroupID,
@@ -298,11 +302,13 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 			earliest_posted_at,
 			readiness_bucket,
 			expected_file_coverage_pct,
+			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,NOW())
+		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-		SET updated_at = NOW()`,
+		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
+		    updated_at = NOW()`,
 		key.ProviderID,
 		key.NewsgroupID,
 		key.KeyKind,

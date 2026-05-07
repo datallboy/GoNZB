@@ -896,8 +896,7 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM release_family_readiness_summaries
-		WHERE processed_at IS NULL
-		   OR updated_at > processed_at`).Scan(&count); err != nil {
+		WHERE updated_at > COALESCE(processed_at, updated_at)`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil
