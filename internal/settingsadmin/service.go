@@ -183,12 +183,21 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 
 func preserveServerPasswords(current, next []app.ServerRuntimeSettings) {
 	serverPasswords := make(map[string]string, len(current))
+	hostPasswords := make(map[string]string, len(current))
 	for _, server := range current {
 		serverPasswords[server.ID] = server.Password
+		if host := strings.TrimSpace(server.Host); host != "" {
+			hostPasswords[strings.ToLower(host)] = server.Password
+		}
 	}
 	for i := range next {
 		if strings.TrimSpace(next[i].Password) == "" {
 			next[i].Password = serverPasswords[next[i].ID]
+			if next[i].Password == "" {
+				if host := strings.TrimSpace(next[i].Host); host != "" {
+					next[i].Password = hostPasswords[strings.ToLower(host)]
+				}
+			}
 		}
 	}
 }
