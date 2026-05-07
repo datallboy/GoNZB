@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS public.release_family_readiness_summaries (
     total_bytes bigint DEFAULT 0 NOT NULL,
     earliest_posted_at timestamp with time zone,
     readiness_bucket text DEFAULT 'fragment_only'::text NOT NULL,
+    processed_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT release_family_readiness_summaries_pkey PRIMARY KEY (provider_id, newsgroup_id, key_kind, family_key),
     CONSTRAINT release_family_readiness_summaries_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE,
@@ -34,7 +35,8 @@ INSERT INTO public.release_family_readiness_summaries (
     total_bytes,
     earliest_posted_at,
     readiness_bucket,
-    updated_at
+    updated_at,
+    processed_at
 )
 SELECT
     b.provider_id,
@@ -69,7 +71,8 @@ SELECT
         ), 0) > 0 THEN 'actionable'
         ELSE 'fragment_only'
     END AS readiness_bucket,
-    NOW() AS updated_at
+    NOW() AS updated_at,
+    NULL AS processed_at
 FROM public.binaries b
 WHERE BTRIM(b.release_family_key) <> ''
 GROUP BY b.provider_id, b.newsgroup_id, b.release_family_key
@@ -101,7 +104,8 @@ INSERT INTO public.release_family_readiness_summaries (
     total_bytes,
     earliest_posted_at,
     readiness_bucket,
-    updated_at
+    updated_at,
+    processed_at
 )
 SELECT
     b.provider_id,
@@ -136,7 +140,8 @@ SELECT
         ), 0) > 0 THEN 'actionable'
         ELSE 'fragment_only'
     END AS readiness_bucket,
-    NOW() AS updated_at
+    NOW() AS updated_at,
+    NULL AS processed_at
 FROM public.binaries b
 WHERE b.expected_file_count > 1
   AND BTRIM(b.base_stem) <> ''

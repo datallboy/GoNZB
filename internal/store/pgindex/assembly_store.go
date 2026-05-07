@@ -1065,9 +1065,6 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 				if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
 					return 0, err
 				}
-				if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-					return 0, err
-				}
 			}
 		}
 	}
@@ -1111,37 +1108,6 @@ func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int6
 		payload,
 	); err != nil {
 		return fmt.Errorf("upsert binary grouping evidence %d: %w", binaryID, err)
-	}
-	return nil
-}
-
-func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, keyKind, familyKey string) error {
-	if tx == nil {
-		return fmt.Errorf("release dirty queue tx is required")
-	}
-	familyKey = strings.TrimSpace(familyKey)
-	if providerID <= 0 || newsgroupID <= 0 || familyKey == "" {
-		return nil
-	}
-
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO release_stage_dirty_families (
-			provider_id,
-			newsgroup_id,
-			key_kind,
-			family_key,
-			updated_at
-		)
-		VALUES ($1,$2,$3,$4,NOW())
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-		SET updated_at = NOW()`,
-		providerID,
-		newsgroupID,
-		strings.TrimSpace(keyKind),
-		familyKey,
-	)
-	if err != nil {
-		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", providerID, newsgroupID, keyKind, familyKey, err)
 	}
 	return nil
 }
@@ -1414,9 +1380,6 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 
 	for _, key := range summaryKeys {
 		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return err
-		}
-		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
 			return err
 		}
 	}

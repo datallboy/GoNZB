@@ -556,6 +556,12 @@ func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, ma
 	if strings.TrimSpace(header.FileName) != "" {
 		return false
 	}
+	// Lane B is our broad backlog-drain path. Keep it cheap and deterministic:
+	// defer opaque body-header recovery there instead of letting a pathological
+	// slice of backlog monopolize assemble throughput.
+	if !header.StructuredIdentityBinaryMatched {
+		return false
+	}
 	if hasSufficientStructuredIdentity(header) && header.StructuredIdentityBinaryMatched && hasStableMultipartMatch(matched) {
 		return false
 	}
