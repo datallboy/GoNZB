@@ -3,6 +3,7 @@ package pgindex
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -707,6 +708,258 @@ func TestUpsertBinaryMirrorsReleaseFamilyKeyIntoLegacyReleaseKey(t *testing.T) {
 	}
 }
 
+func TestReplaceBinaryInspectionPersistenceHelpersBatchAndClearRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.replace.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_inspection_artifacts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup inspection artifacts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_archive_entries WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup archive entries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_media_streams WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup media streams: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_text_evidence WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup text evidence: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_par2_sets WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup par2 sets: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "inspect-replace-source",
+		ReleaseFamilyKey:  "inspect-replace-family",
+		BinaryKey:         fmt.Sprintf("inspect-replace-%d", time.Now().UnixNano()),
+		BinaryName:        "inspect.replace.sample.bin",
+		FileName:          "inspect.replace.sample.bin",
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.99,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, []BinaryInspectionArtifactRecord{
+		{ReleaseID: "", ArtifactRole: "primary", ArtifactName: "sample.7z", ArtifactPath: "/tmp/sample.7z", BytesTotal: 100, MIMEType: "application/x-7z-compressed", Signature: "7z", SourceKind: "archive", Metadata: map[string]any{"kind": "archive"}},
+		{ReleaseID: "", ArtifactRole: "secondary", ArtifactName: "sample.nfo", ArtifactPath: "/tmp/sample.nfo", BytesTotal: 50, MIMEType: "text/plain", Signature: "nfo", SourceKind: "sidecar", Metadata: map[string]any{"kind": "text"}},
+	}); err != nil {
+		t.Fatalf("replace inspection artifacts: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{
+		{EntryName: "video.mkv", IsDir: false, UncompressedBytes: 1000, CompressedBytes: 800, Encrypted: false, Comment: "main", MediaType: "video", Signature: "mkv", Metadata: map[string]any{"track": 1}},
+		{EntryName: "proof/", IsDir: true, UncompressedBytes: 0, CompressedBytes: 0, Encrypted: false, Comment: "", MediaType: "", Signature: "", Metadata: map[string]any{"dir": true}},
+	}); err != nil {
+		t.Fatalf("replace archive entries: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{
+		{StreamIndex: 0, StreamType: "video", CodecName: "h264", CodecLongName: "H.264", Profile: "High", Width: 1920, Height: 1080, Channels: 0, Language: "eng", DurationSeconds: 10.5, BitRate: 1000, DefaultDisposition: true, ForcedDisposition: false, Metadata: map[string]any{"title": "video"}},
+		{StreamIndex: 1, StreamType: "audio", CodecName: "aac", CodecLongName: "AAC", Profile: "LC", Width: 0, Height: 0, Channels: 2, Language: "eng", DurationSeconds: 10.5, BitRate: 192000, DefaultDisposition: true, ForcedDisposition: false, Metadata: map[string]any{"title": "audio"}},
+	}); err != nil {
+		t.Fatalf("replace media streams: %v", err)
+	}
+	if err := store.ReplaceBinaryTextEvidence(ctx, "inspect_nfo", binaryID, []BinaryTextEvidenceRecord{
+		{EvidenceKind: "nfo_text", TextValue: "Example Release", Tokens: []string{"Example", "Release", "Example"}, Metadata: map[string]any{"source": "nfo"}},
+		{EvidenceKind: "tag", TextValue: "x264", Tokens: []string{"x264"}, Metadata: map[string]any{"source": "scan"}},
+	}); err != nil {
+		t.Fatalf("replace text evidence: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{
+		{SetName: "sample.par2", BaseName: "sample", IsVolume: false, VolumeNumber: 0, RecoveryBlocks: 0, SignatureOK: true, Metadata: map[string]any{"kind": "index"}},
+		{SetName: "sample.vol00+01.par2", BaseName: "sample", IsVolume: true, VolumeNumber: 1, RecoveryBlocks: 1, SignatureOK: true, Metadata: map[string]any{"kind": "volume"}},
+	}); err != nil {
+		t.Fatalf("replace par2 sets: %v", err)
+	}
+
+	assertTableCount := func(table string, want int) {
+		t.Helper()
+		var got int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE binary_id = $1`, binaryID).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("expected %d rows in %s for binary %d, got %d", want, table, binaryID, got)
+		}
+	}
+
+	assertTableCount("binary_inspection_artifacts", 2)
+	assertTableCount("binary_archive_entries", 2)
+	assertTableCount("binary_media_streams", 2)
+	assertTableCount("binary_text_evidence", 2)
+	assertTableCount("binary_par2_sets", 2)
+
+	var tokensJSON []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT tokens_json
+		FROM binary_text_evidence
+		WHERE binary_id = $1 AND stage_name = 'inspect_nfo' AND evidence_kind = 'nfo_text'`,
+		binaryID,
+	).Scan(&tokensJSON); err != nil {
+		t.Fatalf("query text evidence tokens: %v", err)
+	}
+	if got := decodeJSONStringSlice(tokensJSON); len(got) != 2 || got[0] != "Example" || got[1] != "Release" {
+		t.Fatalf("expected deduped token slice, got %#v", got)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, nil); err != nil {
+		t.Fatalf("clear inspection artifacts: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear archive entries: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear media streams: %v", err)
+	}
+	if err := store.ReplaceBinaryTextEvidence(ctx, "inspect_nfo", binaryID, nil); err != nil {
+		t.Fatalf("clear text evidence: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, nil); err != nil {
+		t.Fatalf("clear par2 sets: %v", err)
+	}
+
+	assertTableCount("binary_inspection_artifacts", 0)
+	assertTableCount("binary_archive_entries", 0)
+	assertTableCount("binary_media_streams", 0)
+	assertTableCount("binary_text_evidence", 0)
+	assertTableCount("binary_par2_sets", 0)
+}
+
+func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID := seedTestRelease(t, store, "enrichment-batch")
+	normalizedA := normalizePredbTitle("Scene.Release.2026-GRP")
+	normalizedB := normalizePredbTitle("Another.Release.2026-GRP")
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_tmdb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup tmdb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_tvdb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup tvdb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_predb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup predb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM predb_entries WHERE normalized_title IN ($1,$2)`, normalizedA, normalizedB); err != nil {
+			t.Fatalf("cleanup predb entries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if err := store.ReplaceReleaseTMDBMatches(ctx, releaseID, []ReleaseTMDBMatchRecord{
+		{TMDBID: 101, MediaType: "movie", Title: "Example Movie", OriginalTitle: "Original Movie", Year: 2026, Confidence: 0.91, Chosen: true, Payload: map[string]any{"provider": "tmdb"}},
+		{TMDBID: 102, MediaType: "movie", Title: "Backup Movie", OriginalTitle: "Backup Original", Year: 2025, Confidence: 0.55, Chosen: false, Payload: map[string]any{"provider": "tmdb"}},
+	}); err != nil {
+		t.Fatalf("replace tmdb matches: %v", err)
+	}
+
+	if err := store.ReplaceReleaseTVDBMatches(ctx, releaseID, []ReleaseTVDBMatchRecord{
+		{TVDBID: 201, MediaType: "tv", Title: "Example Show", OriginalTitle: "Example Show", Year: 2026, Confidence: 0.88, Chosen: true, Payload: map[string]any{"provider": "tvdb"}},
+		{TVDBID: 202, MediaType: "tv", Title: "Backup Show", OriginalTitle: "Backup Show", Year: 2024, Confidence: 0.42, Chosen: false, Payload: map[string]any{"provider": "tvdb"}},
+	}); err != nil {
+		t.Fatalf("replace tvdb matches: %v", err)
+	}
+
+	if err := store.UpsertPredbEntries(ctx, []PredbEntryRecord{
+		{Title: "Scene.Release.2026-GRP", Category: "TV", Source: "predb", ExternalID: 5001, Team: "GRP", Genre: "Drama", URL: "https://predb.example/a", SizeKB: 1024, FileCount: 12, Payload: map[string]any{"source": "initial"}},
+		{NormalizedTitle: normalizedA, Title: "Scene.Release.2026-GRP", Category: "", Source: "", ExternalID: 0, Team: "", Genre: "", URL: "", SizeKB: 0, FileCount: 0, Payload: map[string]any{}},
+	}); err != nil {
+		t.Fatalf("upsert predb entries: %v", err)
+	}
+
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, []ReleasePredbMatchRecord{
+		{Title: "Scene.Release.2026-GRP", Category: "TV", Source: "predb", ExternalID: 5001, Team: "GRP", Genre: "Drama", URL: "https://predb.example/a", SizeKB: 1024, FileCount: 12, Confidence: 0.77, Chosen: true, Payload: map[string]any{"kind": "scene"}},
+		{NormalizedTitle: normalizedB, Title: "Another.Release.2026-GRP", Category: "Movies", Source: "predb", ExternalID: 5002, Team: "GRP2", Genre: "Action", URL: "https://predb.example/b", SizeKB: 2048, FileCount: 20, Confidence: 0.44, Chosen: false, Payload: map[string]any{"kind": "backup"}},
+	}); err != nil {
+		t.Fatalf("replace predb matches: %v", err)
+	}
+
+	assertReleaseCount := func(table string, want int) {
+		t.Helper()
+		var got int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE release_id = $1`, releaseID).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("expected %d rows in %s for release %s, got %d", want, table, releaseID, got)
+		}
+	}
+
+	assertReleaseCount("release_tmdb_matches", 2)
+	assertReleaseCount("release_tvdb_matches", 2)
+	assertReleaseCount("release_predb_matches", 2)
+
+	var tmdbChosen bool
+	var tmdbPayload []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT chosen, payload_json
+		FROM release_tmdb_matches
+		WHERE release_id = $1 AND tmdb_id = 101`, releaseID,
+	).Scan(&tmdbChosen, &tmdbPayload); err != nil {
+		t.Fatalf("query tmdb match: %v", err)
+	}
+	var tmdbPayloadMap map[string]any
+	if err := json.Unmarshal(tmdbPayload, &tmdbPayloadMap); err != nil {
+		t.Fatalf("decode tmdb payload: %v", err)
+	}
+	if !tmdbChosen || tmdbPayloadMap["provider"] != "tmdb" {
+		t.Fatalf("expected chosen tmdb payload to be preserved, got chosen=%v payload=%s", tmdbChosen, string(tmdbPayload))
+	}
+
+	var category string
+	var source string
+	var fileCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT category, source, file_count
+		FROM predb_entries
+		WHERE normalized_title = $1`, normalizedA,
+	).Scan(&category, &source, &fileCount); err != nil {
+		t.Fatalf("query normalized predb entry: %v", err)
+	}
+	if category != "TV" || source != "predb" || fileCount != 12 {
+		t.Fatalf("expected predb fallback fields to be preserved, got category=%q source=%q file_count=%d", category, source, fileCount)
+	}
+
+	if err := store.ReplaceReleaseTMDBMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear tmdb matches: %v", err)
+	}
+	if err := store.ReplaceReleaseTVDBMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear tvdb matches: %v", err)
+	}
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, nil); err != nil {
+		t.Fatalf("clear predb matches: %v", err)
+	}
+
+	assertReleaseCount("release_tmdb_matches", 0)
+	assertReleaseCount("release_tvdb_matches", 0)
+	assertReleaseCount("release_predb_matches", 0)
+}
+
 func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -999,6 +1252,115 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 	if dirtyCount != 1 {
 		t.Fatalf("expected refreshed binary stats to requeue release family once, got %d rows", dirtyCount)
+	}
+}
+
+func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.batch.duplicates.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 5, 5, 15, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<scrape-batch-duplicate-%d@test>", time.Now().UnixNano())
+	inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 501,
+			MessageID:     messageID,
+			Subject:       `Duplicate Batch [1/1] - "batch.first.rar" yEnc (1/10)`,
+			Poster:        "poster-batch-first@example.com",
+			DateUTC:       &now,
+			Bytes:         1000,
+			Lines:         10,
+			Xref:          "xref-first",
+			RawOverview: map[string]any{
+				"Bytes": int64(1000),
+			},
+		},
+		{
+			ArticleNumber: 501,
+			MessageID:     messageID,
+			Subject:       `Duplicate Batch [1/1] - "batch.second.rar" yEnc (2/10)`,
+			Poster:        "poster-batch-second@example.com",
+			DateUTC:       &now,
+			Bytes:         2000,
+			Lines:         20,
+			Xref:          "xref-second",
+			RawOverview: map[string]any{
+				"Bytes": int64(2000),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert duplicate article headers batch: %v", err)
+	}
+	if inserted != 2 {
+		t.Fatalf("expected 2 processed headers, got %d", inserted)
+	}
+
+	var headerCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_headers
+		WHERE newsgroup_id = $1`, newsgroupID,
+	).Scan(&headerCount); err != nil {
+		t.Fatalf("count article headers: %v", err)
+	}
+	if headerCount != 1 {
+		t.Fatalf("expected 1 stored article header after duplicate batch, got %d", headerCount)
+	}
+
+	var (
+		subject         string
+		posterText      string
+		subjectFileName string
+		yencPartNumber  int
+		xref            string
+		rawBytes        int64
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			p.subject,
+			p.poster,
+			p.subject_file_name,
+			p.yenc_part_number,
+			p.xref,
+			COALESCE((p.raw_overview_json->>'Bytes')::bigint, 0)
+		FROM article_header_ingest_payloads p
+		JOIN article_headers ah ON ah.id = p.article_header_id
+		WHERE ah.newsgroup_id = $1`, newsgroupID,
+	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref, &rawBytes); err != nil {
+		t.Fatalf("query duplicate batch payload: %v", err)
+	}
+
+	if subject != `Duplicate Batch [1/1] - "batch.second.rar" yEnc (2/10)` {
+		t.Fatalf("expected last duplicate subject to win, got %q", subject)
+	}
+	if posterText != "" {
+		t.Fatalf("expected poster text normalized away after duplicate batch, got %q", posterText)
+	}
+	if subjectFileName != "batch.second.rar" || yencPartNumber != 2 {
+		t.Fatalf("expected last duplicate parsed metadata to win, got name=%q part=%d", subjectFileName, yencPartNumber)
+	}
+	if xref != "xref-second" {
+		t.Fatalf("expected last duplicate xref to win, got %q", xref)
+	}
+	if rawBytes != 2000 {
+		t.Fatalf("expected last duplicate raw overview bytes to win, got %d", rawBytes)
 	}
 }
 
@@ -2829,6 +3191,134 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 	if !found {
 		t.Fatalf("expected inspect_media candidate to rerun after fresher archive inspection")
+	}
+}
+
+func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	before, err := store.RefreshIndexerDashboardStats(ctx)
+	if err != nil {
+		t.Fatalf("refresh baseline dashboard stats: %v", err)
+	}
+	beforeByKey := make(map[string]IndexerDashboardStat, len(before.Items))
+	for _, item := range before.Items {
+		beforeByKey[item.Key] = item
+	}
+
+	groupName := fmt.Sprintf("alt.test.dashboard.stats.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-dashboard-stats-%d@example.com", time.Now().UnixNano())
+	posterID, err := store.EnsurePoster(ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("dashboard-stats-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Dashboard Stats Test",
+		SourceTitle:             "Dashboard.Stats.Test",
+		SearchTitle:             "dashboard stats test",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  posterName,
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::video",
+		FamilyKind:        "file_name",
+		BaseStem:          "dashboard.stats",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Dashboard Stats Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "dashboard.stats.sample.mkv",
+		FileName:          "dashboard.stats.sample.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "dashboard.stats.sample.mkv",
+		SizeBytes: 734003200,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_stage_dirty_families (provider_id, newsgroup_id, key_kind, family_key, updated_at)
+		VALUES ($1, $2, 'release_key', $3, NOW())`,
+		1, newsgroupID, baseKey,
+	); err != nil {
+		t.Fatalf("insert dirty family: %v", err)
+	}
+
+	after, err := store.RefreshIndexerDashboardStats(ctx)
+	if err != nil {
+		t.Fatalf("refresh updated dashboard stats: %v", err)
+	}
+	afterByKey := make(map[string]IndexerDashboardStat, len(after.Items))
+	for _, item := range after.Items {
+		afterByKey[item.Key] = item
+	}
+
+	mediaBefore := beforeByKey["pending_media_inspection_binaries"].Value
+	mediaAfter, ok := afterByKey["pending_media_inspection_binaries"]
+	if !ok {
+		t.Fatalf("missing pending_media_inspection_binaries stat")
+	}
+	if !mediaAfter.Available || mediaAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_media_inspection_binaries to be cached, got %#v", mediaAfter)
+	}
+	if mediaAfter.Value < mediaBefore+1 {
+		t.Fatalf("expected media backlog to increase by at least 1, before=%d after=%d", mediaBefore, mediaAfter.Value)
+	}
+
+	releaseBefore := beforeByKey["pending_release_candidate_families"].Value
+	releaseAfter, ok := afterByKey["pending_release_candidate_families"]
+	if !ok {
+		t.Fatalf("missing pending_release_candidate_families stat")
+	}
+	if !releaseAfter.Available || releaseAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_release_candidate_families to be cached, got %#v", releaseAfter)
+	}
+	if releaseAfter.Value < releaseBefore+1 {
+		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
 }
 

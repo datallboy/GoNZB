@@ -131,6 +131,7 @@ func NewNNTPProviderWithLogger(c config.ServerConfig, log providerLogger) Provid
 // Provider represents the contract for a Usenet server connection.
 type Provider interface {
 	ID() string
+	Label() string
 	Priority() int
 	MaxConnection() int
 	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
@@ -142,6 +143,14 @@ type Provider interface {
 
 // Interface implimentation: ID
 func (p *nntpProvider) ID() string { return p.conf.ID }
+
+// Label returns the operator-facing identifier for logs and UI-adjacent status output.
+func (p *nntpProvider) Label() string {
+	if host := strings.TrimSpace(p.conf.Host); host != "" {
+		return host
+	}
+	return strings.TrimSpace(p.conf.ID)
+}
 
 // Interface implimentation: Priority
 func (p *nntpProvider) Priority() int { return p.conf.Priority }

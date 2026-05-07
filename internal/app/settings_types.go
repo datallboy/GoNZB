@@ -91,14 +91,16 @@ type IndexingMatchRuntimeSettings struct {
 }
 
 type IndexingInspectRuntimeSettings struct {
-	WorkDir         string `json:"work_dir,omitempty"`
-	MaxBytes        int64  `json:"max_bytes,omitempty"`
-	MaxArchiveDepth int    `json:"max_archive_depth,omitempty"`
-	ToolTimeoutSecs int    `json:"tool_timeout_seconds,omitempty"`
-	FFProbePath     string `json:"ffprobe_path,omitempty"`
-	SevenZipPath    string `json:"seven_zip_path,omitempty"`
-	UnrarPath       string `json:"unrar_path,omitempty"`
-	PAR2Path        string `json:"par2_path,omitempty"`
+	WorkDir          string `json:"work_dir,omitempty"`
+	WorkspaceBackend string `json:"workspace_backend,omitempty"`
+	MemoryWorkDir    string `json:"memory_work_dir,omitempty"`
+	MaxBytes         int64  `json:"max_bytes,omitempty"`
+	MaxArchiveDepth  int    `json:"max_archive_depth,omitempty"`
+	ToolTimeoutSecs  int    `json:"tool_timeout_seconds,omitempty"`
+	FFProbePath      string `json:"ffprobe_path,omitempty"`
+	SevenZipPath     string `json:"seven_zip_path,omitempty"`
+	UnrarPath        string `json:"unrar_path,omitempty"`
+	PAR2Path         string `json:"par2_path,omitempty"`
 }
 
 type IndexingPreDBRuntimeSettings struct {

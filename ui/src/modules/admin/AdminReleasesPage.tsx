@@ -7,6 +7,7 @@ import type { AdminReleaseListParams, AdminReleaseListResponse } from '../../sha
 
 const defaultFilters: AdminReleaseListParams = {
   q: '',
+  newsgroup: '',
   sort: 'posted_desc',
   category_id: '',
   classification: '',
@@ -22,6 +23,7 @@ const defaultFilters: AdminReleaseListParams = {
   password_candidates: '',
   metadata_mismatch: '',
   low_confidence: '',
+  completion_state: '',
   has_nfo: '',
   has_par2: '',
   limit: 100,
@@ -57,6 +59,14 @@ export function AdminReleasesPage() {
           <label className="field">
             <span>Search Releases</span>
             <input value={filters.q ?? ''} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} />
+          </label>
+          <label className="field">
+            <span>Newsgroup</span>
+            <input
+              value={filters.newsgroup ?? ''}
+              onChange={(event) => setFilters((current) => ({ ...current, newsgroup: event.target.value }))}
+              placeholder="alt.binaries.wood"
+            />
           </label>
           <label className="field">
             <span>Sort</span>
@@ -189,6 +199,14 @@ export function AdminReleasesPage() {
               <option value="">Any</option>
               <option value="yes">yes</option>
               <option value="no">no</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Completion</span>
+            <select value={filters.completion_state ?? ''} onChange={(event) => setFilters((current) => ({ ...current, completion_state: event.target.value }))}>
+              <option value="">Any</option>
+              <option value="exact_100">100%</option>
+              <option value="below_100">Below 100%</option>
             </select>
           </label>
           <label className="field">

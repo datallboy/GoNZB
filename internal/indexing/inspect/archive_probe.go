@@ -29,12 +29,19 @@ type ArticleFetcher interface {
 
 type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+	RunInput(ctx context.Context, input io.Reader, name string, args ...string) ([]byte, error)
 }
 
 type ExecCommandRunner struct{}
 
 func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (ExecCommandRunner) RunInput(ctx context.Context, input io.Reader, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = input
+	return cmd.CombinedOutput()
 }
 
 type ArchiveProbeResult struct {

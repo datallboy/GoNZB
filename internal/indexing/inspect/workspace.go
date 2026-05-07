@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -35,7 +36,7 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 		return nil, err
 	}
 
-	stageDir := filepath.Join(m.opts.WorkDir, stageName)
+	stageDir := filepath.Join(m.workspaceRoot(), stageName)
 	if err := os.MkdirAll(stageDir, 0755); err != nil {
 		return nil, fmt.Errorf("create inspect workspace root %s: %w", stageDir, err)
 	}
@@ -52,6 +53,8 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 		"release_title":     candidate.ReleaseTitle,
 		"file_name":         candidate.FileName,
 		"total_bytes":       candidate.TotalBytes,
+		"workspace_backend": m.opts.WorkspaceBackend,
+		"workspace_root":    stageDir,
 		"prepared_at":       time.Now().UTC(),
 		"max_materialize":   m.opts.MaxBytes,
 		"max_archive_depth": m.opts.MaxArchiveDepth,
@@ -71,6 +74,27 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 		ManifestPath:      manifestPath,
 		MaterializedBytes: int64(len(b)),
 	}, nil
+}
+
+func (m *WorkspaceManager) workspaceRoot() string {
+	if m == nil {
+		return ""
+	}
+	if m.opts.WorkspaceBackend == "memory" || m.opts.WorkspaceBackend == "auto" {
+		path := strings.TrimSpace(m.opts.MemoryWorkDir)
+		if path != "" {
+			if info, err := os.Stat(path); err == nil && info.IsDir() {
+				return path
+			}
+			if err := os.MkdirAll(path, 0755); err == nil {
+				return path
+			}
+		}
+		if m.opts.WorkspaceBackend == "memory" {
+			return m.opts.WorkDir
+		}
+	}
+	return m.opts.WorkDir
 }
 
 func (w *Workspace) Cleanup() error {

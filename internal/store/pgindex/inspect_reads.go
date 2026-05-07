@@ -31,6 +31,63 @@ type IndexerOverview struct {
 	FailedRunCount        int64 `json:"failed_run_count"`
 }
 
+type IndexerDashboardStat struct {
+	Key                string     `json:"key"`
+	Label              string     `json:"label"`
+	Description        string     `json:"description"`
+	Value              int64      `json:"value"`
+	Available          bool       `json:"available"`
+	Exact              bool       `json:"exact"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+	RefreshAttemptedAt *time.Time `json:"refresh_attempted_at,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+}
+
+type IndexerDashboardStats struct {
+	Items []IndexerDashboardStat `json:"items"`
+	Count int                    `json:"count"`
+}
+
+type IndexerBackfillProgressItem struct {
+	GroupName                   string     `json:"group_name"`
+	ConfiguredCutoffDate        *time.Time `json:"configured_cutoff_date,omitempty"`
+	CutoffReached               bool       `json:"cutoff_reached"`
+	BackfillCursorArticleNumber int64      `json:"backfill_cursor_article_number"`
+	LatestArticleNumber         int64      `json:"latest_article_number"`
+	OldestScrapedArticleDate    *time.Time `json:"oldest_scraped_article_date,omitempty"`
+	LatestScrapedArticleDate    *time.Time `json:"latest_scraped_article_date,omitempty"`
+	ProviderCount               int        `json:"provider_count"`
+	LastCheckpointUpdatedAt     *time.Time `json:"last_checkpoint_updated_at,omitempty"`
+}
+
+type IndexerBackfillProgress struct {
+	Items []IndexerBackfillProgressItem `json:"items"`
+	Count int                           `json:"count"`
+}
+
+type IndexerStageThroughputWindow struct {
+	WindowHours      int     `json:"window_hours"`
+	CompletedRuns    int     `json:"completed_runs"`
+	FailedRuns       int     `json:"failed_runs"`
+	ItemsProcessed   int64   `json:"items_processed"`
+	ItemsPerSecond   float64 `json:"items_per_second"`
+	ItemsPerMinute   float64 `json:"items_per_minute"`
+	ItemsPerHour     float64 `json:"items_per_hour"`
+	AvgRunDurationMS float64 `json:"avg_run_duration_ms"`
+}
+
+type IndexerStageThroughputItem struct {
+	StageName string                         `json:"stage_name"`
+	Label     string                         `json:"label"`
+	ItemLabel string                         `json:"item_label"`
+	Windows   []IndexerStageThroughputWindow `json:"windows"`
+}
+
+type IndexerStageThroughput struct {
+	Items []IndexerStageThroughputItem `json:"items"`
+	Count int                          `json:"count"`
+}
+
 type IndexerReleaseSummary struct {
 	ReleaseID               string     `json:"release_id"`
 	GUID                    string     `json:"guid"`
@@ -96,6 +153,7 @@ type IndexerReleaseSummary struct {
 
 type AdminIndexerReleaseListParams struct {
 	Query              string
+	Newsgroup          string
 	Limit              int
 	Offset             int
 	Sort               string
@@ -113,6 +171,7 @@ type AdminIndexerReleaseListParams struct {
 	PasswordCandidates string
 	MetadataMismatch   string
 	LowConfidence      string
+	CompletionState    string
 	HasNFO             *bool
 	HasPAR2            *bool
 }
@@ -380,6 +439,522 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	return &item, nil
 }
 
+type indexerDashboardStatDefinition struct {
+	Key         string
+	Label       string
+	Description string
+	Exact       bool
+}
+
+var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
+	{
+		Key:         "unassembled_headers",
+		Label:       "Unassembled Headers",
+		Description: "Article headers still waiting for assemble processing.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_media_inspection_binaries",
+		Label:       "Pending Media Inspection",
+		Description: "Binaries that inspect_media would claim if it ran now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_release_candidate_families",
+		Label:       "Pending Release Families",
+		Description: "Dirty release families still waiting for release processing.",
+		Exact:       true,
+	},
+}
+
+func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT stat_key, int_value, updated_at, refresh_attempted_at, last_error
+		FROM indexer_dashboard_stats
+		WHERE stat_key = ANY($1)
+		ORDER BY stat_key`, dashboardStatKeys())
+	if err != nil {
+		return nil, fmt.Errorf("get indexer dashboard stats: %w", err)
+	}
+	defer rows.Close()
+
+	type statRow struct {
+		value              int64
+		updatedAt          sql.NullTime
+		refreshAttemptedAt sql.NullTime
+		lastError          sql.NullString
+	}
+	rowByKey := make(map[string]statRow, len(indexerDashboardStatDefinitions))
+	for rows.Next() {
+		var (
+			key string
+			row statRow
+		)
+		if err := rows.Scan(&key, &row.value, &row.updatedAt, &row.refreshAttemptedAt, &row.lastError); err != nil {
+			return nil, fmt.Errorf("scan indexer dashboard stat: %w", err)
+		}
+		rowByKey[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer dashboard stats: %w", err)
+	}
+
+	items := make([]IndexerDashboardStat, 0, len(indexerDashboardStatDefinitions))
+	for _, def := range indexerDashboardStatDefinitions {
+		row, ok := rowByKey[def.Key]
+		item := IndexerDashboardStat{
+			Key:         def.Key,
+			Label:       def.Label,
+			Description: def.Description,
+			Exact:       def.Exact,
+		}
+		if ok {
+			item.Value = row.value
+			if row.updatedAt.Valid {
+				ts := row.updatedAt.Time.UTC()
+				item.UpdatedAt = &ts
+				item.Available = true
+			}
+			if row.refreshAttemptedAt.Valid {
+				ts := row.refreshAttemptedAt.Time.UTC()
+				item.RefreshAttemptedAt = &ts
+			}
+			if row.lastError.Valid {
+				item.LastError = strings.TrimSpace(row.lastError.String)
+			}
+		}
+		items = append(items, item)
+	}
+
+	return &IndexerDashboardStats{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfillProgress, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH article_date_bounds AS (
+			SELECT
+				newsgroup_id,
+				MIN(date_utc) AS oldest_scraped_article_date,
+				MAX(date_utc) AS latest_scraped_article_date
+			FROM article_headers
+			GROUP BY newsgroup_id
+		),
+		checkpoint_rollup AS (
+			SELECT
+				sc.newsgroup_id,
+				MAX(sc.backfill_until_date) AS configured_cutoff_date,
+				BOOL_OR(sc.backfill_cutoff_reached) AS cutoff_reached,
+				MIN(NULLIF(sc.backfill_article_number, 0)) AS backfill_cursor_article_number,
+				MAX(sc.last_article_number) AS latest_article_number,
+				COUNT(DISTINCT sc.provider_id) AS provider_count,
+				MAX(sc.updated_at) AS last_checkpoint_updated_at
+			FROM scrape_checkpoints sc
+			GROUP BY sc.newsgroup_id
+		)
+		SELECT
+			ng.group_name,
+			cr.configured_cutoff_date,
+			cr.cutoff_reached,
+			COALESCE(cr.backfill_cursor_article_number, 0) AS backfill_cursor_article_number,
+			COALESCE(cr.latest_article_number, 0) AS latest_article_number,
+			adb.oldest_scraped_article_date,
+			adb.latest_scraped_article_date,
+			cr.provider_count,
+			cr.last_checkpoint_updated_at
+		FROM checkpoint_rollup cr
+		JOIN newsgroups ng ON ng.id = cr.newsgroup_id
+		LEFT JOIN article_date_bounds adb ON adb.newsgroup_id = cr.newsgroup_id
+		ORDER BY
+			CASE
+				WHEN cr.configured_cutoff_date IS NULL THEN 1
+				WHEN cr.cutoff_reached THEN 1
+				ELSE 0
+			END,
+			ng.group_name`)
+	if err != nil {
+		return nil, fmt.Errorf("get indexer backfill progress: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]IndexerBackfillProgressItem, 0)
+	for rows.Next() {
+		var (
+			item                    IndexerBackfillProgressItem
+			configuredCutoffDate    sql.NullTime
+			oldestScrapedArticle    sql.NullTime
+			latestScrapedArticle    sql.NullTime
+			lastCheckpointUpdatedAt sql.NullTime
+		)
+		if err := rows.Scan(
+			&item.GroupName,
+			&configuredCutoffDate,
+			&item.CutoffReached,
+			&item.BackfillCursorArticleNumber,
+			&item.LatestArticleNumber,
+			&oldestScrapedArticle,
+			&latestScrapedArticle,
+			&item.ProviderCount,
+			&lastCheckpointUpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan indexer backfill progress: %w", err)
+		}
+		if configuredCutoffDate.Valid {
+			ts := configuredCutoffDate.Time.UTC()
+			item.ConfiguredCutoffDate = &ts
+		}
+		if oldestScrapedArticle.Valid {
+			ts := oldestScrapedArticle.Time.UTC()
+			item.OldestScrapedArticleDate = &ts
+		}
+		if latestScrapedArticle.Valid {
+			ts := latestScrapedArticle.Time.UTC()
+			item.LatestScrapedArticleDate = &ts
+		}
+		if lastCheckpointUpdatedAt.Valid {
+			ts := lastCheckpointUpdatedAt.Time.UTC()
+			item.LastCheckpointUpdatedAt = &ts
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer backfill progress: %w", err)
+	}
+
+	return &IndexerBackfillProgress{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+type stageThroughputDefinition struct {
+	StageName string
+	Label     string
+	ItemLabel string
+}
+
+var stageThroughputDefinitions = []stageThroughputDefinition{
+	{StageName: "scrape_latest", Label: "Scrape Latest", ItemLabel: "headers"},
+	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
+	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
+	{StageName: "release", Label: "Release", ItemLabel: "families"},
+	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
+	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
+	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
+	{StageName: "inspect_archive", Label: "Inspect Archive", ItemLabel: "binaries"},
+	{StageName: "inspect_password", Label: "Inspect Password", ItemLabel: "binaries"},
+	{StageName: "inspect_media", Label: "Inspect Media", ItemLabel: "binaries"},
+	{StageName: "enrich_predb", Label: "Enrich Predb", ItemLabel: "releases"},
+	{StageName: "enrich_tmdb", Label: "Enrich TMDB", ItemLabel: "releases"},
+}
+
+type stageThroughputAccumulator struct {
+	completedRuns   int
+	failedRuns      int
+	itemsProcessed  int64
+	totalDurationMS float64
+}
+
+func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThroughput, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT stage_name, status, started_at, finished_at, metrics_json
+		FROM indexer_stage_runs
+		WHERE started_at >= NOW() - INTERVAL '24 hours'
+		ORDER BY started_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("get indexer stage throughput: %w", err)
+	}
+	defer rows.Close()
+
+	windows := []int{1, 6, 24}
+	now := time.Now().UTC()
+	accumulators := make(map[string]map[int]*stageThroughputAccumulator, len(stageThroughputDefinitions))
+	defByStage := make(map[string]stageThroughputDefinition, len(stageThroughputDefinitions))
+	for _, def := range stageThroughputDefinitions {
+		defByStage[def.StageName] = def
+		accumulators[def.StageName] = make(map[int]*stageThroughputAccumulator, len(windows))
+		for _, windowHours := range windows {
+			accumulators[def.StageName][windowHours] = &stageThroughputAccumulator{}
+		}
+	}
+
+	for rows.Next() {
+		var (
+			stageName  string
+			status     string
+			startedAt  time.Time
+			finishedAt sql.NullTime
+			metricsRaw []byte
+		)
+		if err := rows.Scan(&stageName, &status, &startedAt, &finishedAt, &metricsRaw); err != nil {
+			return nil, fmt.Errorf("scan indexer stage throughput row: %w", err)
+		}
+		if _, ok := defByStage[stageName]; !ok {
+			continue
+		}
+		age := now.Sub(startedAt.UTC())
+		var items int64
+		var durationMS float64
+		if strings.EqualFold(status, "completed") {
+			items = stageThroughputMetricValue(stageName, metricsRaw)
+			if finishedAt.Valid {
+				durationMS = finishedAt.Time.Sub(startedAt).Seconds() * 1000
+			}
+		}
+		for _, windowHours := range windows {
+			if age > time.Duration(windowHours)*time.Hour {
+				continue
+			}
+			acc := accumulators[stageName][windowHours]
+			switch strings.ToLower(strings.TrimSpace(status)) {
+			case "completed":
+				acc.completedRuns++
+				acc.itemsProcessed += items
+				if durationMS > 0 {
+					acc.totalDurationMS += durationMS
+				}
+			case "failed":
+				acc.failedRuns++
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer stage throughput rows: %w", err)
+	}
+
+	items := make([]IndexerStageThroughputItem, 0, len(stageThroughputDefinitions))
+	for _, def := range stageThroughputDefinitions {
+		windowsOut := make([]IndexerStageThroughputWindow, 0, len(windows))
+		for _, windowHours := range windows {
+			acc := accumulators[def.StageName][windowHours]
+			window := IndexerStageThroughputWindow{
+				WindowHours:    windowHours,
+				CompletedRuns:  acc.completedRuns,
+				FailedRuns:     acc.failedRuns,
+				ItemsProcessed: acc.itemsProcessed,
+			}
+			if acc.totalDurationMS > 0 {
+				window.ItemsPerSecond = float64(acc.itemsProcessed) / (acc.totalDurationMS / 1000.0)
+				window.ItemsPerMinute = window.ItemsPerSecond * 60.0
+				window.ItemsPerHour = window.ItemsPerMinute * 60.0
+				window.AvgRunDurationMS = acc.totalDurationMS / float64(maxInt(acc.completedRuns, 1))
+			}
+			windowsOut = append(windowsOut, window)
+		}
+		items = append(items, IndexerStageThroughputItem{
+			StageName: def.StageName,
+			Label:     def.Label,
+			ItemLabel: def.ItemLabel,
+			Windows:   windowsOut,
+		})
+	}
+
+	return &IndexerStageThroughput{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+func stageThroughputMetricValue(stageName string, metricsRaw []byte) int64 {
+	if len(metricsRaw) == 0 {
+		return 0
+	}
+	var metrics map[string]any
+	if err := json.Unmarshal(metricsRaw, &metrics); err != nil {
+		return 0
+	}
+	for _, key := range stageThroughputMetricKeys(stageName) {
+		if value, ok := metricInt64(metrics[key]); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func stageThroughputMetricKeys(stageName string) []string {
+	switch stageName {
+	case "scrape_latest", "scrape_backfill":
+		return []string{"articles_inserted", "article_headers_seen"}
+	case "assemble":
+		return []string{"processed_headers"}
+	case "release":
+		return []string{"candidate_families_inspected", "candidate_families"}
+	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
+		return []string{"processed_count", "candidate_count"}
+	case "enrich_predb", "enrich_tmdb":
+		return []string{"processed_count", "candidate_count"}
+	default:
+		return nil
+	}
+}
+
+func metricInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err == nil {
+			return n, true
+		}
+		f, err := v.Float64()
+		if err == nil {
+			return int64(f), true
+		}
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func maxInt(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
+	for _, def := range indexerDashboardStatDefinitions {
+		now := time.Now().UTC()
+		value, err := s.computeIndexerDashboardStat(ctx, def.Key)
+		if err != nil {
+			if persistErr := s.persistIndexerDashboardStatFailure(ctx, def.Key, now, err); persistErr != nil {
+				return nil, persistErr
+			}
+			continue
+		}
+		if err := s.persistIndexerDashboardStatSuccess(ctx, def.Key, value, now); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.GetIndexerDashboardStats(ctx)
+}
+
+func dashboardStatKeys() []string {
+	keys := make([]string, 0, len(indexerDashboardStatDefinitions))
+	for _, def := range indexerDashboardStatDefinitions {
+		keys = append(keys, def.Key)
+	}
+	return keys
+}
+
+func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (int64, error) {
+	switch key {
+	case "unassembled_headers":
+		return s.CountUnassembledArticleHeaders(ctx)
+	case "pending_media_inspection_binaries":
+		return s.CountPendingInspectMediaBinaries(ctx)
+	case "pending_release_candidate_families":
+		return s.CountPendingReleaseCandidateFamilies(ctx)
+	default:
+		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
+	}
+}
+
+func (s *Store) persistIndexerDashboardStatSuccess(ctx context.Context, key string, value int64, now time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO indexer_dashboard_stats (stat_key, int_value, updated_at, refresh_attempted_at, last_error)
+		VALUES ($1, $2, $3, $3, '')
+		ON CONFLICT (stat_key)
+		DO UPDATE SET
+			int_value = EXCLUDED.int_value,
+			updated_at = EXCLUDED.updated_at,
+			refresh_attempted_at = EXCLUDED.refresh_attempted_at,
+			last_error = ''`, key, value, now); err != nil {
+		return fmt.Errorf("persist dashboard stat %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *Store) persistIndexerDashboardStatFailure(ctx context.Context, key string, now time.Time, cause error) error {
+	msg := strings.TrimSpace(cause.Error())
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO indexer_dashboard_stats (stat_key, refresh_attempted_at, last_error)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (stat_key)
+		DO UPDATE SET
+			refresh_attempted_at = EXCLUDED.refresh_attempted_at,
+			last_error = EXCLUDED.last_error`, key, now, msg); err != nil {
+		return fmt.Errorf("persist dashboard stat failure %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_stage_dirty_families`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending release candidate families: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
+	filter, err := inspectCandidateFilter("inspect_media")
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				bi.inspection_claimed_until IS NOT NULL AND
+				bi.inspection_claimed_until < NOW()
+			) OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate + `
+			OR (
+				abi.updated_at IS NOT NULL AND (
+					bi.id IS NULL OR
+					abi.updated_at > bi.updated_at
+				)
+			)`
+
+	var count int64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT b.id)
+		FROM binaries b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = 'inspect_media'
+			AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+			ON abi.stage_name = 'inspect_archive'
+			AND abi.binary_id = b.id
+		WHERE `+filter+`
+		  AND (
+			`+rerunPredicate+`
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
+		  )`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending inspect_media binaries: %w", err)
+	}
+	return count, nil
+}
+
 func normalizeAdminReleaseSort(sort string) string {
 	switch strings.TrimSpace(sort) {
 	case "", "posted_desc":
@@ -424,6 +999,15 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 
 	if query := strings.TrimSpace(params.Query); query != "" {
 		add(fmt.Sprintf("(r.search_title ILIKE '%%' || $%d || '%%' OR r.group_name ILIKE '%%' || $%d || '%%')", arg, arg), query)
+	}
+	if v := strings.TrimSpace(params.Newsgroup); v != "" {
+		add(fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM release_newsgroups rng
+			JOIN newsgroups ng ON ng.id = rng.newsgroup_id
+			WHERE rng.release_id = r.release_id
+			  AND ng.group_name ILIKE '%%' || $%d || '%%'
+		)`, arg), v)
 	}
 	if params.CategoryID > 0 {
 		add(fmt.Sprintf("r.category_id = $%d", arg), params.CategoryID)
@@ -498,6 +1082,12 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 		add("COALESCE(r.identity_confidence_score, 0) < 0.80")
 	case "no":
 		add("COALESCE(r.identity_confidence_score, 0) >= 0.80")
+	}
+	switch strings.TrimSpace(params.CompletionState) {
+	case "exact_100":
+		add("r.completion_pct = 100")
+	case "below_100":
+		add("r.completion_pct < 100")
 	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
@@ -721,13 +1311,13 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			rf.subject,
 			rf.poster,
 			rf.posted_at,
-			COUNT(rfa.id) AS article_count,
+			COUNT(bp.id) AS article_count,
 			COALESCE(b.total_parts, 0),
 			COALESCE(b.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, '')
 		FROM release_files rf
-		LEFT JOIN release_file_articles rfa ON rfa.release_file_id = rf.id
+		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
 		LEFT JOIN binaries b ON b.id = rf.binary_id
 		WHERE rf.release_id = $1
 		GROUP BY rf.id, rf.binary_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, b.total_parts, b.observed_parts, b.match_confidence, b.match_status
@@ -948,7 +1538,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
 			COALESCE(bge.payload_json, '{}'::jsonb),
-			(SELECT COUNT(*) FROM release_file_articles WHERE release_file_id = rf.id)
+			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
 		FROM release_files rf
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binaries b ON b.id = rf.binary_id

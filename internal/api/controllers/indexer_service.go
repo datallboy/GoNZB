@@ -18,6 +18,10 @@ var errIndexerUnavailable = errors.New("indexer runtime is unavailable")
 
 type indexerService interface {
 	Overview(ctx context.Context) (*pgindex.IndexerOverview, error)
+	DashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
+	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
 	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
@@ -116,6 +120,34 @@ func (s *runtimeIndexerService) Overview(ctx context.Context) (*pgindex.IndexerO
 		return nil, errIndexerUnavailable
 	}
 	return s.store.GetIndexerOverview(ctx)
+}
+
+func (s *runtimeIndexerService) DashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetIndexerDashboardStats(ctx)
+}
+
+func (s *runtimeIndexerService) RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.RefreshIndexerDashboardStats(ctx)
+}
+
+func (s *runtimeIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetIndexerBackfillProgress(ctx)
+}
+
+func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetIndexerStageThroughput(ctx)
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

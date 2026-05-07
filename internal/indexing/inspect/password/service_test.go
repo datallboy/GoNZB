@@ -374,6 +374,10 @@ func (f fakeCommandRunner) Run(_ context.Context, _ string, args ...string) ([]b
 	return []byte("Wrong password"), fmt.Errorf("wrong password")
 }
 
+func (f fakeCommandRunner) RunInput(ctx context.Context, _ io.Reader, name string, args ...string) ([]byte, error) {
+	return f.Run(ctx, name, args...)
+}
+
 func boolPtrValue(v *bool) bool {
 	return v != nil && *v
 }

@@ -43,6 +43,8 @@ type AssemblyCandidate struct {
 	YEncPart                        int
 	YEncTotal                       int
 	YEncFileSize                    int64
+	YEncRecoveryMissingCount        int
+	YEncRecoveryRetryAfter          *time.Time
 	StructuredIdentityBinaryMatched bool
 	RawOverview                     map[string]any
 }
@@ -217,53 +219,56 @@ func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQue
 		priorityHeaderWindow = assemblePriorityHeaderMaxScan
 	}
 
-	priorityHeaders, err := s.listPriorityAssemblyHeaders(ctx, q, laneALimit, priorityHeaderWindow)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]AssemblyCandidate, 0, limit)
+	selected := make([]assemblyCandidateSelection, 0, limit)
 	selectedIDs := make(map[int64]struct{}, limit)
-	for _, candidate := range priorityHeaders {
-		if len(out) >= laneALimit {
-			break
-		}
-		if _, exists := selectedIDs[candidate.ID]; exists {
-			continue
-		}
-		selectedIDs[candidate.ID] = struct{}{}
-		out = append(out, candidate)
-	}
 
-	remaining := limit - len(out)
-	if remaining <= 0 {
-		return out, nil
-	}
-
-	recentWindow := remaining * 20
-	if recentWindow < remaining {
-		recentWindow = remaining
-	}
-
-	recentHeaders, err := s.listRecentUnassembledHeaders(ctx, q, recentWindow)
+	priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
 	if err != nil {
 		return nil, err
 	}
-	for _, candidate := range recentHeaders {
-		if len(out) >= limit {
+	for _, id := range priorityIDs {
+		if len(selected) >= laneALimit {
 			break
 		}
-		if _, exists := selectedIDs[candidate.ID]; exists {
+		if _, exists := selectedIDs[id]; exists {
 			continue
 		}
-		selectedIDs[candidate.ID] = struct{}{}
-		out = append(out, candidate)
+		selectedIDs[id] = struct{}{}
+		selected = append(selected, assemblyCandidateSelection{
+			ID:                              id,
+			StructuredIdentityBinaryMatched: true,
+		})
 	}
 
-	return out, nil
+	remaining := limit - len(selected)
+	if remaining <= 0 {
+		return s.hydrateAssemblyCandidates(ctx, q, selected)
+	}
+
+	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, selectedIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range recentIDs {
+		if len(selected) >= limit {
+			break
+		}
+		if _, exists := selectedIDs[id]; exists {
+			continue
+		}
+		selectedIDs[id] = struct{}{}
+		selected = append(selected, assemblyCandidateSelection{ID: id})
+	}
+
+	return s.hydrateAssemblyCandidates(ctx, q, selected)
 }
 
-func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]AssemblyCandidate, error) {
+type assemblyCandidateSelection struct {
+	ID                              int64
+	StructuredIdentityBinaryMatched bool
+}
+
+func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -272,22 +277,29 @@ func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, q assemblyQuery
 	}
 
 	rows, err := q.QueryContext(ctx, `
-		WITH pending_structured AS (
+		WITH recent_pending AS (
 			SELECT
 				ah.id,
 				ah.provider_id,
-				ah.newsgroup_id,
-				LOWER(BTRIM(p.subject_file_name)) AS normalized_file_name
+				ah.newsgroup_id
 			FROM article_headers ah
-			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 			WHERE ah.assembled_at IS NULL
 			  AND (
 			  	ah.assembly_claimed_until IS NULL
 			  	OR ah.assembly_claimed_until < NOW()
 			  )
-			  AND BTRIM(p.subject_file_name) <> ''
 			ORDER BY ah.id DESC
 			LIMIT $2
+		),
+		pending_structured AS (
+			SELECT
+				rp.id,
+				rp.provider_id,
+				rp.newsgroup_id,
+				LOWER(BTRIM(p.subject_file_name)) AS normalized_file_name
+			FROM recent_pending rp
+			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id
+			WHERE BTRIM(p.subject_file_name) <> ''
 		),
 		ranked_matches AS (
 			SELECT
@@ -343,32 +355,8 @@ func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, q assemblyQuery
 			LIMIT $1
 		)
 		SELECT
-			ah.id,
-			ah.provider_id,
-			ah.newsgroup_id,
-			ng.group_name,
-			ah.article_number,
-			ah.message_id,
-			p.subject,
-			COALESCE(po.poster_name, p.poster, '') AS poster,
-			ah.date_utc,
-			ah.bytes,
-			ah.lines,
-			p.xref,
-			COALESCE(p.poster_id, 0) AS poster_id,
-			COALESCE(p.subject_file_name, '') AS subject_file_name,
-			COALESCE(p.subject_file_index, 0) AS subject_file_index,
-			COALESCE(p.subject_file_total, 0) AS subject_file_total,
-			COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-			COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
-			COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-			TRUE AS structured_identity_binary_matched,
-			COALESCE(p.raw_overview_json::text, '') AS raw_overview
+			s.id
 		FROM selected s
-		JOIN article_headers ah ON ah.id = s.id
-		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN posters po ON po.id = p.poster_id
 		ORDER BY
 			CASE
 				WHEN s.is_main_payload THEN 0
@@ -377,25 +365,25 @@ func (s *Store) listPriorityAssemblyHeaders(ctx context.Context, q assemblyQuery
 			s.completion_ratio DESC,
 			s.observed_parts DESC,
 			s.binary_id DESC,
-			ah.id DESC`,
+			s.id DESC`,
 		limit,
 		pendingWindow,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list priority assembly headers: %w", err)
+		return nil, fmt.Errorf("list priority assembly header ids: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]AssemblyCandidate, 0, limit)
+	out := make([]int64, 0, limit)
 	for rows.Next() {
-		item, err := scanAssemblyCandidate(rows)
-		if err != nil {
-			return nil, err
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan priority assembly header id: %w", err)
 		}
-		out = append(out, item)
+		out = append(out, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate priority assembly headers: %w", err)
+		return nil, fmt.Errorf("iterate priority assembly header ids: %w", err)
 	}
 
 	return out, nil
@@ -575,7 +563,7 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 				TRUE AS structured_identity_binary_matched,
-				COALESCE(p.raw_overview_json::text, '') AS raw_overview
+				'' AS raw_overview
 			FROM article_header_ingest_payloads p
 			JOIN article_headers ah
 			  ON ah.id = p.article_header_id
@@ -621,8 +609,74 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 	return out, nil
 }
 
-func (s *Store) listRecentUnassembledHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
+func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit int, excludeIDs map[int64]struct{}) ([]int64, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	args := []any{limit}
+	query := `
+		SELECT ah.id
+		FROM article_headers ah
+		WHERE ah.assembled_at IS NULL
+		  AND (
+		  	ah.assembly_claimed_until IS NULL
+		  	OR ah.assembly_claimed_until < NOW()
+		  )`
+	if len(excludeIDs) > 0 {
+		ids := make([]int64, 0, len(excludeIDs))
+		for id := range excludeIDs {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		args = append(args, ids)
+		query += fmt.Sprintf(`
+		  AND NOT (ah.id = ANY($%d::bigint[]))`, len(args))
+	}
+	query += `
+		ORDER BY ah.id DESC
+		LIMIT $1`
+
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list recent unassembled header ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan recent unassembled header id: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent unassembled header ids: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer, selected []assemblyCandidateSelection) ([]AssemblyCandidate, error) {
+	if len(selected) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, 0, len(selected))
+	ords := make([]int32, 0, len(selected))
+	structuredMatches := make([]bool, 0, len(selected))
+	for idx, item := range selected {
+		ids = append(ids, item.ID)
+		ords = append(ords, int32(idx))
+		structuredMatches = append(structuredMatches, item.StructuredIdentityBinaryMatched)
+	}
+
 	rows, err := q.QueryContext(ctx, `
+		WITH requested(id, ord, structured_identity_binary_matched) AS (
+			SELECT *
+			FROM UNNEST($1::bigint[], $2::integer[], $3::boolean[])
+		)
 		SELECT
 			ah.id,
 			ah.provider_id,
@@ -643,25 +697,22 @@ func (s *Store) listRecentUnassembledHeaders(ctx context.Context, q assemblyQuer
 			COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
 			COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
 			COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-			FALSE AS structured_identity_binary_matched,
-			COALESCE(p.raw_overview_json::text, '') AS raw_overview
-		FROM article_headers ah
+			COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
+			p.yenc_recovery_retry_after,
+			requested.structured_identity_binary_matched,
+			'' AS raw_overview
+		FROM requested
+		JOIN article_headers ah ON ah.id = requested.id
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 		LEFT JOIN posters po ON po.id = p.poster_id
-		WHERE ah.assembled_at IS NULL
-		  AND (
-		  	ah.assembly_claimed_until IS NULL
-		  	OR ah.assembly_claimed_until < NOW()
-		  )
-		ORDER BY ah.id DESC
-		LIMIT $1`, limit)
+		ORDER BY requested.ord ASC`, ids, ords, structuredMatches)
 	if err != nil {
-		return nil, fmt.Errorf("list recent unassembled headers: %w", err)
+		return nil, fmt.Errorf("hydrate assembly candidates: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]AssemblyCandidate, 0, limit)
+	out := make([]AssemblyCandidate, 0, len(selected))
 	for rows.Next() {
 		item, err := scanAssemblyCandidate(rows)
 		if err != nil {
@@ -670,7 +721,7 @@ func (s *Store) listRecentUnassembledHeaders(ctx context.Context, q assemblyQuer
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate recent unassembled headers: %w", err)
+		return nil, fmt.Errorf("iterate hydrated assembly candidates: %w", err)
 	}
 
 	return out, nil
@@ -686,12 +737,13 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	Scan(dest ...any) error
 }, binaryID *int64) (AssemblyCandidate, error) {
 	var (
-		item AssemblyCandidate
-		date sql.NullTime
-		raw  string
+		item       AssemblyCandidate
+		date       sql.NullTime
+		retryAfter sql.NullTime
+		raw        string
 	)
 
-	dest := make([]any, 0, 22)
+	dest := make([]any, 0, 24)
 	if binaryID != nil {
 		dest = append(dest, binaryID)
 	}
@@ -715,6 +767,8 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 		&item.YEncPart,
 		&item.YEncTotal,
 		&item.YEncFileSize,
+		&item.YEncRecoveryMissingCount,
+		&retryAfter,
 		&item.StructuredIdentityBinaryMatched,
 		&raw,
 	)
@@ -727,12 +781,13 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 		t := date.Time.UTC()
 		item.DateUTC = &t
 	}
-
-	if raw != "" {
-		_ = json.Unmarshal([]byte(raw), &item.RawOverview)
+	if retryAfter.Valid {
+		t := retryAfter.Time.UTC()
+		item.YEncRecoveryRetryAfter = &t
 	}
+
 	if item.RawOverview == nil {
-		item.RawOverview = make(map[string]any, 7)
+		item.RawOverview = make(map[string]any, 8)
 	}
 	if strings.TrimSpace(item.FileName) != "" {
 		item.RawOverview["name"] = item.FileName
@@ -752,8 +807,34 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	if item.YEncFileSize > 0 {
 		item.RawOverview["size"] = item.YEncFileSize
 	}
+	if item.Bytes > 0 {
+		item.RawOverview["bytes"] = item.Bytes
+	}
 
 	return item, nil
+}
+
+func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
+	if articleHeaderID <= 0 {
+		return fmt.Errorf("article header id is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads
+		SET yenc_recovery_missing_count = article_header_ingest_payloads.yenc_recovery_missing_count + 1,
+		    yenc_recovery_last_missing_at = NOW(),
+		    yenc_recovery_retry_after = NOW() + CASE
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '1 hour'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '6 hours'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '24 hours'
+		    	ELSE INTERVAL '72 hours'
+		    END
+		WHERE article_header_id = $1`, articleHeaderID,
+	)
+	if err != nil {
+		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
+	}
+	return nil
 }
 
 func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, error) {

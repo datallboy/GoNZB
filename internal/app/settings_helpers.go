@@ -27,7 +27,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			Assemble:                 defaultStage(false, 10, 5000, 1),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			InspectDiscovery:         defaultStage(false, 10, 100, 0),
 			InspectPAR2:              defaultStage(false, 10, 100, 0),
 			InspectNFO:               defaultStage(false, 10, 100, 0),
@@ -182,14 +182,16 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		ArticleBucketSize:           int64Value(cfg.Match.ArticleBucketSize, 5000),
 	}
 	out.Inspect = IndexingInspectRuntimeSettings{
-		WorkDir:         firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
-		MaxBytes:        firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
-		MaxArchiveDepth: firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
-		ToolTimeoutSecs: firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
-		FFProbePath:     firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
-		SevenZipPath:    firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
-		UnrarPath:       firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
-		PAR2Path:        firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
+		WorkDir:          firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
+		WorkspaceBackend: firstNonEmpty(cfg.Inspect.WorkspaceBackend, "auto"),
+		MemoryWorkDir:    firstNonEmpty(cfg.Inspect.MemoryWorkDir, "/dev/shm/gonzb-inspect"),
+		MaxBytes:         firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MaxArchiveDepth:  firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
+		ToolTimeoutSecs:  firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
+		FFProbePath:      firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
+		SevenZipPath:     firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
+		UnrarPath:        firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
+		PAR2Path:         firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
 	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
 	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
@@ -309,14 +311,16 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			ArticleBucketSize:           int64Ptr(indexing.Match.ArticleBucketSize),
 		}
 		effective.Indexing.Inspect = config.IndexingInspectConfig{
-			WorkDir:         indexing.Inspect.WorkDir,
-			MaxBytes:        indexing.Inspect.MaxBytes,
-			MaxArchiveDepth: indexing.Inspect.MaxArchiveDepth,
-			ToolTimeoutSecs: indexing.Inspect.ToolTimeoutSecs,
-			FFProbePath:     indexing.Inspect.FFProbePath,
-			SevenZipPath:    indexing.Inspect.SevenZipPath,
-			UnrarPath:       indexing.Inspect.UnrarPath,
-			PAR2Path:        indexing.Inspect.PAR2Path,
+			WorkDir:          indexing.Inspect.WorkDir,
+			WorkspaceBackend: indexing.Inspect.WorkspaceBackend,
+			MemoryWorkDir:    indexing.Inspect.MemoryWorkDir,
+			MaxBytes:         indexing.Inspect.MaxBytes,
+			MaxArchiveDepth:  indexing.Inspect.MaxArchiveDepth,
+			ToolTimeoutSecs:  indexing.Inspect.ToolTimeoutSecs,
+			FFProbePath:      indexing.Inspect.FFProbePath,
+			SevenZipPath:     indexing.Inspect.SevenZipPath,
+			UnrarPath:        indexing.Inspect.UnrarPath,
+			PAR2Path:         indexing.Inspect.PAR2Path,
 		}
 		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
 		effective.Indexing.InspectPAR2 = toStageConfigNoConcurrency(indexing.InspectPAR2)

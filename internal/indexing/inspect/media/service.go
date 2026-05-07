@@ -233,6 +233,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	artifactRows := make([]pgindex.BinaryInspectionArtifactRecord, 0)
 	streamRows := make([]pgindex.BinaryMediaStreamRecord, 0)
 
+	strongArchiveHeuristics := archiveBacked && shouldSkipArchiveProbe(isVideo, isAudio, resolution, videoCodec, audioCodec)
+	if strongArchiveHeuristics {
+		probeMode = "heuristic_archive_entry"
+	}
+
 	if (isVideo || isAudio) && s.fetcher != nil && s.runner != nil && !archiveBacked {
 		materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
 		if err == nil {
@@ -327,13 +332,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ffprobeError = err.Error()
 		}
 	}
-	if (isVideo || isAudio) && archiveBacked && s.fetcher != nil {
-		extractedPath := filepath.Join(workspace.Dir, filepath.Base(mediaEntry))
-		archiveMedia, err := inspectpkg.MaterializeArchiveMediaToWorkspace(ctx, s.repo, s.fetcher, candidate, mediaEntry, workspace.Dir, s.opts, s.log)
+	if (isVideo || isAudio) && archiveBacked && s.fetcher != nil && !strongArchiveHeuristics {
+		archiveMedia, err := inspectpkg.MaterializeArchiveMediaToWorkspace(ctx, s.repo, s.fetcher, s.runner, candidate, mediaEntry, workspace.Dir, s.opts, s.log)
 		if err == nil {
 			probeMode = "ffprobe_archive"
 			materializedBytes += archiveMedia.ArchiveBytes + archiveMedia.ExtractedBytes
-			extractedPath = archiveMedia.OutputPath
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
 				ReleaseID:    candidate.ReleaseID,
@@ -345,16 +348,20 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				Signature:    archiveMedia.Signature,
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
-					"probe_mode":         "ffprobe_archive",
-					"archive_entry":      mediaEntry,
-					"extract_stderr":     archiveMedia.ExtractStderr,
-					"partial_extraction": archiveMedia.PartialExtraction,
+					"probe_mode":          "ffprobe_archive",
+					"archive_entry":       mediaEntry,
+					"extract_stderr":      archiveMedia.ExtractStderr,
+					"partial_extraction":  archiveMedia.PartialExtraction,
+					"streamed_to_ffprobe": true,
 				},
 			}}
 
-			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(probeCtx, s.runner, s.opts.FFProbePath, extractedPath)
-			cancel()
+			ffprobeResult, ffprobeOutput, probeErr := archiveMedia.FFProbeResult, archiveMedia.FFProbeOutput, error(nil)
+			if archiveMedia.FFProbeError != "" {
+				probeErr = fmt.Errorf("%s", archiveMedia.FFProbeError)
+			} else if ffprobeResult == nil && len(ffprobeOutput) == 0 {
+				probeErr = fmt.Errorf("ffprobe archive probe returned no result")
+			}
 			if ffprobeResult != nil {
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
@@ -507,6 +514,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 
 func normalizeMatch(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func shouldSkipArchiveProbe(isVideo, isAudio bool, resolution, videoCodec, audioCodec string) bool {
+	if isAudio && audioCodec != "" {
+		return true
+	}
+	if isVideo && resolution != "" && (videoCodec != "" || audioCodec != "") {
+		return true
+	}
+	return false
 }
 
 func mediaTier(score float64) string {

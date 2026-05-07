@@ -112,6 +112,63 @@ export type IndexerOverview = {
   failed_run_count: number
 }
 
+export type IndexerDashboardStat = {
+  key: string
+  label: string
+  description: string
+  value: number
+  available: boolean
+  exact: boolean
+  updated_at?: string
+  refresh_attempted_at?: string
+  last_error?: string
+}
+
+export type IndexerDashboardStats = {
+  items: IndexerDashboardStat[]
+  count: number
+}
+
+export type IndexerBackfillProgressItem = {
+  group_name: string
+  configured_cutoff_date?: string
+  cutoff_reached: boolean
+  backfill_cursor_article_number: number
+  latest_article_number: number
+  oldest_scraped_article_date?: string
+  latest_scraped_article_date?: string
+  provider_count: number
+  last_checkpoint_updated_at?: string
+}
+
+export type IndexerBackfillProgress = {
+  items: IndexerBackfillProgressItem[]
+  count: number
+}
+
+export type IndexerStageThroughputWindow = {
+  window_hours: number
+  completed_runs: number
+  failed_runs: number
+  items_processed: number
+  items_per_second: number
+  items_per_minute: number
+  items_per_hour: number
+  avg_run_duration_ms: number
+}
+
+export type IndexerStageThroughputItem = {
+  stage_name: string
+  label: string
+  item_label: string
+  windows: IndexerStageThroughputWindow[]
+}
+
+export type IndexerStageThroughput = {
+  items: IndexerStageThroughputItem[]
+  count: number
+}
+
 export type AdminStage = {
   stage_name: string
   enabled: boolean
@@ -213,6 +270,7 @@ export type AdminReleaseListResponse = {
 
 export type AdminReleaseListParams = {
   q?: string
+  newsgroup?: string
   sort?: string
   category_id?: string
   classification?: string
@@ -228,6 +286,7 @@ export type AdminReleaseListParams = {
   password_candidates?: string
   metadata_mismatch?: string
   low_confidence?: string
+  completion_state?: string
   has_nfo?: string
   has_par2?: string
   limit?: number
@@ -614,6 +673,8 @@ export type IndexingRuntimeSettings = {
   }
   inspect: {
     work_dir: string
+    workspace_backend: string
+    memory_work_dir: string
     max_bytes: number
     max_archive_depth: number
     tool_timeout_seconds: number

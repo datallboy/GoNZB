@@ -13,7 +13,8 @@ We currently have several planning and reference documents. This file defines wh
 - the backlog burn-down performance pass and assemble/release refinement loop are done
 - the first API/UI expansion phase is done
 - the process execution and performance sprint is complete and archived
-- the active indexer execution focus is now database storage retention, maintenance reporting, and NZB/offload options
+- the backlog burn-down follow-up sprint is complete and archived
+- the active indexer execution focus now centers on storage retention, maintenance/reporting, and later operational tuning work
 
 ## Current Active Docs
 
@@ -46,22 +47,32 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database storage retention and reclaim planning for the indexer runtime.
+The current focus is database storage retention and reclaim planning.
 
 Primary workstream:
 
 - make maintenance retention windows configurable
 - add maintenance reporting and admin UI controls
 - reduce `article_header_ingest_payloads` retention safely
-- evaluate and implement `release_file_articles` consolidation into `binary_parts` if invariants hold
-- design NZB blob caching/offload so article mappings can eventually be pruned more aggressively
+- evaluate longer-term NZB blob caching/offload so article mappings can eventually be pruned more aggressively
 
 Recent completed focus:
 
+- assemble backlog burn-down and schema simplification
 - assemble throughput and safe concurrency
 - release query/write batching
 - inspect archive/media concurrency with database reservations
 - deferring cross-process topology until measurements justify it
+
+### `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_AND_SCHEMA_SIMPLIFICATION_PLAN.md`
+
+Use for:
+
+- the completed backlog burn-down follow-up sprint after the assemble selector rewrite
+- assemble hot-path payload reduction, pending-count removal, and yEnc guardrails
+- `release_file_articles` consolidation into `binary_parts`
+- inspection, enrichment, scrape, and release write batching
+- inspect media probe-path reduction and dashboard backlog/throughput expansion
 
 ## Prior Execution And Reference Docs
 

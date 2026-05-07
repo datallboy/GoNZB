@@ -80,6 +80,8 @@ function defaultSettings(): RuntimeSettings {
       },
       inspect: {
         work_dir: '/store/indexer/inspect',
+        workspace_backend: 'auto',
+        memory_work_dir: '/dev/shm/gonzb-inspect',
         max_bytes: 2147483648,
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
@@ -236,8 +238,24 @@ function parseCleanupExtensions(value: string) {
 function serversForSave(servers: ServerRuntimeSettings[], prefix: string) {
   return servers.map((server, index) => ({
     ...server,
-    id: server.id?.trim() || `${prefix}-${index + 1}`,
+    id: deriveServerID(server, index, prefix),
   }))
+}
+
+function deriveServerID(server: ServerRuntimeSettings, index: number, prefix: string) {
+  const hostID = server.host.trim().toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+  if (hostID) {
+    return hostID
+  }
+  return server.id?.trim() || `${prefix}-${index + 1}`
+}
+
+function serverTitle(server: ServerRuntimeSettings, index: number) {
+  const host = server.host.trim()
+  if (host) {
+    return host
+  }
+  return `Server ${index + 1}`
 }
 
 function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRuntimeSettings {
@@ -427,7 +445,7 @@ export function AdminSettingsPage() {
             {downloaderServers.map((server, index) => (
               <ServerFields
                 key={index}
-                title={`Server ${index + 1}`}
+                title={serverTitle(server, index)}
                 server={server}
                 locked={lockDownloaderServers}
                 onRemove={() => setSettings((current) => ({ ...current, downloader_servers: downloaderServers.filter((_, i) => i !== index) }))}
@@ -518,7 +536,7 @@ export function AdminSettingsPage() {
             {indexerServers.map((server, index) => (
               <ServerFields
                 key={index}
-                title={`Server ${index + 1}`}
+                title={serverTitle(server, index)}
                 server={server}
                 locked={lockIndexerServers}
                 onRemove={() => setSettings((current) => ({ ...current, indexer_servers: indexerServers.filter((_, i) => i !== index) }))}
@@ -539,20 +557,21 @@ export function AdminSettingsPage() {
               </button>
             </div>
             {newsgroupDrafts.map((row, index) => (
-              <div className="toolbar-grid" key={index}>
+              <div className="newsgroup-row" key={index}>
                 <TextField
                   label="Newsgroup"
                   value={row.group}
                   required
                   onChange={(value) => updateNewsgroup(index, { group: value })}
                 />
-                <TextField
-                  label="Scrape until"
+                <DateField
+                  label="Backfill until date"
                   value={row.until}
                   onChange={(value) => updateNewsgroup(index, { until: value })}
+                  helpText="Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date."
                 />
                 <button
-                  className="secondary-button align-end"
+                  className="secondary-button newsgroup-row__remove"
                   type="button"
                   disabled={lockIndexerLists}
                   onClick={() => {
@@ -612,7 +631,6 @@ export function AdminSettingsPage() {
 
         <SettingsSection title="Inspection tools">
           <div className="toolbar-grid">
-            <TextField label="Work dir" value={indexing.inspect.work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, work_dir: value } })} />
             <NumberField label="Max bytes" value={indexing.inspect.max_bytes} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })} />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
@@ -620,6 +638,32 @@ export function AdminSettingsPage() {
             <TextField label="7z path" value={indexing.inspect.seven_zip_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, seven_zip_path: value } })} />
             <TextField label="unrar path" value={indexing.inspect.unrar_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, unrar_path: value } })} />
             <TextField label="par2 path" value={indexing.inspect.par2_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, par2_path: value } })} />
+          </div>
+          <div className="stack">
+            <div className="banner">
+              Archive/media inspection workspaces can use RAM or disk. `Auto` prefers RAM when available and falls back to disk.
+            </div>
+            <div className="page-card stack">
+              <h3 className="section-subtitle">Workspace Storage</h3>
+              <p className="muted-copy">
+                Use `Work dir` for normal disk-backed workspaces and fallback storage. Use `Memory work dir` only for RAM-backed workspaces.
+              </p>
+              <div className="toolbar-grid">
+                <label>
+                  <span>Workspace backend</span>
+                  <select
+                    value={indexing.inspect.workspace_backend}
+                    onChange={(event) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, workspace_backend: event.target.value } })}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="memory">Memory</option>
+                    <option value="disk">Disk</option>
+                  </select>
+                </label>
+                <TextField label="Work dir" value={indexing.inspect.work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, work_dir: value } })} />
+                <TextField label="Memory work dir" value={indexing.inspect.memory_work_dir} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, memory_work_dir: value } })} />
+              </div>
+            </div>
           </div>
         </SettingsSection>
 
@@ -804,6 +848,28 @@ function TextField({
     <label className="field">
       <span>{label}</span>
       <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  )
+}
+
+function DateField({
+  label,
+  value,
+  required,
+  helpText,
+  onChange,
+}: {
+  label: string
+  value: string
+  required?: boolean
+  helpText?: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type="date" value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }

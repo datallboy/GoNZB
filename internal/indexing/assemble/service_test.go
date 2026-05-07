@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
+	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -206,14 +207,214 @@ func TestRunOnceSkipsYEncRecoveryWhenStructuredIdentityAlreadyMatchesExistingBin
 	}
 }
 
-type fakeRepository struct {
-	headers          []pgindex.AssemblyCandidate
-	upsertedBinaries []pgindex.BinaryRecord
-	upsertedParts    []pgindex.BinaryPartRecord
+func TestRunOnceSkipsYEncRecoveryWhenSubjectAlreadyExposesFileName(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:            41,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 3001,
+				MessageID:     "<subject-name@test.example>",
+				Subject:       `Readable Subject - "readable.release.bin" yEnc`,
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         2048,
+				Lines:         100,
+				Xref:          `alt.binaries.test:3001`,
+				FileName:      "readable.release.bin",
+			},
+		},
+	}
+	matcher := &fakeMatcher{
+		result: match.Result{
+			SourceReleaseKey: "readable-release",
+			ReleaseFamilyKey: "readable-release",
+			ReleaseKey:       "readable-release",
+			BinaryName:       "readable.release.bin",
+			BinaryKey:        "readable-release::readable.release.bin",
+			FileName:         "readable.release.bin",
+			PartNumber:       1,
+			TotalParts:       1,
+			MatchConfidence:  0.20,
+			MatchStatus:      "low_confidence",
+		},
+	}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<subject-name@test.example>": "=ybegin part=1 total=1 line=128 size=2048 name=readable.release.bin\r\n",
+		},
+	}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if fetcher.calls != 0 {
+		t.Fatalf("expected yEnc recovery to stay off the hot path when subject already exposes file name, got %d calls", fetcher.calls)
+	}
 }
 
-func (f *fakeRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
-	return int64(len(f.headers)), nil
+func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 12, 30, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:            51,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 4001,
+				MessageID:     "<opaque-cap-a@test.example>",
+				Subject:       "ABCDEF1234567890opaquecapaaaa",
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         1024,
+				Lines:         100,
+				Xref:          `alt.binaries.test:4001`,
+			},
+			{
+				ID:            52,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 4002,
+				MessageID:     "<opaque-cap-b@test.example>",
+				Subject:       "ABCDEF1234567890opaquecapbbbb",
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         1024,
+				Lines:         100,
+				Xref:          `alt.binaries.test:4002`,
+			},
+			{
+				ID:            53,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 4003,
+				MessageID:     "<opaque-cap-c@test.example>",
+				Subject:       "ABCDEF1234567890opaquecapcccc",
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         1024,
+				Lines:         100,
+				Xref:          `alt.binaries.test:4003`,
+			},
+		},
+	}
+	matcher := &fakeMatcher{dynamic: true}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<opaque-cap-a@test.example>": "=ybegin part=1 total=10 line=128 size=1234 name=opaque.cap.file\r\n=ypart begin=1 end=2\r\n",
+			"<opaque-cap-b@test.example>": "=ybegin part=2 total=10 line=128 size=1234 name=opaque.cap.file\r\n=ypart begin=3 end=4\r\n",
+			"<opaque-cap-c@test.example>": "=ybegin part=3 total=10 line=128 size=1234 name=opaque.cap.file\r\n=ypart begin=5 end=6\r\n",
+		},
+	}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10, MaxYEncRecoveryAttempts: 2})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if fetcher.calls != 2 {
+		t.Fatalf("expected yEnc recovery attempts to be capped at 2, got %d", fetcher.calls)
+	}
+	if got := intValue(metrics["recovery_attempts"]); got != 2 {
+		t.Fatalf("expected 2 recorded recovery attempts, got %d", got)
+	}
+	if got := intValue(metrics["recovery_skipped_by_cap"]); got != 1 {
+		t.Fatalf("expected 1 skipped recovery due to cap, got %d", got)
+	}
+}
+
+func TestRunOnceSkipsYEncRecoveryDuringPersistedBackoff(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 13, 0, 0, 0, time.UTC)
+	retryAfter := time.Now().UTC().Add(2 * time.Hour)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:                     61,
+				ProviderID:             1,
+				NewsgroupID:            2,
+				NewsgroupName:          "alt.binaries.test",
+				ArticleNumber:          5001,
+				MessageID:              "<opaque-backoff@test.example>",
+				Subject:                "ABCDEF1234567890opaquebackoff",
+				Poster:                 `Poster <poster@example.com>`,
+				DateUTC:                &postedAt,
+				Bytes:                  1024,
+				Lines:                  100,
+				Xref:                   `alt.binaries.test:5001`,
+				YEncRecoveryRetryAfter: &retryAfter,
+			},
+		},
+	}
+	matcher := &fakeMatcher{dynamic: true}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<opaque-backoff@test.example>": "=ybegin part=1 total=10 line=128 size=1234 name=opaque.backoff.file\r\n",
+		},
+	}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("expected no yEnc fetch during persisted backoff, got %d calls", fetcher.calls)
+	}
+	if got := intValue(metrics["recovery_skipped_by_backoff"]); got != 1 {
+		t.Fatalf("expected 1 recovery skip due to backoff, got %d", got)
+	}
+}
+
+func TestRunOncePersistsYEncNotFoundBackoff(t *testing.T) {
+	postedAt := time.Date(2026, 5, 6, 13, 30, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:            71,
+				ProviderID:    1,
+				NewsgroupID:   2,
+				NewsgroupName: "alt.binaries.test",
+				ArticleNumber: 6001,
+				MessageID:     "<opaque-notfound@test.example>",
+				Subject:       "ABCDEF1234567890opaquenotfound",
+				Poster:        `Poster <poster@example.com>`,
+				DateUTC:       &postedAt,
+				Bytes:         1024,
+				Lines:         100,
+				Xref:          `alt.binaries.test:6001`,
+			},
+		},
+	}
+	matcher := &fakeMatcher{dynamic: true}
+	fetcher := &errorArticleFetcher{err: nntp.ErrArticleNotFound}
+
+	svc := NewService(repo, matcher, fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if len(repo.yencNotFoundRecorded) != 1 || repo.yencNotFoundRecorded[0] != 71 {
+		t.Fatalf("expected yEnc not-found backoff to be recorded for header 71, got %#v", repo.yencNotFoundRecorded)
+	}
+	if got := intValue(metrics["recovery_fetch_failures"]); got != 1 {
+		t.Fatalf("expected 1 recovery fetch failure, got %d", got)
+	}
+}
+
+type fakeRepository struct {
+	headers              []pgindex.AssemblyCandidate
+	upsertedBinaries     []pgindex.BinaryRecord
+	upsertedParts        []pgindex.BinaryPartRecord
+	yencNotFoundRecorded []int64
 }
 
 func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
@@ -243,6 +444,11 @@ func (f *fakeRepository) RefreshBinaryStats(context.Context, int64) error {
 }
 
 func (f *fakeRepository) RefreshBinaryStatsBatch(context.Context, []int64) error {
+	return nil
+}
+
+func (f *fakeRepository) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {
+	f.yencNotFoundRecorded = append(f.yencNotFoundRecorded, articleHeaderID)
 	return nil
 }
 
@@ -303,6 +509,14 @@ func (f fakeArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (
 type countingArticleFetcher struct {
 	payloads map[string]string
 	calls    int
+}
+
+type errorArticleFetcher struct {
+	err error
+}
+
+func (f *errorArticleFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+	return nil, f.err
 }
 
 func (f *countingArticleFetcher) Fetch(_ context.Context, msgID string, _ []string) (io.Reader, error) {
