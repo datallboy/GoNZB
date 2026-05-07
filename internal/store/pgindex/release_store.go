@@ -44,18 +44,25 @@ type BinarySummary struct {
 
 // grouped release candidate used by release formation.
 type ReleaseCandidate struct {
-	ProviderID          int64
-	NewsgroupID         int64
-	KeyKind             string
-	SourceReleaseKey    string
-	ReleaseFamilyKey    string
-	ReleaseKey          string
-	ReleaseName         string
-	PostedAt            *time.Time
-	BinaryCount         int
-	CompleteBinaryCount int
-	ReadinessBucket     string
-	TotalBytes          int64
+	ProviderID                     int64
+	NewsgroupID                    int64
+	KeyKind                        string
+	SourceReleaseKey               string
+	ReleaseFamilyKey               string
+	ReleaseKey                     string
+	ReleaseName                    string
+	PostedAt                       *time.Time
+	BinaryCount                    int
+	CompleteBinaryCount            int
+	CompleteMainPayloadBinaryCount int
+	ExpectedFileCount              int
+	ExpectedFileCoveragePct        float64
+	ReadinessBucket                string
+	TotalBytes                     int64
+}
+
+type ReleaseCandidateSelectionOptions struct {
+	MinExpectedFileCoveragePct float64
 }
 
 type ReleaseCandidateAck struct {
@@ -156,9 +163,15 @@ func normalizeReleaseIdentity(in *ReleaseRecord) {
 }
 
 // CHANGED: return release groups whose binaries are new or changed since last formation.
-func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]ReleaseCandidate, error) {
+func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts ReleaseCandidateSelectionOptions) ([]ReleaseCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	if opts.MinExpectedFileCoveragePct < 0 {
+		opts.MinExpectedFileCoveragePct = 0
+	}
+	if opts.MinExpectedFileCoveragePct > 100 {
+		opts.MinExpectedFileCoveragePct = 100
 	}
 
 	query := fmt.Sprintf(`
@@ -214,16 +227,27 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				posted_at,
 				binary_count,
 				total_bytes,
+				expected_file_count,
 				complete_binary_count,
+				complete_main_payload_binary_count,
+				expected_file_coverage_pct,
 				has_expected_file_count,
 				readiness_bucket
 			FROM candidate_summaries
 			ORDER BY
 				CASE
 					WHEN readiness_bucket = '%s' THEN 0
-					WHEN readiness_bucket = '%s' THEN 1
-					ELSE 2
+					WHEN readiness_bucket = '%s'
+					 AND (
+					 	NOT has_expected_file_count
+					 	OR expected_file_count <= 0
+					 	OR expected_file_coverage_pct >= $2
+					 ) THEN 1
+					WHEN readiness_bucket = '%s' THEN 2
+					ELSE 3
 				END ASC,
+				expected_file_coverage_pct DESC,
+				complete_main_payload_binary_count DESC,
 				complete_binary_count DESC,
 				CASE
 					WHEN has_expected_file_count THEN 1
@@ -244,15 +268,26 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			q.posted_at,
 			q.binary_count,
 			q.complete_binary_count,
+			q.complete_main_payload_binary_count,
+			q.expected_file_count,
+			q.expected_file_coverage_pct,
 			q.readiness_bucket,
 			q.total_bytes
 		FROM next_queue q
 		ORDER BY
 			CASE
 				WHEN q.readiness_bucket = '%s' THEN 0
-				WHEN q.readiness_bucket = '%s' THEN 1
-				ELSE 2
+				WHEN q.readiness_bucket = '%s'
+				 AND (
+				 	NOT q.has_expected_file_count
+				 	OR q.expected_file_count <= 0
+				 	OR q.expected_file_coverage_pct >= $2
+				 ) THEN 1
+				WHEN q.readiness_bucket = '%s' THEN 2
+				ELSE 3
 			END ASC,
+			q.expected_file_coverage_pct DESC,
+			q.complete_main_payload_binary_count DESC,
 			q.complete_binary_count DESC,
 			CASE
 				WHEN q.has_expected_file_count THEN 1
@@ -262,11 +297,13 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			q.family_key ASC`,
 		releaseReadinessStaleCleanupOnly,
 		releaseReadinessActionable,
+		releaseReadinessActionable,
 		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
 		releaseReadinessActionable,
 		releaseReadinessStaleCleanupOnly,
 	)
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.db.QueryContext(ctx, query, limit, opts.MinExpectedFileCoveragePct)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
@@ -288,6 +325,9 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			&postedAt,
 			&item.BinaryCount,
 			&item.CompleteBinaryCount,
+			&item.CompleteMainPayloadBinaryCount,
+			&item.ExpectedFileCount,
+			&item.ExpectedFileCoveragePct,
 			&item.ReadinessBucket,
 			&item.TotalBytes,
 		); err != nil {

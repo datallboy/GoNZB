@@ -664,6 +664,7 @@ export type IndexingRuntimeSettings = {
   release: AdminStageConfigPatch & {
     min_confidence: number
     min_completion_pct: number
+    min_expected_file_coverage_pct: number
     require_expected_file_count_for_contextual_obfuscated: boolean
   }
   match: {

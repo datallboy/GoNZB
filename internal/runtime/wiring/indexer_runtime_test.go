@@ -55,12 +55,13 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		ArticleBucketSize:           &articleBucket,
 	}
 	cfg.Indexing.Release = config.IndexingReleaseConfig{
-		Enabled:          &enabled,
-		IntervalMinutes:  &interval,
-		BatchSize:        &batch,
-		BackoffSeconds:   &backoff,
-		MinConfidence:    &matchHigh,
-		MinCompletionPct: func() *float64 { v := 25.0; return &v }(),
+		Enabled:                    &enabled,
+		IntervalMinutes:            &interval,
+		BatchSize:                  &batch,
+		BackoffSeconds:             &backoff,
+		MinConfidence:              &matchHigh,
+		MinCompletionPct:           func() *float64 { v := 25.0; return &v }(),
+		MinExpectedFileCoveragePct: func() *float64 { v := 92.0; return &v }(),
 		RequireExpectedFileCountForContextualObfuscated: func() *bool { v := true; return &v }(),
 	}
 	cfg.Indexing.InspectMedia = config.IndexingStageConfig{
@@ -114,8 +115,8 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
 	}
-	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || !got.RequireExpectedFileCountForContextualObfuscated {
-		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.RequireExpectedFileCountForContextualObfuscated)
+	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || got.ReleaseMinExpectedFileCoveragePct != 92 || !got.RequireExpectedFileCountForContextualObfuscated {
+		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v min_expected_file_coverage_pct=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.ReleaseMinExpectedFileCoveragePct, got.RequireExpectedFileCountForContextualObfuscated)
 	}
 	if got.InspectMedia.BatchSize != batch {
 		t.Fatalf("expected inspect_media batch size %d, got %+v", batch, got.InspectMedia)

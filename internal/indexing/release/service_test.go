@@ -305,6 +305,45 @@ func TestRunOnceSkipsBinaryListingForFragmentOnlyCandidates(t *testing.T) {
 	}
 }
 
+func TestRunOnceCoolsDownLowCoverageCandidatesBeforeBinaryListing(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:                     1,
+				NewsgroupID:                    2,
+				KeyKind:                        "release_family",
+				ReleaseFamilyKey:               "low-coverage",
+				BinaryCount:                    8,
+				CompleteBinaryCount:            4,
+				CompleteMainPayloadBinaryCount: 4,
+				ExpectedFileCount:              10,
+				ExpectedFileCoveragePct:        40,
+				ReadinessBucket:                "actionable",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                         10,
+		ReleaseMinConfidence:              0.55,
+		ReleaseMinExpectedFileCoveragePct: 90,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for low-coverage candidate, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected 1 acked candidate, got %d", len(repo.ackedCandidates))
+	}
+	if got := metrics["cooled_down_low_coverage_families"]; got != 1 {
+		t.Fatalf("expected cooled_down_low_coverage_families=1, got %#v", got)
+	}
+}
+
 func TestRunOnceCoolsDownFragmentOnlyFamilyAndAcksDirtyCandidate(t *testing.T) {
 	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1565,7 +1604,7 @@ type ackedReleaseCandidate struct {
 	familyKey   string
 }
 
-func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
+func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int, pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error) {
 	f.listReleaseCandidatesCalls++
 	return f.candidates, nil
 }

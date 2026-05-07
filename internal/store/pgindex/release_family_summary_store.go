@@ -89,14 +89,16 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	}
 
 	var (
-		sourceReleaseKey     string
-		releaseKey           string
-		releaseName          string
-		binaryCount          int
-		completeBinaryCount  int
-		hasExpectedFileCount bool
-		totalBytes           int64
-		earliestPostedAt     sql.NullTime
+		sourceReleaseKey               string
+		releaseKey                     string
+		releaseName                    string
+		binaryCount                    int
+		completeBinaryCount            int
+		completeMainPayloadBinaryCount int
+		expectedFileCount              int
+		hasExpectedFileCount           bool
+		totalBytes                     int64
+		earliestPostedAt               sql.NullTime
 	)
 	query := `
 		SELECT
@@ -110,6 +112,15 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 					ELSE 0
 				END
 			), 0)::INTEGER AS complete_binary_count,
+			COALESCE(SUM(
+				CASE
+					WHEN (b.is_main_payload OR NOT b.is_auxiliary)
+					 AND b.observed_parts = b.total_parts
+					 AND b.total_parts > 0 THEN 1
+					ELSE 0
+				END
+			), 0)::INTEGER AS complete_main_payload_binary_count,
+			COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
 			COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
 			MIN(b.posted_at) AS earliest_posted_at
@@ -121,6 +132,8 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		&releaseName,
 		&binaryCount,
 		&completeBinaryCount,
+		&completeMainPayloadBinaryCount,
+		&expectedFileCount,
 		&hasExpectedFileCount,
 		&totalBytes,
 		&earliestPostedAt,
@@ -146,8 +159,15 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	}
 
 	readinessBucket := releaseReadinessFragmentOnly
-	if completeBinaryCount > 0 {
+	if completeMainPayloadBinaryCount > 0 {
 		readinessBucket = releaseReadinessActionable
+	}
+	expectedFileCoveragePct := 0.0
+	if expectedFileCount > 0 {
+		expectedFileCoveragePct = (float64(completeMainPayloadBinaryCount) / float64(expectedFileCount)) * 100
+		if expectedFileCoveragePct > 100 {
+			expectedFileCoveragePct = 100
+		}
 	}
 
 	var earliestPostedAtValue any
@@ -167,25 +187,31 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			release_name,
 			binary_count,
 			complete_binary_count,
+			complete_main_payload_binary_count,
 			incomplete_binary_count,
+			expected_file_count,
 			has_expected_file_count,
 			total_bytes,
 			earliest_posted_at,
 			readiness_bucket,
+			expected_file_coverage_pct,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
 		    binary_count = EXCLUDED.binary_count,
 		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
 		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
 		    has_expected_file_count = EXCLUDED.has_expected_file_count,
 		    total_bytes = EXCLUDED.total_bytes,
 		    earliest_posted_at = EXCLUDED.earliest_posted_at,
 		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
 		    updated_at = NOW()`,
 		key.ProviderID,
 		key.NewsgroupID,
@@ -196,11 +222,14 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		releaseName,
 		binaryCount,
 		completeBinaryCount,
+		completeMainPayloadBinaryCount,
 		binaryCount-completeBinaryCount,
+		expectedFileCount,
 		hasExpectedFileCount,
 		totalBytes,
 		earliestPostedAtValue,
 		readinessBucket,
+		expectedFileCoveragePct,
 	); err != nil {
 		return fmt.Errorf("upsert release family summary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
 	}

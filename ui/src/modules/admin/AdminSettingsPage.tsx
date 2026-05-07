@@ -71,6 +71,7 @@ function defaultSettings(): RuntimeSettings {
         ...stageDefaults(1000),
         min_confidence: 0.55,
         min_completion_pct: 0,
+        min_expected_file_coverage_pct: 90,
         require_expected_file_count_for_contextual_obfuscated: true,
       },
       match: {
@@ -268,6 +269,7 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       backoff_seconds: indexing.release.backoff_seconds,
       min_confidence: indexing.release.min_confidence,
       min_completion_pct: indexing.release.min_completion_pct,
+      min_expected_file_coverage_pct: indexing.release.min_expected_file_coverage_pct,
       require_expected_file_count_for_contextual_obfuscated: indexing.release.require_expected_file_count_for_contextual_obfuscated,
     },
     enrich_predb: {
@@ -587,6 +589,9 @@ export function AdminSettingsPage() {
           </SettingsSection>
 
         <SettingsSection title="Indexer stages">
+          <div className="banner">
+            Stage settings control how often each pipeline stage runs and how much work it claims per pass. Larger batch sizes improve throughput when the queue is healthy, but they also make weak selection mistakes more expensive.
+          </div>
           <div className="table-shell">
             <table className="data-table">
               <thead>
@@ -618,14 +623,67 @@ export function AdminSettingsPage() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Release and matching">
+        <SettingsSection title="Release candidate selection and matching">
+          <div className="banner">
+            Release settings below affect two different parts of the pipeline. Candidate selection decides which release families are worth processing now. Matching settings affect how article headers are grouped into binaries during assemble.
+          </div>
           <div className="toolbar-grid">
-            <NumberField label="Minimum confidence" step="0.01" value={indexing.release.min_confidence} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })} />
-            <NumberField label="Minimum completion %" value={indexing.release.min_completion_pct} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })} />
-            <NumberField label="High confidence threshold" step="0.01" value={indexing.match.high_confidence_threshold} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })} />
-            <NumberField label="Probable confidence threshold" step="0.01" value={indexing.match.probable_confidence_threshold} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })} />
-            <NumberField label="Article bucket size" value={indexing.match.article_bucket_size} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })} />
-            <CheckboxField label="Require expected file count" checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })} />
+            <NumberField
+              label="Minimum expected file coverage %"
+              min={0}
+              max={100}
+              value={indexing.release.min_expected_file_coverage_pct}
+              helpText="Used during release candidate selection. When a family has an expected file count, this percent of expected files must be complete before release prioritizes the family for formation."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
+            />
+            <NumberField
+              label="Minimum confidence"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.release.min_confidence}
+              helpText="Final release persistence gate. Lower values allow weaker release identities to be saved after clustering."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
+            />
+            <NumberField
+              label="Minimum completion %"
+              min={0}
+              max={100}
+              value={indexing.release.min_completion_pct}
+              helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
+            />
+            <CheckboxField
+              label="Require expected file count for contextual obfuscated releases"
+              helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
+              checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+            />
+            <NumberField
+              label="High confidence threshold"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.match.high_confidence_threshold}
+              helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
+            />
+            <NumberField
+              label="Probable confidence threshold"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.match.probable_confidence_threshold}
+              helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
+            />
+            <NumberField
+              label="Article bucket size"
+              min={1}
+              value={indexing.match.article_bucket_size}
+              helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+            />
           </div>
         </SettingsSection>
 
@@ -881,6 +939,7 @@ function NumberField({
   min,
   max,
   required,
+  helpText,
   onChange,
 }: {
   label: string
@@ -889,21 +948,34 @@ function NumberField({
   min?: number
   max?: number
   required?: boolean
+  helpText?: string
   onChange: (value: number) => void
 }) {
   return (
     <label className="field">
       <span>{label}</span>
       <input type="number" step={step} min={min} max={max} required={required} value={value} onChange={(event) => onChange(fieldNumber(event.target.value))} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
 
-function CheckboxField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function CheckboxField({
+  label,
+  checked,
+  helpText,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  helpText?: string
+  onChange: (value: boolean) => void
+}) {
   return (
     <label className="field checkbox-field">
       <span>{label}</span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
