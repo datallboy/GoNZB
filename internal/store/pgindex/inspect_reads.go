@@ -48,6 +48,23 @@ type IndexerDashboardStats struct {
 	Count int                    `json:"count"`
 }
 
+type IndexerBackfillProgressItem struct {
+	GroupName                   string     `json:"group_name"`
+	ConfiguredCutoffDate        *time.Time `json:"configured_cutoff_date,omitempty"`
+	CutoffReached               bool       `json:"cutoff_reached"`
+	BackfillCursorArticleNumber int64      `json:"backfill_cursor_article_number"`
+	LatestArticleNumber         int64      `json:"latest_article_number"`
+	OldestScrapedArticleDate    *time.Time `json:"oldest_scraped_article_date,omitempty"`
+	LatestScrapedArticleDate    *time.Time `json:"latest_scraped_article_date,omitempty"`
+	ProviderCount               int        `json:"provider_count"`
+	LastCheckpointUpdatedAt     *time.Time `json:"last_checkpoint_updated_at,omitempty"`
+}
+
+type IndexerBackfillProgress struct {
+	Items []IndexerBackfillProgressItem `json:"items"`
+	Count int                           `json:"count"`
+}
+
 type IndexerReleaseSummary struct {
 	ReleaseID               string     `json:"release_id"`
 	GUID                    string     `json:"guid"`
@@ -487,6 +504,103 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 	}
 
 	return &IndexerDashboardStats{
+		Items: items,
+		Count: len(items),
+	}, nil
+}
+
+func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfillProgress, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH article_date_bounds AS (
+			SELECT
+				newsgroup_id,
+				MIN(date_utc) AS oldest_scraped_article_date,
+				MAX(date_utc) AS latest_scraped_article_date
+			FROM article_headers
+			GROUP BY newsgroup_id
+		),
+		checkpoint_rollup AS (
+			SELECT
+				sc.newsgroup_id,
+				MAX(sc.backfill_until_date) AS configured_cutoff_date,
+				BOOL_OR(sc.backfill_cutoff_reached) AS cutoff_reached,
+				MIN(NULLIF(sc.backfill_article_number, 0)) AS backfill_cursor_article_number,
+				MAX(sc.last_article_number) AS latest_article_number,
+				COUNT(DISTINCT sc.provider_id) AS provider_count,
+				MAX(sc.updated_at) AS last_checkpoint_updated_at
+			FROM scrape_checkpoints sc
+			GROUP BY sc.newsgroup_id
+		)
+		SELECT
+			ng.group_name,
+			cr.configured_cutoff_date,
+			cr.cutoff_reached,
+			COALESCE(cr.backfill_cursor_article_number, 0) AS backfill_cursor_article_number,
+			COALESCE(cr.latest_article_number, 0) AS latest_article_number,
+			adb.oldest_scraped_article_date,
+			adb.latest_scraped_article_date,
+			cr.provider_count,
+			cr.last_checkpoint_updated_at
+		FROM checkpoint_rollup cr
+		JOIN newsgroups ng ON ng.id = cr.newsgroup_id
+		LEFT JOIN article_date_bounds adb ON adb.newsgroup_id = cr.newsgroup_id
+		ORDER BY
+			CASE
+				WHEN cr.configured_cutoff_date IS NULL THEN 1
+				WHEN cr.cutoff_reached THEN 1
+				ELSE 0
+			END,
+			ng.group_name`)
+	if err != nil {
+		return nil, fmt.Errorf("get indexer backfill progress: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]IndexerBackfillProgressItem, 0)
+	for rows.Next() {
+		var (
+			item                    IndexerBackfillProgressItem
+			configuredCutoffDate    sql.NullTime
+			oldestScrapedArticle    sql.NullTime
+			latestScrapedArticle    sql.NullTime
+			lastCheckpointUpdatedAt sql.NullTime
+		)
+		if err := rows.Scan(
+			&item.GroupName,
+			&configuredCutoffDate,
+			&item.CutoffReached,
+			&item.BackfillCursorArticleNumber,
+			&item.LatestArticleNumber,
+			&oldestScrapedArticle,
+			&latestScrapedArticle,
+			&item.ProviderCount,
+			&lastCheckpointUpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan indexer backfill progress: %w", err)
+		}
+		if configuredCutoffDate.Valid {
+			ts := configuredCutoffDate.Time.UTC()
+			item.ConfiguredCutoffDate = &ts
+		}
+		if oldestScrapedArticle.Valid {
+			ts := oldestScrapedArticle.Time.UTC()
+			item.OldestScrapedArticleDate = &ts
+		}
+		if latestScrapedArticle.Valid {
+			ts := latestScrapedArticle.Time.UTC()
+			item.LatestScrapedArticleDate = &ts
+		}
+		if lastCheckpointUpdatedAt.Valid {
+			ts := lastCheckpointUpdatedAt.Time.UTC()
+			item.LastCheckpointUpdatedAt = &ts
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer backfill progress: %w", err)
+	}
+
+	return &IndexerBackfillProgress{
 		Items: items,
 		Count: len(items),
 	}, nil

@@ -129,6 +129,23 @@ export type IndexerDashboardStats = {
   count: number
 }
 
+export type IndexerBackfillProgressItem = {
+  group_name: string
+  configured_cutoff_date?: string
+  cutoff_reached: boolean
+  backfill_cursor_article_number: number
+  latest_article_number: number
+  oldest_scraped_article_date?: string
+  latest_scraped_article_date?: string
+  provider_count: number
+  last_checkpoint_updated_at?: string
+}
+
+export type IndexerBackfillProgress = {
+  items: IndexerBackfillProgressItem[]
+  count: number
+}
+
 export type AdminStage = {
   stage_name: string
   enabled: boolean

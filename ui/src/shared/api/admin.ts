@@ -1,5 +1,6 @@
 import { apiRequest } from './http'
 import type {
+  IndexerBackfillProgress,
   IndexerDashboardStats,
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
@@ -23,6 +24,10 @@ export function getAdminDashboardStats() {
 
 export function refreshAdminDashboardStats() {
   return apiRequest<IndexerDashboardStats>('/api/v1/admin/indexer/overview/stats/actions/refresh', { method: 'POST' })
+}
+
+export function getAdminBackfillProgress() {
+  return apiRequest<IndexerBackfillProgress>('/api/v1/admin/indexer/overview/backfill-progress')
 }
 
 export async function getAdminStages() {
