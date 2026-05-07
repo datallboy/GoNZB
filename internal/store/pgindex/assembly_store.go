@@ -914,6 +914,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	defer rollbackTx(tx)
 
 	var (
+		hadExistingBinary          bool
 		existingReleaseFamilyKey  string
 		existingBaseStem          string
 		existingExpectedFileCount int
@@ -930,12 +931,16 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		in.ProviderID,
 		in.NewsgroupID,
 		in.BinaryKey,
-	).Scan(
+		).Scan(
 		&existingReleaseFamilyKey,
 		&existingBaseStem,
 		&existingExpectedFileCount,
-	); err != nil && err != sql.ErrNoRows {
-		return 0, fmt.Errorf("lookup existing binary %q: %w", in.BinaryKey, err)
+	); err != nil {
+		if err != sql.ErrNoRows {
+			return 0, fmt.Errorf("lookup existing binary %q: %w", in.BinaryKey, err)
+		}
+	} else {
+		hadExistingBinary = true
 	}
 
 	var id int64
@@ -1028,24 +1033,42 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		return 0, err
 	}
 
-	summaryKeys := make([]releaseFamilySummaryKey, 0, 4)
-	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 4)
-	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", existingReleaseFamilyKey)
-	if existingExpectedFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", existingBaseStem)
-	}
-	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey)
-	if in.ExpectedFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
-	}
-	sortReleaseFamilySummaryKeys(summaryKeys)
-
-	for _, key := range summaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return 0, err
+	// The assemble hot path already refreshes binary stats and the current release-family
+	// queue state in one set-based batch after all binary parts are written. Avoid doing
+	// that same work eagerly for brand-new binaries here; only reconcile summaries inline
+	// when an existing binary actually moves between release-family identities.
+	if hadExistingBinary {
+		identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(in.ReleaseFamilyKey)
+		existingBaseStemKey := ""
+		if existingExpectedFileCount > 1 {
+			existingBaseStemKey = strings.ToLower(strings.TrimSpace(existingBaseStem))
 		}
-		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-			return 0, err
+		newBaseStemKey := ""
+		if in.ExpectedFileCount > 1 {
+			newBaseStemKey = strings.ToLower(strings.TrimSpace(in.BaseStem))
+		}
+		identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
+		if identityChanged {
+			summaryKeys := make([]releaseFamilySummaryKey, 0, 4)
+			seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 4)
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", existingReleaseFamilyKey)
+			if existingExpectedFileCount > 1 {
+				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", existingBaseStem)
+			}
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey)
+			if in.ExpectedFileCount > 1 {
+				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
+			}
+			sortReleaseFamilySummaryKeys(summaryKeys)
+
+			for _, key := range summaryKeys {
+				if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+					return 0, err
+				}
+				if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 
