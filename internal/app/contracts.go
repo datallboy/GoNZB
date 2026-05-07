@@ -118,6 +118,7 @@ type UsenetIndexStore interface {
 	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)
 	GetIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
 	RefreshIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	GetIndexerBackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)

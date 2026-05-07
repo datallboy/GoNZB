@@ -15,6 +15,7 @@ import (
 type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
 	dashboard    *pgindex.IndexerDashboardStats
+	backfill     *pgindex.IndexerBackfillProgress
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
 	run          *pgindex.IndexerStageRun
@@ -39,6 +40,10 @@ func (s *stubIndexerService) DashboardStats(ctx context.Context) (*pgindex.Index
 
 func (s *stubIndexerService) RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error) {
 	return s.dashboard, nil
+}
+
+func (s *stubIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
+	return s.backfill, nil
 }
 
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
@@ -282,6 +287,44 @@ func TestIndexerAdminControllerGetDashboardStats(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, needle := range []string{`"count":1`, `"key":"unassembled_headers"`, `"value":42`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerAdminControllerGetBackfillProgress(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/backfill-progress", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{
+		Service: &stubIndexerService{
+			backfill: &pgindex.IndexerBackfillProgress{
+				Items: []pgindex.IndexerBackfillProgressItem{{
+					GroupName:                   "alt.binaries.wood",
+					CutoffReached:               true,
+					BackfillCursorArticleNumber: 12345,
+					LatestArticleNumber:         67890,
+					ProviderCount:               2,
+				}},
+				Count: 1,
+			},
+		},
+	}
+
+	if err := ctrl.GetBackfillProgress(c); err != nil {
+		t.Fatalf("GetBackfillProgress returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"count":1`, `"group_name":"alt.binaries.wood"`, `"cutoff_reached":true`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
