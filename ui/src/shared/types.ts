@@ -230,6 +230,7 @@ export type AdminReleaseListResponse = {
 
 export type AdminReleaseListParams = {
   q?: string
+  newsgroup?: string
   sort?: string
   category_id?: string
   classification?: string
@@ -245,6 +246,7 @@ export type AdminReleaseListParams = {
   password_candidates?: string
   metadata_mismatch?: string
   low_confidence?: string
+  completion_state?: string
   has_nfo?: string
   has_par2?: string
   limit?: number
