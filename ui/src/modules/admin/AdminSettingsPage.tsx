@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
 import type {
@@ -557,7 +557,7 @@ export function AdminSettingsPage() {
               </button>
             </div>
             {newsgroupDrafts.map((row, index) => (
-              <div className="toolbar-grid" key={index}>
+              <div className="newsgroup-row" key={index}>
                 <TextField
                   label="Newsgroup"
                   value={row.group}
@@ -571,7 +571,7 @@ export function AdminSettingsPage() {
                   helpText="Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date."
                 />
                 <button
-                  className="secondary-button align-end"
+                  className="secondary-button newsgroup-row__remove"
                   type="button"
                   disabled={lockIndexerLists}
                   onClick={() => {
@@ -865,29 +865,10 @@ function DateField({
   helpText?: string
   onChange: (value: string) => void
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null)
-
-  function openPicker() {
-    inputRef.current?.showPicker?.()
-  }
-
   return (
     <label className="field">
       <span>{label}</span>
-      <div className="button-row">
-        <input
-          ref={inputRef}
-          type="date"
-          value={value}
-          required={required}
-          onFocus={openPicker}
-          onClick={openPicker}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <button className="secondary-button" type="button" onClick={openPicker}>
-          Pick Date
-        </button>
-      </div>
+      <input type="date" value={value} required={required} onChange={(event) => onChange(event.target.value)} />
       {helpText ? <small>{helpText}</small> : null}
     </label>
   )

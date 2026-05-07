@@ -368,6 +368,27 @@ textarea {
   align-items: end;
 }
 
+.newsgroup-row {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(240px, 2fr) minmax(220px, 1fr) auto;
+  align-items: end;
+}
+
+.newsgroup-row__remove {
+  align-self: end;
+}
+
+@media (max-width: 860px) {
+  .newsgroup-row {
+    grid-template-columns: 1fr;
+  }
+
+  .newsgroup-row__remove {
+    justify-self: start;
+  }
+}
+
 .toolbar-grid--compact {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
