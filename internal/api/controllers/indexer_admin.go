@@ -167,6 +167,7 @@ func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 	}
 	items, total, err := ctrl.Service.ListAdminReleases(c.Request().Context(), pgindex.AdminIndexerReleaseListParams{
 		Query:              queryParamTrimmed(c, "q"),
+		Newsgroup:          queryParamTrimmed(c, "newsgroup"),
 		Limit:              limit,
 		Offset:             offset,
 		Sort:               queryParamTrimmed(c, "sort"),
@@ -184,6 +185,7 @@ func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 		PasswordCandidates: queryParamTrimmed(c, "password_candidates"),
 		MetadataMismatch:   queryParamTrimmed(c, "metadata_mismatch"),
 		LowConfidence:      queryParamTrimmed(c, "low_confidence"),
+		CompletionState:    queryParamTrimmed(c, "completion_state"),
 		HasNFO:             parseOptionalBoolQuery(c, "has_nfo"),
 		HasPAR2:            parseOptionalBoolQuery(c, "has_par2"),
 	})

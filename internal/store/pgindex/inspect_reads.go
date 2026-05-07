@@ -113,6 +113,7 @@ type IndexerReleaseSummary struct {
 
 type AdminIndexerReleaseListParams struct {
 	Query              string
+	Newsgroup          string
 	Limit              int
 	Offset             int
 	Sort               string
@@ -130,6 +131,7 @@ type AdminIndexerReleaseListParams struct {
 	PasswordCandidates string
 	MetadataMismatch   string
 	LowConfidence      string
+	CompletionState    string
 	HasNFO             *bool
 	HasPAR2            *bool
 }
@@ -667,6 +669,15 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	if query := strings.TrimSpace(params.Query); query != "" {
 		add(fmt.Sprintf("(r.search_title ILIKE '%%' || $%d || '%%' OR r.group_name ILIKE '%%' || $%d || '%%')", arg, arg), query)
 	}
+	if v := strings.TrimSpace(params.Newsgroup); v != "" {
+		add(fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM release_newsgroups rng
+			JOIN newsgroups ng ON ng.id = rng.newsgroup_id
+			WHERE rng.release_id = r.release_id
+			  AND ng.group_name ILIKE '%%' || $%d || '%%'
+		)`, arg), v)
+	}
 	if params.CategoryID > 0 {
 		add(fmt.Sprintf("r.category_id = $%d", arg), params.CategoryID)
 	}
@@ -740,6 +751,12 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 		add("COALESCE(r.identity_confidence_score, 0) < 0.80")
 	case "no":
 		add("COALESCE(r.identity_confidence_score, 0) >= 0.80")
+	}
+	switch strings.TrimSpace(params.CompletionState) {
+	case "exact_100":
+		add("r.completion_pct = 100")
+	case "below_100":
+		add("r.completion_pct < 100")
 	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
