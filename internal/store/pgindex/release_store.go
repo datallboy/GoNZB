@@ -204,8 +204,11 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				s.earliest_posted_at AS posted_at,
 				COALESCE(s.binary_count, 0) AS binary_count,
 				COALESCE(s.total_bytes, 0)::BIGINT AS total_bytes,
+				COALESCE(s.expected_file_count, 0) AS expected_file_count,
 				COALESCE(s.has_expected_file_count, FALSE) AS has_expected_file_count,
 				COALESCE(s.complete_binary_count, 0) AS complete_binary_count,
+				COALESCE(s.complete_main_payload_binary_count, 0) AS complete_main_payload_binary_count,
+				COALESCE(s.expected_file_coverage_pct, 0)::DOUBLE PRECISION AS expected_file_coverage_pct,
 				COALESCE(s.readiness_bucket, '%s') AS readiness_bucket
 			FROM queue_window q
 			LEFT JOIN release_family_readiness_summaries s
