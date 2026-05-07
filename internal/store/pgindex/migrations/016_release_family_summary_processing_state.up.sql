@@ -1,17 +1,13 @@
 ALTER TABLE public.release_family_readiness_summaries
     ADD COLUMN IF NOT EXISTS processed_at timestamptz;
 
-UPDATE public.release_family_readiness_summaries
-SET processed_at = updated_at
-WHERE processed_at IS NULL;
-
 CREATE INDEX IF NOT EXISTS idx_release_family_readiness_summaries_pending
 ON public.release_family_readiness_summaries (updated_at, provider_id, newsgroup_id)
-WHERE processed_at IS NULL OR updated_at > processed_at;
+WHERE updated_at > COALESCE(processed_at, updated_at);
 
 UPDATE public.release_family_readiness_summaries s
 SET updated_at = GREATEST(s.updated_at, d.updated_at),
-    processed_at = NULL
+    processed_at = TIMESTAMPTZ 'epoch'
 FROM public.release_stage_dirty_families d
 WHERE s.provider_id = d.provider_id
   AND s.newsgroup_id = d.newsgroup_id
@@ -58,7 +54,7 @@ SELECT
     'stale_cleanup_only'::text,
     0,
     d.updated_at,
-    NULL
+    TIMESTAMPTZ 'epoch'
 FROM public.release_stage_dirty_families d
 LEFT JOIN public.release_family_readiness_summaries s
   ON s.provider_id = d.provider_id
