@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +71,21 @@ type ReleaseCandidateAck struct {
 	NewsgroupID int64
 	KeyKind     string
 	FamilyKey   string
+}
+
+func sortReleaseCandidateAcks(acks []ReleaseCandidateAck) {
+	sort.Slice(acks, func(i, j int) bool {
+		if acks[i].ProviderID != acks[j].ProviderID {
+			return acks[i].ProviderID < acks[j].ProviderID
+		}
+		if acks[i].NewsgroupID != acks[j].NewsgroupID {
+			return acks[i].NewsgroupID < acks[j].NewsgroupID
+		}
+		if acks[i].KeyKind != acks[j].KeyKind {
+			return acks[i].KeyKind < acks[j].KeyKind
+		}
+		return acks[i].FamilyKey < acks[j].FamilyKey
+	})
 }
 
 // release catalog upsert input.
@@ -634,6 +650,7 @@ func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCa
 		seen[candidate] = struct{}{}
 		unique = append(unique, candidate)
 	}
+	sortReleaseCandidateAcks(unique)
 
 	const maxAckBatchRows = 1000
 	for start := 0; start < len(unique); start += maxAckBatchRows {
