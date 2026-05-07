@@ -143,17 +143,49 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 
 	if binaryCount == 0 {
 		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM release_family_readiness_summaries
-			WHERE provider_id = $1
-			  AND newsgroup_id = $2
-			  AND key_kind = $3
-			  AND family_key = $4`,
+			INSERT INTO release_family_readiness_summaries (
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				source_release_key,
+				release_key,
+				release_name,
+				binary_count,
+				complete_binary_count,
+				complete_main_payload_binary_count,
+				incomplete_binary_count,
+				expected_file_count,
+				has_expected_file_count,
+				total_bytes,
+				earliest_posted_at,
+				readiness_bucket,
+				expected_file_coverage_pct,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,NOW())
+			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			SET source_release_key = EXCLUDED.source_release_key,
+			    release_key = EXCLUDED.release_key,
+			    release_name = EXCLUDED.release_name,
+			    binary_count = EXCLUDED.binary_count,
+			    complete_binary_count = EXCLUDED.complete_binary_count,
+			    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+			    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+			    expected_file_count = EXCLUDED.expected_file_count,
+			    has_expected_file_count = EXCLUDED.has_expected_file_count,
+			    total_bytes = EXCLUDED.total_bytes,
+			    earliest_posted_at = EXCLUDED.earliest_posted_at,
+			    readiness_bucket = EXCLUDED.readiness_bucket,
+			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+			    updated_at = NOW()`,
 			key.ProviderID,
 			key.NewsgroupID,
 			key.KeyKind,
 			key.FamilyKey,
+			releaseReadinessStaleCleanupOnly,
 		); err != nil {
-			return fmt.Errorf("delete empty release family summary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
+			return fmt.Errorf("upsert stale cleanup release family summary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
 		}
 		return nil
 	}
@@ -234,5 +266,51 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		return fmt.Errorf("upsert release family summary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
 	}
 
+	return nil
+}
+
+func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, keyKind, familyKey string) error {
+	if tx == nil {
+		return fmt.Errorf("release summary queue tx is required")
+	}
+
+	key, ok := normalizeReleaseFamilySummaryKey(providerID, newsgroupID, keyKind, familyKey)
+	if !ok {
+		return nil
+	}
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			incomplete_binary_count,
+			expected_file_count,
+			has_expected_file_count,
+			total_bytes,
+			earliest_posted_at,
+			readiness_bucket,
+			expected_file_coverage_pct,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,NOW())
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET updated_at = NOW()`,
+		key.ProviderID,
+		key.NewsgroupID,
+		key.KeyKind,
+		key.FamilyKey,
+		releaseReadinessStaleCleanupOnly,
+	)
+	if err != nil {
+		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
+	}
 	return nil
 }

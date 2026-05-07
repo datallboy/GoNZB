@@ -99,6 +99,7 @@ func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) 
 				Bytes:         740189,
 				Lines:         100,
 				Xref:          `alt.binaries.test:1001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
 				ID:            22,
@@ -113,6 +114,7 @@ func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) 
 				Bytes:         740369,
 				Lines:         100,
 				Xref:          `alt.binaries.test:1002`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -275,6 +277,7 @@ func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 				Bytes:         1024,
 				Lines:         100,
 				Xref:          `alt.binaries.test:4001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
 				ID:            52,
@@ -289,6 +292,7 @@ func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 				Bytes:         1024,
 				Lines:         100,
 				Xref:          `alt.binaries.test:4002`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
 				ID:            53,
@@ -303,6 +307,7 @@ func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 				Bytes:         1024,
 				Lines:         100,
 				Xref:          `alt.binaries.test:4003`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -351,6 +356,7 @@ func TestRunOnceSkipsYEncRecoveryDuringPersistedBackoff(t *testing.T) {
 				Lines:                  100,
 				Xref:                   `alt.binaries.test:5001`,
 				YEncRecoveryRetryAfter: &retryAfter,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -391,6 +397,7 @@ func TestRunOncePersistsYEncNotFoundBackoff(t *testing.T) {
 				Bytes:         1024,
 				Lines:         100,
 				Xref:          `alt.binaries.test:6001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}

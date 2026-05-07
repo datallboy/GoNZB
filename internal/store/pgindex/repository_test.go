@@ -1242,13 +1242,14 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_stage_dirty_families
+		FROM release_family_readiness_summaries
 		WHERE provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
-		  AND family_key = 'test-release-family'`, newsgroupID,
+		  AND family_key = 'test-release-family'
+		  AND (processed_at IS NULL OR updated_at > processed_at)`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
-		t.Fatalf("query release dirty queue: %v", err)
+		t.Fatalf("query release summary queue state: %v", err)
 	}
 	if dirtyCount != 1 {
 		t.Fatalf("expected refreshed binary stats to requeue release family once, got %d rows", dirtyCount)
@@ -1483,18 +1484,31 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 	completeBinaryID := makeBinary(completeFamily, 1, 10, 10)
 
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE release_stage_dirty_families
-		SET updated_at = NOW() - INTERVAL '2 minutes'
-		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, incompleteFamily,
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 0, 0, 1, 1, true, 12345, NOW(), 'fragment_only', 0, NOW() - INTERVAL '2 minutes', NULL),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 1, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '1 minute', NULL)
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, incompleteFamily, completeFamily,
 	); err != nil {
-		t.Fatalf("age incomplete queue row: %v", err)
-	}
-	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE release_stage_dirty_families
-		SET updated_at = NOW() - INTERVAL '1 minute'
-		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, completeFamily,
-	); err != nil {
-		t.Fatalf("age complete queue row: %v", err)
+		t.Fatalf("seed release summary queue rows: %v", err)
 	}
 
 	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
@@ -1515,10 +1529,10 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 		t.Fatalf("cleanup binaries: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families
+		DELETE FROM release_family_readiness_summaries
 		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, incompleteFamily, completeFamily,
 	); err != nil {
-		t.Fatalf("cleanup dirty families: %v", err)
+		t.Fatalf("cleanup release summaries: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
@@ -1573,11 +1587,31 @@ func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFami
 	withoutExpectedBinaryID := makeCompleteBinary(withoutExpected, 0)
 
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE release_stage_dirty_families
-		SET updated_at = NOW() - INTERVAL '2 minutes'
-		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, withExpected, withoutExpected,
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 3, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', NULL),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 0, false, 12345, NOW(), 'actionable', 0, NOW() - INTERVAL '2 minutes', NULL)
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, withExpected, withoutExpected,
 	); err != nil {
-		t.Fatalf("align queue row ages: %v", err)
+		t.Fatalf("seed expected-file summary rows: %v", err)
 	}
 
 	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
@@ -1598,10 +1632,10 @@ func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFami
 		t.Fatalf("cleanup binaries: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families
+		DELETE FROM release_family_readiness_summaries
 		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, withExpected, withoutExpected,
 	); err != nil {
-		t.Fatalf("cleanup dirty families: %v", err)
+		t.Fatalf("cleanup release summaries: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
@@ -1620,8 +1654,14 @@ func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *
 
 	staleFamily := fmt.Sprintf("queue-stale-%d", time.Now().UnixNano())
 	if _, err := store.DB().ExecContext(ctx, `
-		INSERT INTO release_stage_dirty_families (provider_id, newsgroup_id, key_kind, family_key, updated_at)
-		VALUES (1, $1, 'release_family', $2, NOW() - INTERVAL '5 minutes')`, newsgroupID, staleFamily,
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES (1, $1, 'release_family', $2, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW() - INTERVAL '5 minutes', NULL)`, newsgroupID, staleFamily,
 	); err != nil {
 		t.Fatalf("insert stale cleanup family: %v", err)
 	}
@@ -1641,10 +1681,10 @@ func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families
+		DELETE FROM release_family_readiness_summaries
 		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, staleFamily,
 	); err != nil {
-		t.Fatalf("cleanup dirty family: %v", err)
+		t.Fatalf("cleanup stale summary family: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
@@ -1737,10 +1777,11 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families
+		UPDATE release_family_readiness_summaries
+		SET processed_at = updated_at
 		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'`, newsgroupID,
 	); err != nil {
-		t.Fatalf("ack dirty family row: %v", err)
+		t.Fatalf("ack summary queue row: %v", err)
 	}
 
 	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
@@ -1750,13 +1791,14 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_stage_dirty_families
+		FROM release_family_readiness_summaries
 		WHERE provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
-		  AND family_key = 'requeue-family'`, newsgroupID,
+		  AND family_key = 'requeue-family'
+		  AND (processed_at IS NULL OR updated_at > processed_at)`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
-		t.Fatalf("query requeued dirty family: %v", err)
+		t.Fatalf("query requeued summary family: %v", err)
 	}
 	if dirtyCount != 1 {
 		t.Fatalf("expected family to be requeued after refresh, got %d rows", dirtyCount)
@@ -2057,19 +2099,20 @@ func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `
 			SELECT COUNT(*)
-			FROM release_stage_dirty_families
+			FROM release_family_readiness_summaries
 			WHERE provider_id = 1
 			  AND newsgroup_id = $1
 			  AND key_kind = $2
-			  AND family_key = $3`,
+			  AND family_key = $3
+			  AND (processed_at IS NULL OR updated_at > processed_at)`,
 			newsgroupID,
 			row.keyKind,
 			row.familyKey,
 		).Scan(&count); err != nil {
-			t.Fatalf("query dirty queue count for %s/%s: %v", row.keyKind, row.familyKey, err)
+			t.Fatalf("query summary queue count for %s/%s: %v", row.keyKind, row.familyKey, err)
 		}
 		if count != 1 {
-			t.Fatalf("expected dirty queue row for %s/%s after family move, got %d", row.keyKind, row.familyKey, count)
+			t.Fatalf("expected pending summary row for %s/%s after family move, got %d", row.keyKind, row.familyKey, count)
 		}
 	}
 }
@@ -3343,11 +3386,20 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		t.Fatalf("replace release files: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		INSERT INTO release_stage_dirty_families (provider_id, newsgroup_id, key_kind, family_key, updated_at)
-		VALUES ($1, $2, 'release_key', $3, NOW())`,
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES ($1, $2, 'release_key', $3, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW(), NULL)
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET updated_at = NOW(),
+		    processed_at = NULL`,
 		1, newsgroupID, baseKey,
 	); err != nil {
-		t.Fatalf("insert dirty family: %v", err)
+		t.Fatalf("insert pending release summary family: %v", err)
 	}
 
 	after, err := store.RefreshIndexerDashboardStats(ctx)

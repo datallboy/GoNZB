@@ -203,7 +203,9 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				key_kind,
 				family_key,
 				updated_at
-			FROM release_stage_dirty_families
+			FROM release_family_readiness_summaries
+			WHERE processed_at IS NULL
+			   OR updated_at > processed_at
 			ORDER BY updated_at, family_key
 			LIMIT (SELECT queue_window_limit FROM limits)
 		),
@@ -675,12 +677,13 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 	}
 
 	_, err := db.ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families d
+		UPDATE release_family_readiness_summaries s
+		SET processed_at = GREATEST(COALESCE(s.processed_at, TIMESTAMPTZ 'epoch'), s.updated_at)
 		USING (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-		WHERE d.provider_id = v.provider_id
-		  AND d.newsgroup_id = v.newsgroup_id
-		  AND d.key_kind = v.key_kind
-		  AND d.family_key = v.family_key`,
+		WHERE s.provider_id = v.provider_id
+		  AND s.newsgroup_id = v.newsgroup_id
+		  AND s.key_kind = v.key_kind
+		  AND s.family_key = v.family_key`,
 		args...,
 	)
 	if err != nil {
