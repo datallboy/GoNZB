@@ -16,6 +16,10 @@ import (
 )
 
 func (r *Runner) ExecuteServer() {
+	r.ExecuteServerWithOptions(ServerOptions{})
+}
+
+func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	appCtx := r.setupApp(context.Background())
 	e := echo.New()
 
@@ -41,7 +45,15 @@ func (r *Runner) ExecuteServer() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := wiring.StartServerBackgroundLoops(ctx, appCtx); err != nil {
+	startOpts := wiring.ServerStartOptions{
+		SkipModuleStarts: map[string]bool{},
+	}
+	if opts.DisableIndexerSupervisor {
+		startOpts.SkipModuleStarts["usenet_indexer"] = true
+		appCtx.Logger.Info("server mode will not start the built-in usenet indexer supervisor")
+	}
+
+	if err := wiring.StartServerBackgroundLoops(ctx, appCtx, startOpts); err != nil {
 		appCtx.Logger.Fatal("%v", err)
 	}
 
@@ -58,13 +70,14 @@ func (r *Runner) ExecuteServer() {
 	}
 
 	appCtx.Logger.Info(
-		"starting server addr=%s downloader=%t aggregator=%t usenet_indexer=%t api=%t web_ui=%t",
+		"starting server addr=%s downloader=%t aggregator=%t usenet_indexer=%t api=%t web_ui=%t indexer_supervisor=%t",
 		srv.Addr,
 		appCtx.Config.Modules.Downloader.Enabled,
 		appCtx.Config.Modules.Aggregator.Enabled,
 		appCtx.Config.Modules.UsenetIndexer.Enabled,
 		appCtx.Config.Modules.API.Enabled,
 		appCtx.Config.Modules.WebUI.Enabled,
+		!opts.DisableIndexerSupervisor,
 	)
 
 	errCh := make(chan error, 1)
