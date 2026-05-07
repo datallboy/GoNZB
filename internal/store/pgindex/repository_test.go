@@ -2248,6 +2248,27 @@ func TestUpsertBinaryPartsDeduplicatesConflictingBatchRows(t *testing.T) {
 	}
 }
 
+func TestUniqueSortedArticleHeaderIDs(t *testing.T) {
+	got := uniqueSortedArticleHeaderIDs([]BinaryPartRecord{
+		{ArticleHeaderID: 42},
+		{ArticleHeaderID: 7},
+		{ArticleHeaderID: 42},
+		{ArticleHeaderID: 0},
+		{ArticleHeaderID: 19},
+		{ArticleHeaderID: 7},
+	})
+
+	want := []int64{7, 19, 42}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected id count: got %d want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected id at %d: got %d want %d", i, got[i], want[i])
+		}
+	}
+}
+
 func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinaries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

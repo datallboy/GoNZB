@@ -1161,11 +1161,21 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
 	dedupedRecords := dedupeBinaryPartRecords(records)
+	sort.Slice(dedupedRecords, func(i, j int) bool {
+		if dedupedRecords[i].BinaryID != dedupedRecords[j].BinaryID {
+			return dedupedRecords[i].BinaryID < dedupedRecords[j].BinaryID
+		}
+		if dedupedRecords[i].PartNumber != dedupedRecords[j].PartNumber {
+			return dedupedRecords[i].PartNumber < dedupedRecords[j].PartNumber
+		}
+		return dedupedRecords[i].ArticleHeaderID < dedupedRecords[j].ArticleHeaderID
+	})
+	headerIDs := uniqueSortedArticleHeaderIDs(records)
 
 	partArgs := make([]any, 0, len(dedupedRecords)*7)
-	headerArgs := make([]any, 0, len(records))
+	headerArgs := make([]any, 0, len(headerIDs))
 	partValues := make([]string, 0, len(dedupedRecords))
-	headerValues := make([]string, 0, len(records))
+	headerValues := make([]string, 0, len(headerIDs))
 	for i, record := range dedupedRecords {
 		if record.BinaryID <= 0 || record.ArticleHeaderID <= 0 {
 			return fmt.Errorf("binary id and article header id are required")
@@ -1196,9 +1206,9 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			strings.TrimSpace(record.FileName),
 		)
 	}
-	for i, record := range records {
+	for i, articleHeaderID := range headerIDs {
 		headerValues = append(headerValues, fmt.Sprintf("($%d::bigint)", i+1))
-		headerArgs = append(headerArgs, record.ArticleHeaderID)
+		headerArgs = append(headerArgs, articleHeaderID)
 	}
 
 	query := fmt.Sprintf(`
@@ -1237,10 +1247,33 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		WHERE article_headers.id = claimed_headers.id`,
 		strings.Join(headerValues, ","))
 	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
-		return fmt.Errorf("mark %d article headers assembled: %w", len(records), err)
+		return fmt.Errorf("mark %d article headers assembled: %w", len(headerIDs), err)
 	}
 
 	return nil
+}
+
+func uniqueSortedArticleHeaderIDs(records []BinaryPartRecord) []int64 {
+	if len(records) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(records))
+	seen := make(map[int64]struct{}, len(records))
+	for _, record := range records {
+		if record.ArticleHeaderID <= 0 {
+			continue
+		}
+		if _, ok := seen[record.ArticleHeaderID]; ok {
+			continue
+		}
+		seen[record.ArticleHeaderID] = struct{}{}
+		ids = append(ids, record.ArticleHeaderID)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return ids[i] < ids[j]
+	})
+	return ids
 }
 
 func dedupeBinaryPartRecords(records []BinaryPartRecord) []BinaryPartRecord {
