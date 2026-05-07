@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -70,6 +71,32 @@ func RunFFProbe(ctx context.Context, runner CommandRunner, ffprobePath, targetPa
 		"-print_format", "json",
 		targetPath,
 	)
+	return parseFFProbeOutput(output, err)
+}
+
+func RunFFProbeInput(ctx context.Context, runner CommandRunner, ffprobePath string, input io.Reader) (*FFProbeResult, []byte, error) {
+	if runner == nil {
+		return nil, nil, fmt.Errorf("ffprobe runner is required")
+	}
+	ffprobePath = strings.TrimSpace(ffprobePath)
+	if ffprobePath == "" {
+		return nil, nil, fmt.Errorf("ffprobe path is required")
+	}
+
+	output, err := runner.RunInput(
+		ctx,
+		input,
+		ffprobePath,
+		"-v", "error",
+		"-show_streams",
+		"-show_format",
+		"-print_format", "json",
+		"-i", "pipe:0",
+	)
+	return parseFFProbeOutput(output, err)
+}
+
+func parseFFProbeOutput(output []byte, err error) (*FFProbeResult, []byte, error) {
 	var parsed FFProbeResult
 	if payload := extractFFProbeJSON(output); len(payload) > 0 {
 		if parseErr := json.Unmarshal(payload, &parsed); parseErr == nil {

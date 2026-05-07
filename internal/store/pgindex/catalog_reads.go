@@ -173,7 +173,7 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 	return out, nil
 }
 
-// CHANGED: list article refs for one release_file row.
+// CHANGED: list article refs for one release_file row via release_files -> binary_parts.
 func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]CatalogArticleRef, error) {
 	if releaseFileID <= 0 {
 		return nil, fmt.Errorf("release file id is required")
@@ -183,11 +183,12 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 		SELECT
 			ah.message_id,
 			ah.bytes,
-			rfa.part_number
-		FROM release_file_articles rfa
-		JOIN article_headers ah ON ah.id = rfa.article_header_id
-		WHERE rfa.release_file_id = $1
-		ORDER BY rfa.part_number`, releaseFileID)
+			bp.part_number
+		FROM release_files rf
+		JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+		JOIN article_headers ah ON ah.id = bp.article_header_id
+		WHERE rf.id = $1
+		ORDER BY bp.part_number`, releaseFileID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release file articles %d: %w", releaseFileID, err)
 	}

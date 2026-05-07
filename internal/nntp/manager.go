@@ -30,9 +30,9 @@ func NewManager(ctx *app.Context) (*Manager, error) {
 	for _, cfg := range ctx.Config.Servers {
 		p := NewNNTPProviderWithLogger(cfg, ctx.Logger)
 
-		ctx.Logger.Info("Validating provider: %s", p.ID())
+		ctx.Logger.Info("Validating provider: %s", p.Label())
 		if err := p.TestConnection(); err != nil {
-			return nil, fmt.Errorf("connection test failed for %s: %w", p.ID(), err)
+			return nil, fmt.Errorf("connection test failed for %s: %w", p.Label(), err)
 		}
 
 		managed = append(managed, &managedProvider{
@@ -70,19 +70,19 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 		// If we already have some 430s for this segment, log that we are trying a failover
 		if len(seg.MissingFrom) > 0 {
 			m.ctx.Logger.Debug("[Failover] Segment %s missing on %d providers, trying %s (Priority %d)",
-				seg.MessageID, len(seg.MissingFrom), mp.ID(), mp.Priority())
+				seg.MessageID, len(seg.MissingFrom), mp.Label(), mp.Priority())
 		}
 
 		select {
 		case mp.semaphore <- struct{}{}:
-			m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.ID())
+			m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
 			reader, err := m.tryFetch(ctx, mp, seg.MessageID, groups)
 			if err != nil {
 				// Release the slot if the fetch fails
 				<-mp.semaphore
 
 				if errors.Is(err, ErrArticleNotFound) {
-					m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.ID(), seg.MessageID)
+					m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
 					seg.MissingFrom[mp.ID()] = true
 
 					// Small sleep before trying next provider in failover
@@ -91,7 +91,7 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 				}
 
 				// If it's a network/auth error, keep looking but save error
-				m.ctx.Logger.Debug("Failover: %s error: %v", mp.ID(), err)
+				m.ctx.Logger.Debug("Failover: %s error: %v", mp.Label(), err)
 				lastErr = err
 				continue
 			}

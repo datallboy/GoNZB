@@ -30,6 +30,7 @@ type repository interface {
 	GetBackfillCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error)
 	UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error
 	GetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64) (*pgindex.BackfillCheckpointState, error)
+	HasBackfillCutoffReachedForGroup(ctx context.Context, newsgroupID int64, untilDate time.Time) (bool, error)
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
@@ -293,6 +294,14 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 	if hasCutoff {
 		cutoff := cutoffDate.UTC()
+		reachedForGroup, err := s.repo.HasBackfillCutoffReachedForGroup(ctx, newsgroupID, cutoff)
+		if err != nil {
+			return fmt.Errorf("check backfill cutoff state %s: %w", group, err)
+		}
+		if reachedForGroup {
+			s.log.Debug("scrape backfill: group %s already reached cutoff %s for another provider", group, cutoff.Format("2006-01-02"))
+			return nil
+		}
 		if state == nil || state.UntilDate == nil || !state.UntilDate.Equal(cutoff) {
 			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, &cutoff, false, ""); err != nil {
 				return fmt.Errorf("set backfill cutoff state %s: %w", group, err)

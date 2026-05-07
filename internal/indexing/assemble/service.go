@@ -2,6 +2,7 @@ package assemble
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
+	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -22,7 +24,6 @@ type logger interface {
 
 // local interface only, scoped to assembly service.
 type repository interface {
-	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
@@ -30,6 +31,7 @@ type repository interface {
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
+	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 }
 
 // narrow matcher dependency.
@@ -42,17 +44,20 @@ type articleFetcher interface {
 }
 
 type Options struct {
-	BatchSize   int
-	ClaimOwner  string
-	ClaimLease  time.Duration
-	Concurrency int
+	BatchSize               int
+	ClaimOwner              string
+	ClaimLease              time.Duration
+	Concurrency             int
+	MaxYEncRecoveryAttempts int
 }
 
 type recoveryCounters struct {
-	attempts      int
-	successes     int
-	noops         int
-	fetchFailures int
+	attempts         int
+	successes        int
+	noops            int
+	fetchFailures    int
+	skippedByCap     int
+	skippedByBackoff int
 }
 
 type Service struct {
@@ -75,6 +80,9 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
+	}
+	if opts.MaxYEncRecoveryAttempts <= 0 {
+		opts.MaxYEncRecoveryAttempts = 128
 	}
 
 	return &Service{
@@ -101,13 +109,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	started := time.Now()
-	countStarted := time.Now()
-	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count unassembled article headers: %w", err)
-	}
-	countDuration := time.Since(countStarted)
-
 	selectionStarted := time.Now()
 	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
 		Limit:         s.opts.BatchSize,
@@ -120,13 +121,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	selectionDuration := time.Since(selectionStarted)
 	if len(headers) == 0 {
 		return map[string]any{
-			"pending_headers":                 pendingCount,
 			"selected_headers":                0,
 			"processed_headers":               0,
 			"binaries_refreshed":              0,
 			"batch_size":                      s.opts.BatchSize,
 			"worker_count":                    s.opts.Concurrency,
-			"pending_count_duration_ms":       durationMillis(countDuration),
 			"candidate_selection_duration_ms": durationMillis(selectionDuration),
 			"total_duration_ms":               durationMillis(time.Since(started)),
 			"headers_per_second":              0.0,
@@ -166,9 +165,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			defer wg.Done()
 			workerSvc := *s
 			workerSvc.repo = claimedBatchRepository{
-				delegate:     s.repo,
-				pendingCount: pendingCount,
-				headers:      workerHeaders,
+				delegate: s.repo,
+				headers:  workerHeaders,
 			}
 			metrics, err := workerSvc.runOnceWithMetricsSingle(ctx, workerBatch, fmt.Sprintf("%s-worker-%d", s.opts.ClaimOwner, workerID))
 			mu.Lock()
@@ -184,9 +182,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	totalDuration := time.Since(started)
 	processed, _ := numericMetricInt64(combined, "processed_headers")
 	refreshed, _ := numericMetricInt64(combined, "binaries_refreshed")
-	combined["pending_headers"] = pendingCount
 	combined["selected_headers"] = len(headers)
-	combined["pending_count_duration_ms"] = durationMillis(countDuration)
 	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
 	combined["total_duration_ms"] = durationMillis(totalDuration)
 	combined["headers_per_second"] = throughputPerSecond(int(processed), totalDuration)
@@ -196,13 +192,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 }
 
 type claimedBatchRepository struct {
-	delegate     repository
-	pendingCount int64
-	headers      []pgindex.AssemblyCandidate
-}
-
-func (r claimedBatchRepository) CountUnassembledArticleHeaders(context.Context) (int64, error) {
-	return r.pendingCount, nil
+	delegate repository
+	headers  []pgindex.AssemblyCandidate
 }
 
 func (r claimedBatchRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
@@ -233,6 +224,10 @@ func (r claimedBatchRepository) RefreshBinaryStatsBatch(ctx context.Context, bin
 	return r.delegate.RefreshBinaryStatsBatch(ctx, binaryIDs)
 }
 
+func (r claimedBatchRepository) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
+	return r.delegate.RecordYEncRecoveryNotFound(ctx, articleHeaderID)
+}
+
 func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("assembly repo is required")
@@ -242,13 +237,6 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 
 	started := time.Now()
-	countStarted := time.Now()
-	pendingCount, err := s.repo.CountUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count unassembled article headers: %w", err)
-	}
-	countDuration := time.Since(countStarted)
-
 	selectionStarted := time.Now()
 	headers, err := s.repo.ClaimUnassembledArticleHeaders(ctx, pgindex.AssemblyClaimRequest{
 		Limit:         batchSize,
@@ -260,14 +248,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 	selectionDuration := time.Since(selectionStarted)
 	metrics := map[string]any{
-		"pending_headers":                 pendingCount,
 		"selected_headers":                len(headers),
 		"batch_size":                      batchSize,
-		"pending_count_duration_ms":       durationMillis(countDuration),
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
 	}
 	if len(headers) == 0 {
-		s.log.Debug("assemble: no unassembled article headers found pending_headers=%d", pendingCount)
+		s.log.Debug("assemble: no unassembled article headers found")
 		metrics["processed_headers"] = 0
 		metrics["binaries_refreshed"] = 0
 		metrics["total_duration_ms"] = durationMillis(time.Since(started))
@@ -318,23 +304,29 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		}
 		matchStarted := time.Now()
 		matched := s.matcher.Match(candidate)
-		if s.shouldAttemptYEncRecovery(header, matched) {
-			recovery.attempts++
-			rematched, result, err := s.rematchFromYEncHeader(ctx, header, candidate)
-			if err != nil {
-				metrics["processed_headers"] = assembledCount
-				metrics["binaries_refreshed"] = len(refreshed)
-				addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-				return metrics, fmt.Errorf("recover yenc metadata for article %d: %w", header.ID, err)
-			}
-			if result.fetchFailed {
-				recovery.fetchFailures++
-			}
-			if result.recovered {
-				recovery.successes++
-				matched = rematched
+		if header.YEncRecoveryRetryAfter != nil && header.YEncRecoveryRetryAfter.After(time.Now().UTC()) {
+			recovery.skippedByBackoff++
+		} else if s.shouldAttemptYEncRecovery(header, matched) {
+			if recovery.attempts >= s.opts.MaxYEncRecoveryAttempts {
+				recovery.skippedByCap++
 			} else {
-				recovery.noops++
+				recovery.attempts++
+				rematched, result, err := s.rematchFromYEncHeader(ctx, header, candidate)
+				if err != nil {
+					metrics["processed_headers"] = assembledCount
+					metrics["binaries_refreshed"] = len(refreshed)
+					addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+					return metrics, fmt.Errorf("recover yenc metadata for article %d: %w", header.ID, err)
+				}
+				if result.fetchFailed {
+					recovery.fetchFailures++
+				}
+				if result.recovered {
+					recovery.successes++
+					matched = rematched
+				} else {
+					recovery.noops++
+				}
 			}
 		}
 		headerMatchDuration += time.Since(matchStarted)
@@ -450,11 +442,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	metrics["recovery_successes"] = recovery.successes
 	metrics["recovery_noops"] = recovery.noops
 	metrics["recovery_fetch_failures"] = recovery.fetchFailures
+	metrics["recovery_skipped_by_cap"] = recovery.skippedByCap
+	metrics["recovery_skipped_by_backoff"] = recovery.skippedByBackoff
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: pending_headers=%d lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d",
-		pendingCount,
+		"assemble: lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneASelected,
 		laneBSelected,
 		assembledCount,
@@ -471,6 +464,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		recovery.successes,
 		recovery.noops,
 		recovery.fetchFailures,
+		recovery.skippedByCap,
+		recovery.skippedByBackoff,
 	)
 
 	return metrics, nil
@@ -479,7 +474,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
 	for key, value := range src {
 		switch key {
-		case "batch_size", "pending_headers", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
+		case "batch_size", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
 			continue
 		}
 		switch tv := value.(type) {
@@ -553,6 +548,14 @@ func (s *Service) shouldAttemptYEncRecovery(header pgindex.AssemblyCandidate, ma
 	if header.MessageID == "" {
 		return false
 	}
+	if header.YEncRecoveryRetryAfter != nil && header.YEncRecoveryRetryAfter.After(time.Now().UTC()) {
+		return false
+	}
+	// If scrape/XOVER already exposed a structured file name from the subject,
+	// inline body-header recovery is rarely worth it on the hot path.
+	if strings.TrimSpace(header.FileName) != "" {
+		return false
+	}
 	if hasSufficientStructuredIdentity(header) && header.StructuredIdentityBinaryMatched && hasStableMultipartMatch(matched) {
 		return false
 	}
@@ -580,6 +583,11 @@ func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.Asse
 
 	reader, err := s.fetcher.Fetch(ctx, header.MessageID, groups)
 	if err != nil {
+		if errors.Is(err, nntp.ErrArticleNotFound) && s.repo != nil {
+			if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, header.ID); markErr != nil && s.log != nil {
+				s.log.Warn("assemble: failed to persist yenc not_found backoff article=%d err=%v", header.ID, markErr)
+			}
+		}
 		return match.Result{}, recoveryAttemptResult{fetchFailed: true}, nil
 	}
 	if closer, ok := reader.(io.Closer); ok {

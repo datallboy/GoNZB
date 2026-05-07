@@ -20,8 +20,6 @@ type repository interface {
 	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
-	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
-	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
@@ -226,21 +224,18 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 }
 
 type releaseTimings struct {
-	candidateList      time.Duration
-	listBinaries       time.Duration
-	titleCandidates    time.Duration
-	buildFiles         time.Duration
-	articleLookup      time.Duration
-	upsertRelease      time.Duration
-	replaceFiles       time.Duration
-	replaceNewsgroups  time.Duration
-	upsertNZBCache     time.Duration
-	deleteStale        time.Duration
-	ackCandidate       time.Duration
-	binariesListed     int
-	articleLookupCalls int
-	filesBuilt         int
-	articlesBuilt      int
+	candidateList     time.Duration
+	listBinaries      time.Duration
+	titleCandidates   time.Duration
+	buildFiles        time.Duration
+	upsertRelease     time.Duration
+	replaceFiles      time.Duration
+	replaceNewsgroups time.Duration
+	upsertNZBCache    time.Duration
+	deleteStale       time.Duration
+	ackCandidate      time.Duration
+	binariesListed    int
+	filesBuilt        int
 }
 
 func (t *releaseTimings) addMetrics(metrics map[string]any) {
@@ -251,7 +246,6 @@ func (t *releaseTimings) addMetrics(metrics map[string]any) {
 	metrics["list_binaries_duration_ms"] = durationMillis(t.listBinaries)
 	metrics["title_candidates_duration_ms"] = durationMillis(t.titleCandidates)
 	metrics["build_files_duration_ms"] = durationMillis(t.buildFiles)
-	metrics["article_lookup_duration_ms"] = durationMillis(t.articleLookup)
 	metrics["upsert_release_duration_ms"] = durationMillis(t.upsertRelease)
 	metrics["replace_files_duration_ms"] = durationMillis(t.replaceFiles)
 	metrics["replace_newsgroups_duration_ms"] = durationMillis(t.replaceNewsgroups)
@@ -259,9 +253,7 @@ func (t *releaseTimings) addMetrics(metrics map[string]any) {
 	metrics["delete_stale_duration_ms"] = durationMillis(t.deleteStale)
 	metrics["ack_candidate_duration_ms"] = durationMillis(t.ackCandidate)
 	metrics["binaries_listed"] = t.binariesListed
-	metrics["article_lookup_calls"] = t.articleLookupCalls
 	metrics["files_built"] = t.filesBuilt
-	metrics["articles_built"] = t.articlesBuilt
 }
 
 func durationMillis(d time.Duration) float64 {
@@ -523,7 +515,7 @@ func countCompleteBinaries(binaries []pgindex.BinarySummary) int {
 	return count
 }
 
-func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster, timings *releaseTimings) ([]pgindex.ReleaseFileRecord, error) {
+func (s *Service) buildReleaseFiles(_ context.Context, cluster releaseCluster, timings *releaseTimings) ([]pgindex.ReleaseFileRecord, error) {
 	selected := make([]pgindex.BinarySummary, 0, len(cluster.Binaries))
 	byName := make(map[string]int, len(cluster.Binaries))
 	for _, binary := range cluster.Binaries {
@@ -542,29 +534,8 @@ func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster,
 		selected = append(selected, binary)
 	}
 
-	binaryIDs := make([]int64, 0, len(selected))
-	for _, binary := range selected {
-		if binary.BinaryID > 0 {
-			binaryIDs = append(binaryIDs, binary.BinaryID)
-		}
-	}
-
-	start := time.Now()
-	articlesByBinaryID, err := s.repo.ListBinaryPartArticlesBatch(ctx, binaryIDs)
-	if timings != nil {
-		timings.articleLookup += time.Since(start)
-		if len(binaryIDs) > 0 {
-			timings.articleLookupCalls++
-		}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list binary part articles batch: %w", err)
-	}
-
 	files := make([]pgindex.ReleaseFileRecord, 0, len(selected))
 	for idx, binary := range selected {
-		articles := articlesByBinaryID[binary.BinaryID]
-
 		fileName := pickFileName(binary)
 		fileIndex := binary.FileIndex
 		if fileIndex <= 0 {
@@ -579,11 +550,9 @@ func (s *Service) buildReleaseFiles(ctx context.Context, cluster releaseCluster,
 			Subject:   binary.BinaryName,
 			Poster:    binary.Poster,
 			PostedAt:  binary.PostedAt,
-			Articles:  articles,
 		})
 		if timings != nil {
 			timings.filesBuilt++
-			timings.articlesBuilt += len(articles)
 		}
 	}
 

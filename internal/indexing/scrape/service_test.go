@@ -56,6 +56,7 @@ type fakeScrapeRepo struct {
 	insertedHeaders           []pgindex.ArticleHeader
 	cutoffReached             bool
 	backfillCheckpointUpdated bool
+	groupCutoffReached        bool
 }
 
 func (f *fakeScrapeRepo) EnsureProvider(context.Context, string, string) (int64, error) {
@@ -95,6 +96,10 @@ func (f *fakeScrapeRepo) GetBackfillCheckpointState(context.Context, int64, int6
 	return nil, nil
 }
 
+func (f *fakeScrapeRepo) HasBackfillCutoffReachedForGroup(context.Context, int64, time.Time) (bool, error) {
+	return f.groupCutoffReached, nil
+}
+
 func (f *fakeScrapeRepo) SetBackfillCheckpointState(_ context.Context, _ int64, _ int64, _ *time.Time, cutoffReached bool, _ string) error {
 	f.cutoffReached = cutoffReached
 	return nil
@@ -128,3 +133,39 @@ func (testScrapeLogger) Debug(string, ...interface{}) {}
 func (testScrapeLogger) Info(string, ...interface{})  {}
 func (testScrapeLogger) Warn(string, ...interface{})  {}
 func (testScrapeLogger) Error(string, ...interface{}) {}
+
+func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) {
+	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	repo := &fakeScrapeRepo{
+		backfillCheckpoint: 10,
+		groupCutoffReached: true,
+	}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 10},
+		headers: []OverviewHeader{
+			{ArticleNumber: 10, MessageID: "<ten>", DateUTC: &cutoff},
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups:               []string{"alt.binaries.test"},
+		BatchSize:                10,
+		BackfillUntilDateByGroup: map[string]time.Time{"alt.binaries.test": cutoff},
+	})
+
+	metrics, err := svc.RunBackfillOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunBackfillOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 0 {
+		t.Fatalf("expected no inserted headers once group cutoff already reached, got %+v", repo.insertedHeaders)
+	}
+	if repo.backfillCheckpointUpdated {
+		t.Fatalf("expected no checkpoint update after group-wide cutoff skip")
+	}
+	if repo.cutoffReached {
+		t.Fatalf("expected no per-provider cutoff rewrite when group-wide cutoff already reached")
+	}
+	if got := metrics["groups_with_work"]; got != 0 {
+		t.Fatalf("expected groups_with_work=0, got %+v", got)
+	}
+}

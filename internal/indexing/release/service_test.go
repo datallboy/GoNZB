@@ -738,12 +738,7 @@ func TestRunOnceAllowsReadableStandaloneMediaWithoutExplicitFileCounter(t *testi
 }
 
 func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
-	repo := &fakeReleaseRepository{
-		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
-			1: {{ArticleHeaderID: 101, PartNumber: 1}},
-			2: {{ArticleHeaderID: 201, PartNumber: 1}, {ArticleHeaderID: 202, PartNumber: 2}},
-		},
-	}
+	repo := &fakeReleaseRepository{}
 	svc := NewService(repo, testReleaseLogger{}, Options{})
 
 	files, err := svc.buildReleaseFiles(context.Background(), releaseCluster{
@@ -774,9 +769,6 @@ func TestBuildReleaseFilesDeduplicatesDuplicateFileNames(t *testing.T) {
 	}
 	if files[0].BinaryID != 2 {
 		t.Fatalf("expected better duplicate binary to win, got %d", files[0].BinaryID)
-	}
-	if len(files[0].Articles) != 2 {
-		t.Fatalf("expected winning binary articles to be kept, got %d", len(files[0].Articles))
 	}
 }
 

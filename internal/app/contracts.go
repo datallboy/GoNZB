@@ -116,6 +116,10 @@ type UsenetIndexStore interface {
 	ListIndexerStageRunsFiltered(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
 	GetIndexerStageRun(ctx context.Context, runID int64) (*pgindex.IndexerStageRun, error)
 	GetIndexerOverview(ctx context.Context) (*pgindex.IndexerOverview, error)
+	GetIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	RefreshIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	GetIndexerBackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
+	GetIndexerStageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
@@ -136,12 +140,13 @@ type UsenetIndexStore interface {
 	GetBackfillCheckpoint(ctx context.Context, providerID, newsgroupID int64) (int64, error)
 	UpsertBackfillCheckpoint(ctx context.Context, providerID, newsgroupID, backfillArticleNumber int64) error
 	GetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64) (*pgindex.BackfillCheckpointState, error)
+	HasBackfillCutoffReachedForGroup(ctx context.Context, newsgroupID int64, untilDate time.Time) (bool, error)
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
 
-	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error

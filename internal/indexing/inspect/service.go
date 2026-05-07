@@ -37,6 +37,8 @@ type namedRunner struct {
 
 type Options struct {
 	WorkDir            string
+	WorkspaceBackend   string
+	MemoryWorkDir      string
 	MaxBytes           int64
 	MaxArchiveDepth    int
 	ToolTimeout        time.Duration
@@ -88,6 +90,16 @@ func (s *Service) RunOnce(ctx context.Context) error {
 func DefaultOptions(opts Options) Options {
 	if strings.TrimSpace(opts.WorkDir) == "" {
 		opts.WorkDir = "/store/indexer/inspect"
+	}
+	opts.WorkspaceBackend = strings.ToLower(strings.TrimSpace(opts.WorkspaceBackend))
+	if opts.WorkspaceBackend == "" {
+		opts.WorkspaceBackend = "auto"
+	}
+	if opts.WorkspaceBackend != "disk" && opts.WorkspaceBackend != "memory" && opts.WorkspaceBackend != "auto" {
+		opts.WorkspaceBackend = "auto"
+	}
+	if strings.TrimSpace(opts.MemoryWorkDir) == "" {
+		opts.MemoryWorkDir = "/dev/shm/gonzb-inspect"
 	}
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = 2 * 1024 * 1024 * 1024

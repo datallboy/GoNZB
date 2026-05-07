@@ -85,6 +85,63 @@ func TestWorkspaceManagerCreatesManifest(t *testing.T) {
 	}
 }
 
+func TestWorkspaceManagerPrefersMemoryWorkspaceRootWhenConfigured(t *testing.T) {
+	diskRoot := t.TempDir()
+	memRoot := filepath.Join(t.TempDir(), "mem")
+	manager := NewWorkspaceManager(Options{
+		WorkDir:          diskRoot,
+		WorkspaceBackend: "memory",
+		MemoryWorkDir:    memRoot,
+		MaxBytes:         4096,
+		MaxArchiveDepth:  2,
+	})
+
+	ws, err := manager.PrepareBinaryWorkspace(context.Background(), "inspect_media", pgindex.BinaryInspectionCandidate{
+		BinaryID:     43,
+		ReleaseID:    "rel-2",
+		ReleaseTitle: "Memory.Release",
+		FileName:     "memory.mkv",
+		TotalBytes:   2048,
+	})
+	if err != nil {
+		t.Fatalf("prepare workspace: %v", err)
+	}
+	defer ws.Cleanup()
+
+	if got := ws.Dir; filepath.Dir(filepath.Dir(got)) != memRoot {
+		t.Fatalf("expected workspace under memory root %s, got %s", memRoot, got)
+	}
+	if _, err := os.Stat(memRoot); err != nil {
+		t.Fatalf("expected memory root to exist: %v", err)
+	}
+}
+
+func TestWorkspaceManagerAutoBackendFallsBackToDiskWhenMemoryRootUnavailable(t *testing.T) {
+	diskRoot := t.TempDir()
+	manager := NewWorkspaceManager(Options{
+		WorkDir:          diskRoot,
+		WorkspaceBackend: "auto",
+		MemoryWorkDir:    filepath.Join("/proc", "not-writable", "gonzb-inspect"),
+		MaxBytes:         4096,
+		MaxArchiveDepth:  2,
+	})
+
+	ws, err := manager.PrepareBinaryWorkspace(context.Background(), "inspect_media", pgindex.BinaryInspectionCandidate{
+		BinaryID:     44,
+		ReleaseID:    "rel-3",
+		ReleaseTitle: "Disk.Fallback.Release",
+		FileName:     "fallback.mkv",
+		TotalBytes:   2048,
+	})
+	if err != nil {
+		t.Fatalf("prepare workspace: %v", err)
+	}
+	defer ws.Cleanup()
+	if got := ws.Dir; filepath.Dir(filepath.Dir(got)) != diskRoot {
+		t.Fatalf("expected workspace under disk root %s, got %s", diskRoot, got)
+	}
+}
+
 func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 	got := ExtractPasswordCandidates(
 		"Some.Release password:open-sesame",

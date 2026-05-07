@@ -9,6 +9,207 @@ import (
 	"time"
 )
 
+const enrichmentInsertBatchSize = 200
+
+type preparedPredbEntry struct {
+	NormalizedTitle string
+	Title           string
+	Category        string
+	Source          string
+	ExternalID      int64
+	Team            string
+	Genre           string
+	URL             string
+	SizeKB          float64
+	FileCount       int
+	PostedAt        *time.Time
+	PayloadJSON     string
+}
+
+func dedupePreparedPredbEntries(rows []preparedPredbEntry) []preparedPredbEntry {
+	if len(rows) <= 1 {
+		return rows
+	}
+
+	indexByNormalized := make(map[string]int, len(rows))
+	out := make([]preparedPredbEntry, 0, len(rows))
+	for _, row := range rows {
+		if idx, exists := indexByNormalized[row.NormalizedTitle]; exists {
+			out[idx] = row
+			continue
+		}
+		indexByNormalized[row.NormalizedTitle] = len(out)
+		out = append(out, row)
+	}
+	return out
+}
+
+func execEnrichmentInsertBatch(ctx context.Context, tx *sql.Tx, insertPrefix, insertSuffix string, rows [][]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	for start := 0; start < len(rows); start += enrichmentInsertBatchSize {
+		end := start + enrichmentInsertBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[start:end]
+
+		var (
+			query strings.Builder
+			args  []any
+		)
+		query.WriteString(insertPrefix)
+		args = make([]any, 0, len(batch)*len(batch[0]))
+
+		for i, row := range batch {
+			if i > 0 {
+				query.WriteByte(',')
+			}
+			query.WriteByte('(')
+			for j, value := range row {
+				if j > 0 {
+					query.WriteByte(',')
+				}
+				args = append(args, value)
+				query.WriteString(fmt.Sprintf("$%d", len(args)))
+			}
+			query.WriteByte(')')
+		}
+		query.WriteString(insertSuffix)
+
+		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func preparePredbEntryRecord(normalizedTitle, title, category, source string, externalID int64, team, genre, url string, sizeKB float64, fileCount int, postedAt *time.Time, payload map[string]any) (*preparedPredbEntry, error) {
+	normalized := strings.TrimSpace(normalizedTitle)
+	title = strings.TrimSpace(title)
+	if normalized == "" {
+		normalized = normalizePredbTitle(title)
+	}
+	if normalized == "" || title == "" {
+		return nil, nil
+	}
+
+	payloadJSON, err := json.Marshal(jsonOrEmptyMap(payload))
+	if err != nil {
+		return nil, err
+	}
+
+	return &preparedPredbEntry{
+		NormalizedTitle: normalized,
+		Title:           title,
+		Category:        strings.TrimSpace(category),
+		Source:          strings.TrimSpace(source),
+		ExternalID:      externalID,
+		Team:            strings.TrimSpace(team),
+		Genre:           strings.TrimSpace(genre),
+		URL:             strings.TrimSpace(url),
+		SizeKB:          sizeKB,
+		FileCount:       fileCount,
+		PostedAt:        postedAt,
+		PayloadJSON:     string(payloadJSON),
+	}, nil
+}
+
+func upsertPredbEntriesTx(ctx context.Context, tx *sql.Tx, rows []preparedPredbEntry) error {
+	insertRows := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		insertRows = append(insertRows, []any{
+			row.NormalizedTitle,
+			row.Title,
+			row.Category,
+			row.Source,
+			row.ExternalID,
+			row.Team,
+			row.Genre,
+			row.URL,
+			row.SizeKB,
+			row.FileCount,
+			row.PostedAt,
+			row.PayloadJSON,
+			time.Now().UTC(),
+		})
+	}
+
+	return execEnrichmentInsertBatch(ctx, tx, `
+		INSERT INTO predb_entries (
+			normalized_title,
+			title,
+			category,
+			source,
+			external_id,
+			team,
+			genre,
+			url,
+			size_kb,
+			file_count,
+			posted_at,
+			payload_json,
+			updated_at
+		)
+		VALUES `,
+		`
+		ON CONFLICT (normalized_title) DO UPDATE
+		SET title = EXCLUDED.title,
+		    category = CASE WHEN EXCLUDED.category <> '' THEN EXCLUDED.category ELSE predb_entries.category END,
+		    source = CASE WHEN EXCLUDED.source <> '' THEN EXCLUDED.source ELSE predb_entries.source END,
+		    external_id = CASE WHEN EXCLUDED.external_id > 0 THEN EXCLUDED.external_id ELSE predb_entries.external_id END,
+		    team = CASE WHEN EXCLUDED.team <> '' THEN EXCLUDED.team ELSE predb_entries.team END,
+		    genre = CASE WHEN EXCLUDED.genre <> '' THEN EXCLUDED.genre ELSE predb_entries.genre END,
+		    url = CASE WHEN EXCLUDED.url <> '' THEN EXCLUDED.url ELSE predb_entries.url END,
+		    size_kb = CASE WHEN EXCLUDED.size_kb > 0 THEN EXCLUDED.size_kb ELSE predb_entries.size_kb END,
+		    file_count = CASE WHEN EXCLUDED.file_count > 0 THEN EXCLUDED.file_count ELSE predb_entries.file_count END,
+		    posted_at = COALESCE(EXCLUDED.posted_at, predb_entries.posted_at),
+		    payload_json = CASE
+		    	WHEN EXCLUDED.payload_json <> '{}'::jsonb THEN EXCLUDED.payload_json
+		    	ELSE predb_entries.payload_json
+		    END,
+		    updated_at = NOW()`, insertRows)
+}
+
+func loadPredbEntryIDsTx(ctx context.Context, tx *sql.Tx, normalizedTitles []string) (map[string]int64, error) {
+	if len(normalizedTitles) == 0 {
+		return map[string]int64{}, nil
+	}
+
+	placeholders := make([]string, 0, len(normalizedTitles))
+	args := make([]any, 0, len(normalizedTitles))
+	for _, normalized := range normalizedTitles {
+		args = append(args, normalized)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT normalized_title, id
+		FROM predb_entries
+		WHERE normalized_title IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64, len(normalizedTitles))
+	for rows.Next() {
+		var normalized string
+		var entryID int64
+		if err := rows.Scan(&normalized, &entryID); err != nil {
+			return nil, err
+		}
+		out[normalized] = entryID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]ReleaseEnrichmentCandidate, error) {
 	stageName = strings.TrimSpace(stageName)
 	if stageName == "" {
@@ -162,12 +363,27 @@ func (s *Store) ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string,
 		return fmt.Errorf("delete tmdb matches for %s: %w", releaseID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
 		if err != nil {
 			return fmt.Errorf("marshal tmdb payload for %s/%d: %w", releaseID, row.TMDBID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			releaseID,
+			row.TMDBID,
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Title),
+			strings.TrimSpace(row.OriginalTitle),
+			row.Year,
+			row.Confidence,
+			row.Chosen,
+			string(payloadJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execEnrichmentInsertBatch(ctx, tx, `
 			INSERT INTO release_tmdb_matches (
 				release_id,
 				tmdb_id,
@@ -180,19 +396,8 @@ func (s *Store) ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string,
 				payload_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
-			releaseID,
-			row.TMDBID,
-			strings.TrimSpace(row.MediaType),
-			strings.TrimSpace(row.Title),
-			strings.TrimSpace(row.OriginalTitle),
-			row.Year,
-			row.Confidence,
-			row.Chosen,
-			string(payloadJSON),
-		); err != nil {
-			return fmt.Errorf("insert tmdb match for %s/%d: %w", releaseID, row.TMDBID, err)
-		}
+			VALUES `, ``, insertRows); err != nil {
+		return fmt.Errorf("insert tmdb matches for %s: %w", releaseID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -217,70 +422,64 @@ func (s *Store) ReplaceReleasePredbMatches(ctx context.Context, releaseID string
 		return fmt.Errorf("delete predb matches for %s: %w", releaseID, err)
 	}
 
+	preparedEntries := make([]preparedPredbEntry, 0, len(rows))
+	matchRows := make([]ReleasePredbMatchRecord, 0, len(rows))
 	for _, row := range rows {
-		normalized := strings.TrimSpace(row.NormalizedTitle)
-		if normalized == "" {
-			normalized = normalizePredbTitle(strings.TrimSpace(row.Title))
-		}
-		if normalized == "" || strings.TrimSpace(row.Title) == "" {
-			continue
-		}
-		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
-		if err != nil {
-			return fmt.Errorf("marshal predb payload for %s/%s: %w", releaseID, normalized, err)
-		}
-		var entryID int64
-		if err := tx.QueryRowContext(ctx, `
-			INSERT INTO predb_entries (
-				normalized_title,
-				title,
-				category,
-				source,
-				external_id,
-				team,
-				genre,
-				url,
-				size_kb,
-				file_count,
-				posted_at,
-				payload_json,
-				updated_at
-			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
-			ON CONFLICT (normalized_title) DO UPDATE
-			SET title = EXCLUDED.title,
-			    category = EXCLUDED.category,
-			    source = EXCLUDED.source,
-			    external_id = CASE WHEN EXCLUDED.external_id > 0 THEN EXCLUDED.external_id ELSE predb_entries.external_id END,
-			    team = CASE WHEN EXCLUDED.team <> '' THEN EXCLUDED.team ELSE predb_entries.team END,
-			    genre = CASE WHEN EXCLUDED.genre <> '' THEN EXCLUDED.genre ELSE predb_entries.genre END,
-			    url = CASE WHEN EXCLUDED.url <> '' THEN EXCLUDED.url ELSE predb_entries.url END,
-			    size_kb = CASE WHEN EXCLUDED.size_kb > 0 THEN EXCLUDED.size_kb ELSE predb_entries.size_kb END,
-			    file_count = CASE WHEN EXCLUDED.file_count > 0 THEN EXCLUDED.file_count ELSE predb_entries.file_count END,
-			    posted_at = COALESCE(EXCLUDED.posted_at, predb_entries.posted_at),
-			    payload_json = CASE
-			    	WHEN EXCLUDED.payload_json <> '{}'::jsonb THEN EXCLUDED.payload_json
-			    	ELSE predb_entries.payload_json
-			    END,
-			    updated_at = NOW()
-			RETURNING id`,
-			normalized,
-			strings.TrimSpace(row.Title),
-			strings.TrimSpace(row.Category),
-			strings.TrimSpace(row.Source),
+		prepared, err := preparePredbEntryRecord(
+			row.NormalizedTitle,
+			row.Title,
+			row.Category,
+			row.Source,
 			row.ExternalID,
-			strings.TrimSpace(row.Team),
-			strings.TrimSpace(row.Genre),
-			strings.TrimSpace(row.URL),
+			row.Team,
+			row.Genre,
+			row.URL,
 			row.SizeKB,
 			row.FileCount,
 			row.PostedAt,
-			string(payloadJSON),
-		).Scan(&entryID); err != nil {
-			return fmt.Errorf("upsert predb entry for %s/%s: %w", releaseID, normalized, err)
+			row.Payload,
+		)
+		if err != nil {
+			return fmt.Errorf("marshal predb payload for %s/%s: %w", releaseID, strings.TrimSpace(row.Title), err)
 		}
+		if prepared == nil {
+			continue
+		}
+		preparedEntries = append(preparedEntries, *prepared)
+		row.NormalizedTitle = prepared.NormalizedTitle
+		matchRows = append(matchRows, row)
+	}
 
-		if _, err := tx.ExecContext(ctx, `
+	preparedEntries = dedupePreparedPredbEntries(preparedEntries)
+	if err := upsertPredbEntriesTx(ctx, tx, preparedEntries); err != nil {
+		return fmt.Errorf("upsert predb entries for %s: %w", releaseID, err)
+	}
+
+	normalizedTitles := make([]string, 0, len(preparedEntries))
+	for _, row := range preparedEntries {
+		normalizedTitles = append(normalizedTitles, row.NormalizedTitle)
+	}
+	entryIDs, err := loadPredbEntryIDsTx(ctx, tx, normalizedTitles)
+	if err != nil {
+		return fmt.Errorf("load predb entry ids for %s: %w", releaseID, err)
+	}
+
+	insertRows := make([][]any, 0, len(matchRows))
+	for _, row := range matchRows {
+		entryID, ok := entryIDs[strings.TrimSpace(row.NormalizedTitle)]
+		if !ok || entryID <= 0 {
+			return fmt.Errorf("missing predb entry id for %s/%s", releaseID, row.NormalizedTitle)
+		}
+		insertRows = append(insertRows, []any{
+			releaseID,
+			entryID,
+			row.Confidence,
+			row.Chosen,
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execEnrichmentInsertBatch(ctx, tx, `
 			INSERT INTO release_predb_matches (
 				release_id,
 				predb_entry_id,
@@ -288,14 +487,8 @@ func (s *Store) ReplaceReleasePredbMatches(ctx context.Context, releaseID string
 				chosen,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,NOW())`,
-			releaseID,
-			entryID,
-			row.Confidence,
-			row.Chosen,
-		); err != nil {
-			return fmt.Errorf("insert predb match for %s/%d: %w", releaseID, entryID, err)
-		}
+			VALUES `, ``, insertRows); err != nil {
+		return fmt.Errorf("insert predb matches for %s: %w", releaseID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -314,66 +507,34 @@ func (s *Store) UpsertPredbEntries(ctx context.Context, rows []PredbEntryRecord)
 	}
 	defer rollbackTx(tx)
 
+	preparedRows := make([]preparedPredbEntry, 0, len(rows))
 	for _, row := range rows {
-		normalized := strings.TrimSpace(row.NormalizedTitle)
-		if normalized == "" {
-			normalized = normalizePredbTitle(strings.TrimSpace(row.Title))
-		}
-		if normalized == "" || strings.TrimSpace(row.Title) == "" {
-			continue
-		}
-		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
-		if err != nil {
-			return fmt.Errorf("marshal predb entry payload for %s: %w", normalized, err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO predb_entries (
-				normalized_title,
-				title,
-				category,
-				source,
-				external_id,
-				team,
-				genre,
-				url,
-				size_kb,
-				file_count,
-				posted_at,
-				payload_json,
-				updated_at
-			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
-			ON CONFLICT (normalized_title) DO UPDATE
-			SET title = EXCLUDED.title,
-			    category = CASE WHEN EXCLUDED.category <> '' THEN EXCLUDED.category ELSE predb_entries.category END,
-			    source = CASE WHEN EXCLUDED.source <> '' THEN EXCLUDED.source ELSE predb_entries.source END,
-			    external_id = CASE WHEN EXCLUDED.external_id > 0 THEN EXCLUDED.external_id ELSE predb_entries.external_id END,
-			    team = CASE WHEN EXCLUDED.team <> '' THEN EXCLUDED.team ELSE predb_entries.team END,
-			    genre = CASE WHEN EXCLUDED.genre <> '' THEN EXCLUDED.genre ELSE predb_entries.genre END,
-			    url = CASE WHEN EXCLUDED.url <> '' THEN EXCLUDED.url ELSE predb_entries.url END,
-			    size_kb = CASE WHEN EXCLUDED.size_kb > 0 THEN EXCLUDED.size_kb ELSE predb_entries.size_kb END,
-			    file_count = CASE WHEN EXCLUDED.file_count > 0 THEN EXCLUDED.file_count ELSE predb_entries.file_count END,
-			    posted_at = COALESCE(EXCLUDED.posted_at, predb_entries.posted_at),
-			    payload_json = CASE
-			    	WHEN EXCLUDED.payload_json <> '{}'::jsonb THEN EXCLUDED.payload_json
-			    	ELSE predb_entries.payload_json
-			    END,
-			    updated_at = NOW()`,
-			normalized,
-			strings.TrimSpace(row.Title),
-			strings.TrimSpace(row.Category),
-			strings.TrimSpace(row.Source),
+		prepared, err := preparePredbEntryRecord(
+			row.NormalizedTitle,
+			row.Title,
+			row.Category,
+			row.Source,
 			row.ExternalID,
-			strings.TrimSpace(row.Team),
-			strings.TrimSpace(row.Genre),
-			strings.TrimSpace(row.URL),
+			row.Team,
+			row.Genre,
+			row.URL,
 			row.SizeKB,
 			row.FileCount,
 			row.PostedAt,
-			string(payloadJSON),
-		); err != nil {
-			return fmt.Errorf("upsert predb entry %s: %w", normalized, err)
+			row.Payload,
+		)
+		if err != nil {
+			return fmt.Errorf("marshal predb entry payload for %s: %w", strings.TrimSpace(row.Title), err)
 		}
+		if prepared == nil {
+			continue
+		}
+		preparedRows = append(preparedRows, *prepared)
+	}
+
+	preparedRows = dedupePreparedPredbEntries(preparedRows)
+	if err := upsertPredbEntriesTx(ctx, tx, preparedRows); err != nil {
+		return fmt.Errorf("upsert predb entries: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -619,12 +780,27 @@ func (s *Store) ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string,
 		return fmt.Errorf("delete tvdb matches for %s: %w", releaseID, err)
 	}
 
+	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		payloadJSON, err := json.Marshal(jsonOrEmptyMap(row.Payload))
 		if err != nil {
 			return fmt.Errorf("marshal tvdb payload for %s/%d: %w", releaseID, row.TVDBID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		insertRows = append(insertRows, []any{
+			releaseID,
+			row.TVDBID,
+			strings.TrimSpace(row.MediaType),
+			strings.TrimSpace(row.Title),
+			strings.TrimSpace(row.OriginalTitle),
+			row.Year,
+			row.Confidence,
+			row.Chosen,
+			string(payloadJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execEnrichmentInsertBatch(ctx, tx, `
 			INSERT INTO release_tvdb_matches (
 				release_id,
 				tvdb_id,
@@ -637,19 +813,8 @@ func (s *Store) ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string,
 				payload_json,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
-			releaseID,
-			row.TVDBID,
-			strings.TrimSpace(row.MediaType),
-			strings.TrimSpace(row.Title),
-			strings.TrimSpace(row.OriginalTitle),
-			row.Year,
-			row.Confidence,
-			row.Chosen,
-			string(payloadJSON),
-		); err != nil {
-			return fmt.Errorf("insert tvdb match for %s/%d: %w", releaseID, row.TVDBID, err)
-		}
+			VALUES `, ``, insertRows); err != nil {
+		return fmt.Errorf("insert tvdb matches for %s: %w", releaseID, err)
 	}
 
 	if err := tx.Commit(); err != nil {

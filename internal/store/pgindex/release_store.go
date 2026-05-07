@@ -416,7 +416,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	}
 
 	candidateSelector := `
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.release_family_key = $2`
@@ -427,11 +427,11 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	switch keyKind {
 	case "base_stem":
 		candidateSelector = `
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.expected_file_count > 1
-			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -441,11 +441,11 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	default:
 		candidateSelector += `
 			UNION
-			SELECT b.*
+			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
 			  AND b.expected_file_count > 1
-			  AND NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
+			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -490,7 +490,8 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status
-		FROM candidate_binaries b
+		FROM candidate_binaries cb
+		JOIN binaries b ON b.id = cb.id
 		LEFT JOIN posters p ON p.id = b.poster_id`
 	args := []any{providerID, releaseFamilyKey}
 	if newsgroupID > 0 {
@@ -628,7 +629,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 	return nil
 }
 
-// CHANGED: fetch article ids/part numbers for one binary to build release_file_articles.
+// CHANGED: fetch article ids/part numbers for one binary so release file article refs can be derived on demand.
 func (s *Store) ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]ReleaseFileArticleRecord, error) {
 	if binaryID <= 0 {
 		return nil, fmt.Errorf("binary id is required")
@@ -1008,7 +1009,7 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 	return nil
 }
 
-// CHANGED: replace release_files and release_file_articles atomically for one release.
+// CHANGED: replace release_files atomically for one release.
 func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files []ReleaseFileRecord) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
@@ -1020,14 +1021,6 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		return err
 	}
 	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM release_file_articles
-		WHERE release_file_id IN (
-			SELECT id FROM release_files WHERE release_id = $1
-		)`, releaseID); err != nil {
-		return fmt.Errorf("delete release_file_articles for %s: %w", releaseID, err)
-	}
 
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM release_files
@@ -1057,16 +1050,6 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		}
 		filter := strings.Join(placeholders, ",")
 		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM release_file_articles
-			WHERE release_file_id IN (
-				SELECT id
-				FROM release_files
-				WHERE release_id <> $1
-				  AND binary_id IN (`+filter+`)
-			)`, args...); err != nil {
-			return fmt.Errorf("delete stale cross-release file articles for %s: %w", releaseID, err)
-		}
-		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM release_files
 			WHERE release_id <> $1
 			  AND binary_id IN (`+filter+`)`, args...); err != nil {
@@ -1074,14 +1057,35 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		}
 	}
 
+	args := make([]any, 0, len(files)*10)
+	placeholders := make([]string, 0, len(files))
 	for _, f := range files {
 		var postedAt any
 		if f.PostedAt != nil {
 			postedAt = f.PostedAt.UTC()
 		}
+		base := len(args)
+		args = append(args,
+			releaseID,
+			nullIfZero(f.BinaryID),
+			strings.TrimSpace(f.FileName),
+			f.SizeBytes,
+			f.FileIndex,
+			f.IsPars,
+			strings.TrimSpace(f.Subject),
+			strings.TrimSpace(f.Poster),
+			postedAt,
+			time.Now().UTC(),
+		)
+		placeholders = append(placeholders, fmt.Sprintf(
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5,
+			base+6, base+7, base+8, base+9, base+10,
+		))
+	}
 
-		var releaseFileID int64
-		if err := tx.QueryRowContext(ctx, `
+	if len(placeholders) > 0 {
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO release_files (
 				release_id,
 				binary_id,
@@ -1094,72 +1098,15 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 				posted_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-			RETURNING id`,
-			releaseID,
-			nullIfZero(f.BinaryID),
-			strings.TrimSpace(f.FileName),
-			f.SizeBytes,
-			f.FileIndex,
-			f.IsPars,
-			strings.TrimSpace(f.Subject),
-			strings.TrimSpace(f.Poster),
-			postedAt,
-		).Scan(&releaseFileID); err != nil {
-			return fmt.Errorf("insert release file %q for %s: %w", f.FileName, releaseID, err)
-		}
-
-		if err := insertReleaseFileArticlesBatch(ctx, tx, releaseFileID, f.Articles); err != nil {
-			return err
+			VALUES `+strings.Join(placeholders, ","),
+			args...,
+		); err != nil {
+			return fmt.Errorf("insert release files for %s: %w", releaseID, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return err
-	}
-
-	return nil
-}
-
-func insertReleaseFileArticlesBatch(ctx context.Context, tx *sql.Tx, releaseFileID int64, articles []ReleaseFileArticleRecord) error {
-	if tx == nil {
-		return fmt.Errorf("release file article tx is required")
-	}
-	if releaseFileID <= 0 || len(articles) == 0 {
-		return nil
-	}
-
-	const maxRowsPerInsert = 10000
-	for start := 0; start < len(articles); start += maxRowsPerInsert {
-		end := start + maxRowsPerInsert
-		if end > len(articles) {
-			end = len(articles)
-		}
-
-		args := make([]any, 0, (end-start)*3)
-		placeholders := make([]string, 0, end-start)
-		for _, article := range articles[start:end] {
-			if article.ArticleHeaderID <= 0 {
-				continue
-			}
-			args = append(args, releaseFileID, article.ArticleHeaderID, article.PartNumber)
-			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,$%d)", len(args)-2, len(args)-1, len(args)))
-		}
-		if len(placeholders) == 0 {
-			continue
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO release_file_articles (
-				release_file_id,
-				article_header_id,
-				part_number
-			)
-			VALUES `+strings.Join(placeholders, ","),
-			args...,
-		); err != nil {
-			return fmt.Errorf("insert release file articles batch file=%d: %w", releaseFileID, err)
-		}
 	}
 
 	return nil
