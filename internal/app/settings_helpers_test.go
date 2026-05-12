@@ -123,6 +123,24 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	}
 }
 
+func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			Assemble: IndexingStageRuntimeSettings{Enabled: true, IntervalMinutes: 5, BatchSize: 4000, Concurrency: 2},
+		},
+	})
+
+	if runtime.Indexing == nil {
+		t.Fatalf("expected indexing settings")
+	}
+	if runtime.Indexing.AssembleLaneA.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneA.BatchSize <= 0 {
+		t.Fatalf("expected lane A defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneA)
+	}
+	if runtime.Indexing.AssembleLaneB.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneB.BatchSize <= 0 {
+		t.Fatalf("expected lane B defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneB)
+	}
+}
+
 func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
 	current := &RuntimeSettings{
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{{

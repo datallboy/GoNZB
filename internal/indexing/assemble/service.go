@@ -49,6 +49,7 @@ type Options struct {
 	ClaimLease              time.Duration
 	Concurrency             int
 	MaxYEncRecoveryAttempts int
+	Lane                    string
 }
 
 type recoveryCounters struct {
@@ -84,6 +85,16 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	if opts.MaxYEncRecoveryAttempts <= 0 {
 		opts.MaxYEncRecoveryAttempts = 128
 	}
+	switch strings.TrimSpace(strings.ToLower(opts.Lane)) {
+	case pgindex.AssemblyClaimLaneCombined:
+		opts.Lane = pgindex.AssemblyClaimLaneCombined
+	case pgindex.AssemblyClaimLaneA:
+		opts.Lane = pgindex.AssemblyClaimLaneA
+	case pgindex.AssemblyClaimLaneB:
+		opts.Lane = pgindex.AssemblyClaimLaneB
+	default:
+		opts.Lane = pgindex.AssemblyClaimLaneCombined
+	}
 
 	return &Service{
 		repo:    repo,
@@ -114,6 +125,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		Limit:         s.opts.BatchSize,
 		Owner:         s.opts.ClaimOwner,
 		LeaseDuration: s.opts.ClaimLease,
+		Lane:          s.opts.Lane,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
@@ -126,6 +138,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			"binaries_refreshed":              0,
 			"batch_size":                      s.opts.BatchSize,
 			"worker_count":                    s.opts.Concurrency,
+			"lane_mode":                       laneMetricName(s.opts.Lane),
 			"candidate_selection_duration_ms": durationMillis(selectionDuration),
 			"total_duration_ms":               durationMillis(time.Since(started)),
 			"headers_per_second":              0.0,
@@ -242,6 +255,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		Limit:         batchSize,
 		Owner:         claimOwner,
 		LeaseDuration: s.opts.ClaimLease,
+		Lane:          s.opts.Lane,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
@@ -250,6 +264,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	metrics := map[string]any{
 		"selected_headers":                len(headers),
 		"batch_size":                      batchSize,
+		"lane_mode":                       laneMetricName(s.opts.Lane),
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
 	}
 	if len(headers) == 0 {
@@ -447,7 +462,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		laneMetricName(s.opts.Lane),
 		laneASelected,
 		laneBSelected,
 		assembledCount,
@@ -460,6 +476,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		metrics["binary_upsert_duration_ms"],
 		metrics["binary_part_upsert_duration_ms"],
 		metrics["binary_refresh_duration_ms"],
+		metrics["unique_binary_upserts"],
+		metrics["binary_upsert_cache_hits"],
 		recovery.attempts,
 		recovery.successes,
 		recovery.noops,
@@ -524,6 +542,17 @@ func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerM
 	metrics["total_duration_ms"] = durationMillis(totalDuration)
 	metrics["headers_per_second"] = throughputPerSecond(processedHeaders, totalDuration)
 	metrics["refreshed_binaries_per_second"] = throughputPerSecond(refreshedBinaries, totalDuration)
+}
+
+func laneMetricName(lane string) string {
+	switch strings.TrimSpace(strings.ToLower(lane)) {
+	case pgindex.AssemblyClaimLaneA:
+		return pgindex.AssemblyClaimLaneA
+	case pgindex.AssemblyClaimLaneB:
+		return pgindex.AssemblyClaimLaneB
+	default:
+		return "combined"
+	}
 }
 
 func durationMillis(d time.Duration) float64 {

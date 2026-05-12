@@ -24,8 +24,10 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/release"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
+	"github.com/datallboy/gonzb/internal/indexing/yencrecover"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/segmentio/ksuid"
 )
 
@@ -50,6 +52,9 @@ type usenetIndexerConfig struct {
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
 	Assemble                                        indexerStageConfig
+	AssembleLaneA                                   indexerStageConfig
+	AssembleLaneB                                   indexerStageConfig
+	RecoverYEnc                                     indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
 	InspectDiscovery                                indexerStageConfig
 	InspectPAR2                                     indexerStageConfig
@@ -97,6 +102,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeBackfillSvc *scrape.Service
 		scrapeProvider    io.Closer
 		inspectFetcher    inspectpkg.ArticleFetcher
+		recoverFetcher    interface {
+			FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
+		}
 	)
 
 	if len(runtimeCfg.Newsgroups) > 0 {
@@ -134,6 +142,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		)
 		scrapeProvider = provider
 		inspectFetcher = provider
+		recoverFetcher = provider
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
@@ -147,6 +156,43 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			ClaimOwner:  "assemble",
 			ClaimLease:  5 * time.Minute,
 			Concurrency: runtimeCfg.Assemble.Concurrency,
+		},
+	)
+	assembleLaneASvc := assemble.NewService(
+		appCtx.PGIndexStore,
+		matcherSvc,
+		inspectFetcher,
+		appCtx.Logger,
+		assemble.Options{
+			BatchSize:   runtimeCfg.AssembleLaneA.BatchSize,
+			ClaimOwner:  "assemble-lane-a",
+			ClaimLease:  5 * time.Minute,
+			Concurrency: runtimeCfg.AssembleLaneA.Concurrency,
+			Lane:        pgindex.AssemblyClaimLaneA,
+		},
+	)
+	assembleLaneBSvc := assemble.NewService(
+		appCtx.PGIndexStore,
+		matcherSvc,
+		inspectFetcher,
+		appCtx.Logger,
+		assemble.Options{
+			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
+			ClaimOwner:  "assemble-lane-b",
+			ClaimLease:  5 * time.Minute,
+			Concurrency: runtimeCfg.AssembleLaneB.Concurrency,
+			Lane:        pgindex.AssemblyClaimLaneB,
+		},
+	)
+	recoverYEncSvc := yencrecover.NewService(
+		appCtx.PGIndexStore,
+		matcherSvc,
+		recoverFetcher,
+		appCtx.Logger,
+		yencrecover.Options{
+			BatchSize:      runtimeCfg.RecoverYEnc.BatchSize,
+			MaxHeaderBytes: 8192,
+			FetchTimeout:   10 * time.Second,
 		},
 	)
 
@@ -206,6 +252,39 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.Assemble.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(assembleSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageAssembleLaneA,
+			Interval:    runtimeCfg.AssembleLaneA.Interval,
+			Enabled:     assembleLaneASvc != nil && runtimeCfg.AssembleLaneA.Enabled,
+			BatchSize:   runtimeCfg.AssembleLaneA.BatchSize,
+			Concurrency: runtimeCfg.AssembleLaneA.Concurrency,
+			Backoff:     runtimeCfg.AssembleLaneA.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(assembleLaneASvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageAssembleLaneB,
+			Interval:    runtimeCfg.AssembleLaneB.Interval,
+			Enabled:     assembleLaneBSvc != nil && runtimeCfg.AssembleLaneB.Enabled,
+			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
+			Concurrency: runtimeCfg.AssembleLaneB.Concurrency,
+			Backoff:     runtimeCfg.AssembleLaneB.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(assembleLaneBSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageRecoverYEnc,
+			Interval:    runtimeCfg.RecoverYEnc.Interval,
+			Enabled:     recoverYEncSvc != nil && recoverFetcher != nil && runtimeCfg.RecoverYEnc.Enabled,
+			BatchSize:   runtimeCfg.RecoverYEnc.BatchSize,
+			Concurrency: runtimeCfg.RecoverYEnc.Concurrency,
+			Backoff:     runtimeCfg.RecoverYEnc.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(recoverYEncSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -324,6 +403,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	service := indexing.NewService(supervisorSvc, indexing.Options{
+		AssembleLaneA:           assembleLaneASvc.RunOnce,
+		AssembleLaneB:           assembleLaneBSvc.RunOnce,
+		RecoverYEnc:             recoverYEncSvc.RunOnce,
 		ReleaseReform:           releaseSvc.RunReformOnce,
 		EnrichPredbSceneName:    enrichPreDBSvc.RunSceneNameRecoveryOnce,
 		EnrichPredbMetadataOnly: enrichPreDBSvc.RunMetadataFallbackOnce,
@@ -431,6 +513,9 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ScrapeLatest:   newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill: newIndexerStageConfig(indexingCfg.ScrapeBackfill),
 		Assemble:       newIndexerStageConfig(indexingCfg.Assemble),
+		AssembleLaneA:  newIndexerStageConfig(indexingCfg.AssembleLaneA),
+		AssembleLaneB:  newIndexerStageConfig(indexingCfg.AssembleLaneB),
+		RecoverYEnc:    newIndexerStageConfig(indexingCfg.RecoverYEnc),
 		ReleaseStage: newIndexerStageConfig(app.IndexingStageRuntimeSettings{
 			Enabled:         indexingCfg.Release.Enabled,
 			IntervalMinutes: indexingCfg.Release.IntervalMinutes,

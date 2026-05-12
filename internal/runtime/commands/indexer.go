@@ -69,6 +69,57 @@ func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerAssembleLaneA(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.AssembleLaneAOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer assemble lane-a --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer assemble lane-a --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerAssembleLaneAScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer assemble lane-a scheduler failed: %v", err)
+	}
+}
+
+func (r *Runner) ExecuteIndexerAssembleLaneB(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.AssembleLaneBOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer assemble lane-b --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer assemble lane-b --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerAssembleLaneBScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer assemble lane-b scheduler failed: %v", err)
+	}
+}
+
+func (r *Runner) ExecuteIndexerRecoverYEnc(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn and an indexer NNTP server.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.RecoverYEncOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer recover-yenc --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer recover-yenc --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerRecoverYEncScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer recover-yenc scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerRelease(once bool, reform bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

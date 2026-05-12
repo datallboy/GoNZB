@@ -197,12 +197,87 @@ Recommended model:
    - for operators who want the combined behavior manually
    - but move scheduled runtime control to the split stages
 
+## Implementation Update
+
+The lane split is now implemented in the current branch:
+
+- new supervisor stages:
+  - `assemble_lane_a`
+  - `assemble_lane_b`
+- new runtime settings:
+  - `indexing.assemble_lane_a`
+  - `indexing.assemble_lane_b`
+- compatibility/manual commands:
+  - `gonzb indexer assemble --once`
+  - `gonzb indexer assemble lane-a --once`
+  - `gonzb indexer assemble lane-b --once`
+
+Behavior:
+
+- lane A now claims only structured-priority headers that feed existing incomplete binaries
+- lane B claims recent non-priority headers and excludes the structured-incomplete-binary path
+- lane B still keeps inline yEnc recovery off the hot path
+- combined `assemble` remains available for compatibility and manual mixed runs
+
+## Post-Implementation Live Baseline
+
+Live runs against the same large backlog after the true split landed:
+
+- `2026-05-07 13:30:33`
+  - `assemble lane-a --once`
+  - `lane_a_selected=5000`
+  - `lane_b_selected=0`
+  - `processed_headers=5000`
+  - `headers_per_second=379.73`
+  - `header_match_ms=776.96`
+  - `binary_upsert_ms=539.10`
+  - `binary_refresh_ms=1190.73`
+  - `unique_binary_upserts=233`
+  - `binary_upsert_cache_hits=4767`
+  - `assemble_recovery_attempts=0`
+
+- `2026-05-07 13:30:44`
+  - `assemble lane-b --once`
+  - `lane_a_selected=0`
+  - `lane_b_selected=2500`
+  - `processed_headers=2500`
+  - `headers_per_second=377.28`
+  - `header_match_ms=410.69`
+  - `binary_upsert_ms=3912.70`
+  - `binary_refresh_ms=1656.82`
+  - `unique_binary_upserts=1886`
+  - `binary_upsert_cache_hits=614`
+  - `assemble_recovery_attempts=0`
+
+- `2026-05-07 13:31:47`
+  - `assemble lane-a --once`
+  - `lane_a_selected=954`
+  - `lane_b_selected=0`
+  - `processed_headers=954`
+  - `headers_per_second=107.58`
+  - `binary_upsert_ms=302.17`
+  - `unique_binary_upserts=141`
+
+- `2026-05-07 13:32:04`
+  - `release --once`
+  - `candidate_families=5000`
+  - `formed=0`
+  - `cooled_down_low_coverage_families=21`
+  - `skipped_fragments=4979`
+
+Interpretation:
+
+- the old lane B 45-second upsert symptom was mostly a mixed-batch problem, not a pure lane B identity-matching problem
+- once lane B is isolated and given a smaller batch, it remains more write-heavy than lane A, but it no longer monopolizes the assemble pass
+- lane A is now a very efficient feed stage when structured priority work exists
+- release is still overwhelmingly fragment-bound, so selector and queue coordination are healthier, but the backlog itself still does not contain enough formable families yet
+
 ## Baseline To Beat
 
-Any follow-up lane split should be judged against these current-head live samples:
+Any follow-up lane tuning should now be judged against these split-stage live samples:
 
-- lane A-heavy pass around `203.77 headers/sec`
-- lane B-only passes around `98` to `127 headers/sec`
-- lane B `header_match_ms` now around `1.9s` to `2.0s`
-- lane B still spending `44s` to `49s` in `binary_upsert_ms`
-- release still showing `formed=0` on a `5000` family pass with `4974` fragment skips
+- lane A pass around `379.73 headers/sec` on a full `5000` priority batch
+- lane A `binary_upsert_ms` well under `1s` when cache reuse is high
+- lane B pass around `377.28 headers/sec` on a `2500` batch
+- lane B `binary_upsert_ms` around `3.9s` with `1886` unique binary upserts
+- release still showing `formed=0` on a `5000` family pass with `4979` fragment skips

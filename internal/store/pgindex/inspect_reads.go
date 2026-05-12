@@ -639,6 +639,9 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "scrape_latest", Label: "Scrape Latest", ItemLabel: "headers"},
 	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
 	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
+	{StageName: "assemble_lane_a", Label: "Assemble Lane A", ItemLabel: "headers"},
+	{StageName: "assemble_lane_b", Label: "Assemble Lane B", ItemLabel: "headers"},
+	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
@@ -777,8 +780,10 @@ func stageThroughputMetricKeys(stageName string) []string {
 	switch stageName {
 	case "scrape_latest", "scrape_backfill":
 		return []string{"articles_inserted", "article_headers_seen"}
-	case "assemble":
+	case "assemble", "assemble_lane_a", "assemble_lane_b":
 		return []string{"processed_headers"}
+	case "recover_yenc":
+		return []string{"recovered", "attempted", "candidates"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":

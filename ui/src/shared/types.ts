@@ -661,6 +661,9 @@ export type IndexingRuntimeSettings = {
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
+  assemble_lane_a: AdminStageConfigPatch
+  assemble_lane_b: AdminStageConfigPatch
+  recover_yenc: AdminStageConfigPatch
   release: AdminStageConfigPatch & {
     min_confidence: number
     min_completion_pct: number

@@ -1642,6 +1642,527 @@ func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFami
 	}
 }
 
+func TestListReleaseCandidatesRanksWeakSingleBehindFormableFamilies(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.weak-single.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	actionableFamily := fmt.Sprintf("queue-actionable-%d", time.Now().UnixNano())
+	weakFamily := fmt.Sprintf("queue-weak-%d", time.Now().UnixNano())
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 3, 3, 3, 0, 3, true, 12345, NOW(), 'readable_title', 'movie.2026.mkv', 0.95, 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 0, false, 12345, NOW(), 'contextual_obfuscated', 'abc123def456.bin', 0.92, 'weak_single_binary', 0, NOW() - INTERVAL '3 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, actionableFamily, weakFamily,
+	); err != nil {
+		t.Fatalf("seed weak-single summary rows: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != actionableFamily {
+		t.Fatalf("expected actionable family %q first, got %q", actionableFamily, candidates[0].ReleaseFamilyKey)
+	}
+	if candidates[1].ReleaseFamilyKey != weakFamily {
+		t.Fatalf("expected weak single family %q second, got %q", weakFamily, candidates[1].ReleaseFamilyKey)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, actionableFamily, weakFamily,
+	); err != nil {
+		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesPrefersBaseStemWhenReadinessIsEqual(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.base-stem-priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	releaseFamilyKey := fmt.Sprintf("queue-release-family-%d", time.Now().UnixNano())
+	baseStemKey := fmt.Sprintf("queue-base-stem-%d", time.Now().UnixNano())
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 4, 4, 4, 0, 12, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'base_stem', $3, $3, $3, $3, 4, 4, 4, 0, 12, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, releaseFamilyKey, baseStemKey,
+	); err != nil {
+		t.Fatalf("seed base-stem priority rows: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 2, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].KeyKind != "base_stem" {
+		t.Fatalf("expected base_stem candidate first, got %s", candidates[0].KeyKind)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3)`, newsgroupID, releaseFamilyKey, baseStemKey,
+	); err != nil {
+		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesDerivesWeakSingleBucketFromDominantBinary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.weak-derive.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("queue-derived-weak-%d", time.Now().UnixNano())
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		SourceReleaseKey: family,
+		ReleaseFamilyKey: family,
+		FileFamilyKey:    family + "::file",
+		FamilyKind:       "contextual_obfuscated",
+		IsMainPayload:    true,
+		ReleaseKey:       family,
+		ReleaseName:      family,
+		BinaryKey:        fmt.Sprintf("%s::%d", family, time.Now().UnixNano()),
+		BinaryName:       "04601b416a624006a3ef2df4717c6ede.bin",
+		FileName:         "04601b416a624006a3ef2df4717c6ede.bin",
+		TotalParts:       10,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET observed_parts = total_parts, total_bytes = 12345, updated_at = NOW()
+		WHERE id = $1`, binaryID,
+	); err != nil {
+		t.Fatalf("update binary stats: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 0, false, 12345, NOW(), 'actionable', 0, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("seed derived weak-single summary row: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReadinessBucket != releaseReadinessWeakSingle {
+		t.Fatalf("expected derived readiness bucket %q, got %q", releaseReadinessWeakSingle, candidates[0].ReadinessBucket)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup release summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesDerivesFragmentBucketForNumericOpaqueFamily(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.numeric-opaque.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("80894690-n-yuo-%d", time.Now().UnixNano())
+	for idx, name := range []string{
+		"0q2503mv5r4sp5gxg64bs9uqdzn0nq4k",
+		"e81q5yfbwtk46b9n5szq5mdk740cl1v1",
+	} {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			FileFamilyKey:     fmt.Sprintf("%s::%d", family, idx+1),
+			FamilyKind:        "readable_title",
+			IsMainPayload:     true,
+			ReleaseKey:        family,
+			ReleaseName:       "80894690 n YuO",
+			BinaryKey:         fmt.Sprintf("%s::%d::%d", family, idx+1, time.Now().UnixNano()),
+			BinaryName:        fmt.Sprintf(`80894690-n-YuO [%d/2] - "%s" yEnc (1/1)`, idx+1, name),
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: 2,
+			TotalParts:        1,
+			MatchConfidence:   1.0,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary: %v", err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts, total_bytes = 1000, updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update binary stats: %v", err)
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, '80894690 n YuO', 2, 2, 2, 0, 2, true, 2000, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET release_name = EXCLUDED.release_name,
+		    binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("seed numeric opaque summary row: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReadinessBucket != releaseReadinessFragmentOnly {
+		t.Fatalf("expected derived readiness bucket %q, got %q", releaseReadinessFragmentOnly, candidates[0].ReadinessBucket)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE release_family_key = $1`, family); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup release summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesDerivesPreferBaseStemBucketFromContextualArchiveEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.prefer-base-stem.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("queue-prefer-base-stem-%d", time.Now().UnixNano())
+	for i := 1; i <= 3; i++ {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			FileFamilyKey:     fmt.Sprintf("%s::file-%d", family, i),
+			FamilyKind:        "contextual_obfuscated",
+			BaseStem:          "opaque.release.7z",
+			IsMainPayload:     true,
+			ReleaseKey:        family,
+			ReleaseName:       family,
+			BinaryKey:         fmt.Sprintf("%s::%d", family, i),
+			BinaryName:        fmt.Sprintf("opaque.release.7z.%03d", i),
+			FileName:          fmt.Sprintf("opaque.release.7z.%03d", i),
+			FileIndex:         i,
+			ExpectedFileCount: 20,
+			TotalParts:        10,
+			MatchConfidence:   0.72,
+			MatchStatus:       "probable",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts, total_bytes = 12345, updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update binary %d stats: %v", i, err)
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 3, 3, 3, 0, 20, true, 12345, NOW(), 'actionable', 15, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("seed prefer-base-stem summary row: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReadinessBucket != releaseReadinessPreferBaseStem {
+		t.Fatalf("expected derived readiness bucket %q, got %q", releaseReadinessPreferBaseStem, candidates[0].ReadinessBucket)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM binaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND release_family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup release summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesDerivesOvergroupedContextualBucketFromUniqueStemMatrix(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.overgrouped.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("queue-overgrouped-%d", time.Now().UnixNano())
+	for i := 1; i <= 24; i++ {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			FileFamilyKey:     fmt.Sprintf("%s::file-%d", family, i),
+			FamilyKind:        "contextual_obfuscated",
+			BaseStem:          fmt.Sprintf("opaque-file-%03d", i),
+			IsMainPayload:     true,
+			ReleaseKey:        family,
+			ReleaseName:       family,
+			BinaryKey:         fmt.Sprintf("%s::%d", family, i),
+			BinaryName:        fmt.Sprintf("opaque-file-%03d.bin", i),
+			FileName:          fmt.Sprintf("opaque-file-%03d.bin", i),
+			FileIndex:         i,
+			ExpectedFileCount: 8,
+			TotalParts:        10,
+			MatchConfidence:   0.61,
+			MatchStatus:       "probable",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts, total_bytes = 12345, updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update binary %d stats: %v", i, err)
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 24, 24, 24, 0, 8, true, 12345, NOW(), 'actionable', 100, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("seed overgrouped summary row: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReadinessBucket != releaseReadinessOvergrouped {
+		t.Fatalf("expected derived readiness bucket %q, got %q", releaseReadinessOvergrouped, candidates[0].ReadinessBucket)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM binaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND release_family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = $2`, newsgroupID, family,
+	); err != nil {
+		t.Fatalf("cleanup release summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
 func TestListReleaseCandidatesKeepsZeroBinaryFamiliesEligibleForStaleCleanup(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

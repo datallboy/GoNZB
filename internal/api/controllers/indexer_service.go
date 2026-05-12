@@ -551,6 +551,12 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ScrapeBackfill, true
 	case string(supervisor.StageAssemble):
 		return runtime.Indexing.Assemble, true
+	case string(supervisor.StageAssembleLaneA):
+		return runtime.Indexing.AssembleLaneA, true
+	case string(supervisor.StageAssembleLaneB):
+		return runtime.Indexing.AssembleLaneB, true
+	case string(supervisor.StageRecoverYEnc):
+		return runtime.Indexing.RecoverYEnc, true
 	case string(supervisor.StageRelease):
 		return app.IndexingStageRuntimeSettings{
 			Enabled:         runtime.Indexing.Release.Enabled,
@@ -600,6 +606,9 @@ var allIndexerStages = []string{
 	string(supervisor.StageScrapeLatest),
 	string(supervisor.StageScrapeBackfill),
 	string(supervisor.StageAssemble),
+	string(supervisor.StageAssembleLaneA),
+	string(supervisor.StageAssembleLaneB),
+	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageRelease),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
@@ -640,6 +649,12 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ScrapeBackfill, patch)
 	case string(supervisor.StageAssemble):
 		applyStagePatch(&indexing.Assemble, patch)
+	case string(supervisor.StageAssembleLaneA):
+		applyStagePatch(&indexing.AssembleLaneA, patch)
+	case string(supervisor.StageAssembleLaneB):
+		applyStagePatch(&indexing.AssembleLaneB, patch)
+	case string(supervisor.StageRecoverYEnc):
+		applyStagePatch(&indexing.RecoverYEnc, patch)
 	case string(supervisor.StageRelease):
 		applyReleaseStagePatch(&indexing.Release, patch)
 	case string(supervisor.StageInspectDiscovery):
@@ -668,7 +683,7 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 
 func stageSupportsConcurrency(stageName string) bool {
 	switch stageName {
-	case string(supervisor.StageAssemble), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
+	case string(supervisor.StageAssemble), string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
 		return true
 	default:
 		return false

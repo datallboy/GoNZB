@@ -29,6 +29,7 @@ type repository interface {
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
+	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 }
 
 type Options struct {
@@ -135,19 +136,26 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		}
 	}
 	metrics := map[string]any{
-		"reform":                            reform,
-		"batch_size":                        s.opts.BatchSize,
-		"min_confidence":                    s.opts.ReleaseMinConfidence,
-		"min_completion_pct":                s.opts.ReleaseMinCompletion,
-		"min_expected_file_coverage_pct":    s.opts.ReleaseMinExpectedFileCoveragePct,
-		"candidate_families":                len(candidates),
-		"formed":                            0,
-		"skipped_fragments":                 0,
-		"skipped_confidence":                0,
-		"skipped_completion":                0,
-		"cooled_down_low_coverage_families": 0,
-		"stale_cleanup_families":            0,
-		"fragment_only_families":            0,
+		"reform":                                reform,
+		"batch_size":                            s.opts.BatchSize,
+		"min_confidence":                        s.opts.ReleaseMinConfidence,
+		"min_completion_pct":                    s.opts.ReleaseMinCompletion,
+		"min_expected_file_coverage_pct":        s.opts.ReleaseMinExpectedFileCoveragePct,
+		"candidate_families":                    len(candidates),
+		"formed":                                0,
+		"skipped_fragments":                     0,
+		"skipped_fragments_no_main_payload":     0,
+		"skipped_fragments_single_main":         0,
+		"skipped_fragments_multi_file":          0,
+		"skipped_fragments_contextual_weak":     0,
+		"skipped_confidence":                    0,
+		"skipped_completion":                    0,
+		"cooled_down_low_coverage_families":     0,
+		"cooled_down_weak_single_families":      0,
+		"cooled_down_overgrouped_families":      0,
+		"cooled_down_prefer_base_stem_families": 0,
+		"stale_cleanup_families":                0,
+		"fragment_only_families":                0,
 	}
 	if len(candidates) == 0 {
 		if reform {
@@ -162,8 +170,15 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	candidateFamiliesInspected := 0
 	cooledDownFragmentOnly := 0
 	cooledDownLowCoverage := 0
+	cooledDownWeakSingle := 0
+	cooledDownOvergrouped := 0
+	cooledDownPreferBaseStem := 0
 	staleCleanupOnly := 0
 	skippedFragments := 0
+	skippedNoMainPayload := 0
+	skippedSingleMain := 0
+	skippedMultiFileSingle := 0
+	skippedContextualWeak := 0
 	skippedConfidence := 0
 	skippedCompletion := 0
 	deferredAcks := make([]pgindex.ReleaseCandidateAck, 0, 128)
@@ -185,8 +200,15 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			metrics["formed"] = formed
 			metrics["fragment_only_families"] = cooledDownFragmentOnly
 			metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
+			metrics["cooled_down_weak_single_families"] = cooledDownWeakSingle
+			metrics["cooled_down_overgrouped_families"] = cooledDownOvergrouped
+			metrics["cooled_down_prefer_base_stem_families"] = cooledDownPreferBaseStem
 			metrics["stale_cleanup_families"] = staleCleanupOnly
 			metrics["skipped_fragments"] = skippedFragments
+			metrics["skipped_fragments_no_main_payload"] = skippedNoMainPayload
+			metrics["skipped_fragments_single_main"] = skippedSingleMain
+			metrics["skipped_fragments_multi_file"] = skippedMultiFileSingle
+			metrics["skipped_fragments_contextual_weak"] = skippedContextualWeak
 			metrics["skipped_confidence"] = skippedConfidence
 			metrics["skipped_completion"] = skippedCompletion
 			return metrics, fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
@@ -194,8 +216,15 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		formed += outcome.formed
 		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
 		cooledDownLowCoverage += outcome.cooledDownLowCoverage
+		cooledDownWeakSingle += outcome.cooledDownWeakSingle
+		cooledDownOvergrouped += outcome.cooledDownOvergrouped
+		cooledDownPreferBaseStem += outcome.cooledDownPreferBaseStem
 		staleCleanupOnly += outcome.staleCleanupOnly
 		skippedFragments += outcome.skippedFragments
+		skippedNoMainPayload += outcome.skippedNoMainPayload
+		skippedSingleMain += outcome.skippedSingleMain
+		skippedMultiFileSingle += outcome.skippedMultiFileSingle
+		skippedContextualWeak += outcome.skippedContextualWeak
 		skippedConfidence += outcome.skippedConfidence
 		skippedCompletion += outcome.skippedCompletion
 		if outcome.deferredAck != nil {
@@ -215,20 +244,34 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics["formed"] = formed
 	metrics["fragment_only_families"] = cooledDownFragmentOnly
 	metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
+	metrics["cooled_down_weak_single_families"] = cooledDownWeakSingle
+	metrics["cooled_down_overgrouped_families"] = cooledDownOvergrouped
+	metrics["cooled_down_prefer_base_stem_families"] = cooledDownPreferBaseStem
 	metrics["stale_cleanup_families"] = staleCleanupOnly
 	metrics["skipped_fragments"] = skippedFragments
+	metrics["skipped_fragments_no_main_payload"] = skippedNoMainPayload
+	metrics["skipped_fragments_single_main"] = skippedSingleMain
+	metrics["skipped_fragments_multi_file"] = skippedMultiFileSingle
+	metrics["skipped_fragments_contextual_weak"] = skippedContextualWeak
 	metrics["skipped_confidence"] = skippedConfidence
 	metrics["skipped_completion"] = skippedCompletion
 	timings.addMetrics(metrics)
 
 	s.log.Info(
-		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
+		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d cooled_down_weak_single_families=%d cooled_down_overgrouped_families=%d cooled_down_prefer_base_stem_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_fragments_no_main_payload=%d skipped_fragments_single_main=%d skipped_fragments_multi_file=%d skipped_fragments_contextual_weak=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
 		candidateFamiliesInspected,
 		formed,
 		cooledDownFragmentOnly,
 		cooledDownLowCoverage,
+		cooledDownWeakSingle,
+		cooledDownOvergrouped,
+		cooledDownPreferBaseStem,
 		staleCleanupOnly,
 		skippedFragments,
+		skippedNoMainPayload,
+		skippedSingleMain,
+		skippedMultiFileSingle,
+		skippedContextualWeak,
 		skippedConfidence,
 		skippedCompletion,
 		s.opts.BatchSize,
@@ -278,15 +321,29 @@ func durationMillis(d time.Duration) float64 {
 }
 
 type candidateOutcome struct {
-	formed                 int
-	cooledDownFragmentOnly int
-	cooledDownLowCoverage  int
-	staleCleanupOnly       int
-	skippedFragments       int
-	skippedConfidence      int
-	skippedCompletion      int
-	deferredAck            *pgindex.ReleaseCandidateAck
+	formed                   int
+	cooledDownFragmentOnly   int
+	cooledDownLowCoverage    int
+	cooledDownWeakSingle     int
+	cooledDownOvergrouped    int
+	cooledDownPreferBaseStem int
+	staleCleanupOnly         int
+	skippedFragments         int
+	skippedNoMainPayload     int
+	skippedSingleMain        int
+	skippedMultiFileSingle   int
+	skippedContextualWeak    int
+	skippedConfidence        int
+	skippedCompletion        int
+	deferredAck              *pgindex.ReleaseCandidateAck
 }
+
+const (
+	fragmentReasonNoMainPayload              = "no_main_payload"
+	fragmentReasonSingleMainPayload          = "single_main_payload"
+	fragmentReasonMultiFileSingleMainPayload = "multi_file_single_main_payload"
+	fragmentReasonContextualWeak             = "contextual_obfuscated_missing_expected"
+)
 
 func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCandidate, timings *releaseTimings) (candidateOutcome, error) {
 	familyKey := candidateFamilyKey(candidate)
@@ -319,6 +376,51 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		return candidateOutcome{
 			cooledDownFragmentOnly: 1,
 			deferredAck:            buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ReadinessBucket == "weak_single_binary" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete weak-single stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			cooledDownWeakSingle: 1,
+			deferredAck:          buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ReadinessBucket == "overgrouped_contextual" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete overgrouped stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			cooledDownOvergrouped: 1,
+			deferredAck:           buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ReadinessBucket == "prefer_base_stem" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete prefer-base-stem stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		if err := s.repo.PromoteBaseStemCandidatesForReleaseFamily(ctx, candidate.ProviderID, candidate.NewsgroupID, familyKey); err != nil {
+			return candidateOutcome{}, fmt.Errorf("promote base-stem candidates for %s: %w", familyKey, err)
+		}
+		return candidateOutcome{
+			cooledDownPreferBaseStem: 1,
+			deferredAck:              buildDeferredReleaseAck(candidate, familyKey),
 		}, nil
 	}
 
@@ -404,8 +506,18 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		}
 
 		record := buildReleaseRecord(candidate, cluster, titleCandidates)
-		if !shouldPersistCluster(cluster, record, s.opts) {
+		if ok, reason := shouldPersistCluster(cluster, record, s.opts); !ok {
 			outcome.skippedFragments++
+			switch reason {
+			case fragmentReasonNoMainPayload:
+				outcome.skippedNoMainPayload++
+			case fragmentReasonSingleMainPayload:
+				outcome.skippedSingleMain++
+			case fragmentReasonMultiFileSingleMainPayload:
+				outcome.skippedMultiFileSingle++
+			case fragmentReasonContextualWeak:
+				outcome.skippedContextualWeak++
+			}
 			continue
 		}
 		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
@@ -516,25 +628,29 @@ func (s *Service) flushDeferredAcks(ctx context.Context, candidates []pgindex.Re
 	return nil
 }
 
-func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) bool {
+func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) (bool, string) {
 	mainPayloadCount := countMainPayloadBinaries(cluster.Binaries)
 	if mainPayloadCount == 0 {
-		return false
+		return false, fragmentReasonNoMainPayload
 	}
 	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
 	if expectedFiles > 1 && mainPayloadCount < 2 {
-		return false
+		return false, fragmentReasonMultiFileSingleMainPayload
 	}
 	if opts.RequireExpectedFileCountForContextualObfuscated &&
 		expectedFiles <= 0 &&
 		clusterIsContextualObfuscated(cluster.Binaries) &&
 		!allowsStandaloneBinaryRelease(cluster.Binaries, record) {
-		return false
+		return false, fragmentReasonContextualWeak
+	}
+	if !clusterHasUsableFileIdentity(cluster.Binaries, record) &&
+		(looksWeakGeneratedReleaseTitle(record.Title) || looksWeakGeneratedReleaseTitle(record.SourceTitle)) {
+		return false, fragmentReasonContextualWeak
 	}
 	if mainPayloadCount == 1 && !allowsStandaloneBinaryRelease(cluster.Binaries, record) {
-		return false
+		return false, fragmentReasonSingleMainPayload
 	}
-	return true
+	return true, ""
 }
 
 func countCompleteBinaries(binaries []pgindex.BinarySummary) int {

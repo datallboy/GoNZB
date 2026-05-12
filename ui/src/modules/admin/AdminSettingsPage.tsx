@@ -15,6 +15,9 @@ type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
   | 'assemble'
+  | 'assemble_lane_a'
+  | 'assemble_lane_b'
+  | 'recover_yenc'
   | 'release'
   | 'inspect_discovery'
   | 'inspect_par2'
@@ -28,19 +31,22 @@ type StageKey =
 type BackfillRow = { group: string; until: string }
 type SettingsTab = 'downloader' | 'aggregator' | 'indexer'
 
-const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean }> = [
-  { key: 'scrape_latest', label: 'Scrape latest', concurrency: false },
-  { key: 'scrape_backfill', label: 'Scrape backfill', concurrency: false },
-  { key: 'assemble', label: 'Assemble', concurrency: true },
-  { key: 'release', label: 'Release', concurrency: false },
-  { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false },
-  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: false },
-  { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false },
-  { key: 'inspect_archive', label: 'Inspect archive', concurrency: true },
-  { key: 'inspect_password', label: 'Inspect password', concurrency: false },
-  { key: 'inspect_media', label: 'Inspect media', concurrency: true },
-  { key: 'enrich_predb', label: 'Enrich PreDB', concurrency: false },
-  { key: 'enrich_tmdb', label: 'Enrich TMDB', concurrency: false },
+const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; description: string }> = [
+  { key: 'scrape_latest', label: 'Scrape latest', concurrency: false, description: 'Fast forward scan for new article headers.' },
+  { key: 'scrape_backfill', label: 'Scrape backfill', concurrency: false, description: 'Older article scan toward each group cutoff date.' },
+  { key: 'assemble', label: 'Assemble', concurrency: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
+  { key: 'assemble_lane_a', label: 'Assemble lane A', concurrency: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
+  { key: 'assemble_lane_b', label: 'Assemble lane B', concurrency: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', concurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
+  { key: 'release', label: 'Release', concurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
+  { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false, description: 'Opaque-binary inspection discovery pass.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: false, description: 'PAR2 inspection and recovery metadata extraction.' },
+  { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false, description: 'NFO text extraction and evidence capture.' },
+  { key: 'inspect_archive', label: 'Inspect archive', concurrency: true, description: 'Archive listing and encrypted/password detection.' },
+  { key: 'inspect_password', label: 'Inspect password', concurrency: false, description: 'Password verification workflow.' },
+  { key: 'inspect_media', label: 'Inspect media', concurrency: true, description: 'Media probe and stream metadata extraction.' },
+  { key: 'enrich_predb', label: 'Enrich PreDB', concurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
+  { key: 'enrich_tmdb', label: 'Enrich TMDB', concurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
 ]
 
 const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
@@ -67,6 +73,9 @@ function defaultSettings(): RuntimeSettings {
       scrape_latest: stageDefaults(5000),
       scrape_backfill: stageDefaults(5000),
       assemble: stageDefaults(5000, 1),
+      assemble_lane_a: stageDefaults(5000, 1),
+      assemble_lane_b: stageDefaults(2500, 1),
+      recover_yenc: stageDefaults(25, 1),
       release: {
         ...stageDefaults(1000),
         min_confidence: 0.55,
@@ -160,6 +169,9 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
+      assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
+      assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
+      recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
       release: { ...defaults.indexing!.release, ...indexing.release },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
@@ -590,7 +602,7 @@ export function AdminSettingsPage() {
 
         <SettingsSection title="Indexer stages">
           <div className="banner">
-            Stage settings control how often each pipeline stage runs and how much work it claims per pass. Larger batch sizes improve throughput when the queue is healthy, but they also make weak selection mistakes more expensive.
+            Stage settings control how often each pipeline stage runs and how much work it claims per pass. Larger batch sizes improve throughput when the queue is healthy, but they also make weak selection mistakes more expensive. Lane A is the fast feed into release. Lane B is the slower backlog-drain path.
           </div>
           <div className="table-shell">
             <table className="data-table">
@@ -609,7 +621,10 @@ export function AdminSettingsPage() {
                   const value = indexing[stage.key] as AdminStageConfigPatch
                   return (
                     <tr key={stage.key}>
-                      <td>{stage.label}</td>
+                      <td>
+                        <div><strong>{stage.label}</strong></div>
+                        <div className="muted-copy">{stage.description}</div>
+                      </td>
                       <td><input type="checkbox" checked={Boolean(value.enabled)} onChange={(event) => updateStage(stage.key, { enabled: event.target.checked })} /></td>
                       <td><input type="number" value={value.interval_minutes ?? 0} onChange={(event) => updateStage(stage.key, { interval_minutes: fieldNumber(event.target.value) })} /></td>
                       <td><input type="number" value={value.batch_size ?? 0} onChange={(event) => updateStage(stage.key, { batch_size: fieldNumber(event.target.value) })} /></td>

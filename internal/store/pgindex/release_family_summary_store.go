@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -12,7 +14,12 @@ const (
 	releaseReadinessActionable       = "actionable"
 	releaseReadinessFragmentOnly     = "fragment_only"
 	releaseReadinessStaleCleanupOnly = "stale_cleanup_only"
+	releaseReadinessWeakSingle       = "weak_single_binary"
+	releaseReadinessPreferBaseStem   = "prefer_base_stem"
+	releaseReadinessOvergrouped      = "overgrouped_contextual"
 )
+
+var summaryOpaqueTokenRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 
 type releaseFamilySummaryKey struct {
 	ProviderID  int64
@@ -99,6 +106,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		hasExpectedFileCount           bool
 		totalBytes                     int64
 		earliestPostedAt               sql.NullTime
+		dominantFamilyKind             string
+		dominantFileName               string
+		dominantMatchConfidence        float64
 	)
 	query := `
 		SELECT
@@ -159,12 +169,15 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				has_expected_file_count,
 				total_bytes,
 				earliest_posted_at,
+				dominant_family_kind,
+				dominant_file_name,
+				dominant_match_confidence,
 				readiness_bucket,
 				expected_file_coverage_pct,
 				processed_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,TIMESTAMPTZ 'epoch',NOW())
+			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,'','',0,$5,0,TIMESTAMPTZ 'epoch',NOW())
 			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -177,6 +190,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			    has_expected_file_count = EXCLUDED.has_expected_file_count,
 			    total_bytes = EXCLUDED.total_bytes,
 			    earliest_posted_at = EXCLUDED.earliest_posted_at,
+			    dominant_family_kind = EXCLUDED.dominant_family_kind,
+			    dominant_file_name = EXCLUDED.dominant_file_name,
+			    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
 			    readiness_bucket = EXCLUDED.readiness_bucket,
 			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
 			    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
@@ -192,9 +208,44 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		return nil
 	}
 
+	dominantQuery := `
+		SELECT
+			COALESCE(b.family_kind, ''),
+			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''),
+			COALESCE(b.match_confidence, 0)
+		FROM binaries b
+		WHERE ` + whereClause + `
+		ORDER BY
+			CASE
+				WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
+				ELSE 1
+			END ASC,
+			CASE
+				WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
+				ELSE 1
+			END ASC,
+			b.observed_parts DESC,
+			b.total_bytes DESC,
+			b.match_confidence DESC,
+			b.id ASC
+		LIMIT 1`
+	if err := tx.QueryRowContext(ctx, dominantQuery, key.ProviderID, key.NewsgroupID, key.FamilyKey).Scan(
+		&dominantFamilyKind,
+		&dominantFileName,
+		&dominantMatchConfidence,
+	); err != nil {
+		return fmt.Errorf("query dominant release family binary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
+	}
+
 	readinessBucket := releaseReadinessFragmentOnly
 	if completeMainPayloadBinaryCount > 0 {
 		readinessBucket = releaseReadinessActionable
+	}
+	if binaryCount == 1 &&
+		completeMainPayloadBinaryCount == 1 &&
+		expectedFileCount <= 0 &&
+		!summaryAllowsStandaloneBinaryRelease(dominantFamilyKind, dominantFileName, dominantMatchConfidence) {
+		readinessBucket = releaseReadinessWeakSingle
 	}
 	expectedFileCoveragePct := 0.0
 	if expectedFileCount > 0 {
@@ -227,12 +278,15 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			has_expected_file_count,
 			total_bytes,
 			earliest_posted_at,
+			dominant_family_kind,
+			dominant_file_name,
+			dominant_match_confidence,
 			readiness_bucket,
 			expected_file_coverage_pct,
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,TIMESTAMPTZ 'epoch',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -245,6 +299,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		    has_expected_file_count = EXCLUDED.has_expected_file_count,
 		    total_bytes = EXCLUDED.total_bytes,
 		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
 		    readiness_bucket = EXCLUDED.readiness_bucket,
 		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
 		    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
@@ -264,6 +321,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		hasExpectedFileCount,
 		totalBytes,
 		earliestPostedAtValue,
+		dominantFamilyKind,
+		dominantFileName,
+		dominantMatchConfidence,
 		readinessBucket,
 		expectedFileCoveragePct,
 	); err != nil {
@@ -300,12 +360,15 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 			has_expected_file_count,
 			total_bytes,
 			earliest_posted_at,
+			dominant_family_kind,
+			dominant_file_name,
+			dominant_match_confidence,
 			readiness_bucket,
 			expected_file_coverage_pct,
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,$5,0,TIMESTAMPTZ 'epoch',NOW())
+		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,'','',0,$5,0,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,
@@ -319,4 +382,38 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
 	}
 	return nil
+}
+
+func summaryAllowsStandaloneBinaryRelease(familyKind, fileName string, matchConfidence float64) bool {
+	familyKind = strings.TrimSpace(strings.ToLower(familyKind))
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return false
+	}
+	if familyKind == "contextual_obfuscated" {
+		return false
+	}
+	if matchConfidence < 0.85 {
+		return false
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	switch ext {
+	case ".mkv", ".mp4", ".avi", ".mov", ".mp3", ".flac", ".m4a", ".wav":
+	default:
+		return false
+	}
+
+	base := strings.TrimSpace(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
+	base = strings.ReplaceAll(base, ".", " ")
+	base = strings.ReplaceAll(base, "_", " ")
+	base = strings.ReplaceAll(base, "-", " ")
+	base = strings.Join(strings.Fields(strings.ToLower(base)), " ")
+	if base == "" {
+		return false
+	}
+	if summaryOpaqueTokenRE.MatchString(strings.ReplaceAll(base, " ", "")) {
+		return false
+	}
+	return true
 }

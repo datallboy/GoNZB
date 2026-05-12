@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-04-29
+Snapshot date: 2026-05-12
 
 This file continues the prior indexer foundation doc and keeps the indexer docs organized as execution focus moves beyond the completed performance and process-execution phase.
 
@@ -14,7 +14,8 @@ We currently have several planning and reference documents. This file defines wh
 - the first API/UI expansion phase is done
 - the process execution and performance sprint is complete and archived
 - the backlog burn-down follow-up sprint is complete and archived
-- the active indexer execution focus now centers on storage retention, maintenance/reporting, and later operational tuning work
+- the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
+- the active indexer execution focus now centers on the grouping model re-evaluation for obfuscated posts
 
 ## Current Active Docs
 
@@ -26,24 +27,14 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
+### `docs/active/INDEXER_GROUPING_MODEL_REEVALUATION_PLAN.md`
 
 Use for:
 
-- the active database space-reduction and retention backlog
-- table/index size findings from the live dev database
-- maintenance configurability and frontend reporting requirements
-- NZB blob-cache/offload planning
-- evaluating whether `release_file_articles` can be consolidated into `binary_parts`
-
-### `docs/active/INDEXER_ASSEMBLE_RELEASE_QUEUE_AND_LANE_SPLIT_EVALUATION.md`
-
-Use for:
-
-- the active assemble/release stabilization sprint
-- measured before/after live backlog benchmarks
-- deciding whether assemble lane A and lane B should become separate runtime-controlled stages
-- the current baseline for release queue coordination changes
+- the active grouping-model follow-up after clean-database release validation
+- deciding how XOVER subject set tokens, yEnc file counts, and yEnc part counts should shape binaries and release-family keys
+- separating provisional obfuscated file-set identity from releasable release-family identity
+- planning schema/runtime changes for identity strength and readiness buckets
 
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
@@ -56,14 +47,14 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database storage retention and reclaim planning.
+The current focus is grouping correctness for obfuscated posts.
 
 Primary workstream:
 
-- make maintenance retention windows configurable
-- add maintenance reporting and admin UI controls
-- reduce `article_header_ingest_payloads` retention safely
-- evaluate longer-term NZB blob caching/offload so article mappings can eventually be pruned more aggressively
+- separate provisional obfuscated file-set identity from releasable release-family identity
+- use subject set tokens, yEnc file count, and yEnc part count intentionally
+- keep yEnc recovery as a promotion path from weak/provisional groups into stronger archive/media/PAR families
+- prevent small opaque `misc` releases from forming solely because they are `100%` complete
 
 Recent completed focus:
 
@@ -72,6 +63,37 @@ Recent completed focus:
 - release query/write batching
 - inspect archive/media concurrency with database reservations
 - deferring cross-process topology until measurements justify it
+- release fragment selection and weak-candidate cooldowns
+- assemble lane A / lane B runtime split
+- initial yEnc recovery stage wiring
+
+### `docs/archive/completed/indexer/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
+
+Use for:
+
+- the completed database space-reduction and retention planning notes
+- table/index size findings from the live dev database
+- maintenance configurability and frontend reporting requirements
+- NZB blob-cache/offload planning
+- evaluating whether `release_file_articles` can be consolidated into `binary_parts`
+
+### `docs/archive/completed/indexer/INDEXER_ASSEMBLE_RELEASE_QUEUE_AND_LANE_SPLIT_EVALUATION.md`
+
+Use for:
+
+- the completed assemble/release stabilization sprint
+- measured before/after live backlog benchmarks
+- assemble lane A and lane B runtime-control rationale
+- the release queue coordination baseline
+
+### `docs/archive/completed/indexer/INDEXER_RELEASE_FRAGMENT_SELECTION_PLAN.md`
+
+Use for:
+
+- the completed release-fragment selection sprint
+- why release skipped most candidates as fragments
+- which fragment checks moved into summary-time candidate selection
+- the baseline for richer release-family readiness summaries before the grouping model re-evaluation
 
 ### `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_AND_SCHEMA_SIMPLIFICATION_PLAN.md`
 
