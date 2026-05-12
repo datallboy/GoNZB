@@ -245,6 +245,33 @@ func TestParseSevenZipNextHeaderRange(t *testing.T) {
 	}
 }
 
+func TestEvaluateContentFilterBlocksMagicAndSize(t *testing.T) {
+	opts := DefaultOptions(Options{
+		MinBinaryBytes:  10,
+		MaxBinaryBytes:  100,
+		BlockedMagicHex: []string{"52 43 4c 4f 4e 45"},
+	})
+
+	blocked := EvaluateContentFilter(opts, &BinaryPrefixSample{
+		Prefix:    []byte("RCLONE\x00\x00payload"),
+		BytesRead: 32,
+		ExactSize: 32,
+	})
+	if !blocked.Filtered || blocked.Reason != "blocked_magic" {
+		t.Fatalf("expected blocked magic decision, got %+v", blocked)
+	}
+
+	small := EvaluateContentFilter(opts, &BinaryPrefixSample{Prefix: []byte("abc"), BytesRead: 3, ExactSize: 3})
+	if !small.Filtered || small.Reason != "below_min_binary_bytes" {
+		t.Fatalf("expected min-size decision, got %+v", small)
+	}
+
+	large := EvaluateContentFilter(opts, &BinaryPrefixSample{Prefix: []byte("abc"), BytesRead: 3, ExactSize: 101})
+	if !large.Filtered || large.Reason != "above_max_binary_bytes" {
+		t.Fatalf("expected max-size decision, got %+v", large)
+	}
+}
+
 type runnerFunc func(context.Context) error
 
 func (fn runnerFunc) RunOnce(ctx context.Context) error { return fn(ctx) }

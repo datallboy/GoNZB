@@ -115,6 +115,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		sampledBinaries++
 		bestTarget = target
 		bestSample = sample
+		if decision := inspectpkg.EvaluateContentFilter(s.opts, sample); decision.Filtered {
+			kind, ext, confidence = "filtered", "", 1
+			if s != nil && s.log != nil {
+				s.log.Info("inspect_discovery: filtered binary_id=%d release_id=%s reason=%s rule=%s", target.BinaryID, candidate.ReleaseID, decision.Reason, decision.Rule)
+			}
+			break
+		}
 		kind, ext, confidence = classifySample(sample)
 		if kind != "" && ext != "" {
 			break
@@ -142,6 +149,21 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"sampled_binary_id": bestTarget.BinaryID,
 		"sampled_file_name": bestTarget.FileName,
 		"release_scan_mode": "opaque_release_family",
+	}
+	if decision := inspectpkg.EvaluateContentFilter(s.opts, bestSample); decision.Filtered {
+		summary["content_filtered"] = true
+		summary["content_filter_reason"] = decision.Reason
+		summary["content_filter_rule"] = decision.Rule
+		return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:         stageName,
+			BinaryID:          candidate.BinaryID,
+			ReleaseID:         candidate.ReleaseID,
+			Status:            "completed",
+			MaterializedBytes: int64(sampledBinaries) * bestSample.BytesRead,
+			ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
+			Summary:           summary,
+			SourceUpdatedAt:   candidate.SourceUpdatedAt,
+		})
 	}
 
 	if kind != "" && ext != "" {

@@ -30,7 +30,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			RecoverYEnc:              defaultStage(false, 10, 25, 1),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			InspectDiscovery:         defaultStage(false, 10, 100, 0),
 			InspectPAR2:              defaultStage(false, 10, 100, 0),
 			InspectNFO:               defaultStage(false, 10, 100, 0),
@@ -193,6 +193,9 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		WorkspaceBackend: firstNonEmpty(cfg.Inspect.WorkspaceBackend, "auto"),
 		MemoryWorkDir:    firstNonEmpty(cfg.Inspect.MemoryWorkDir, "/dev/shm/gonzb-inspect"),
 		MaxBytes:         firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MinBinaryBytes:   cfg.Inspect.MinBinaryBytes,
+		MaxBinaryBytes:   cfg.Inspect.MaxBinaryBytes,
+		BlockedMagicHex:  append([]string(nil), cfg.Inspect.BlockedMagicHex...),
 		MaxArchiveDepth:  firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
 		ToolTimeoutSecs:  firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
 		FFProbePath:      firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
@@ -326,6 +329,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			WorkspaceBackend: indexing.Inspect.WorkspaceBackend,
 			MemoryWorkDir:    indexing.Inspect.MemoryWorkDir,
 			MaxBytes:         indexing.Inspect.MaxBytes,
+			MinBinaryBytes:   indexing.Inspect.MinBinaryBytes,
+			MaxBinaryBytes:   indexing.Inspect.MaxBinaryBytes,
+			BlockedMagicHex:  append([]string(nil), indexing.Inspect.BlockedMagicHex...),
 			MaxArchiveDepth:  indexing.Inspect.MaxArchiveDepth,
 			ToolTimeoutSecs:  indexing.Inspect.ToolTimeoutSecs,
 			FFProbePath:      indexing.Inspect.FFProbePath,
@@ -651,7 +657,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
 		Release:                  in.Release,
 		Match:                    in.Match,
-		Inspect:                  in.Inspect,
+		Inspect:                  cloneInspectRuntimeSettings(in.Inspect),
 		InspectDiscovery:         in.InspectDiscovery,
 		InspectPAR2:              in.InspectPAR2,
 		InspectNFO:               in.InspectNFO,
@@ -661,6 +667,12 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnrichPreDB:              in.EnrichPreDB,
 		EnrichTMDB:               in.EnrichTMDB,
 	}
+	return out
+}
+
+func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInspectRuntimeSettings {
+	out := in
+	out.BlockedMagicHex = append([]string(nil), in.BlockedMagicHex...)
 	return out
 }
 

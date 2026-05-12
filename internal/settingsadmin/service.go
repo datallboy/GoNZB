@@ -2,6 +2,7 @@ package settingsadmin
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -292,6 +293,32 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		}
 		if stage.config.BatchSize <= 0 {
 			issues = append(issues, "indexing."+stage.name+".batch_size must be greater than 0 when enabled")
+		}
+	}
+	if indexing.Inspect.MinBinaryBytes < 0 {
+		issues = append(issues, "indexing.inspect.min_binary_bytes must be greater than or equal to 0")
+	}
+	if indexing.Inspect.MaxBinaryBytes < 0 {
+		issues = append(issues, "indexing.inspect.max_binary_bytes must be greater than or equal to 0")
+	}
+	if indexing.Inspect.MinBinaryBytes > 0 && indexing.Inspect.MaxBinaryBytes > 0 && indexing.Inspect.MinBinaryBytes > indexing.Inspect.MaxBinaryBytes {
+		issues = append(issues, "indexing.inspect.min_binary_bytes must be less than or equal to indexing.inspect.max_binary_bytes")
+	}
+	for i, rule := range indexing.Inspect.BlockedMagicHex {
+		clean := strings.ToUpper(strings.TrimSpace(rule))
+		clean = strings.ReplaceAll(clean, "0X", "")
+		clean = strings.ReplaceAll(clean, " ", "")
+		clean = strings.ReplaceAll(clean, ":", "")
+		clean = strings.ReplaceAll(clean, "-", "")
+		if clean == "" {
+			continue
+		}
+		if len(clean)%2 != 0 {
+			issues = append(issues, fmt.Sprintf("indexing.inspect.blocked_magic_hex[%d] must contain an even number of hex characters", i))
+			continue
+		}
+		if _, err := hex.DecodeString(clean); err != nil {
+			issues = append(issues, fmt.Sprintf("indexing.inspect.blocked_magic_hex[%d] must be hex encoded", i))
 		}
 	}
 	return issues

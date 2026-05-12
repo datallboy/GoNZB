@@ -291,6 +291,14 @@ type BinaryPAR2SetRecord struct {
 	Metadata       map[string]any
 }
 
+type BinaryPAR2TargetRecord struct {
+	BinaryID  int64
+	ReleaseID string
+	FileName  string
+	FileSize  int64
+	Metadata  map[string]any
+}
+
 type PasswordVerificationCandidate struct {
 	ID                 int64
 	ReleaseID          string

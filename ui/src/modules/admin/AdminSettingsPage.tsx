@@ -93,6 +93,9 @@ function defaultSettings(): RuntimeSettings {
         workspace_backend: 'auto',
         memory_work_dir: '/dev/shm/gonzb-inspect',
         max_bytes: 2147483648,
+        min_binary_bytes: 0,
+        max_binary_bytes: 0,
+        blocked_magic_hex: ['52434C4F4E45'],
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
         ffprobe_path: 'ffprobe',
@@ -245,6 +248,10 @@ function cleanupExtensionsText(items: string[]) {
 }
 
 function parseCleanupExtensions(value: string) {
+  return value.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function parseCSV(value: string) {
   return value.split(',').map((item) => item.trim()).filter(Boolean)
 }
 
@@ -703,8 +710,36 @@ export function AdminSettingsPage() {
         </SettingsSection>
 
         <SettingsSection title="Inspection tools">
+          <div className="banner">
+            Content filters are conservative inspection guardrails. They mark completed opaque binaries as filtered so later inspect stages do not keep spending time on known-unwanted payloads.
+          </div>
           <div className="toolbar-grid">
-            <NumberField label="Max bytes" value={indexing.inspect.max_bytes} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })} />
+            <NumberField
+              label="Max inspect bytes"
+              value={indexing.inspect.max_bytes}
+              helpText="Safety cap for materializing a binary during deep inspection. This is not a release size filter."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })}
+            />
+            <NumberField
+              label="Minimum binary bytes"
+              min={0}
+              value={indexing.inspect.min_binary_bytes}
+              helpText="0 disables. Completed opaque binaries smaller than this are marked content-filtered during inspect discovery."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, min_binary_bytes: value } })}
+            />
+            <NumberField
+              label="Maximum binary bytes"
+              min={0}
+              value={indexing.inspect.max_binary_bytes}
+              helpText="0 disables. Completed opaque binaries larger than this are marked content-filtered during inspect discovery."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_binary_bytes: value } })}
+            />
+            <TextField
+              label="Blocked magic bytes"
+              value={(indexing.inspect.blocked_magic_hex ?? []).join(', ')}
+              helpText="Comma-separated hex prefixes to filter after sampling. Default RCLONE magic is 52434C4F4E45."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, blocked_magic_hex: parseCSV(value) } })}
+            />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
             <TextField label="ffprobe path" value={indexing.inspect.ffprobe_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, ffprobe_path: value } })} />
@@ -909,18 +944,21 @@ function TextField({
   value,
   type = 'text',
   required,
+  helpText,
   onChange,
 }: {
   label: string
   value: string
   type?: string
   required?: boolean
+  helpText?: string
   onChange: (value: string) => void
 }) {
   return (
     <label className="field">
       <span>{label}</span>
       <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
