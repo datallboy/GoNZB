@@ -91,6 +91,9 @@ type IndexingConfig struct {
 	ScrapeLatest             IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
 	ScrapeBackfill           IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
 	Assemble                 IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	AssembleLaneA            IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
+	AssembleLaneB            IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
+	RecoverYEnc              IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
 	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
 	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
 	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
@@ -293,6 +296,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_media.batch_size", 100)
 	v.SetDefault("indexing.inspect_media.concurrency", 1)
 	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
+	v.SetDefault("indexing.recover_yenc.enabled", false)
+	v.SetDefault("indexing.recover_yenc.interval_minutes", 10.0)
+	v.SetDefault("indexing.recover_yenc.batch_size", 25)
+	v.SetDefault("indexing.recover_yenc.concurrency", 1)
+	v.SetDefault("indexing.recover_yenc.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_predb.enabled", false)
 	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_predb.batch_size", 100)
@@ -382,6 +390,15 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.assemble_lane_b", c.Indexing.AssembleLaneB); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{

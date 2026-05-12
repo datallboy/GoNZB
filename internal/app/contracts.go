@@ -166,6 +166,7 @@ type UsenetIndexStore interface {
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
+	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
 	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
@@ -178,6 +179,8 @@ type UsenetIndexStore interface {
 	ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryTextEvidenceRecord) error
 	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
 	ApplyBinaryRecovery(ctx context.Context, in pgindex.BinaryRecoveryRecord) error
+	ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]pgindex.YEncRecoveryCandidate, error)
+	ApplyYEncHeaderRecovery(ctx context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error)
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
@@ -207,6 +210,9 @@ type UsenetIndexerService interface {
 	ScrapeLatestOnce(ctx context.Context) error
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
+	AssembleLaneAOnce(ctx context.Context) error
+	AssembleLaneBOnce(ctx context.Context) error
+	RecoverYEncOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
 	InspectOnce(ctx context.Context) error

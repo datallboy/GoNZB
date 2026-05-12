@@ -434,7 +434,7 @@ func (s *matchState) smallArchiveFamilyReleaseKey(fileName string) (string, stri
 	if !splitArchiveRE.MatchString(lower) && !rarFamilyRE.MatchString(lower) && !strings.HasSuffix(lower, ".rar") && !parFileRE.MatchString(lower) {
 		return "", ""
 	}
-	if s.fileIndex > 0 && s.expectedFileCount > 16 {
+	if s.fileIndex > 0 && s.expectedFileCount > 16 && splitArchiveRE.MatchString(lower) {
 		return "", ""
 	}
 	baseStem := archiveFamilyBaseStem(fileName)

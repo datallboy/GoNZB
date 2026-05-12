@@ -122,6 +122,101 @@ type BinaryRecoveryRecord struct {
 	Canonicalize bool
 }
 
+type YEncRecoveryCandidate struct {
+	BinaryID                        int64
+	ArticleHeaderID                 int64
+	ProviderID                      int64
+	NewsgroupID                     int64
+	NewsgroupName                   string
+	ArticleNumber                   int64
+	MessageID                       string
+	Subject                         string
+	Poster                          string
+	DateUTC                         *time.Time
+	Bytes                           int64
+	Lines                           int
+	Xref                            string
+	FileName                        string
+	FileIndex                       int
+	FileTotal                       int
+	YEncPart                        int
+	YEncTotal                       int
+	YEncFileSize                    int64
+	RawOverview                     map[string]any
+	YEncRecoveryMissingCount        int
+	YEncRecoveryRetryAfter          *time.Time
+	CurrentBinaryKey                string
+	CurrentReleaseFamilyKey         string
+	CurrentBaseStem                 string
+	CurrentReadinessBucket          string
+	StructuredIdentityBinaryMatched bool
+}
+
+func (c YEncRecoveryCandidate) FetchGroups() []string {
+	if strings.TrimSpace(c.NewsgroupName) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(c.NewsgroupName)}
+}
+
+func (c YEncRecoveryCandidate) CloneRawOverview() map[string]any {
+	out := make(map[string]any, len(c.RawOverview)+8)
+	for k, v := range c.RawOverview {
+		out[k] = v
+	}
+	if strings.TrimSpace(c.FileName) != "" {
+		out["name"] = c.FileName
+	}
+	if c.FileIndex > 0 {
+		out["file_index"] = c.FileIndex
+	}
+	if c.FileTotal > 0 {
+		out["file_total"] = c.FileTotal
+	}
+	if c.YEncPart > 0 {
+		out["part"] = c.YEncPart
+	}
+	if c.YEncTotal > 0 {
+		out["total"] = c.YEncTotal
+	}
+	if c.YEncFileSize > 0 {
+		out["size"] = c.YEncFileSize
+	}
+	if c.Bytes > 0 {
+		out["bytes"] = c.Bytes
+	}
+	return out
+}
+
+type YEncHeaderRecoveryRecord struct {
+	BinaryID          int64
+	ArticleHeaderID   int64
+	SourceReleaseKey  string
+	ReleaseFamilyKey  string
+	FileFamilyKey     string
+	FamilyKind        string
+	BaseStem          string
+	IsAuxiliary       bool
+	IsMainPayload     bool
+	ReleaseKey        string
+	ReleaseName       string
+	BinaryKey         string
+	BinaryName        string
+	FileName          string
+	FileIndex         int
+	ExpectedFileCount int
+	TotalParts        int
+	MatchConfidence   float64
+	MatchStatus       string
+	GroupingEvidence  map[string]any
+}
+
+type YEncHeaderRecoveryResult struct {
+	BinaryID       int64
+	TargetBinaryID int64
+	Merged         bool
+}
+
 type BinaryInspectionArtifactRecord struct {
 	BinaryID     int64
 	ReleaseID    string

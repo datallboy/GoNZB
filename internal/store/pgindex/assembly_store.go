@@ -90,7 +90,14 @@ type AssemblyClaimRequest struct {
 	Limit         int
 	Owner         string
 	LeaseDuration time.Duration
+	Lane          string
 }
+
+const (
+	AssemblyClaimLaneCombined = ""
+	AssemblyClaimLaneA        = "lane_a"
+	AssemblyClaimLaneB        = "lane_b"
+)
 
 type assemblyQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -132,7 +139,7 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 		return nil, fmt.Errorf("lock assembly claim selector: %w", err)
 	}
 
-	candidates, err := s.listUnassembledArticleHeaders(ctx, tx, req.Limit)
+	candidates, err := s.listUnassembledArticleHeadersForLane(ctx, tx, req.Limit, req.Lane)
 	if err != nil {
 		return nil, err
 	}
@@ -199,53 +206,83 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 }
 
 func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
+	return s.listUnassembledArticleHeadersForLane(ctx, q, limit, AssemblyClaimLaneCombined)
+}
+
+func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q assemblyQueryer, limit int, lane string) ([]AssemblyCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 
-	laneALimit := 1
-	if limit > 1 {
-		laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
-		if laneALimit <= 0 {
-			laneALimit = 1
+	lane = strings.TrimSpace(strings.ToLower(lane))
+	laneALimit := limit
+	switch lane {
+	case AssemblyClaimLaneCombined:
+		laneALimit = 1
+		if limit > 1 {
+			laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
+			if laneALimit <= 0 {
+				laneALimit = 1
+			}
 		}
+	case AssemblyClaimLaneA:
+		laneALimit = limit
+	case AssemblyClaimLaneB:
+		laneALimit = 0
+	default:
+		return nil, fmt.Errorf("unknown assembly claim lane %q", lane)
 	}
 
-	priorityHeaderWindow := laneALimit * assemblePriorityHeaderWindowMultiplier
-	if priorityHeaderWindow < assemblePriorityHeaderMinScan {
-		priorityHeaderWindow = assemblePriorityHeaderMinScan
+	priorityHeaderWindow := assemblePriorityHeaderMinScan
+	if laneALimit > 0 {
+		priorityHeaderWindow = laneALimit * assemblePriorityHeaderWindowMultiplier
+		if priorityHeaderWindow < assemblePriorityHeaderMinScan {
+			priorityHeaderWindow = assemblePriorityHeaderMinScan
+		}
+		if priorityHeaderWindow > assemblePriorityHeaderMaxScan {
+			priorityHeaderWindow = assemblePriorityHeaderMaxScan
+		}
 	}
-	if priorityHeaderWindow > assemblePriorityHeaderMaxScan {
-		priorityHeaderWindow = assemblePriorityHeaderMaxScan
+	recentHeaderWindow := limit * assemblePriorityHeaderWindowMultiplier
+	if recentHeaderWindow < assemblePriorityHeaderMinScan {
+		recentHeaderWindow = assemblePriorityHeaderMinScan
+	}
+	if recentHeaderWindow > assemblePriorityHeaderMaxScan {
+		recentHeaderWindow = assemblePriorityHeaderMaxScan
 	}
 
 	selected := make([]assemblyCandidateSelection, 0, limit)
 	selectedIDs := make(map[int64]struct{}, limit)
 
-	priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range priorityIDs {
-		if len(selected) >= laneALimit {
-			break
+	if laneALimit > 0 {
+		priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
+		if err != nil {
+			return nil, err
 		}
-		if _, exists := selectedIDs[id]; exists {
-			continue
+		for _, id := range priorityIDs {
+			if len(selected) >= laneALimit {
+				break
+			}
+			if _, exists := selectedIDs[id]; exists {
+				continue
+			}
+			selectedIDs[id] = struct{}{}
+			selected = append(selected, assemblyCandidateSelection{
+				ID:                              id,
+				StructuredIdentityBinaryMatched: true,
+			})
 		}
-		selectedIDs[id] = struct{}{}
-		selected = append(selected, assemblyCandidateSelection{
-			ID:                              id,
-			StructuredIdentityBinaryMatched: true,
-		})
 	}
 
 	remaining := limit - len(selected)
+	if lane == AssemblyClaimLaneA {
+		return s.hydrateAssemblyCandidates(ctx, q, selected)
+	}
 	if remaining <= 0 {
 		return s.hydrateAssemblyCandidates(ctx, q, selected)
 	}
 
-	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, selectedIDs)
+	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, recentHeaderWindow, selectedIDs, lane == AssemblyClaimLaneB)
 	if err != nil {
 		return nil, err
 	}
@@ -609,20 +646,33 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 	return out, nil
 }
 
-func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit int, excludeIDs map[int64]struct{}) ([]int64, error) {
+func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int, excludeIDs map[int64]struct{}, excludeStructuredMatches bool) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
+	if pendingWindow < limit {
+		pendingWindow = limit
+	}
 
-	args := []any{limit}
+	args := []any{limit, pendingWindow}
 	query := `
-		SELECT ah.id
-		FROM article_headers ah
-		WHERE ah.assembled_at IS NULL
-		  AND (
-		  	ah.assembly_claimed_until IS NULL
-		  	OR ah.assembly_claimed_until < NOW()
-		  )`
+		WITH recent_pending AS (
+			SELECT
+				ah.id,
+				ah.provider_id,
+				ah.newsgroup_id
+			FROM article_headers ah
+			WHERE ah.assembled_at IS NULL
+			  AND (
+			  	ah.assembly_claimed_until IS NULL
+			  	OR ah.assembly_claimed_until < NOW()
+			  )
+			ORDER BY ah.id DESC
+			LIMIT $2
+		)
+		SELECT rp.id
+		FROM recent_pending rp
+		WHERE TRUE`
 	if len(excludeIDs) > 0 {
 		ids := make([]int64, 0, len(excludeIDs))
 		for id := range excludeIDs {
@@ -631,10 +681,26 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		args = append(args, ids)
 		query += fmt.Sprintf(`
-		  AND NOT (ah.id = ANY($%d::bigint[]))`, len(args))
+		  AND NOT (rp.id = ANY($%d::bigint[]))`, len(args))
+	}
+	if excludeStructuredMatches {
+		query += `
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM article_header_ingest_payloads p
+		  	JOIN binaries b
+		  	  ON b.provider_id = rp.provider_id
+		  	 AND b.newsgroup_id = rp.newsgroup_id
+		  	 AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
+		  	 AND b.total_parts > 0
+		  	 AND b.observed_parts < b.total_parts
+		  	 AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+		  	WHERE p.article_header_id = rp.id
+		  	  AND BTRIM(p.subject_file_name) <> ''
+		  )`
 	}
 	query += `
-		ORDER BY ah.id DESC
+		ORDER BY rp.id DESC
 		LIMIT $1`
 
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -914,7 +980,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	defer rollbackTx(tx)
 
 	var (
-		hadExistingBinary          bool
+		hadExistingBinary         bool
 		existingReleaseFamilyKey  string
 		existingBaseStem          string
 		existingExpectedFileCount int
@@ -931,7 +997,7 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		in.ProviderID,
 		in.NewsgroupID,
 		in.BinaryKey,
-		).Scan(
+	).Scan(
 		&existingReleaseFamilyKey,
 		&existingBaseStem,
 		&existingExpectedFileCount,

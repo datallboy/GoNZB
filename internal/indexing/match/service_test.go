@@ -401,3 +401,32 @@ func TestMatchKeepsSmallIndexedArchiveFamilyTogetherByStem(t *testing.T) {
 		t.Fatalf("expected small indexed archive family to stay together, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
 	}
 }
+
+func TestMatchPromotesLargeIndexedArchiveFamilyBySharedStem(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 10001,
+		MessageID:     "<large-archive-a@host.example>",
+		Subject:       `[001/287] - "sharedopaquearchive.part001.rar" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:10001`,
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 10002,
+		MessageID:     "<large-archive-b@host.example>",
+		Subject:       `[002/287] - "sharedopaquearchive.part002.rar" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:10002`,
+	})
+
+	if first.FamilyKind != "archive_stem" || second.FamilyKind != "archive_stem" {
+		t.Fatalf("expected archive_stem family kind, got %q / %q", first.FamilyKind, second.FamilyKind)
+	}
+	if first.ReleaseKey != second.ReleaseKey {
+		t.Fatalf("expected shared archive stem to group large family, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+	if first.BaseStem != "sharedopaquearchive" || second.BaseStem != "sharedopaquearchive" {
+		t.Fatalf("expected base stem %q, got %q / %q", "sharedopaquearchive", first.BaseStem, second.BaseStem)
+	}
+}

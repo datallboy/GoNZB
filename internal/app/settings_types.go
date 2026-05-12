@@ -138,6 +138,9 @@ type IndexingRuntimeSettings struct {
 	ScrapeLatest             IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
 	ScrapeBackfill           IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
 	Assemble                 IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
+	AssembleLaneA            IndexingStageRuntimeSettings   `json:"assemble_lane_a,omitempty"`
+	AssembleLaneB            IndexingStageRuntimeSettings   `json:"assemble_lane_b,omitempty"`
+	RecoverYEnc              IndexingStageRuntimeSettings   `json:"recover_yenc,omitempty"`
 	Release                  IndexingReleaseRuntimeSettings `json:"release,omitempty"`
 	Match                    IndexingMatchRuntimeSettings   `json:"match,omitempty"`
 	Inspect                  IndexingInspectRuntimeSettings `json:"inspect,omitempty"`

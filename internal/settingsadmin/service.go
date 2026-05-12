@@ -307,6 +307,9 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
 		{name: "assemble", config: indexing.Assemble},
+		{name: "assemble_lane_a", config: indexing.AssembleLaneA},
+		{name: "assemble_lane_b", config: indexing.AssembleLaneB},
+		{name: "recover_yenc", config: indexing.RecoverYEnc},
 		{name: "release", config: app.IndexingStageRuntimeSettings{
 			Enabled:         indexing.Release.Enabled,
 			IntervalMinutes: indexing.Release.IntervalMinutes,

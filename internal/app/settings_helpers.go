@@ -25,6 +25,9 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeLatest:             defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:           defaultStage(false, 10, 5000, 0),
 			Assemble:                 defaultStage(false, 10, 5000, 1),
+			AssembleLaneA:            defaultStage(false, 2, 5000, 1),
+			AssembleLaneB:            defaultStage(false, 10, 2500, 1),
+			RecoverYEnc:              defaultStage(false, 10, 25, 1),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
@@ -167,6 +170,9 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
 	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
+	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
+	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
+	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.Release = IndexingReleaseRuntimeSettings{
 		Enabled:                    boolValue(cfg.Release.Enabled, true),
 		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
@@ -297,6 +303,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ScrapeLatest = toStageConfigNoConcurrency(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
 		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
+		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
+		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
+		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
 			Enabled:                    boolPtr(indexing.Release.Enabled),
 			IntervalMinutes:            float64Ptr(indexing.Release.IntervalMinutes),
@@ -550,6 +559,9 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ScrapeLatest.Enabled ||
 		in.ScrapeBackfill.Enabled ||
 		in.Assemble.Enabled ||
+		in.AssembleLaneA.Enabled ||
+		in.AssembleLaneB.Enabled ||
+		in.RecoverYEnc.Enabled ||
 		in.Release.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
@@ -628,12 +640,15 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	if in == nil {
 		return nil
 	}
-	return &IndexingRuntimeSettings{
+	out := &IndexingRuntimeSettings{
 		Newsgroups:               append([]string(nil), in.Newsgroups...),
 		BackfillUntilDateByGroup: cloneStringMap(in.BackfillUntilDateByGroup),
 		ScrapeLatest:             in.ScrapeLatest,
 		ScrapeBackfill:           in.ScrapeBackfill,
 		Assemble:                 in.Assemble,
+		AssembleLaneA:            mergeStageRuntimeSettings(defaultStage(false, 2, 5000, 1), in.AssembleLaneA),
+		AssembleLaneB:            mergeStageRuntimeSettings(defaultStage(false, 10, 2500, 1), in.AssembleLaneB),
+		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
 		Release:                  in.Release,
 		Match:                    in.Match,
 		Inspect:                  in.Inspect,
@@ -646,6 +661,26 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnrichPreDB:              in.EnrichPreDB,
 		EnrichTMDB:               in.EnrichTMDB,
 	}
+	return out
+}
+
+func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) IndexingStageRuntimeSettings {
+	if override.Enabled {
+		base.Enabled = true
+	}
+	if override.IntervalMinutes > 0 {
+		base.IntervalMinutes = override.IntervalMinutes
+	}
+	if override.BatchSize > 0 {
+		base.BatchSize = override.BatchSize
+	}
+	if override.Concurrency > 0 {
+		base.Concurrency = override.Concurrency
+	}
+	if override.BackoffSeconds > 0 {
+		base.BackoffSeconds = override.BackoffSeconds
+	}
+	return base
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

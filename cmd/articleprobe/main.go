@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
+	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 )
 
 type articleRef struct {
@@ -38,8 +40,8 @@ func main() {
 	flag.StringVar(&group, "group", "", "newsgroup to select before article-number operations")
 	flag.StringVar(&messageID, "message-id", "", "message-id to inspect")
 	flag.Int64Var(&articleNum, "article-number", 0, "article number to inspect within --group")
-	flag.Int64Var(&bodyBytes, "body-bytes", 4096, "max BODY bytes to print")
-	flag.Int64Var(&articleBytes, "article-bytes", 8192, "max ARTICLE bytes to print")
+	flag.Int64Var(&bodyBytes, "body-bytes", 4096, "max BODY bytes to print; 0 disables BODY")
+	flag.Int64Var(&articleBytes, "article-bytes", 8192, "max ARTICLE bytes to print; 0 disables ARTICLE")
 	flag.IntVar(&headLines, "head-lines", 200, "max HEAD lines to print")
 	flag.Parse()
 
@@ -47,6 +49,8 @@ func main() {
 	fatalIf(err)
 
 	cfg, err := config.Load(configPath)
+	fatalIf(err)
+	cfg, err = withRuntimeServers(cfg)
 	fatalIf(err)
 
 	server, err := chooseServer(cfg, serverID)
@@ -75,12 +79,29 @@ func main() {
 	if err := printHead(conn, ref, headLines); err != nil {
 		fmt.Printf("head: %v\n", err)
 	}
-	if err := printBody(conn, ref, bodyBytes); err != nil {
-		fmt.Printf("body: %v\n", err)
+	if bodyBytes > 0 {
+		if err := printBody(conn, ref, bodyBytes); err != nil {
+			fmt.Printf("body: %v\n", err)
+		}
 	}
-	if err := printArticle(conn, ref, articleBytes); err != nil {
-		fmt.Printf("article: %v\n", err)
+	if articleBytes > 0 {
+		if err := printArticle(conn, ref, articleBytes); err != nil {
+			fmt.Printf("article: %v\n", err)
+		}
 	}
+}
+
+func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
+	if cfg == nil || len(cfg.Servers) > 0 || strings.TrimSpace(cfg.Store.SQLitePath) == "" {
+		return cfg, nil
+	}
+	store, err := settingsstore.NewStore(cfg.Store.SQLitePath)
+	if err != nil {
+		return nil, fmt.Errorf("open runtime settings: %w", err)
+	}
+	defer store.Close()
+
+	return store.LoadEffectiveSettings(context.Background(), cfg)
 }
 
 func fatalIf(err error) {

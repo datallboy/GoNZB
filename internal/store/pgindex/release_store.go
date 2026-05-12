@@ -226,13 +226,95 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				COALESCE(s.complete_binary_count, 0) AS complete_binary_count,
 				COALESCE(s.complete_main_payload_binary_count, 0) AS complete_main_payload_binary_count,
 				COALESCE(s.expected_file_coverage_pct, 0)::DOUBLE PRECISION AS expected_file_coverage_pct,
-				COALESCE(s.readiness_bucket, '%s') AS readiness_bucket
+				CASE
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(s.binary_count, 0) = 1
+					 AND COALESCE(s.complete_main_payload_binary_count, 0) = 1
+					 AND COALESCE(s.expected_file_count, 0) <= 0
+					 AND (
+					 	LOWER(COALESCE(NULLIF(s.dominant_family_kind, ''), dominant.family_kind, '')) = 'contextual_obfuscated'
+						OR LOWER(COALESCE(NULLIF(s.dominant_file_name, ''), dominant.file_name, '')) ~ '\\.(bin|r[0-9]+|part[0-9]+|vol[0-9]+\\+[0-9]+)$'
+					 	OR COALESCE(NULLIF(s.dominant_match_confidence, 0), dominant.match_confidence, 0) < 0.85
+					 ) THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND REGEXP_REPLACE(
+					 	REPLACE(REPLACE(REPLACE(LOWER(BTRIM(COALESCE(NULLIF(s.release_name, ''), q.family_key))), '_', ' '), '.', ' '), '-', ' '),
+					 	'[[:space:]]+',
+					 	' ',
+					 	'g'
+					 ) ~ '^[0-9]{5,}[[:space:]]+[a-z]([[:space:]]+[a-z]{2,4})?$'
+					 AND NOT COALESCE(shape.has_usable_file_identity, FALSE)
+					 THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(shape.all_contextual, FALSE)
+					 AND COALESCE(shape.max_expected_file_count, 0) > 1
+					 AND COALESCE(shape.indexed_file_count, 0) >= 2
+					 AND COALESCE(shape.base_stem_file_count, 0) = COALESCE(shape.distinct_base_stem_count, 0)
+					 AND COALESCE(shape.distinct_base_stem_count, 0) >= GREATEST(COALESCE(shape.max_expected_file_count, 0), 8)
+					 AND COALESCE(s.binary_count, 0) >= GREATEST(COALESCE(shape.max_expected_file_count, 0) * 3, 24)
+					 THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(shape.all_contextual, FALSE)
+					 AND COALESCE(shape.max_expected_file_count, 0) > 1
+					 AND COALESCE(shape.indexed_file_count, 0) >= 2
+					 AND COALESCE(shape.base_stem_file_count, 0) >= 2
+					 AND COALESCE(shape.distinct_base_stem_count, 0) < COALESCE(shape.base_stem_file_count, 0)
+					 THEN '%s'
+					ELSE COALESCE(s.readiness_bucket, '%s')
+				END AS readiness_bucket
 			FROM queue_window q
 			LEFT JOIN release_family_readiness_summaries s
 			  ON s.provider_id = q.provider_id
 			 AND s.newsgroup_id = q.newsgroup_id
 			 AND s.key_kind = q.key_kind
 			 AND s.family_key = q.family_key
+			LEFT JOIN LATERAL (
+				SELECT
+					COALESCE(b.family_kind, '') AS family_kind,
+					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS file_name,
+					COALESCE(b.match_confidence, 0)::DOUBLE PRECISION AS match_confidence
+				FROM binaries b
+				WHERE q.key_kind = 'release_family'
+				  AND b.provider_id = q.provider_id
+				  AND b.newsgroup_id = q.newsgroup_id
+				  AND b.release_family_key = q.family_key
+				ORDER BY
+					CASE
+						WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
+						ELSE 1
+					END ASC,
+					CASE
+						WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
+						ELSE 1
+					END ASC,
+					b.observed_parts DESC,
+					b.total_bytes DESC,
+					b.match_confidence DESC,
+					b.id ASC
+				LIMIT 1
+			) dominant ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT
+					COALESCE(BOOL_AND(LOWER(COALESCE(b.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
+					COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS max_expected_file_count,
+					COUNT(*) FILTER (WHERE b.file_index > 0) AS indexed_file_count,
+					COUNT(*) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS base_stem_file_count,
+					COUNT(DISTINCT LOWER(BTRIM(COALESCE(b.base_stem, '')))) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS distinct_base_stem_count,
+					COALESCE(BOOL_OR(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~
+						'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
+					), FALSE) AS has_usable_file_identity
+				FROM binaries b
+				WHERE q.key_kind = 'release_family'
+				  AND b.provider_id = q.provider_id
+				  AND b.newsgroup_id = q.newsgroup_id
+				  AND b.release_family_key = q.family_key
+				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+			) shape ON TRUE
 		),
 		next_queue AS (
 			SELECT
@@ -264,7 +346,9 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 					 	OR expected_file_coverage_pct >= $2
 					 ) THEN 1
 					WHEN readiness_bucket = '%s' THEN 2
-					ELSE 3
+					WHEN readiness_bucket = '%s' THEN 3
+					WHEN readiness_bucket = '%s' THEN 4
+					ELSE 5
 				END ASC,
 				expected_file_coverage_pct DESC,
 				complete_main_payload_binary_count DESC,
@@ -273,6 +357,10 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 					WHEN has_expected_file_count THEN 1
 					ELSE 0
 				END DESC,
+				CASE
+					WHEN key_kind = 'base_stem' THEN 0
+					ELSE 1
+				END ASC,
 				updated_at ASC,
 				family_key ASC
 			LIMIT (SELECT total_limit FROM limits)
@@ -294,34 +382,56 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 			q.readiness_bucket,
 			q.total_bytes
 		FROM next_queue q
-		ORDER BY
-			CASE
-				WHEN q.readiness_bucket = '%s' THEN 0
-				WHEN q.readiness_bucket = '%s'
-				 AND (
-				 	NOT q.has_expected_file_count
-				 	OR q.expected_file_count <= 0
-				 	OR q.expected_file_coverage_pct >= $2
-				 ) THEN 1
-				WHEN q.readiness_bucket = '%s' THEN 2
-				ELSE 3
-			END ASC,
-			q.expected_file_coverage_pct DESC,
-			q.complete_main_payload_binary_count DESC,
+			ORDER BY
+				CASE
+					WHEN q.readiness_bucket = '%s' THEN 0
+					WHEN q.readiness_bucket = '%s'
+					 AND (
+					 	NOT q.has_expected_file_count
+					 	OR q.expected_file_count <= 0
+					 	OR q.expected_file_coverage_pct >= $2
+					 ) THEN 1
+					WHEN q.readiness_bucket = '%s' THEN 2
+					WHEN q.readiness_bucket = '%s' THEN 3
+					WHEN q.readiness_bucket = '%s' THEN 4
+					ELSE 5
+				END ASC,
+				q.expected_file_coverage_pct DESC,
+				q.complete_main_payload_binary_count DESC,
 			q.complete_binary_count DESC,
 			CASE
 				WHEN q.has_expected_file_count THEN 1
 				ELSE 0
 			END DESC,
+			CASE
+				WHEN q.key_kind = 'base_stem' THEN 0
+				ELSE 1
+			END ASC,
 			q.updated_at ASC,
 			q.family_key ASC`,
 		releaseReadinessStaleCleanupOnly,
 		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
 		releaseReadinessActionable,
+		releaseReadinessActionable,
+		releaseReadinessFragmentOnly,
+		releaseReadinessActionable,
+		releaseReadinessActionable,
+		releaseReadinessOvergrouped,
+		releaseReadinessActionable,
+		releaseReadinessActionable,
+		releaseReadinessPreferBaseStem,
+		releaseReadinessStaleCleanupOnly,
 		releaseReadinessStaleCleanupOnly,
 		releaseReadinessActionable,
-		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
+		releaseReadinessOvergrouped,
+		releaseReadinessPreferBaseStem,
 		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
+		releaseReadinessOvergrouped,
+		releaseReadinessPreferBaseStem,
 	)
 	rows, err := s.db.QueryContext(ctx, query, limit, opts.MinExpectedFileCoveragePct)
 	if err != nil {
@@ -662,6 +772,50 @@ func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCa
 		if err := ackReleaseCandidatesChunk(ctx, s.db, unique[start:end]); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+	releaseFamilyKey = strings.TrimSpace(releaseFamilyKey)
+	if releaseFamilyKey == "" {
+		return fmt.Errorf("release family key is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		WITH target_stems AS (
+			SELECT DISTINCT LOWER(BTRIM(b.base_stem)) AS family_key
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.newsgroup_id = $2
+			  AND b.release_family_key = $3
+			  AND b.expected_file_count > 1
+			  AND b.file_index > 0
+			  AND BTRIM(COALESCE(b.base_stem, '')) <> ''
+			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+		)
+		UPDATE release_family_readiness_summaries s
+		SET updated_at = NOW()
+		FROM target_stems t
+		WHERE s.provider_id = $1
+		  AND s.newsgroup_id = $2
+		  AND s.key_kind = 'base_stem'
+		  AND s.family_key = t.family_key`,
+		providerID,
+		newsgroupID,
+		releaseFamilyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("promote base-stem candidates for provider=%d group=%d family=%q: %w", providerID, newsgroupID, releaseFamilyKey, err)
 	}
 	return nil
 }

@@ -42,19 +42,20 @@ type localTitleCandidate struct {
 }
 
 var (
-	multiSpaceRE       = regexp.MustCompile(`\s+`)
-	separatorRE        = regexp.MustCompile(`[._\-]+`)
-	resolutionRE       = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
-	videoCodecRE       = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
-	audioCodecRE       = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
-	sourceTagRE        = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
-	subtitleLanguageRE = regexp.MustCompile(`(?i)\b(eng|english|spa|spanish|fre|french|ger|german|ita|italian|jpn|japanese)\b`)
-	rarPartRE          = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
-	splitSevenZipRE    = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
-	splitZipRE         = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
-	parVolumeRE        = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
-	numericNoiseOnlyRE = regexp.MustCompile(`^[a-f0-9]{8,}$`)
-	longOpaqueTokenRE  = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	multiSpaceRE         = regexp.MustCompile(`\s+`)
+	separatorRE          = regexp.MustCompile(`[._\-]+`)
+	resolutionRE         = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
+	videoCodecRE         = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
+	audioCodecRE         = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
+	sourceTagRE          = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
+	subtitleLanguageRE   = regexp.MustCompile(`(?i)\b(eng|english|spa|spanish|fre|french|ger|german|ita|italian|jpn|japanese)\b`)
+	rarPartRE            = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	splitSevenZipRE      = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
+	splitZipRE           = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
+	parVolumeRE          = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
+	numericNoiseOnlyRE   = regexp.MustCompile(`^[a-f0-9]{8,}$`)
+	longOpaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	numberedNoiseTitleRE = regexp.MustCompile(`^\d{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
 )
 
 func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) []releaseCluster {
@@ -889,9 +890,6 @@ func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgin
 		return false
 	}
 
-	if main.ExpectedFileCount == 1 {
-		return true
-	}
 	if main.ExpectedFileCount > 1 {
 		return false
 	}
@@ -927,6 +925,43 @@ func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgin
 	}
 
 	return isVideoFile(name) || isAudioFile(name)
+}
+
+func clusterHasUsableFileIdentity(binaries []pgindex.BinarySummary, record pgindex.ReleaseRecord) bool {
+	if hasArchiveOrMediaMix(binaries) || hasPARRelation(binaries) {
+		return true
+	}
+	if record.TitleSource != "" && record.TitleSource != "source" && record.TitleConfidence >= 0.82 {
+		return true
+	}
+
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if name == "" {
+			continue
+		}
+		ext := filepath.Ext(name)
+		if ext == "" || ext == ".bin" {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(name), ext)
+		if looksReadableReleaseTitle(stem) && !looksObfuscatedReleaseTitle(stem) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func looksWeakGeneratedReleaseTitle(title string) bool {
+	normalized := normalizeSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+	return numberedNoiseTitleRE.MatchString(normalized)
 }
 
 func dominantMainPayloadBinary(binaries []pgindex.BinarySummary) *pgindex.BinarySummary {
@@ -1492,6 +1527,9 @@ func looksReadableReleaseTitle(title string) bool {
 
 	normalized := normalizeSearchTitle(title)
 	if normalized == "" {
+		return false
+	}
+	if numberedNoiseTitleRE.MatchString(normalized) {
 		return false
 	}
 	parts := strings.Fields(normalized)
