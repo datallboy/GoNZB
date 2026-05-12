@@ -37,6 +37,9 @@ func TestParseOverviewLineParsesTwoDigitYearDate(t *testing.T) {
 	if !got.DateUTC.Equal(want) {
 		t.Fatalf("expected %s, got %s", want.Format(time.RFC3339), got.DateUTC.Format(time.RFC3339))
 	}
+	if _, ok := got.RawOverview["line"]; ok {
+		t.Fatalf("expected raw overview to omit full XOVER line, got %#v", got.RawOverview)
+	}
 }
 
 func TestReturnConnAfterCloseDoesNotPanic(t *testing.T) {

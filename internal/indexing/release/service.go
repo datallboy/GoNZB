@@ -152,6 +152,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		"skipped_completion":                    0,
 		"cooled_down_low_coverage_families":     0,
 		"cooled_down_weak_single_families":      0,
+		"cooled_down_weak_obfuscated_families":  0,
 		"cooled_down_overgrouped_families":      0,
 		"cooled_down_prefer_base_stem_families": 0,
 		"stale_cleanup_families":                0,
@@ -171,6 +172,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	cooledDownFragmentOnly := 0
 	cooledDownLowCoverage := 0
 	cooledDownWeakSingle := 0
+	cooledDownWeakObfuscated := 0
 	cooledDownOvergrouped := 0
 	cooledDownPreferBaseStem := 0
 	staleCleanupOnly := 0
@@ -201,6 +203,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			metrics["fragment_only_families"] = cooledDownFragmentOnly
 			metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
 			metrics["cooled_down_weak_single_families"] = cooledDownWeakSingle
+			metrics["cooled_down_weak_obfuscated_families"] = cooledDownWeakObfuscated
 			metrics["cooled_down_overgrouped_families"] = cooledDownOvergrouped
 			metrics["cooled_down_prefer_base_stem_families"] = cooledDownPreferBaseStem
 			metrics["stale_cleanup_families"] = staleCleanupOnly
@@ -217,6 +220,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
 		cooledDownLowCoverage += outcome.cooledDownLowCoverage
 		cooledDownWeakSingle += outcome.cooledDownWeakSingle
+		cooledDownWeakObfuscated += outcome.cooledDownWeakObfuscated
 		cooledDownOvergrouped += outcome.cooledDownOvergrouped
 		cooledDownPreferBaseStem += outcome.cooledDownPreferBaseStem
 		staleCleanupOnly += outcome.staleCleanupOnly
@@ -245,6 +249,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics["fragment_only_families"] = cooledDownFragmentOnly
 	metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
 	metrics["cooled_down_weak_single_families"] = cooledDownWeakSingle
+	metrics["cooled_down_weak_obfuscated_families"] = cooledDownWeakObfuscated
 	metrics["cooled_down_overgrouped_families"] = cooledDownOvergrouped
 	metrics["cooled_down_prefer_base_stem_families"] = cooledDownPreferBaseStem
 	metrics["stale_cleanup_families"] = staleCleanupOnly
@@ -258,12 +263,13 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	timings.addMetrics(metrics)
 
 	s.log.Info(
-		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d cooled_down_weak_single_families=%d cooled_down_overgrouped_families=%d cooled_down_prefer_base_stem_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_fragments_no_main_payload=%d skipped_fragments_single_main=%d skipped_fragments_multi_file=%d skipped_fragments_contextual_weak=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
+		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d cooled_down_weak_single_families=%d cooled_down_weak_obfuscated_families=%d cooled_down_overgrouped_families=%d cooled_down_prefer_base_stem_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_fragments_no_main_payload=%d skipped_fragments_single_main=%d skipped_fragments_multi_file=%d skipped_fragments_contextual_weak=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
 		candidateFamiliesInspected,
 		formed,
 		cooledDownFragmentOnly,
 		cooledDownLowCoverage,
 		cooledDownWeakSingle,
+		cooledDownWeakObfuscated,
 		cooledDownOvergrouped,
 		cooledDownPreferBaseStem,
 		staleCleanupOnly,
@@ -325,6 +331,7 @@ type candidateOutcome struct {
 	cooledDownFragmentOnly   int
 	cooledDownLowCoverage    int
 	cooledDownWeakSingle     int
+	cooledDownWeakObfuscated int
 	cooledDownOvergrouped    int
 	cooledDownPreferBaseStem int
 	staleCleanupOnly         int
@@ -390,6 +397,20 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		return candidateOutcome{
 			cooledDownWeakSingle: 1,
 			deferredAck:          buildDeferredReleaseAck(candidate, familyKey),
+		}, nil
+	}
+
+	if candidate.ReadinessBucket == "weak_obfuscated_set" {
+		start := time.Now()
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+			return candidateOutcome{}, fmt.Errorf("delete weak-obfuscated stale releases: %w", err)
+		}
+		if timings != nil {
+			timings.deleteStale += time.Since(start)
+		}
+		return candidateOutcome{
+			cooledDownWeakObfuscated: 1,
+			deferredAck:              buildDeferredReleaseAck(candidate, familyKey),
 		}, nil
 	}
 

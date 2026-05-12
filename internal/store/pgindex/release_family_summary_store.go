@@ -15,6 +15,7 @@ const (
 	releaseReadinessFragmentOnly     = "fragment_only"
 	releaseReadinessStaleCleanupOnly = "stale_cleanup_only"
 	releaseReadinessWeakSingle       = "weak_single_binary"
+	releaseReadinessWeakObfuscated   = "weak_obfuscated_set"
 	releaseReadinessPreferBaseStem   = "prefer_base_stem"
 	releaseReadinessOvergrouped      = "overgrouped_contextual"
 )
@@ -247,6 +248,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		!summaryAllowsStandaloneBinaryRelease(dominantFamilyKind, dominantFileName, dominantMatchConfidence) {
 		readinessBucket = releaseReadinessWeakSingle
 	}
+	if readinessBucket == releaseReadinessActionable && summaryIsWeakObfuscatedFamily(dominantFamilyKind) {
+		readinessBucket = releaseReadinessWeakObfuscated
+	}
 	expectedFileCoveragePct := 0.0
 	if expectedFileCount > 0 {
 		expectedFileCoveragePct = (float64(completeMainPayloadBinaryCount) / float64(expectedFileCount)) * 100
@@ -416,4 +420,13 @@ func summaryAllowsStandaloneBinaryRelease(familyKind, fileName string, matchConf
 		return false
 	}
 	return true
+}
+
+func summaryIsWeakObfuscatedFamily(familyKind string) bool {
+	switch strings.TrimSpace(strings.ToLower(familyKind)) {
+	case "numeric_obfuscated_set", "opaque_set":
+		return true
+	default:
+		return false
+	}
 }

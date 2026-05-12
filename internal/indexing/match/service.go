@@ -17,7 +17,12 @@ type Candidate struct {
 type Result struct {
 	SourceReleaseKey  string
 	ReleaseFamilyKey  string
+	FileSetKey        string
 	FileFamilyKey     string
+	IdentityStrength  string
+	IdentityReason    string
+	SubjectSetToken   string
+	SubjectSetKind    string
 	FamilyKind        string
 	BaseStem          string
 	IsAuxiliary       bool

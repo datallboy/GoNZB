@@ -430,3 +430,34 @@ func TestMatchPromotesLargeIndexedArchiveFamilyBySharedStem(t *testing.T) {
 		t.Fatalf("expected base stem %q, got %q / %q", "sharedopaquearchive", first.BaseStem, second.BaseStem)
 	}
 }
+
+func TestMatchClassifiesNumericPrefixAsWeakSubjectSet(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		ArticleNumber: 80894690,
+		MessageID:     "<rclone-crypt@host.example>",
+		Subject:       `80894690-n-YuO [1/4] - "bkkm2n3j3pl45ts1taahvgmj4bd6c0uthe84f72v8o8tn0or9icg" yEnc (1/1) 144259`,
+		Poster:        `backup.poster@example.com`,
+		Xref:          `news.example alt.binaries.misc:80894690`,
+	})
+
+	if got.SubjectSetToken != "80894690 n yuo" {
+		t.Fatalf("expected numeric subject set token, got %q", got.SubjectSetToken)
+	}
+	if got.SubjectSetKind != "numeric_obfuscated_set" {
+		t.Fatalf("expected numeric_obfuscated_set, got %q", got.SubjectSetKind)
+	}
+	if got.FamilyKind != "numeric_obfuscated_set" {
+		t.Fatalf("expected family kind numeric_obfuscated_set, got %q", got.FamilyKind)
+	}
+	if got.IdentityStrength != "provisional" || got.IdentityReason != "numeric_obfuscated_set" {
+		t.Fatalf("expected provisional numeric identity, got %q/%q", got.IdentityStrength, got.IdentityReason)
+	}
+	if got.ReleaseKey != "80894690 n yuo" {
+		t.Fatalf("expected release key to preserve set token, got %q", got.ReleaseKey)
+	}
+	if got.FileSetKey != "80894690 n yuo files 4" {
+		t.Fatalf("expected file set key to include expected files, got %q", got.FileSetKey)
+	}
+}
