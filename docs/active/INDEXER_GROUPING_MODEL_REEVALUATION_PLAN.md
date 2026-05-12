@@ -423,6 +423,42 @@ Remaining follow-up:
 - add an operator-facing audit/undo path before turning content filters into a broader release/download blacklist
 - run live inspect PAR2 passes against the fresh database once enough formed PAR2 releases exist
 
+## Weak Single Binary Recovery Finding
+
+`weak_single_binary` should not be read as junk. It means the XOVER/header-only view did not expose a trustworthy release/file identity.
+
+A recent weak-single sample showed:
+
+- nearly all sampled weak singles were one observed article part
+- most were small XOVER-visible article chunks around `740 KB`
+- posters were often randomized, making same-poster grouping weak for this population
+- BODY-prefix probing recovered real yEnc names from otherwise opaque subjects
+
+Manual BODY-prefix checks proved that at least some weak singles are real multipart archive segments:
+
+- binary `6586203` recovered `Wbostp9Yf138Oybk1yc93o.part02.rar`, yEnc part `2/62`, file size `44040192`
+- binary `6584898` recovered `Wbostp9Yf138Oybk1yc93o.part03.rar`, yEnc part `28/62`, file size `44040192`
+
+Interpretation:
+
+- XOVER can hide the true file name even when the article is actionable
+- yEnc `part/total` is article-segment coverage for one file, not release file-count coverage
+- archive volume names recovered from yEnc headers are stronger grouping evidence than subject/title/extension
+- release formation should not form these as single-file releases, but recovery should promote them into archive-stem families when enough evidence arrives
+
+Implemented recovery throughput change:
+
+- `recover_yenc` now honors runtime `concurrency`
+- the stage logs progress every 100 attempted candidates and at batch completion
+- final metrics include concurrency so live tuning can distinguish NNTP latency from merge/re-key cost
+
+Next data-driven discovery work:
+
+- infer archive-volume file index from recovered yEnc names such as `.part02.rar`
+- add binary-level probe/audit support for magic bytes, ASCII ratio, printable strings, and pointer-like text evidence
+- detect pointer candidates by data patterns such as message IDs, NZB/XML fragments, URLs, JSON-like metadata, or unusually text-heavy payloads
+- keep these probes out of assemble/release hot paths unless they produce durable grouping or filtering evidence
+
 Good outcome:
 
 - small opaque `misc` releases stop forming
@@ -451,6 +487,8 @@ Status on 2026-05-12:
 - [x] document configurable size/magic filtering as the next filter layer
 - [x] implement runtime size/magic content filters for inspect discovery
 - [x] implement PAR2 target filename persistence for `inspect_par2`
+- [x] prove weak-single binaries can be real multipart archive segments via yEnc BODY-prefix recovery
+- [x] make `recover_yenc` concurrency-driven and observable enough for live tuning
 - [ ] validate on a clean database with live assemble/recover/release cycles
 
 ## Implementation Sign-off
