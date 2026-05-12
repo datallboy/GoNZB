@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +18,8 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 )
 
@@ -23,16 +28,35 @@ type articleRef struct {
 	articleNumber int64
 }
 
+type nzbExportFile struct {
+	ID        int64
+	BinaryID  int64
+	FileName  string
+	Subject   string
+	Poster    string
+	DateUnix  int64
+	Groups    []string
+	SizeBytes int64
+	Index     int
+	Segments  []nzb.Segment
+}
+
 func main() {
 	var (
-		configPath   string
-		serverID     string
-		group        string
-		messageID    string
-		articleNum   int64
-		bodyBytes    int64
-		articleBytes int64
-		headLines    int
+		configPath       string
+		serverID         string
+		group            string
+		messageID        string
+		articleNum       int64
+		bodyBytes        int64
+		articleBytes     int64
+		headLines        int
+		releaseID        string
+		releaseFamilyKey string
+		binaryID         int64
+		outNZB           string
+		probeSetYEnc     bool
+		setBodyBytes     int64
 	)
 
 	flag.StringVar(&configPath, "config", "config.yaml", "config file path")
@@ -43,14 +67,25 @@ func main() {
 	flag.Int64Var(&bodyBytes, "body-bytes", 4096, "max BODY bytes to print; 0 disables BODY")
 	flag.Int64Var(&articleBytes, "article-bytes", 8192, "max ARTICLE bytes to print; 0 disables ARTICLE")
 	flag.IntVar(&headLines, "head-lines", 200, "max HEAD lines to print")
+	flag.StringVar(&releaseID, "release-id", "", "export an NZB for a formed indexer release id")
+	flag.StringVar(&releaseFamilyKey, "release-family-key", "", "export an NZB for binaries with this release_family_key")
+	flag.Int64Var(&binaryID, "binary-id", 0, "export an NZB for one binary id")
+	flag.StringVar(&outNZB, "out-nzb", "", "write exported NZB to this path; defaults to stdout for export modes")
+	flag.BoolVar(&probeSetYEnc, "probe-set-yenc", false, "for export modes, fetch BODY prefixes and print yEnc header names for segments")
+	flag.Int64Var(&setBodyBytes, "set-body-bytes", 8192, "BODY prefix bytes to fetch per segment for --probe-set-yenc")
 	flag.Parse()
-
-	ref, err := normalizeArticleRef(messageID, articleNum)
-	fatalIf(err)
 
 	cfg, err := config.Load(configPath)
 	fatalIf(err)
 	cfg, err = withRuntimeServers(cfg)
+	fatalIf(err)
+
+	if isExportMode(releaseID, releaseFamilyKey, binaryID) {
+		fatalIf(runNZBExport(context.Background(), cfg, serverID, releaseID, releaseFamilyKey, binaryID, outNZB, probeSetYEnc, setBodyBytes))
+		return
+	}
+
+	ref, err := normalizeArticleRef(messageID, articleNum)
 	fatalIf(err)
 
 	server, err := chooseServer(cfg, serverID)
@@ -89,6 +124,378 @@ func main() {
 			fmt.Printf("article: %v\n", err)
 		}
 	}
+}
+
+func isExportMode(releaseID, releaseFamilyKey string, binaryID int64) bool {
+	return strings.TrimSpace(releaseID) != "" || strings.TrimSpace(releaseFamilyKey) != "" || binaryID > 0
+}
+
+func runNZBExport(ctx context.Context, cfg *config.Config, serverID, releaseID, releaseFamilyKey string, binaryID int64, outPath string, probeYEnc bool, prefixBytes int64) error {
+	selected := 0
+	if strings.TrimSpace(releaseID) != "" {
+		selected++
+	}
+	if strings.TrimSpace(releaseFamilyKey) != "" {
+		selected++
+	}
+	if binaryID > 0 {
+		selected++
+	}
+	if selected != 1 {
+		return fmt.Errorf("exactly one of --release-id, --release-family-key, or --binary-id is required for NZB export")
+	}
+	if cfg == nil || strings.TrimSpace(cfg.Store.PGDSN) == "" {
+		return fmt.Errorf("store.pg_dsn is required for NZB export")
+	}
+
+	store, err := pgindex.NewStore(cfg.Store.PGDSN)
+	if err != nil {
+		return fmt.Errorf("open pgindex store: %w", err)
+	}
+	defer store.Close()
+
+	var title string
+	var files []nzbExportFile
+	switch {
+	case strings.TrimSpace(releaseID) != "":
+		title, files, err = loadNZBExportRelease(ctx, store, releaseID)
+	case strings.TrimSpace(releaseFamilyKey) != "":
+		title, files, err = loadNZBExportBinaries(ctx, store, "release_family_key", releaseFamilyKey, 0)
+	case binaryID > 0:
+		title, files, err = loadNZBExportBinaries(ctx, store, "id", "", binaryID)
+	}
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no files found for export")
+	}
+
+	model := buildNZBModel(title, files)
+	if err := writeNZB(model, outPath); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "exported files=%d segments=%d title=%q\n", len(files), countSegments(files), title)
+
+	if probeYEnc {
+		if err := probeNZBYEncPrefixes(ctx, cfg, serverID, files, prefixBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func loadNZBExportRelease(ctx context.Context, store *pgindex.Store, releaseID string) (string, []nzbExportFile, error) {
+	rel, err := store.GetCatalogReleaseByID(ctx, releaseID)
+	if err != nil {
+		return "", nil, err
+	}
+	if rel == nil {
+		return "", nil, fmt.Errorf("release %q not found", releaseID)
+	}
+	groups, err := store.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		return "", nil, err
+	}
+	releaseFiles, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	files := make([]nzbExportFile, 0, len(releaseFiles))
+	for _, file := range releaseFiles {
+		articles, err := store.ListCatalogReleaseFileArticles(ctx, file.ID)
+		if err != nil {
+			return "", nil, err
+		}
+		files = append(files, exportFileFromCatalog(file, groups, articles))
+	}
+	return rel.Title, files, nil
+}
+
+func exportFileFromCatalog(file pgindex.CatalogReleaseFile, groups []string, articles []pgindex.CatalogArticleRef) nzbExportFile {
+	segments := make([]nzb.Segment, 0, len(articles))
+	for _, article := range articles {
+		segments = append(segments, nzb.Segment{
+			Number:    article.PartNumber,
+			Bytes:     article.Bytes,
+			MessageID: trimMessageIDBrackets(article.MessageID),
+		})
+	}
+	dateUnix := int64(0)
+	if file.PostedAt != nil {
+		dateUnix = file.PostedAt.Unix()
+	}
+	return nzbExportFile{
+		ID:        file.ID,
+		BinaryID:  file.BinaryID,
+		FileName:  file.FileName,
+		Subject:   firstNonEmpty(file.Subject, file.FileName),
+		Poster:    file.Poster,
+		DateUnix:  dateUnix,
+		Groups:    groups,
+		SizeBytes: file.SizeBytes,
+		Index:     file.FileIndex,
+		Segments:  segments,
+	}
+}
+
+func loadNZBExportBinaries(ctx context.Context, store *pgindex.Store, mode, releaseFamilyKey string, binaryID int64) (string, []nzbExportFile, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	db := store.DB()
+	switch mode {
+	case "release_family_key":
+		rows, err = db.QueryContext(ctx, `
+			SELECT
+				b.id,
+				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), 'binary-' || b.id::text) AS file_name,
+				COALESCE(b.binary_name, b.file_name, '') AS subject,
+				COALESCE(po.poster_name, '') AS poster,
+				b.posted_at,
+				COALESCE(b.total_bytes, 0),
+				COALESCE(b.file_index, 0),
+				ng.group_name
+			FROM binaries b
+			JOIN newsgroups ng ON ng.id = b.newsgroup_id
+			LEFT JOIN posters po ON po.id = b.poster_id
+			WHERE b.release_family_key = $1
+			ORDER BY b.file_index, b.id`, releaseFamilyKey)
+	case "id":
+		rows, err = db.QueryContext(ctx, `
+			SELECT
+				b.id,
+				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), 'binary-' || b.id::text) AS file_name,
+				COALESCE(b.binary_name, b.file_name, '') AS subject,
+				COALESCE(po.poster_name, '') AS poster,
+				b.posted_at,
+				COALESCE(b.total_bytes, 0),
+				COALESCE(b.file_index, 0),
+				ng.group_name
+			FROM binaries b
+			JOIN newsgroups ng ON ng.id = b.newsgroup_id
+			LEFT JOIN posters po ON po.id = b.poster_id
+			WHERE b.id = $1
+			ORDER BY b.file_index, b.id`, binaryID)
+	default:
+		return "", nil, fmt.Errorf("unknown export binary mode %q", mode)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	defer rows.Close()
+
+	files := []nzbExportFile{}
+	for rows.Next() {
+		var (
+			file     nzbExportFile
+			postedAt sql.NullTime
+			group    string
+		)
+		if err := rows.Scan(&file.BinaryID, &file.FileName, &file.Subject, &file.Poster, &postedAt, &file.SizeBytes, &file.Index, &group); err != nil {
+			return "", nil, fmt.Errorf("scan export binary: %w", err)
+		}
+		if postedAt.Valid {
+			file.DateUnix = postedAt.Time.Unix()
+		}
+		file.Groups = []string{group}
+		segments, err := loadBinarySegments(ctx, store, file.BinaryID)
+		if err != nil {
+			return "", nil, err
+		}
+		file.Segments = segments
+		files = append(files, file)
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, fmt.Errorf("iterate export binaries: %w", err)
+	}
+	return strings.TrimSpace(firstNonEmpty(releaseFamilyKey, fmt.Sprintf("binary-%d", binaryID))), files, nil
+}
+
+func loadBinarySegments(ctx context.Context, store *pgindex.Store, binaryID int64) ([]nzb.Segment, error) {
+	articles, err := store.ListBinaryPartArticles(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	if len(articles) == 0 {
+		return nil, nil
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT
+			ah.message_id,
+			ah.bytes,
+			bp.part_number
+		FROM binary_parts bp
+		JOIN article_headers ah ON ah.id = bp.article_header_id
+		WHERE bp.binary_id = $1
+		ORDER BY bp.part_number`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list binary %d segments: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	segments := make([]nzb.Segment, 0, len(articles))
+	for rows.Next() {
+		var segment nzb.Segment
+		if err := rows.Scan(&segment.MessageID, &segment.Bytes, &segment.Number); err != nil {
+			return nil, fmt.Errorf("scan binary %d segment: %w", binaryID, err)
+		}
+		segment.MessageID = trimMessageIDBrackets(segment.MessageID)
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary %d segments: %w", binaryID, err)
+	}
+	return segments, nil
+}
+
+func buildNZBModel(title string, files []nzbExportFile) nzb.Model {
+	model := nzb.Model{
+		Meta: []nzb.Meta{
+			{Type: "title", Content: strings.TrimSpace(title)},
+			{Type: "generator", Content: "gonzb articleprobe"},
+		},
+		Files: make([]nzb.File, 0, len(files)),
+	}
+	for _, file := range files {
+		groups := make([]string, 0, len(file.Groups))
+		for _, group := range file.Groups {
+			group = strings.TrimSpace(group)
+			if group == "" {
+				continue
+			}
+			groups = append(groups, group)
+		}
+		subject := strings.TrimSpace(file.Subject)
+		if subject == "" {
+			subject = strings.TrimSpace(file.FileName)
+		}
+		model.Files = append(model.Files, nzb.File{
+			Subject:  subject,
+			Poster:   strings.TrimSpace(file.Poster),
+			Date:     file.DateUnix,
+			Groups:   groups,
+			Segments: file.Segments,
+		})
+	}
+	return model
+}
+
+func writeNZB(model nzb.Model, outPath string) error {
+	data, err := xml.MarshalIndent(model, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal nzb: %w", err)
+	}
+	data = append([]byte(xml.Header), data...)
+	data = append(data, '\n')
+	outPath = strings.TrimSpace(outPath)
+	if outPath == "" || outPath == "-" {
+		_, err = os.Stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		return fmt.Errorf("write nzb %s: %w", outPath, err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote nzb: %s\n", outPath)
+	return nil
+}
+
+func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID string, files []nzbExportFile, prefixBytes int64) error {
+	server, err := chooseServer(cfg, serverID)
+	if err != nil {
+		return err
+	}
+	if prefixBytes <= 0 {
+		prefixBytes = 8192
+	}
+	for _, file := range files {
+		fmt.Fprintf(os.Stderr, "\n== file binary_id=%d index=%d name=%q segments=%d ==\n", file.BinaryID, file.Index, file.FileName, len(file.Segments))
+		for _, segment := range file.Segments {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			prefix, err := fetchBodyPrefix(server, segment.MessageID, file.Groups, prefixBytes)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "part=%d msg=%s error=%v\n", segment.Number, segment.MessageID, err)
+				continue
+			}
+			header, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_header_error=%v\n", segment.Number, segment.MessageID, err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_name=%q yenc_part=%d/%d file_size=%d offset=%d\n",
+				segment.Number,
+				segment.MessageID,
+				header.FileName,
+				header.PartNumber,
+				header.TotalParts,
+				header.FileSize,
+				header.PartOffset,
+			)
+		}
+	}
+	return nil
+}
+
+func fetchBodyPrefix(server config.ServerConfig, messageID string, groups []string, maxBytes int64) ([]byte, error) {
+	conn, err := dialServer(server)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	for _, group := range groups {
+		if strings.TrimSpace(group) == "" {
+			continue
+		}
+		if _, err := selectGroup(conn, group); err != nil {
+			continue
+		}
+		break
+	}
+
+	ref, err := normalizeArticleRef(messageID, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Cmd("BODY %s", formatArticleRef(ref)); err != nil {
+		return nil, err
+	}
+	code, msg, err := conn.ReadCodeLine(222)
+	if err != nil {
+		return nil, fmt.Errorf("BODY failed (code %d): %s", code, msg)
+	}
+	return io.ReadAll(io.LimitReader(conn.DotReader(), maxBytes))
+}
+
+func countSegments(files []nzbExportFile) int {
+	total := 0
+	for _, file := range files {
+		total += len(file.Segments)
+	}
+	return total
+}
+
+func trimMessageIDBrackets(messageID string) string {
+	messageID = strings.TrimSpace(messageID)
+	messageID = strings.TrimPrefix(messageID, "<")
+	messageID = strings.TrimSuffix(messageID, ">")
+	return messageID
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
