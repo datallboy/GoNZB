@@ -56,7 +56,12 @@ type BinaryRecord struct {
 	PosterID          int64
 	SourceReleaseKey  string
 	ReleaseFamilyKey  string
+	FileSetKey        string
 	FileFamilyKey     string
+	IdentityStrength  string
+	IdentityReason    string
+	SubjectSetToken   string
+	SubjectSetKind    string
 	FamilyKind        string
 	BaseStem          string
 	IsAuxiliary       bool
@@ -1017,7 +1022,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			poster_id,
 			source_release_key,
 			release_family_key,
+			file_set_key,
 			file_family_key,
+			identity_strength,
+			identity_reason,
+			subject_set_token,
+			subject_set_kind,
 			family_kind,
 			base_stem,
 			is_auxiliary,
@@ -1036,12 +1046,17 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
 		    source_release_key = EXCLUDED.source_release_key,
 		    release_family_key = EXCLUDED.release_family_key,
+		    file_set_key = EXCLUDED.file_set_key,
 		    file_family_key = EXCLUDED.file_family_key,
+		    identity_strength = EXCLUDED.identity_strength,
+		    identity_reason = EXCLUDED.identity_reason,
+		    subject_set_token = EXCLUDED.subject_set_token,
+		    subject_set_kind = EXCLUDED.subject_set_kind,
 		    family_kind = EXCLUDED.family_kind,
 		    base_stem = EXCLUDED.base_stem,
 		    is_auxiliary = EXCLUDED.is_auxiliary,
@@ -1073,7 +1088,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		posterID,
 		strings.TrimSpace(in.SourceReleaseKey),
 		strings.TrimSpace(in.ReleaseFamilyKey),
+		strings.TrimSpace(in.FileSetKey),
 		strings.TrimSpace(in.FileFamilyKey),
+		strings.TrimSpace(in.IdentityStrength),
+		strings.TrimSpace(in.IdentityReason),
+		strings.TrimSpace(in.SubjectSetToken),
+		strings.TrimSpace(in.SubjectSetKind),
 		strings.TrimSpace(in.FamilyKind),
 		strings.TrimSpace(in.BaseStem),
 		in.IsAuxiliary,

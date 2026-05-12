@@ -402,9 +402,9 @@ func parseOverviewLine(line string) (OverviewHeader, bool) {
 		xref = strings.TrimSpace(fields[8])
 	}
 
-	raw := map[string]any{
-		"line":       line,
-		"references": strings.TrimSpace(fields[5]),
+	raw := map[string]any{}
+	if references := strings.TrimSpace(fields[5]); references != "" {
+		raw["references"] = references
 	}
 
 	return OverviewHeader{

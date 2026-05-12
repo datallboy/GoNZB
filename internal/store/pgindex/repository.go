@@ -193,7 +193,12 @@ type YEncHeaderRecoveryRecord struct {
 	ArticleHeaderID   int64
 	SourceReleaseKey  string
 	ReleaseFamilyKey  string
+	FileSetKey        string
 	FileFamilyKey     string
+	IdentityStrength  string
+	IdentityReason    string
+	SubjectSetToken   string
+	SubjectSetKind    string
 	FamilyKind        string
 	BaseStem          string
 	IsAuxiliary       bool
@@ -1288,6 +1293,9 @@ func sanitizeStringMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		cleanKey := sanitizeUTF8(k)
+		if strings.EqualFold(cleanKey, "line") {
+			continue
+		}
 
 		switch tv := v.(type) {
 		case string:

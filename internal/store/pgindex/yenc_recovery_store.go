@@ -35,8 +35,8 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 			 AND s.newsgroup_id = b.newsgroup_id
 			 AND s.key_kind = 'release_family'
 			 AND s.family_key = b.release_family_key
-			WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary')
-			  AND b.family_kind = 'contextual_obfuscated'
+			WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
+			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND b.is_main_payload = true
 			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
 			ORDER BY b.updated_at DESC, b.id
@@ -298,31 +298,41 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		UPDATE binaries
 		SET source_release_key = $2,
 		    release_family_key = $3,
-		    file_family_key = $4,
-		    family_kind = $5,
-		    base_stem = $6,
-		    is_auxiliary = $7,
-		    is_main_payload = $8,
-		    release_key = $9,
-		    release_name = $10,
-		    binary_key = $11,
-		    binary_name = $12,
-		    file_name = $13,
-		    file_index = CASE WHEN $14 > 0 THEN $14 ELSE file_index END,
-		    expected_file_count = GREATEST(expected_file_count, $15),
-		    total_parts = GREATEST(total_parts, $16),
-		    match_confidence = GREATEST(match_confidence, $17),
-		    match_status = $18,
-		    grouping_evidence_json = $19::jsonb,
+		    file_set_key = $4,
+		    file_family_key = $5,
+		    identity_strength = $6,
+		    identity_reason = $7,
+		    subject_set_token = $8,
+		    subject_set_kind = $9,
+		    family_kind = $10,
+		    base_stem = $11,
+		    is_auxiliary = $12,
+		    is_main_payload = $13,
+		    release_key = $14,
+		    release_name = $15,
+		    binary_key = $16,
+		    binary_name = $17,
+		    file_name = $18,
+		    file_index = CASE WHEN $19 > 0 THEN $19 ELSE file_index END,
+		    expected_file_count = GREATEST(expected_file_count, $20),
+		    total_parts = GREATEST(total_parts, $21),
+		    match_confidence = GREATEST(match_confidence, $22),
+		    match_status = $23,
+		    grouping_evidence_json = $24::jsonb,
 		    recovered_source = 'yenc_header',
-		    recovered_confidence = GREATEST(recovered_confidence, $17),
+		    recovered_confidence = GREATEST(recovered_confidence, $22),
 		    recovered_at = NOW(),
 		    updated_at = NOW()
 		WHERE id = $1`,
 		binaryID,
 		in.SourceReleaseKey,
 		in.ReleaseFamilyKey,
+		in.FileSetKey,
 		in.FileFamilyKey,
+		in.IdentityStrength,
+		in.IdentityReason,
+		in.SubjectSetToken,
+		in.SubjectSetKind,
 		in.FamilyKind,
 		in.BaseStem,
 		in.IsAuxiliary,
