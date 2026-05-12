@@ -2202,11 +2202,17 @@ func inspectCandidateFilter(stageName string) (string, error) {
 	case "inspect_discovery":
 		return `r.completion_pct >= 100 AND
 		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
-		LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.bin' AND
 		COALESCE(b.recovered_extension, '') = '' AND
-		(b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`, nil
+		(b.is_main_payload = TRUE OR b.is_auxiliary = FALSE) AND
+		(
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.bin' OR
+			COALESCE(rf.file_name, b.file_name, '') !~ '\.[A-Za-z0-9]{1,8}$'
+		)`, nil
 	case "inspect_par2":
-		return "rf.is_pars = TRUE", nil
+		return `rf.is_pars = TRUE OR
+		LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.par2' OR
+		COALESCE(b.recovered_kind, '') = 'par2' OR
+		COALESCE(b.recovered_extension, '') = '.par2'`, nil
 	case "inspect_nfo":
 		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
 	case "inspect_archive":

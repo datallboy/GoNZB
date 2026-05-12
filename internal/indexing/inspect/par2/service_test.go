@@ -126,6 +126,19 @@ func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *tes
 	}
 }
 
+func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
+	sample := append(buildPAR2Sample("valid.part01.rar", 1234), buildPAR2Sample("\x7f\x12\x15\x1e", 1234)...)
+	sample = append(sample, buildPAR2Sample("absurd.part02.rar", 1<<60)...)
+
+	targets := parseTargetFiles(sample)
+	if len(targets) != 1 {
+		t.Fatalf("expected one valid target, got %+v", targets)
+	}
+	if targets[0].Name != "valid.part01.rar" || targets[0].Size != 1234 {
+		t.Fatalf("unexpected valid target %+v", targets[0])
+	}
+}
+
 type fakePAR2Repository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile

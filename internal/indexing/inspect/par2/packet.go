@@ -2,13 +2,16 @@ package par2
 
 import (
 	"encoding/binary"
+	"math"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 const (
 	par2PacketHeaderSize = 64
 	par2FileDescBodySize = 44
+	maxPAR2TargetSize    = uint64(1 << 50) // 1 PiB, far above useful Usenet payloads.
 )
 
 var (
@@ -55,15 +58,36 @@ func parseFileDescPacket(packet []byte) (targetFile, bool) {
 	}
 	body := packet[par2PacketHeaderSize:]
 	size := binary.LittleEndian.Uint64(body[36:44])
+	if size == 0 || size > uint64(math.MaxInt64) || size > maxPAR2TargetSize {
+		return targetFile{}, false
+	}
 	nameBytes := body[44:]
 	if idx := indexByte(nameBytes, 0); idx >= 0 {
 		nameBytes = nameBytes[:idx]
 	}
 	name := strings.TrimSpace(string(nameBytes))
-	if name == "" || !utf8.ValidString(name) {
+	if !validTargetName(name) {
 		return targetFile{}, false
 	}
 	return targetFile{Name: name, Size: size}, true
+}
+
+func validTargetName(name string) bool {
+	if name == "" || len(name) > 512 || !utf8.ValidString(name) {
+		return false
+	}
+	hasGraphic := false
+	for _, r := range name {
+		if r == '/' || r == '\\' || r == '.' || r == '_' || r == '-' || r == ' ' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasGraphic = true
+			continue
+		}
+		if unicode.IsControl(r) || unicode.IsMark(r) || unicode.IsSymbol(r) {
+			return false
+		}
+		return false
+	}
+	return hasGraphic
 }
 
 func indexByte(in []byte, target byte) int {
