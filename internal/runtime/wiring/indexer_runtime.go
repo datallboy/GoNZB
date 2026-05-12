@@ -193,6 +193,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:      runtimeCfg.RecoverYEnc.BatchSize,
 			MaxHeaderBytes: 8192,
 			FetchTimeout:   10 * time.Second,
+			Concurrency:    runtimeCfg.RecoverYEnc.Concurrency,
 		},
 	)
 

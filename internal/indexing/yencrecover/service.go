@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
@@ -39,6 +40,7 @@ type Options struct {
 	BatchSize      int
 	MaxHeaderBytes int64
 	FetchTimeout   time.Duration
+	Concurrency    int
 }
 
 type Service struct {
@@ -58,6 +60,9 @@ func NewService(repo repository, matcher matcher, fetcher bodyPrefixFetcher, log
 	}
 	if opts.FetchTimeout <= 0 {
 		opts.FetchTimeout = 10 * time.Second
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 1
 	}
 	return &Service{repo: repo, matcher: matcher, fetcher: fetcher, log: log, opts: opts}
 }
@@ -96,12 +101,20 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return metrics, nil
 	}
 
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return metrics, err
-		}
+	workerCount := s.opts.Concurrency
+	if workerCount > len(candidates) {
+		workerCount = len(candidates)
+	}
+	jobs := make(chan pgindex.YEncRecoveryCandidate)
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+	)
+	recordResult := func(result *pgindex.YEncHeaderRecoveryResult, kind string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
 		metrics["attempted"] = metrics["attempted"].(int) + 1
-		result, kind, err := s.recoverCandidate(ctx, candidate)
 		switch kind {
 		case "not_found":
 			metrics["not_found"] = metrics["not_found"].(int) + 1
@@ -117,14 +130,57 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 				metrics["merged"] = metrics["merged"].(int) + 1
 			}
 		}
-		if err != nil {
+		attempted := metrics["attempted"].(int)
+		if s.log != nil && (attempted == len(candidates) || attempted%100 == 0) {
+			s.log.Info(
+				"recover_yenc: progress attempted=%d/%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d concurrency=%d",
+				attempted,
+				len(candidates),
+				metrics["recovered"],
+				metrics["merged"],
+				metrics["noops"],
+				metrics["not_found"],
+				metrics["fetch_failures"],
+				metrics["parse_failures"],
+				workerCount,
+			)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if ctx.Err() != nil {
+					recordResult(nil, "noop", ctx.Err())
+					continue
+				}
+				result, kind, err := s.recoverCandidate(ctx, candidate)
+				recordResult(result, kind, err)
+			}
+		}()
+	}
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			close(jobs)
+			wg.Wait()
 			return metrics, err
 		}
+		jobs <- candidate
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return metrics, firstErr
 	}
 
 	if s.log != nil {
 		s.log.Info(
-			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d max_header_bytes=%d",
+			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d max_header_bytes=%d concurrency=%d",
 			metrics["candidates"],
 			metrics["attempted"],
 			metrics["recovered"],
@@ -134,6 +190,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["fetch_failures"],
 			metrics["parse_failures"],
 			s.opts.MaxHeaderBytes,
+			workerCount,
 		)
 	}
 	return metrics, nil
