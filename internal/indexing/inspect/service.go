@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -40,6 +41,9 @@ type Options struct {
 	WorkspaceBackend   string
 	MemoryWorkDir      string
 	MaxBytes           int64
+	MinBinaryBytes     int64
+	MaxBinaryBytes     int64
+	BlockedMagicHex    []string
 	MaxArchiveDepth    int
 	ToolTimeout        time.Duration
 	FFProbePath        string
@@ -50,6 +54,12 @@ type Options struct {
 	Concurrency        int
 	ClaimOwner         string
 	ClaimLease         time.Duration
+}
+
+type ContentFilterDecision struct {
+	Filtered bool
+	Reason   string
+	Rule     string
 }
 
 func NewService(log logger, runners map[string]Runner) *Service {
@@ -104,6 +114,13 @@ func DefaultOptions(opts Options) Options {
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = 2 * 1024 * 1024 * 1024
 	}
+	if opts.MinBinaryBytes < 0 {
+		opts.MinBinaryBytes = 0
+	}
+	if opts.MaxBinaryBytes < 0 {
+		opts.MaxBinaryBytes = 0
+	}
+	opts.BlockedMagicHex = normalizeMagicHexRules(opts.BlockedMagicHex)
 	if opts.MaxArchiveDepth <= 0 {
 		opts.MaxArchiveDepth = 3
 	}
@@ -135,6 +152,71 @@ func DefaultOptions(opts Options) Options {
 		opts.ClaimLease = 15 * time.Minute
 	}
 	return opts
+}
+
+func EvaluateContentFilter(opts Options, sample *BinaryPrefixSample) ContentFilterDecision {
+	if sample == nil {
+		return ContentFilterDecision{}
+	}
+	size := sample.ExactSize
+	if size <= 0 {
+		size = sample.File.SizeBytes
+	}
+	if size <= 0 {
+		size = sample.BytesRead
+	}
+	if opts.MinBinaryBytes > 0 && size > 0 && size < opts.MinBinaryBytes {
+		return ContentFilterDecision{Filtered: true, Reason: "below_min_binary_bytes", Rule: fmt.Sprintf("%d", opts.MinBinaryBytes)}
+	}
+	if opts.MaxBinaryBytes > 0 && size > opts.MaxBinaryBytes {
+		return ContentFilterDecision{Filtered: true, Reason: "above_max_binary_bytes", Rule: fmt.Sprintf("%d", opts.MaxBinaryBytes)}
+	}
+	for _, rule := range opts.BlockedMagicHex {
+		magic := decodeMagicHex(rule)
+		if len(magic) == 0 || len(sample.Prefix) < len(magic) {
+			continue
+		}
+		if string(sample.Prefix[:len(magic)]) == string(magic) {
+			return ContentFilterDecision{Filtered: true, Reason: "blocked_magic", Rule: rule}
+		}
+	}
+	return ContentFilterDecision{}
+}
+
+func normalizeMagicHexRules(rules []string) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		clean := strings.ToUpper(strings.TrimSpace(rule))
+		clean = strings.ReplaceAll(clean, "0X", "")
+		clean = strings.ReplaceAll(clean, " ", "")
+		clean = strings.ReplaceAll(clean, ":", "")
+		clean = strings.ReplaceAll(clean, "-", "")
+		if clean == "" || len(clean)%2 != 0 {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func decodeMagicHex(rule string) []byte {
+	rule = strings.TrimSpace(rule)
+	if rule == "" || len(rule)%2 != 0 {
+		return nil
+	}
+	out, err := hex.DecodeString(rule)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 func ToolProvenance(opts Options, stageName string) map[string]any {

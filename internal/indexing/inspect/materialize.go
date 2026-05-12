@@ -145,9 +145,6 @@ func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher Article
 	if maxBytes > 0 && int64(len(prefix)) > maxBytes {
 		prefix = prefix[:maxBytes]
 	}
-	if int64(len(prefix)) > 4096 {
-		prefix = prefix[:4096]
-	}
 	sig := DetectSignature(prefix, file.FileName)
 	return &BinaryPrefixSample{
 		File:       file,
@@ -205,6 +202,9 @@ func DetectSignature(data []byte, fileName string) string {
 	if len(data) >= 6 && string(data[:6]) == "PAR2\x00P" {
 		return "par2"
 	}
+	if len(data) >= 6 && string(data[:6]) == "RCLONE" {
+		return "rclone"
+	}
 	if len(data) >= 6 && string(data[:6]) == "7z\xbc\xaf'\x1c" {
 		return "7z"
 	}
@@ -253,6 +253,8 @@ func DetectSignature(data []byte, fileName string) string {
 
 func DetectMIMEType(data []byte, fileName string) string {
 	switch DetectSignature(data, fileName) {
+	case "rclone":
+		return "application/octet-stream"
 	case "par2":
 		return "application/x-par2"
 	case "7z":

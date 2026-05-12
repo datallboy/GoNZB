@@ -685,6 +685,15 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
 			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
 			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	filteredPredicate := `
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_inspections cfi
+			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.binary_id = b.id
+			  AND cfi.status = 'completed'
+			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
+		  )`
 	rerunPredicate := `
 			bi.id IS NULL OR
 			bi.status = 'failed' OR
@@ -744,6 +753,9 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			bi.inspection_claimed_until IS NULL OR
 			bi.inspection_claimed_until < NOW()
 		  )`
+	if stageName != "inspect_discovery" {
+		query += filteredPredicate
+	}
 	if stageName == "inspect_discovery" {
 		query = `
 			SELECT *
@@ -865,6 +877,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					bi.inspection_claimed_until IS NULL OR
 					bi.inspection_claimed_until < NOW()
 				  )
+				  ` + filteredPredicate + `
 				ORDER BY
 					r.release_id,
 					CASE
@@ -1961,6 +1974,60 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit par2 set replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin par2 target replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE binary_id = $1`, binaryID); err != nil {
+		return fmt.Errorf("delete par2 targets %d: %w", binaryID, err)
+	}
+
+	insertRows := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		fileName := strings.TrimSpace(row.FileName)
+		if fileName == "" {
+			continue
+		}
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal par2 target metadata %d: %w", binaryID, err)
+		}
+		insertRows = append(insertRows, []any{
+			binaryID,
+			strings.TrimSpace(row.ReleaseID),
+			fileName,
+			row.FileSize,
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
+			INSERT INTO binary_par2_targets (
+				binary_id,
+				release_id,
+				file_name,
+				file_size,
+				metadata_json,
+				updated_at
+			)
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert par2 targets %d: %w", binaryID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit par2 target replace tx: %w", err)
 	}
 	return nil
 }

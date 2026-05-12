@@ -3,6 +3,7 @@ package par2
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"testing"
@@ -33,7 +34,7 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	svc := NewService(
 		repo,
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
-		par2Fetcher{body: []byte("PAR2\x00P\x01\x02"), fileName: "example.vol03+04.par2"},
+		par2Fetcher{body: buildPAR2Sample("target.part01.rar", 123456), fileName: "example.vol03+04.par2"},
 		testPAR2Logger{},
 		inspectpkg.Options{MaxBytes: 1024},
 	)
@@ -54,11 +55,20 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if len(repo.releaseUpdates) != 1 || !boolValuePAR2(repo.releaseUpdates[0].HasPAR2) {
 		t.Fatalf("expected has_par2 update, got %+v", repo.releaseUpdates)
 	}
+	if len(repo.par2Targets) != 1 {
+		t.Fatalf("expected one par2 target, got %+v", repo.par2Targets)
+	}
+	if repo.par2Targets[0].FileName != "target.part01.rar" || repo.par2Targets[0].FileSize != 123456 {
+		t.Fatalf("unexpected par2 target %+v", repo.par2Targets[0])
+	}
 	if len(repo.completed) != 1 {
 		t.Fatalf("expected one completed inspection, got %+v", repo.completed)
 	}
 	if got := repo.completed[0].Summary["signature_ok"]; got != true {
 		t.Fatalf("expected signature_ok summary, got %+v", repo.completed[0].Summary)
+	}
+	if got := repo.completed[0].Summary["target_count"]; got != 1 {
+		t.Fatalf("expected target_count=1, got %+v", repo.completed[0].Summary)
 	}
 	if len(repo.artifacts) != 1 || repo.artifacts[0].ArtifactRole != "prefix_sample" {
 		t.Fatalf("expected one prefix sample artifact, got %+v", repo.artifacts)
@@ -123,6 +133,7 @@ type fakePAR2Repository struct {
 	failed         []pgindex.BinaryInspectionRecord
 	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	par2Sets       []pgindex.BinaryPAR2SetRecord
+	par2Targets    []pgindex.BinaryPAR2TargetRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
 }
 
@@ -151,6 +162,11 @@ func (f *fakePAR2Repository) ReplaceBinaryInspectionArtifacts(_ context.Context,
 
 func (f *fakePAR2Repository) ReplaceBinaryPAR2Sets(_ context.Context, _ int64, rows []pgindex.BinaryPAR2SetRecord) error {
 	f.par2Sets = append(f.par2Sets, rows...)
+	return nil
+}
+
+func (f *fakePAR2Repository) ReplaceBinaryPAR2Targets(_ context.Context, _ int64, rows []pgindex.BinaryPAR2TargetRecord) error {
+	f.par2Targets = append(f.par2Targets, rows...)
 	return nil
 }
 
@@ -203,4 +219,19 @@ func encodeYEncPAR2(data []byte) string {
 
 func boolValuePAR2(v *bool) bool {
 	return v != nil && *v
+}
+
+func buildPAR2Sample(fileName string, fileSize uint64) []byte {
+	name := append([]byte(fileName), 0)
+	for len(name)%4 != 0 {
+		name = append(name, 0)
+	}
+	packetLen := 64 + 44 + len(name)
+	packet := make([]byte, packetLen)
+	copy(packet[:8], []byte("PAR2\x00PKT"))
+	binary.LittleEndian.PutUint64(packet[8:16], uint64(packetLen))
+	copy(packet[48:64], []byte("PAR 2.0\x00FileDesc"))
+	binary.LittleEndian.PutUint64(packet[64+36:64+44], fileSize)
+	copy(packet[64+44:], name)
+	return packet
 }

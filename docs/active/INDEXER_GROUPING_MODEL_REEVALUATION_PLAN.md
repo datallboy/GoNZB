@@ -402,6 +402,27 @@ Recommended next implementation:
 - use PAR2 targets to promote/re-key weak single PAR2 binaries into the target archive family when matching binaries exist or later arrive
 - mark old single-file PAR2 releases stale when their PAR2 target graph proves they are only repair metadata for a larger release
 
+Implemented Phase 6 / PAR2 inspection work:
+
+- `inspect_par2` now samples enough prefix bytes to parse PAR2 file-description packets and persists target filenames/sizes in `binary_par2_targets`
+- PAR2 inspection summaries include `target_count` and target metadata so tiny PAR2-only releases can be audited against the recoverable file graph
+- runtime inspect settings now include `min_binary_bytes`, `max_binary_bytes`, and `blocked_magic_hex`
+- default blocked magic includes `52434C4F4E45` for `RCLONE`
+- inspect discovery marks matching completed opaque binaries as `content_filtered` with reason/rule metadata
+- later inspect stages skip binaries already marked content-filtered by inspect discovery
+- the Runtime Settings UI explains the size/magic filters and exposes them alongside inspection tool settings
+
+Validation:
+
+- `go test -count=1 ./internal/indexing/inspect ./internal/indexing/inspect/discovery ./internal/indexing/inspect/par2 ./internal/store/pgindex ./internal/app ./internal/infra/config ./internal/settingsadmin ./internal/runtime/wiring`
+- `npm --prefix ui run build`
+
+Remaining follow-up:
+
+- use persisted PAR2 targets to promote/re-key weak PAR2-only binaries into matching archive families when the target binaries are present
+- add an operator-facing audit/undo path before turning content filters into a broader release/download blacklist
+- run live inspect PAR2 passes against the fresh database once enough formed PAR2 releases exist
+
 Good outcome:
 
 - small opaque `misc` releases stop forming
@@ -428,6 +449,8 @@ Status on 2026-05-12:
 - [x] split provisional file-set identity from releasable release-family identity
 - [x] add readiness buckets for identity strength
 - [x] document configurable size/magic filtering as the next filter layer
+- [x] implement runtime size/magic content filters for inspect discovery
+- [x] implement PAR2 target filename persistence for `inspect_par2`
 - [ ] validate on a clean database with live assemble/recover/release cycles
 
 ## Implementation Sign-off

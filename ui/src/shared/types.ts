@@ -680,6 +680,9 @@ export type IndexingRuntimeSettings = {
     workspace_backend: string
     memory_work_dir: string
     max_bytes: number
+    min_binary_bytes: number
+    max_binary_bytes: number
+    blocked_magic_hex: string[]
     max_archive_depth: number
     tool_timeout_seconds: number
     ffprobe_path: string
