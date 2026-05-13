@@ -36,6 +36,14 @@ Use for:
 - separating provisional obfuscated file-set identity from releasable release-family identity
 - planning schema/runtime changes for identity strength and readiness buckets
 
+### `docs/active/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md`
+
+Use for:
+
+- the current map of indexer table ownership and service responsibilities
+- understanding which `binary_*` tables are canonical identity tables versus inspection/evidence tables
+- tracing missing links between assemble, release, and inspect stages before making schema changes
+
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
 Use for:

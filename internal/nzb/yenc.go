@@ -22,6 +22,7 @@ type YencDecoder struct {
 	PartNumber  int
 	TotalParts  int
 	PartOffset  int64
+	PartEnd     int64
 	FileSize    int64
 	FileName    string
 }
@@ -30,6 +31,7 @@ type YencHeader struct {
 	PartNumber int
 	TotalParts int
 	PartOffset int64
+	PartEnd    int64
 	FileSize   int64
 	FileName   string
 }
@@ -163,11 +165,12 @@ func (d *YencDecoder) Verify() error {
 }
 
 func (d *YencDecoder) parseYbegin(line string) {
-	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, FileSize: d.FileSize, FileName: d.FileName}
+	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, PartEnd: d.PartEnd, FileSize: d.FileSize, FileName: d.FileName}
 	parseYbeginLine(line, &header)
 	d.PartNumber = header.PartNumber
 	d.TotalParts = header.TotalParts
 	d.PartOffset = header.PartOffset
+	d.PartEnd = header.PartEnd
 	d.FileSize = header.FileSize
 	d.FileName = header.FileName
 }
@@ -204,13 +207,14 @@ func parseYbeginLine(line string, header *YencHeader) {
 }
 
 func (d *YencDecoder) handlePotentialPartHeader() error {
-	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, FileSize: d.FileSize, FileName: d.FileName}
+	header := YencHeader{PartNumber: d.PartNumber, TotalParts: d.TotalParts, PartOffset: d.PartOffset, PartEnd: d.PartEnd, FileSize: d.FileSize, FileName: d.FileName}
 	if err := readPotentialPartHeader(d.scanner, &header); err != nil {
 		return err
 	}
 	d.PartNumber = header.PartNumber
 	d.TotalParts = header.TotalParts
 	d.PartOffset = header.PartOffset
+	d.PartEnd = header.PartEnd
 	d.FileSize = header.FileSize
 	d.FileName = header.FileName
 	return nil
@@ -242,6 +246,13 @@ func readPotentialPartHeader(reader *bufio.Reader, header *YencHeader) error {
 				offset, err := strconv.ParseInt(val, 10, 64)
 				if err == nil {
 					header.PartOffset = offset - 1
+				}
+			}
+			if strings.HasPrefix(part, "end=") {
+				val := strings.TrimPrefix(part, "end=")
+				end, err := strconv.ParseInt(val, 10, 64)
+				if err == nil && end > 0 {
+					header.PartEnd = end
 				}
 			}
 		}

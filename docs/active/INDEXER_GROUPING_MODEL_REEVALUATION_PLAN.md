@@ -33,7 +33,9 @@ Assemble then:
 
 Current useful behavior:
 
-- yEnc file index/count is preserved as `file_index` and `expected_file_count`
+- yEnc subject file index/count is preserved as `file_index` and `expected_file_count`
+- `expected_file_count` is the poster/NZB file-set denominator, such as `[01/10]`; it can include PAR2, SFV, NFO, SRR, and other sidecars when the poster includes them in the subject counter
+- `expected_archive_file_count` is the archive/protected-payload denominator from stronger archive/PAR2 evidence; it is separate because a split archive can be `20` archive parts inside a `21` file release that also contains an SFV
 - yEnc article part/count is preserved as `part_number` and `total_parts`
 - Lane A prioritizes headers that match existing incomplete binaries by filename
 - Lane B drains recent unmatched backlog
@@ -406,6 +408,12 @@ Implemented Phase 6 / PAR2 inspection work:
 
 - `inspect_par2` now samples enough prefix bytes to parse PAR2 file-description packets and persists target filenames/sizes in `binary_par2_targets`
 - PAR2 inspection summaries include `target_count` and target metadata so tiny PAR2-only releases can be audited against the recoverable file graph
+- `inspect_par2` now filters parsed targets into protected targets; `.sfv`, `.nfo`, and `.srr` count when PAR2 lists them, while `.par2` files are excluded because they describe/repair the protected set
+- when all archive PAR2 targets share one archive stem, the PAR2 binary is re-keyed as auxiliary evidence for that target family
+- matching binaries with recovered yEnc filenames now receive `expected_archive_file_count` from the PAR2 archive target count and inferred `file_index` values from target names such as `.part02.rar`, `.r00`, `.7z.003`, and `.zip.005`
+- `inspect_par2` can now inspect assembled PAR2 binaries before release formation; PAR2 binaries no longer need to become tiny solo releases before they can provide archive denominator evidence
+- release-family summaries are refreshed immediately after PAR2 coverage is applied, so release selection can see the stronger denominator without waiting for another assemble pass
+- expected-file coverage uses complete binaries against the expected count, while actionable readiness still requires at least one complete main-payload binary
 - runtime inspect settings now include `min_binary_bytes`, `max_binary_bytes`, and `blocked_magic_hex`
 - default blocked magic includes `52434C4F4E45` for `RCLONE`
 - inspect discovery marks matching completed opaque binaries as `content_filtered` with reason/rule metadata
@@ -414,12 +422,13 @@ Implemented Phase 6 / PAR2 inspection work:
 
 Validation:
 
+- `go test -count=1 ./...`
 - `go test -count=1 ./internal/indexing/inspect ./internal/indexing/inspect/discovery ./internal/indexing/inspect/par2 ./internal/store/pgindex ./internal/app ./internal/infra/config ./internal/settingsadmin ./internal/runtime/wiring`
 - `npm --prefix ui run build`
 
 Remaining follow-up:
 
-- use persisted PAR2 targets to promote/re-key weak PAR2-only binaries into matching archive families when the target binaries are present
+- use stored PAR2 target graphs opportunistically when matching target binaries arrive after the PAR2 was already inspected
 - add an operator-facing audit/undo path before turning content filters into a broader release/download blacklist
 - run live inspect PAR2 passes against the fresh database once enough formed PAR2 releases exist
 
@@ -459,6 +468,100 @@ Next data-driven discovery work:
 - detect pointer candidates by data patterns such as message IDs, NZB/XML fragments, URLs, JSON-like metadata, or unusually text-heavy payloads
 - keep these probes out of assemble/release hot paths unless they produce durable grouping or filtering evidence
 
+Side-note plan:
+
+- add binary-level evidence rows for sampled payload signatures instead of relying on filename/title/extension
+- record magic bytes, ASCII ratio, printable string samples, pointer-pattern hits, and sampled-byte offsets
+- treat pointer-like payloads as discovery evidence only until a follow-up stage proves the referenced articles/files exist
+- infer archive volume indexes from recovered yEnc filenames such as `.part02.rar`, `.r04`, `.7z.003`, and `.zip.005`
+- use inferred archive volume indexes as release/file-set coverage evidence, not as article part coverage
+
+## Recovery Throughput Finding
+
+`recover_yenc` is slow because BODY-prefix recovery intentionally does not drain the full article body.
+
+Current behavior:
+
+- `recover_yenc` calls `FetchBodyPrefix`
+- `FetchBodyPrefix` issues `BODY <message-id>` and reads only the configured prefix bytes
+- because the NNTP dot stream still has unread article bytes, the provider discards that connection instead of returning it to the pool
+- each candidate can therefore pay a fresh dial/TLS/auth cost
+
+Implications:
+
+- increasing `recover_yenc.concurrency` helps only until provider/server connection setup becomes the bottleneck
+- scrape uses the same provider instance in the current indexer runtime, so XOVER scrape and BODY-prefix recovery can compete when supervised together
+- there is no global NNTP work queue with stage fairness today; the provider has an idle connection pool, not a priority scheduler
+- there is no standard XOVER field that contains the yEnc `=ybegin name=...` body header, so recovered filenames usually require BODY/ARTICLE data
+
+Header-only improvement:
+
+- some Message-IDs include article counters such as `<Part84of700...>`
+- these counters are available from XOVER and can improve part coverage without BODY fetches
+- matcher should use Message-ID `PartNofM` as article part evidence when subject yEnc counters are missing or weaker
+- same date, close article numbers, similar bytes/lines, and similar poster domain/prefix are useful prioritization signals, but not strong enough to form release/file identity alone
+
+Open throughput options:
+
+- reserve/dedicate indexer NNTP capacity for recovery instead of letting scrape occupy all useful transport time
+- add a stage-aware NNTP scheduler with separate scrape/recovery queues and per-stage concurrency caps
+- prioritize recovery candidates with header evidence that suggests real multipart content
+- keep yEnc BODY-prefix recovery outside assemble unless a tiny bounded hot-path sample proves worth the latency
+- investigate provider-specific commands, but assume portable NNTP has no partial BODY range request
+
+Footer/range notes:
+
+- `=ypart begin/end` is in the cheap BODY prefix and can provide per-article byte range evidence
+- `=yend size/pcrc32/crc32` is at the end of the article body, so capturing it requires reading/draining the full BODY
+- footer CRC is useful for verification/dedupe/probe work, but should not be required for normal grouping because it is too expensive at recovery scale
+- downloader decode already reads yEnc footers for checksum verification during actual downloads; recovery currently only needs the prefix identity evidence
+
+Stage contract:
+
+- assemble stays fast and header-only
+- assemble may create weak/provisional binaries when XOVER is insufficient, but it should not form release-quality identity from weak context alone
+- `recover_yenc` is the promotion stage for weak/provisional binaries that need BODY-prefix identity evidence
+- release should ignore/cool down weak/provisional families and split-archive families without expected file-count evidence
+- inspect stages can add richer evidence later; if that evidence improves grouping, affected families are requeued instead of blocking assemble
+
+Archive volume inference:
+
+- recovered yEnc names such as `.part02.rar`, `.r04`, `.7z.003`, and `.zip.005` should populate `file_index`
+- inferred volume indexes are file-set coverage evidence only; they are not an expected file-count denominator by themselves
+- release should not form split-archive sets with only inferred indexes and no expected file count, because those are likely partial snapshots
+
+Unknown denominator completion model:
+
+- recovered yEnc identity gives the file name, file size, article part number, article total, and article byte range for one split volume
+- that is enough to know whether a single split volume is article-complete
+- it is not enough to know whether the whole archive/release is file-complete
+- observed highest archive volume index is only a lower bound, not the expected file count
+- release formation should treat archive sets with unknown expected count as `needs_more_evidence`, not complete
+
+Ways to discover the missing denominator:
+
+- subject/XOVER file counters when visible, such as `[01/86]`
+- PAR2 target file-description packets, when PAR2 is available and parsed; this is the strongest denominator because it lists protected target filenames directly
+- RAR/ZIP archive metadata from a representative first volume, when enough leading bytes are available
+- 7z start header from `.7z.001`: the first 32 bytes include the next-header offset/size, which can imply the logical archive range
+- for split 7z, if the first volume yEnc file size is known, `ceil(next_header_end / first_volume_size)` can infer the highest required split volume
+
+Implications:
+
+- `recover_yenc` should promote grouping and per-volume article completion, but should not invent `expected_file_count`
+- `inspect_par2` can provide `expected_archive_file_count` when target file-description packets expose a protected split archive/media file set
+- a future lightweight `inspect_archive_head` or archive discovery pass can probe only representative first volumes and persist inferred expected file count when reliable
+- sparse archive inspection can work once the required first/last ranges are present, but it should not guess the last part without header/PAR2 proof
+- RAR is more forgiving because first-volume metadata often provides useful archive entries earlier; 7z often needs the encoded next header near the logical end of the concatenated archive
+- passworded archives should still record archive identity, password-required state, and available entry hints; unknown password is not a grouping failure
+
+Binary evidence stage placement:
+
+- binary-level magic/ASCII/string/pointer probing belongs in inspect/discovery-style stages, not assemble
+- discovery should persist durable evidence rows or metadata that later stages can use without re-fetching
+- pointer-like text files are currently speculative; detect and audit them, but do not make them release-forming until references are proven
+- passworded archives should stay in inspect/archive and inspect/password; unknown-password results should be persisted as release metadata and kept searchable/auditable without blocking grouping
+
 Good outcome:
 
 - small opaque `misc` releases stop forming
@@ -471,7 +574,8 @@ Good outcome:
 - opaque one-file posts do not form releases solely from `expected_file_count=1`
 - multi-file obfuscated sets use subject set token plus file count as a grouping signal
 - yEnc part count remains binary coverage evidence
-- yEnc file count remains release/file-set coverage evidence
+- yEnc file count remains release/NZB-file-set coverage evidence
+- PAR2 target count remains archive/protected-payload coverage evidence
 - release family summaries expose identity strength and readiness clearly enough for UI/runtime tuning
 
 ## Sign-off
@@ -489,6 +593,12 @@ Status on 2026-05-12:
 - [x] implement PAR2 target filename persistence for `inspect_par2`
 - [x] prove weak-single binaries can be real multipart archive segments via yEnc BODY-prefix recovery
 - [x] make `recover_yenc` concurrency-driven and observable enough for live tuning
+- [x] document binary-level probe side-note plan and recovery transport bottleneck
+- [x] use Message-ID `PartNofM` counters as header-only article part evidence
+- [x] infer archive volume indexes from recovered yEnc/archive filenames
+- [x] keep release conservative for split archives without expected file-count evidence
+- [x] apply parsed PAR2 target graphs as expected archive-file-count evidence for matching archive families
+- [x] split poster/NZB file-set count from archive/protected-payload expected count
 - [ ] validate on a clean database with live assemble/recover/release cycles
 
 ## Implementation Sign-off

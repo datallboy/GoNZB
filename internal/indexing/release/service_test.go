@@ -982,6 +982,88 @@ func TestRunOnceSkipsFragmentaryMultiFileClustersUntilMultipleMainFilesExist(t *
 	}
 }
 
+func TestRunOnceSkipsSplitArchiveClusterWithoutExpectedFileCount(t *testing.T) {
+	baseTime := time.Date(2026, 5, 12, 6, 13, 10, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "wbostp9yf138oybk1yc93o",
+			ReleaseKey:       "wbostp9yf138oybk1yc93o",
+			ReleaseName:      "Wbostp9Yf138Oybk1yc93o",
+			BinaryCount:      3,
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"wbostp9yf138oybk1yc93o": {
+				{
+					BinaryID:           1,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part01.rar",
+					FileIndex:          1,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925049,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+				{
+					BinaryID:           2,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part02.rar",
+					FileIndex:          2,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925329,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+				{
+					BinaryID:           3,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part03.rar",
+					FileIndex:          3,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925600,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected split archive without expected file count to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_contextual_weak"]; got != 1 {
+		t.Fatalf("expected contextual weak skip metric, got %#v", got)
+	}
+}
+
 func TestRunOnceSkipsOpaqueStandaloneBinaryWithoutExplicitSingleFileEvidence(t *testing.T) {
 	baseTime := time.Date(2026, 4, 20, 18, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{

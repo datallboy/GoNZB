@@ -429,7 +429,7 @@ func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID stri
 				fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_header_error=%v\n", segment.Number, segment.MessageID, err)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_name=%q yenc_part=%d/%d file_size=%d offset=%d\n",
+			fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_name=%q yenc_part=%d/%d file_size=%d offset=%d end=%d\n",
 				segment.Number,
 				segment.MessageID,
 				header.FileName,
@@ -437,6 +437,7 @@ func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID stri
 				header.TotalParts,
 				header.FileSize,
 				header.PartOffset,
+				header.PartEnd,
 			)
 		}
 	}

@@ -173,6 +173,51 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 	return out, nil
 }
 
+func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*CatalogReleaseFile, error) {
+	if binaryID <= 0 {
+		return nil, fmt.Errorf("binary id is required")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			0::BIGINT AS id,
+			b.id AS binary_id,
+			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS file_name,
+			COALESCE(NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), b.release_name) AS subject,
+			COALESCE(p.poster_name, '') AS poster,
+			b.posted_at,
+			b.total_bytes AS size_bytes,
+			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
+			b.file_index
+		FROM binaries b
+		LEFT JOIN posters p ON p.id = b.poster_id
+		WHERE b.id = $1`, binaryID)
+
+	var item CatalogReleaseFile
+	var postedAt sql.NullTime
+	if err := row.Scan(
+		&item.ID,
+		&item.BinaryID,
+		&item.FileName,
+		&item.Subject,
+		&item.Poster,
+		&postedAt,
+		&item.SizeBytes,
+		&item.IsPars,
+		&item.FileIndex,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get catalog binary file %d: %w", binaryID, err)
+	}
+	if postedAt.Valid {
+		t := postedAt.Time.UTC()
+		item.PostedAt = &t
+	}
+	return &item, nil
+}
+
 // CHANGED: list article refs for one release_file row via release_files -> binary_parts.
 func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]CatalogArticleRef, error) {
 	if releaseFileID <= 0 {
@@ -207,6 +252,71 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
 	}
 
+	return out, nil
+}
+
+func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
+	if binaryID <= 0 {
+		return nil, fmt.Errorf("binary id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ah.message_id,
+			ah.bytes,
+			bp.part_number
+		FROM binary_parts bp
+		JOIN article_headers ah ON ah.id = bp.article_header_id
+		WHERE bp.binary_id = $1
+		ORDER BY bp.part_number`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog binary articles %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]CatalogArticleRef, 0, 128)
+	for rows.Next() {
+		var item CatalogArticleRef
+		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber); err != nil {
+			return nil, fmt.Errorf("scan catalog binary article ref: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate catalog binary article refs: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error) {
+	if binaryID <= 0 {
+		return nil, fmt.Errorf("binary id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ng.group_name
+		FROM binaries b
+		JOIN newsgroups ng ON ng.id = b.newsgroup_id
+		WHERE b.id = $1
+		ORDER BY ng.group_name`, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list binary newsgroups %d: %w", binaryID, err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 1)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan binary newsgroup: %w", err)
+		}
+		if strings.TrimSpace(name) != "" {
+			out = append(out, strings.TrimSpace(name))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary newsgroups %d: %w", binaryID, err)
+	}
 	return out, nil
 }
 

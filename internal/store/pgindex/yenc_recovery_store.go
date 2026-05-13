@@ -84,7 +84,14 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 		WHERE COALESCE(p.subject_file_name, '') = ''
 		  AND (p.yenc_recovery_retry_after IS NULL OR p.yenc_recovery_retry_after <= NOW())
-		ORDER BY b.updated_at DESC, b.id
+		ORDER BY
+			CASE
+				WHEN COALESCE(p.yenc_total_parts, 0) > 1 THEN 0
+				WHEN ah.message_id ~* 'part[0-9]{1,6}of[0-9]{1,6}' THEN 1
+				ELSE 2
+			END,
+			b.updated_at DESC,
+			b.id
 		LIMIT $1`,
 		limit,
 		summaryLimit,
@@ -180,6 +187,9 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 
 	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
 	if err != nil {
+		return nil, err
+	}
+	if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
 		return nil, err
 	}
 

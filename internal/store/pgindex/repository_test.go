@@ -1712,6 +1712,76 @@ func TestListReleaseCandidatesRanksWeakSingleBehindFormableFamilies(t *testing.T
 	}
 }
 
+func TestListReleaseCandidatesQueueWindowPrefersActionableFamiliesOverOlderWeakSingles(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.queue-window.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	actionableFamily := fmt.Sprintf("queue-window-actionable-%d", time.Now().UnixNano())
+	weakFamilyA := fmt.Sprintf("queue-window-weak-a-%d", time.Now().UnixNano())
+	weakFamilyB := fmt.Sprintf("queue-window-weak-b-%d", time.Now().UnixNano())
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 0, false, 12345, NOW(), 'contextual_obfuscated', 'deadbeef.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '5 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 0, false, 12345, NOW(), 'contextual_obfuscated', 'feedface.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '4 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $4, $4, $4, $4, 6, 6, 6, 0, 6, true, 54321, NOW(), 'archive_stem', 'movie.part01.rar', 0.98, 'actionable', 100, NOW() - INTERVAL '1 minute', TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`,
+		newsgroupID, weakFamilyA, weakFamilyB, actionableFamily,
+	); err != nil {
+		t.Fatalf("seed queue-window summary rows: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 80})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != actionableFamily {
+		t.Fatalf("expected actionable family %q first, got %q", actionableFamily, candidates[0].ReleaseFamilyKey)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key IN ($2, $3, $4)`, newsgroupID, weakFamilyA, weakFamilyB, actionableFamily,
+	); err != nil {
+		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
 func TestListReleaseCandidatesPrefersBaseStemWhenReadinessIsEqual(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3379,6 +3449,78 @@ func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRA
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectPAR2PrefersManifestOverVolumes(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.manifest.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-manifest-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-manifest-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	files := []string{
+		"example.par2",
+		"example.vol00+01.par2",
+		"example.vol02+03.par2",
+	}
+	for idx, name := range files {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			PosterID:          posterID,
+			SourceReleaseKey:  baseKey,
+			ReleaseFamilyKey:  baseKey,
+			FileFamilyKey:     baseKey + "::par2",
+			FamilyKind:        "par2",
+			BaseStem:          "example",
+			IsAuxiliary:       true,
+			IsMainPayload:     false,
+			ReleaseKey:        baseKey,
+			ReleaseName:       "Example PAR2",
+			BinaryKey:         fmt.Sprintf("%s::%d", baseKey, idx+1),
+			BinaryName:        name,
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: len(files),
+			TotalParts:        1,
+			PostedAt:          &now,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", name, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+			t.Fatalf("seed observed_parts for %s: %v", name, err)
+		}
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+
+	filtered := make([]BinaryInspectionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.GroupName == baseKey {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("expected one par2 candidate for manifest set, got %d: %+v", len(filtered), filtered)
+	}
+	if filtered[0].FileName != "example.par2" {
+		t.Fatalf("expected manifest par2 candidate, got %+v", filtered[0])
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDetailsUntilSourceChanges(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3817,6 +3959,86 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 	if !found {
 		t.Fatalf("expected inspect_media candidate to rerun after fresher archive inspection")
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.retry.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-retry-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-rerun-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Retry",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "example.par2",
+		FileName:          "example.par2",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("seed observed_parts: %v", err)
+	}
+
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{{
+		BinaryID:    binaryID,
+		SetName:     "example.par2",
+		BaseName:    "example.par2",
+		SignatureOK: true,
+	}}); err != nil {
+		t.Fatalf("seed par2 set: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        binaryID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete par2 inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected inspect_par2 candidate to rerun when targets are missing")
 	}
 }
 

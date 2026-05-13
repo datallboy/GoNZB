@@ -295,6 +295,83 @@ func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) 
 	}
 }
 
+func TestMatchUsesMessageIDPartCounterWhenSubjectCounterIsWeak(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: `<Part84of700.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>`,
+		Subject:   `opaque "opaque-token" yEnc (1/1)`,
+	})
+
+	if got.PartNumber != 84 || got.TotalParts != 700 {
+		t.Fatalf("expected message-id part counter 84/700, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	evidence, ok := got.GroupingEvidence["message_host"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected message_host evidence, got %#v", got.GroupingEvidence["message_host"])
+	}
+	if evidence["part"] != 84 || evidence["total"] != 700 {
+		t.Fatalf("expected message-id counter evidence, got %#v", evidence)
+	}
+}
+
+func TestMatchKeepsSubjectYEncCounterWhenItIsStrongerThanMessageID(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: `<Part2of10.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>`,
+		Subject:   `Example [1/1] - "example.part01.rar" yEnc (84/700)`,
+	})
+
+	if got.PartNumber != 84 || got.TotalParts != 700 {
+		t.Fatalf("expected subject yEnc counter 84/700, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+}
+
+func TestMatchInfersArchiveVolumeIndexFromRecoveredYEncName(t *testing.T) {
+	svc := NewService()
+
+	cases := []struct {
+		name string
+		want int
+	}{
+		{name: "Wbostp9Yf138Oybk1yc93o.part02.rar", want: 2},
+		{name: "Wbostp9Yf138Oybk1yc93o.part001.rar", want: 1},
+		{name: "archive.r00", want: 2},
+		{name: "archive.r04", want: 6},
+		{name: "archive.7z.003", want: 3},
+		{name: "archive.zip.005", want: 5},
+	}
+
+	for _, tc := range cases {
+		got := svc.Match(Candidate{
+			MessageID: "<recovered@indexer.test>",
+			Subject:   `opaque`,
+			RawOverview: map[string]any{
+				"name":  tc.name,
+				"part":  1,
+				"total": 10,
+			},
+		})
+		if got.FileIndex != tc.want {
+			t.Fatalf("%s: expected inferred file index %d, got %d", tc.name, tc.want, got.FileIndex)
+		}
+	}
+}
+
+func TestMatchKeepsExplicitFileCounterOverArchiveVolumeIndex(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<explicit@indexer.test>",
+		Subject:   `[12/40] - "archive.part02.rar" yEnc (1/10)`,
+	})
+
+	if got.FileIndex != 12 || got.ExpectedFileCount != 40 {
+		t.Fatalf("expected explicit file counter 12/40, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+}
+
 func TestMatchDoesNotMergeNearbyPostsWithDifferentExplicitFilenames(t *testing.T) {
 	svc := NewService()
 	postedAt := time.Date(2026, 4, 9, 21, 0, 0, 0, time.UTC)
