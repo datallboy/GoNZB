@@ -91,7 +91,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		whereClause = `
 			b.provider_id = $1
 			AND b.newsgroup_id = $2
-			AND b.expected_file_count > 1
+			AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
 			AND BTRIM(b.base_stem) <> ''
 			AND LOWER(BTRIM(b.base_stem)) = $3`
 	}
@@ -104,7 +104,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		completeBinaryCount            int
 		completeMainPayloadBinaryCount int
 		expectedFileCount              int
+		expectedArchiveFileCount       int
 		hasExpectedFileCount           bool
+		hasExpectedArchiveFileCount    bool
 		totalBytes                     int64
 		earliestPostedAt               sql.NullTime
 		dominantFamilyKind             string
@@ -132,7 +134,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				END
 			), 0)::INTEGER AS complete_main_payload_binary_count,
 			COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
+			COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
 			COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
+			COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
 			MIN(b.posted_at) AS earliest_posted_at
 		FROM binaries b
@@ -145,7 +149,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		&completeBinaryCount,
 		&completeMainPayloadBinaryCount,
 		&expectedFileCount,
+		&expectedArchiveFileCount,
 		&hasExpectedFileCount,
+		&hasExpectedArchiveFileCount,
 		&totalBytes,
 		&earliestPostedAt,
 	); err != nil {
@@ -167,7 +173,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				complete_main_payload_binary_count,
 				incomplete_binary_count,
 				expected_file_count,
+				expected_archive_file_count,
 				has_expected_file_count,
+				has_expected_archive_file_count,
 				total_bytes,
 				earliest_posted_at,
 				dominant_family_kind,
@@ -175,10 +183,11 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				dominant_match_confidence,
 				readiness_bucket,
 				expected_file_coverage_pct,
+				archive_file_coverage_pct,
 				processed_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,'','',0,$5,0,TIMESTAMPTZ 'epoch',NOW())
+			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,0,0,TIMESTAMPTZ 'epoch',NOW())
 			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -188,7 +197,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
 			    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
 			    expected_file_count = EXCLUDED.expected_file_count,
+			    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
 			    has_expected_file_count = EXCLUDED.has_expected_file_count,
+			    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
 			    total_bytes = EXCLUDED.total_bytes,
 			    earliest_posted_at = EXCLUDED.earliest_posted_at,
 			    dominant_family_kind = EXCLUDED.dominant_family_kind,
@@ -196,6 +207,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
 			    readiness_bucket = EXCLUDED.readiness_bucket,
 			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+			    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
 			    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 			    updated_at = NOW()`,
 			key.ProviderID,
@@ -245,6 +257,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	if binaryCount == 1 &&
 		completeMainPayloadBinaryCount == 1 &&
 		expectedFileCount <= 0 &&
+		expectedArchiveFileCount <= 0 &&
 		!summaryAllowsStandaloneBinaryRelease(dominantFamilyKind, dominantFileName, dominantMatchConfidence) {
 		readinessBucket = releaseReadinessWeakSingle
 	}
@@ -253,9 +266,16 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	}
 	expectedFileCoveragePct := 0.0
 	if expectedFileCount > 0 {
-		expectedFileCoveragePct = (float64(completeMainPayloadBinaryCount) / float64(expectedFileCount)) * 100
+		expectedFileCoveragePct = (float64(completeBinaryCount) / float64(expectedFileCount)) * 100
 		if expectedFileCoveragePct > 100 {
 			expectedFileCoveragePct = 100
+		}
+	}
+	archiveFileCoveragePct := 0.0
+	if expectedArchiveFileCount > 0 {
+		archiveFileCoveragePct = (float64(completeMainPayloadBinaryCount) / float64(expectedArchiveFileCount)) * 100
+		if archiveFileCoveragePct > 100 {
+			archiveFileCoveragePct = 100
 		}
 	}
 
@@ -279,7 +299,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			complete_main_payload_binary_count,
 			incomplete_binary_count,
 			expected_file_count,
+			expected_archive_file_count,
 			has_expected_file_count,
+			has_expected_archive_file_count,
 			total_bytes,
 			earliest_posted_at,
 			dominant_family_kind,
@@ -287,10 +309,11 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			dominant_match_confidence,
 			readiness_bucket,
 			expected_file_coverage_pct,
+			archive_file_coverage_pct,
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,TIMESTAMPTZ 'epoch',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -300,7 +323,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
 		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
 		    expected_file_count = EXCLUDED.expected_file_count,
+		    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
 		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
 		    total_bytes = EXCLUDED.total_bytes,
 		    earliest_posted_at = EXCLUDED.earliest_posted_at,
 		    dominant_family_kind = EXCLUDED.dominant_family_kind,
@@ -308,6 +333,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
 		    readiness_bucket = EXCLUDED.readiness_bucket,
 		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
 		    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,
 		key.ProviderID,
@@ -322,7 +348,9 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		completeMainPayloadBinaryCount,
 		binaryCount-completeBinaryCount,
 		expectedFileCount,
+		expectedArchiveFileCount,
 		hasExpectedFileCount,
+		hasExpectedArchiveFileCount,
 		totalBytes,
 		earliestPostedAtValue,
 		dominantFamilyKind,
@@ -330,6 +358,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 		dominantMatchConfidence,
 		readinessBucket,
 		expectedFileCoveragePct,
+		archiveFileCoveragePct,
 	); err != nil {
 		return fmt.Errorf("upsert release family summary provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
 	}
@@ -361,7 +390,9 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 			complete_main_payload_binary_count,
 			incomplete_binary_count,
 			expected_file_count,
+			expected_archive_file_count,
 			has_expected_file_count,
+			has_expected_archive_file_count,
 			total_bytes,
 			earliest_posted_at,
 			dominant_family_kind,
@@ -369,10 +400,11 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 			dominant_match_confidence,
 			readiness_bucket,
 			expected_file_coverage_pct,
+			archive_file_coverage_pct,
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,FALSE,0,NULL,'','',0,$5,0,TIMESTAMPTZ 'epoch',NOW())
+		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,0,0,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,

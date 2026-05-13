@@ -10,7 +10,7 @@ import (
 
 const (
 	par2PacketHeaderSize = 64
-	par2FileDescBodySize = 44
+	par2FileDescBodySize = 56
 	maxPAR2TargetSize    = uint64(1 << 50) // 1 PiB, far above useful Usenet payloads.
 )
 
@@ -57,11 +57,11 @@ func parseFileDescPacket(packet []byte) (targetFile, bool) {
 		return targetFile{}, false
 	}
 	body := packet[par2PacketHeaderSize:]
-	size := binary.LittleEndian.Uint64(body[36:44])
+	size := binary.LittleEndian.Uint64(body[48:56])
 	if size == 0 || size > uint64(math.MaxInt64) || size > maxPAR2TargetSize {
 		return targetFile{}, false
 	}
-	nameBytes := body[44:]
+	nameBytes := body[56:]
 	if idx := indexByte(nameBytes, 0); idx >= 0 {
 		nameBytes = nameBytes[:idx]
 	}

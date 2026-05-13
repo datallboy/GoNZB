@@ -53,6 +53,7 @@ var (
 	yencPartRE       = regexp.MustCompile(`(?i)\bpart\s*[:=]\s*(\d{1,5})\b`)
 	yencTotalRE      = regexp.MustCompile(`(?i)\btotal\s*[:=]\s*(\d{1,5})\b`)
 	yencSizeRE       = regexp.MustCompile(`(?i)\bsize\s*[:=]\s*(\d{1,18})\b`)
+	messagePartRE    = regexp.MustCompile(`(?i)\bpart\s*(\d{1,6})\s*of\s*(\d{1,6})\b`)
 	extensionHintRE  = regexp.MustCompile(`(?i)\.(par2|vol\d+\+\d+\.par2|nfo|sfv|srr|rar|r\d{2,3}|zip|7z|mkv|avi|mp4|mp3|flac)\b`)
 	multiSpaceRE     = regexp.MustCompile(`\s+`)
 	separatorRE      = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
@@ -62,6 +63,9 @@ var (
 	parVolumeStemRE  = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
 	splitArchiveRE   = regexp.MustCompile(`(?i)\.(7z|zip)\.\d{3}$`)
 	rarFamilyRE      = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	rarPartIndexRE   = regexp.MustCompile(`(?i)\.part0*(\d+)\.rar$`)
+	rarRIndexRE      = regexp.MustCompile(`(?i)\.r(\d{2,3})$`)
+	splitIndexRE     = regexp.MustCompile(`(?i)\.(?:7z|zip)\.0*(\d+)$`)
 	volumeTokenRE    = regexp.MustCompile(`(?i)^vol\d+$`)
 	partTokenRE      = regexp.MustCompile(`(?i)^part\d+$`)
 	rarTokenRE       = regexp.MustCompile(`(?i)^r\d{2,3}$`)
@@ -85,6 +89,14 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 	}
 	if structured.Total > totalParts {
 		totalParts = structured.Total
+	}
+	messagePartNumber, messageTotalParts := parseMessagePartInfo(candidate.MessageID)
+	if messageTotalParts > totalParts {
+		partNumber = messagePartNumber
+		totalParts = messageTotalParts
+	}
+	if fileIndex <= 0 {
+		fileIndex = inferArchiveVolumeIndex(firstNonEmpty(structured.Name, extractQuotedFilename(clean)))
 	}
 
 	return &matchState{
@@ -786,6 +798,49 @@ func parsePartInfo(subject string) (int, int) {
 	}
 
 	return bestCounterPair(subject)
+}
+
+func parseMessagePartInfo(messageID string) (int, int) {
+	value := strings.TrimSpace(strings.Trim(messageID, "<>"))
+	if value == "" {
+		return 0, 0
+	}
+	match := messagePartRE.FindStringSubmatch(value)
+	if len(match) != 3 {
+		return 0, 0
+	}
+	part, errPart := strconv.Atoi(match[1])
+	total, errTotal := strconv.Atoi(match[2])
+	if errPart != nil || errTotal != nil || part <= 0 || total <= 0 {
+		return 0, 0
+	}
+	if part > total {
+		total = part
+	}
+	return part, total
+}
+
+func inferArchiveVolumeIndex(fileName string) int {
+	fileName = strings.ToLower(strings.TrimSpace(sanitizeFileName(fileName)))
+	if fileName == "" {
+		return 0
+	}
+	for _, re := range []*regexp.Regexp{rarPartIndexRE, splitIndexRE} {
+		if match := re.FindStringSubmatch(fileName); len(match) == 2 {
+			if index, err := strconv.Atoi(match[1]); err == nil && index > 0 {
+				return index
+			}
+		}
+	}
+	if match := rarRIndexRE.FindStringSubmatch(fileName); len(match) == 2 {
+		if index, err := strconv.Atoi(match[1]); err == nil && index >= 0 {
+			return index + 2
+		}
+	}
+	if strings.HasSuffix(fileName, ".rar") {
+		return 1
+	}
+	return 0
 }
 
 func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {

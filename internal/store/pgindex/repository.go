@@ -299,6 +299,21 @@ type BinaryPAR2TargetRecord struct {
 	Metadata  map[string]any
 }
 
+type BinaryPAR2TargetCoverageResult struct {
+	TargetCount        int
+	MainTargetCount    int
+	UpdatedBinaryCount int
+}
+
+type CatalogReader interface {
+	ListCatalogReleaseFiles(ctx context.Context, releaseID string) ([]CatalogReleaseFile, error)
+	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]CatalogArticleRef, error)
+	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
+	GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*CatalogReleaseFile, error)
+	ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error)
+	ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error)
+}
+
 type PasswordVerificationCandidate struct {
 	ID                 int64
 	ReleaseID          string

@@ -984,6 +984,10 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	}
 	defer rollbackTx(tx)
 
+	if err := lockBinaryIdentityKey(ctx, tx, in.ProviderID, in.NewsgroupID, in.BinaryKey); err != nil {
+		return 0, err
+	}
+
 	var (
 		hadExistingBinary         bool
 		existingReleaseFamilyKey  string
@@ -1246,6 +1250,41 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		return dedupedRecords[i].ArticleHeaderID < dedupedRecords[j].ArticleHeaderID
 	})
 	headerIDs := uniqueSortedArticleHeaderIDs(records)
+	existingBinaryIDs, err := existingBinaryIDsForPartRecords(ctx, tx, dedupedRecords)
+	if err != nil {
+		return err
+	}
+	validRecords := make([]BinaryPartRecord, 0, len(dedupedRecords))
+	validHeaderIDs := make([]int64, 0, len(headerIDs))
+	retryHeaderIDs := make([]int64, 0, 8)
+	retrySeen := make(map[int64]struct{}, 8)
+	for _, record := range dedupedRecords {
+		if _, ok := existingBinaryIDs[record.BinaryID]; ok {
+			validRecords = append(validRecords, record)
+			continue
+		}
+		if record.ArticleHeaderID > 0 {
+			if _, seen := retrySeen[record.ArticleHeaderID]; !seen {
+				retrySeen[record.ArticleHeaderID] = struct{}{}
+				retryHeaderIDs = append(retryHeaderIDs, record.ArticleHeaderID)
+			}
+		}
+	}
+	for _, articleHeaderID := range headerIDs {
+		if _, retry := retrySeen[articleHeaderID]; !retry {
+			validHeaderIDs = append(validHeaderIDs, articleHeaderID)
+		}
+	}
+	dedupedRecords = validRecords
+	headerIDs = validHeaderIDs
+	if len(retryHeaderIDs) > 0 {
+		if err := releaseAssemblyClaims(ctx, tx, retryHeaderIDs); err != nil {
+			return err
+		}
+	}
+	if len(dedupedRecords) == 0 {
+		return nil
+	}
 
 	partArgs := make([]any, 0, len(dedupedRecords)*7)
 	headerArgs := make([]any, 0, len(headerIDs))
@@ -1325,6 +1364,83 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		return fmt.Errorf("mark %d article headers assembled: %w", len(headerIDs), err)
 	}
 
+	return nil
+}
+
+func existingBinaryIDsForPartRecords(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) (map[int64]struct{}, error) {
+	if len(records) == 0 {
+		return map[int64]struct{}{}, nil
+	}
+	ids := make([]int64, 0, len(records))
+	seen := make(map[int64]struct{}, len(records))
+	for _, record := range records {
+		if record.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[record.BinaryID]; ok {
+			continue
+		}
+		seen[record.BinaryID] = struct{}{}
+		ids = append(ids, record.BinaryID)
+	}
+	if len(ids) == 0 {
+		return map[int64]struct{}{}, nil
+	}
+
+	args := make([]any, 0, len(ids))
+	values := make([]string, 0, len(ids))
+	for i, id := range ids {
+		args = append(args, id)
+		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(id) AS (
+			VALUES %s
+		)
+		SELECT b.id
+		FROM binaries b
+		JOIN requested r ON r.id = b.id`, strings.Join(values, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query existing binary ids for part upsert: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]struct{}, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan existing binary id for part upsert: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing binary ids for part upsert: %w", err)
+	}
+	return out, nil
+}
+
+func releaseAssemblyClaims(ctx context.Context, tx *sql.Tx, articleHeaderIDs []int64) error {
+	if len(articleHeaderIDs) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(articleHeaderIDs))
+	values := make([]string, 0, len(articleHeaderIDs))
+	for i, id := range articleHeaderIDs {
+		args = append(args, id)
+		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
+	}
+	query := fmt.Sprintf(`
+		WITH retry_headers(id) AS (
+			VALUES %s
+		)
+		UPDATE article_headers
+		SET assembly_claimed_by = '',
+		    assembly_claimed_until = NULL
+		FROM retry_headers
+		WHERE article_headers.id = retry_headers.id`, strings.Join(values, ","))
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("release %d assembly header claims for retry: %w", len(articleHeaderIDs), err)
+	}
 	return nil
 }
 
@@ -1479,11 +1595,12 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 
 func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]releaseFamilySummaryKey, error) {
 	var (
-		providerID        int64
-		newsgroupID       int64
-		releaseFamilyKey  string
-		baseStem          string
-		expectedFileCount int
+		providerID               int64
+		newsgroupID              int64
+		releaseFamilyKey         string
+		baseStem                 string
+		expectedFileCount        int
+		expectedArchiveFileCount int
 	)
 	err := tx.QueryRowContext(ctx, `
 		WITH agg AS (
@@ -1513,7 +1630,8 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 			b.newsgroup_id,
 			b.release_family_key,
 			b.base_stem,
-			b.expected_file_count`,
+			b.expected_file_count,
+			b.expected_archive_file_count`,
 		binaryID,
 	).Scan(
 		&providerID,
@@ -1521,6 +1639,7 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 		&releaseFamilyKey,
 		&baseStem,
 		&expectedFileCount,
+		&expectedArchiveFileCount,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
@@ -1530,6 +1649,9 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 2)
 	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
 	if expectedFileCount > 1 {
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+	}
+	if expectedArchiveFileCount > 1 {
 		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
 	}
 

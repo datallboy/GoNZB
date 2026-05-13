@@ -655,11 +655,21 @@ func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, 
 		return false, fragmentReasonNoMainPayload
 	}
 	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
-	if expectedFiles > 1 && mainPayloadCount < 2 {
+	expectedArchiveFiles := clusterExpectedArchiveFileCount(cluster.Binaries)
+	if (expectedFiles > 1 || expectedArchiveFiles > 1) && mainPayloadCount < 2 {
 		return false, fragmentReasonMultiFileSingleMainPayload
+	}
+	if expectedFiles <= 0 &&
+		expectedArchiveFiles <= 0 &&
+		mainPayloadCount > 1 &&
+		clusterHasSplitArchiveParts(cluster.Binaries) &&
+		!recordHasStrongTitleEvidence(record) &&
+		releaseTitleNeedsMoreEvidence(record) {
+		return false, fragmentReasonContextualWeak
 	}
 	if opts.RequireExpectedFileCountForContextualObfuscated &&
 		expectedFiles <= 0 &&
+		expectedArchiveFiles <= 0 &&
 		clusterIsContextualObfuscated(cluster.Binaries) &&
 		!allowsStandaloneBinaryRelease(cluster.Binaries, record) {
 		return false, fragmentReasonContextualWeak
@@ -672,6 +682,43 @@ func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, 
 		return false, fragmentReasonSingleMainPayload
 	}
 	return true, ""
+}
+
+func clusterHasSplitArchiveParts(binaries []pgindex.BinarySummary) bool {
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if name == "" {
+			continue
+		}
+		if rarPartRE.MatchString(name) || splitSevenZipRE.MatchString(name) || splitZipRE.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func recordHasStrongTitleEvidence(record pgindex.ReleaseRecord) bool {
+	return record.TitleSource != "" && record.TitleSource != "source" && record.TitleConfidence >= 0.82
+}
+
+func releaseTitleNeedsMoreEvidence(record pgindex.ReleaseRecord) bool {
+	title := firstNonBlank(record.DeobfuscatedTitle, record.MatchedMediaTitle, record.Title, record.SourceTitle)
+	if title == "" {
+		return true
+	}
+	return looksWeakGeneratedReleaseTitle(title) || looksObfuscatedReleaseTitle(title) || !looksReadableReleaseTitle(title)
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func countCompleteBinaries(binaries []pgindex.BinarySummary) int {

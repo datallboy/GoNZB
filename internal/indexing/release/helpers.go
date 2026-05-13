@@ -304,53 +304,54 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	})
 
 	return pgindex.ReleaseRecord{
-		ProviderID:              candidate.ProviderID,
-		SourceReleaseKey:        dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey, familyKey),
-		ReleaseFamilyKey:        familyKey,
-		ReleaseKey:              familyKey,
-		GroupName:               deriveGroupName(candidate, cluster.Binaries),
-		Title:                   finalTitle,
-		SourceTitle:             titleInfo.SourceTitle,
-		DeobfuscatedTitle:       titleInfo.DeobfuscatedTitle,
-		MatchedMediaTitle:       titleInfo.MatchedMediaTitle,
-		TitleSource:             titleInfo.TitleSource,
-		TitleConfidence:         titleInfo.TitleConfidence,
-		SearchTitle:             normalizeSearchTitle(finalTitle),
-		CategoryID:              category.ID,
-		Category:                category.Name,
-		Classification:          classification,
-		Poster:                  dominantPoster(cluster.Binaries),
-		SizeBytes:               totalBytes(cluster.Binaries),
-		PostedAt:                postedAt,
-		FileCount:               clusterObservedFileCount(cluster.Binaries),
-		ExpectedFileCount:       clusterExpectedFileCount(cluster.Binaries),
-		ParFileCount:            countPARFiles(cluster.Binaries),
-		CompletionPct:           clusterCompletionPct(cluster.Binaries),
-		MatchConfidence:         clamp01(cluster.MatchConfidence),
-		IdentityStatus:          identityStatus,
-		Passworded:              passworded,
-		PasswordedKnown:         passwordedKnown,
-		PasswordedUnknown:       passwordedUnknown,
-		PasswordState:           passwordState,
-		Encrypted:               false,
-		HasPAR2:                 hasPAR2,
-		HasNFO:                  hasNFO,
-		ArchiveCount:            archiveCount,
-		VideoCount:              videoCount,
-		AudioCount:              audioCount,
-		SamplePresent:           samplePresent,
-		AvailabilityScore:       availabilityScore,
-		AvailabilityTier:        releasepolicy.AvailabilityTier(availabilityScore),
-		MediaQualityScore:       mediaQualityScore,
-		MediaQualityTier:        mediaQualityTier(mediaQualityScore),
-		IdentityConfidenceScore: identityScore,
-		RuntimeSeconds:          0,
-		PrimaryResolution:       primaryResolution,
-		PrimaryVideoCodec:       primaryVideoCodec,
-		PrimaryAudioCodec:       primaryAudioCodec,
-		SubtitleLanguages:       subtitles,
-		MediaTags:               mediaTags,
-		MetadataUpdatedAt:       &now,
+		ProviderID:               candidate.ProviderID,
+		SourceReleaseKey:         dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey, familyKey),
+		ReleaseFamilyKey:         familyKey,
+		ReleaseKey:               familyKey,
+		GroupName:                deriveGroupName(candidate, cluster.Binaries),
+		Title:                    finalTitle,
+		SourceTitle:              titleInfo.SourceTitle,
+		DeobfuscatedTitle:        titleInfo.DeobfuscatedTitle,
+		MatchedMediaTitle:        titleInfo.MatchedMediaTitle,
+		TitleSource:              titleInfo.TitleSource,
+		TitleConfidence:          titleInfo.TitleConfidence,
+		SearchTitle:              normalizeSearchTitle(finalTitle),
+		CategoryID:               category.ID,
+		Category:                 category.Name,
+		Classification:           classification,
+		Poster:                   dominantPoster(cluster.Binaries),
+		SizeBytes:                totalBytes(cluster.Binaries),
+		PostedAt:                 postedAt,
+		FileCount:                clusterObservedFileCount(cluster.Binaries),
+		ExpectedFileCount:        clusterExpectedFileCount(cluster.Binaries),
+		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(cluster.Binaries),
+		ParFileCount:             countPARFiles(cluster.Binaries),
+		CompletionPct:            clusterCompletionPct(cluster.Binaries),
+		MatchConfidence:          clamp01(cluster.MatchConfidence),
+		IdentityStatus:           identityStatus,
+		Passworded:               passworded,
+		PasswordedKnown:          passwordedKnown,
+		PasswordedUnknown:        passwordedUnknown,
+		PasswordState:            passwordState,
+		Encrypted:                false,
+		HasPAR2:                  hasPAR2,
+		HasNFO:                   hasNFO,
+		ArchiveCount:             archiveCount,
+		VideoCount:               videoCount,
+		AudioCount:               audioCount,
+		SamplePresent:            samplePresent,
+		AvailabilityScore:        availabilityScore,
+		AvailabilityTier:         releasepolicy.AvailabilityTier(availabilityScore),
+		MediaQualityScore:        mediaQualityScore,
+		MediaQualityTier:         mediaQualityTier(mediaQualityScore),
+		IdentityConfidenceScore:  identityScore,
+		RuntimeSeconds:           0,
+		PrimaryResolution:        primaryResolution,
+		PrimaryVideoCodec:        primaryVideoCodec,
+		PrimaryAudioCodec:        primaryAudioCodec,
+		SubtitleLanguages:        subtitles,
+		MediaTags:                mediaTags,
+		MetadataUpdatedAt:        &now,
 	}
 }
 
@@ -835,11 +836,18 @@ func clusterCompletionPct(binaries []pgindex.BinarySummary) float64 {
 	}
 
 	expectedFiles := clusterExpectedFileCount(binaries)
-	if expectedFiles <= 0 {
+	expectedArchiveFiles := clusterExpectedArchiveFileCount(binaries)
+	if expectedFiles <= 0 && expectedArchiveFiles <= 0 {
 		return partPct
 	}
 
-	filePct := (float64(clusterObservedFileCount(binaries)) / float64(expectedFiles)) * 100
+	filePct := 100.0
+	if expectedFiles > 0 {
+		filePct = (float64(clusterObservedFileCount(binaries)) / float64(expectedFiles)) * 100
+	}
+	if expectedArchiveFiles > 0 {
+		filePct = (float64(countMainPayloadBinaries(binaries)) / float64(expectedArchiveFiles)) * 100
+	}
 	if filePct > 100 {
 		filePct = 100
 	}
@@ -854,6 +862,16 @@ func clusterExpectedFileCount(binaries []pgindex.BinarySummary) int {
 	for _, binary := range binaries {
 		if binary.ExpectedFileCount > best {
 			best = binary.ExpectedFileCount
+		}
+	}
+	return best
+}
+
+func clusterExpectedArchiveFileCount(binaries []pgindex.BinarySummary) int {
+	best := 0
+	for _, binary := range binaries {
+		if binary.ExpectedArchiveFileCount > best {
+			best = binary.ExpectedArchiveFileCount
 		}
 	}
 	return best
