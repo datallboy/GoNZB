@@ -659,6 +659,30 @@ Initial audit conclusion:
 - early trim opportunities are more likely to come from pruning stale or long-idle weak-family summaries than from dropping columns
 - `stale_cleanup_only` is a minority of the table; the dominant cost driver is the huge retained `weak_single_binary` population
 
+Recommended trim policy:
+
+- keep the table as the active queue/read-model surface for release formation
+- never purge rows still pending by `updated_at > COALESCE(processed_at, updated_at)`
+- preserve weak-family rows that are still feeding yEnc recovery candidate discovery
+- add age-bounded cleanup for non-pending residue:
+  - `stale_cleanup_only`: purge after `24 hours` when no matching binaries remain
+  - `fragment_only`: purge after `24 hours` when not pending and no stale release cleanup is still needed
+  - `weak_single_binary`: purge after `24 hours` when not pending and no recovery-eligible binaries remain in the family
+  - `weak_obfuscated_set` and `overgrouped_contextual`: purge after `24 hours` when not pending and no recovery-eligible binaries remain
+  - `prefer_base_stem`: purge after `6 hours` when not pending
+- rely on normal summary refresh to recreate rows when new binary activity makes a family relevant again
+
+Reasoning:
+
+- the table currently has about `9,937,099` rows but only about `684,790` pending rows
+- `weak_single_binary` alone accounts for about `9,489,493` rows, far larger than actionable queue state
+- release and recovery logic already differentiate pending and non-pending states through `processed_at`, `updated_at`, and readiness buckets
+
+Safety constraints:
+
+- release candidate selection reads directly from this table, so pruning must not remove pending rows
+- yEnc recovery candidate selection explicitly targets `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual`, so those rows must survive while they are still actionable
+
 ## Migration Reconciliation Summary
 
 Current reconciliation status:

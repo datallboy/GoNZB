@@ -159,6 +159,29 @@ Implementation notes:
 - validate which readiness buckets are productively consumed versus stale queue residue
 - keep actionable family visibility and release throughput checks intact
 
+Recommended default policy:
+
+- keep `release_family_readiness_summaries` as the active release queue/read model
+- do not prune rows that are still pending work by `updated_at > COALESCE(processed_at, updated_at)`
+- do not prune weak-family rows that are still needed by yEnc recovery targeting
+- add bounded retention for non-pending weak-family residue:
+  - `stale_cleanup_only`: purge after `24 hours` when no matching binaries remain
+  - `fragment_only`: purge after `24 hours` when not pending and no stale release cleanup remains to perform
+  - `weak_single_binary`: purge after `24 hours` when not pending and the family no longer has active recovery-eligible binaries
+  - `weak_obfuscated_set` and `overgrouped_contextual`: purge after `24 hours` when not pending and no recovery-eligible binaries remain
+  - `prefer_base_stem`: keep short-lived and purge after `6 hours` when not pending
+- if a family becomes active again, allow summary refresh to recreate the row rather than preserving it indefinitely
+
+Why this is the default:
+
+- the table has roughly `9.94M` rows, but only about `684k` are currently pending release work
+- the dominant cost driver is retained `weak_single_binary`, not actionable queue rows
+- `processed_at` already gives the queue a natural lifecycle marker we can use for pruning
+
+Safety rule:
+
+- any readiness retention job must preserve rows still referenced by current release selection or yEnc recovery candidate discovery
+
 ### Phase 5. Add operator-visible storage reporting
 
 Target:
