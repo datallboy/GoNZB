@@ -6,6 +6,8 @@ This is the active current-state audit doc for the database growth-trim sprint.
 
 This doc is updated on the same sprint branch as the implementation work. Treat the commit order in `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md` as the execution order for audit and cleanup sessions.
 
+Use `docs/active/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` when a cleanup decision depends on whole-system ownership rather than only column-by-column usage.
+
 Use this doc to capture:
 
 - the live Docker Postgres schema as the source of truth

@@ -4,7 +4,7 @@ Snapshot date: 2026-05-14
 
 This is the active plan for reducing indexer database growth after the grouping-model sprint proved the release/readiness improvements were landing but overnight retention growth pushed the PostgreSQL database to about `92 GB`.
 
-This plan is the execution tracker. Use `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md` as the live current-state audit and column-ownership reference for this sprint.
+This plan is the execution tracker. Use `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md` as the live current-state audit and column-ownership reference for this sprint, and use `docs/active/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the current whole-system schema map before cleanup decisions.
 
 This sprint runs on one branch. Treat the commit order below as the working execution order for Codex sessions on that branch.
 
@@ -34,6 +34,16 @@ That means roughly `70 GB` is concentrated in:
 3. add bounded retention and cleanup policies for pre-alpha scale testing
 4. preserve enough evidence to debug grouping issues without keeping every repeated row forever
 
+## Up-Front Answers
+
+These answers should stay true unless a later audit or implementation commit proves otherwise.
+
+- schema truth comes from the live Docker Postgres database, not archived migrations
+- `article_headers`, `binaries`, and `binary_parts` are the core canonical identity surfaces
+- `article_header_ingest_payloads` and `release_family_readiness_summaries` are active derived workflow surfaces that should be retained only as long as they still drive assemble, recovery, or release
+- `binary_grouping_evidence` and verbose JSON payloads are the first storage surfaces to compact, sparsify, or prune
+- safe cleanup means stopping unnecessary writes and shortening derived retention before removing canonical columns
+
 ## Execution Tracks
 
 ### Track 0. Documentation baseline
@@ -52,9 +62,9 @@ Deliverables:
 
 ## Priority Work
 
-### Phase 1. Reconfirm canonical ownership
+### Phase 1. Reconfirm canonical ownership and system interaction
 
-Use `docs/archive/completed/indexer/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md` as the reference map and answer:
+Use `docs/active/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the current system map and `docs/archive/completed/indexer/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md` as historical reference support when needed. Answer:
 
 - what must stay in `article_headers`
 - what can be compacted or aged out from `article_header_ingest_payloads`
@@ -63,6 +73,7 @@ Use `docs/archive/completed/indexer/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md` as t
 
 Deliverables:
 
+- current system-layer map for ingest, identity, recovery, readiness, and inspect
 - completed hot-table column inventory in the active schema audit doc
 - per-column writer and reader map
 - keep, compact, prune, migrate, or drop-candidate disposition for each hot-table column
@@ -235,6 +246,7 @@ Purpose:
 Expected commit contents:
 
 - audit doc baseline sections filled in
+- current schema/system interaction doc added or updated as needed
 - documented schema mismatches or under-documented live fields
 - no code behavior changes
 
@@ -312,6 +324,7 @@ Purpose:
 Expected commit contents:
 
 - code and migration changes that are low risk
+- first-pass write suppression for obviously unnecessary verbose payloads where the system map and audit both agree
 - validation query updates if needed
 - before and after measurements added to the active docs
 
