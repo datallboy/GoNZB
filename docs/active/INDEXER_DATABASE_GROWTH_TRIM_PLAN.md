@@ -261,6 +261,34 @@ Implementation status:
 - completed in cleanup wave 1: admin dashboard cached stats now expose planner-visible dead-tuple counts for those same three tables
 - completed in cleanup wave 1: UI stat cards now format byte-based storage stats in human-readable units
 
+### Phase 6. Reclaim on-disk table space
+
+Target:
+
+- return reclaimed bytes to the Docker volume and host filesystem after retention logic has already reduced row growth
+
+Operator sequence:
+
+1. stop the app and background indexer stages
+2. run `indexer maintenance` to apply retention cleanup first
+3. run `VACUUM (ANALYZE)` on the hot trim tables to refresh planner stats
+4. if host filesystem usage still does not recover, run table-by-table `VACUUM (FULL, ANALYZE)` in this order:
+   - `release_family_readiness_summaries`
+   - `binary_grouping_evidence`
+   - `article_header_ingest_payloads`
+5. recheck exact table sizes and host free space after each table before continuing
+
+Why this order:
+
+- it starts with the smallest rewrite
+- it validates that the Docker-backed Postgres volume is actually returning bytes before risking the largest rewrite
+- it leaves the largest retained payload table for last, after the reclaim path is already proven on the current machine
+
+Implementation status:
+
+- completed in cleanup wave 2: operator reclaim runbook documented in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- still pending: optional CLI wrapper for the same allowlisted table sequence
+
 ## Handoff Action Items
 
 Use these as concise Codex-sized work chunks. Each chunk should update either this plan, the schema audit doc, or both.

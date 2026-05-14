@@ -723,6 +723,15 @@ It currently:
 - purges old `indexer_stage_runs`
 - purges old `scrape_runs`
 - purges retained `article_header_ingest_payloads` older than policy
+- prunes eligible stale `release_family_readiness_summaries`
+- backfills compact inline grouping summaries and purges eligible stable `binary_grouping_evidence`
+
+Important operational note:
+
+- `indexer maintenance` is the application retention pass
+- it reduces row counts and dead-row growth
+- if PostgreSQL files still need to shrink on disk after retention cleanup, that is a separate operator step using `VACUUM (ANALYZE)` or `VACUUM FULL`
+- for the current growth-trim sprint, use the reclaim runbook in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md` for the exact table order and downtime expectations
 
 ## How Metadata Flows Back Into Releases
 
