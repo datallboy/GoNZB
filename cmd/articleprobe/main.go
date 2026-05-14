@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/textproto"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,10 @@ func main() {
 		group            string
 		messageID        string
 		articleNum       int64
+		xoverStart       int64
+		xoverEnd         int64
+		xoverOut         string
+		xoverGrep        string
 		bodyBytes        int64
 		articleBytes     int64
 		headLines        int
@@ -64,6 +69,10 @@ func main() {
 	flag.StringVar(&group, "group", "", "newsgroup to select before article-number operations")
 	flag.StringVar(&messageID, "message-id", "", "message-id to inspect")
 	flag.Int64Var(&articleNum, "article-number", 0, "article number to inspect within --group")
+	flag.Int64Var(&xoverStart, "xover-start", 0, "export XOVER rows starting at this article number within --group")
+	flag.Int64Var(&xoverEnd, "xover-end", 0, "export XOVER rows ending at this article number within --group")
+	flag.StringVar(&xoverOut, "xover-out", "", "write XOVER range output to this path; defaults to stdout")
+	flag.StringVar(&xoverGrep, "xover-grep", "", "optional regexp filter to print matching XOVER rows to stderr during range export")
 	flag.Int64Var(&bodyBytes, "body-bytes", 4096, "max BODY bytes to print; 0 disables BODY")
 	flag.Int64Var(&articleBytes, "article-bytes", 8192, "max ARTICLE bytes to print; 0 disables ARTICLE")
 	flag.IntVar(&headLines, "head-lines", 200, "max HEAD lines to print")
@@ -79,6 +88,11 @@ func main() {
 	fatalIf(err)
 	cfg, err = withRuntimeServers(cfg)
 	fatalIf(err)
+
+	if xoverStart > 0 || xoverEnd > 0 {
+		fatalIf(runXOverExport(context.Background(), cfg, serverID, group, xoverStart, xoverEnd, xoverOut, xoverGrep))
+		return
+	}
 
 	if isExportMode(releaseID, releaseFamilyKey, binaryID) {
 		fatalIf(runNZBExport(context.Background(), cfg, serverID, releaseID, releaseFamilyKey, binaryID, outNZB, probeSetYEnc, setBodyBytes))
@@ -128,6 +142,77 @@ func main() {
 
 func isExportMode(releaseID, releaseFamilyKey string, binaryID int64) bool {
 	return strings.TrimSpace(releaseID) != "" || strings.TrimSpace(releaseFamilyKey) != "" || binaryID > 0
+}
+
+func runXOverExport(ctx context.Context, cfg *config.Config, serverID, group string, start, end int64, outPath, grepExpr string) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return fmt.Errorf("--group is required for XOVER export")
+	}
+	if start <= 0 || end <= 0 {
+		return fmt.Errorf("both --xover-start and --xover-end are required")
+	}
+	if end < start {
+		return fmt.Errorf("--xover-end must be greater than or equal to --xover-start")
+	}
+	var grepRE *regexp.Regexp
+	if strings.TrimSpace(grepExpr) != "" {
+		var err error
+		grepRE, err = regexp.Compile(grepExpr)
+		if err != nil {
+			return fmt.Errorf("compile --xover-grep: %w", err)
+		}
+	}
+
+	server, err := chooseServer(cfg, serverID)
+	if err != nil {
+		return err
+	}
+
+	conn, err := dialServer(server)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	stats, err := selectGroup(conn, group)
+	if err != nil {
+		return err
+	}
+
+	lines, err := fetchXOverLines(conn, start, end)
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "XOVER %d-%d\n", start, end)
+	buf.WriteString("224 Overview Information Follows\n")
+	for _, line := range lines {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+
+	if err := writeOutputFile(outPath, buf.Bytes()); err != nil {
+		return err
+	}
+
+	dest := strings.TrimSpace(outPath)
+	if dest == "" || dest == "-" {
+		dest = "stdout"
+	}
+	fmt.Fprintf(os.Stderr, "exported xover rows=%d group=%s low=%d high=%d output=%s\n", len(lines), stats.group, stats.low, stats.high, dest)
+	if grepRE != nil {
+		matches := 0
+		for _, line := range lines {
+			if grepRE.MatchString(line) {
+				fmt.Fprintln(os.Stderr, line)
+				matches++
+			}
+		}
+		fmt.Fprintf(os.Stderr, "xover-grep matches=%d pattern=%q\n", matches, grepExpr)
+	}
+	return nil
 }
 
 func runNZBExport(ctx context.Context, cfg *config.Config, serverID, releaseID, releaseFamilyKey string, binaryID int64, outPath string, probeYEnc bool, prefixBytes int64) error {
@@ -651,14 +736,7 @@ func printXOver(conn *textproto.Conn, articleNumber int64) error {
 	if articleNumber <= 0 {
 		return nil
 	}
-	if _, err := conn.Cmd("XOVER %d-%d", articleNumber, articleNumber); err != nil {
-		return err
-	}
-	code, msg, err := conn.ReadCodeLine(224)
-	if err != nil {
-		return fmt.Errorf("XOVER failed (code %d): %s", code, msg)
-	}
-	lines, err := readDotLines(conn)
+	lines, err := fetchXOverLines(conn, articleNumber, articleNumber)
 	if err != nil {
 		return err
 	}
@@ -669,6 +747,39 @@ func printXOver(conn *textproto.Conn, articleNumber int64) error {
 	}
 	for _, line := range lines {
 		fmt.Println(line)
+	}
+	return nil
+}
+
+func fetchXOverLines(conn *textproto.Conn, start, end int64) ([]string, error) {
+	if start <= 0 || end <= 0 {
+		return nil, fmt.Errorf("xover range must be positive")
+	}
+	if end < start {
+		return nil, fmt.Errorf("xover end must be greater than or equal to start")
+	}
+	if _, err := conn.Cmd("XOVER %d-%d", start, end); err != nil {
+		return nil, err
+	}
+	code, msg, err := conn.ReadCodeLine(224)
+	if err != nil {
+		return nil, fmt.Errorf("XOVER failed (code %d): %s", code, msg)
+	}
+	lines, err := readDotLines(conn)
+	if err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
+func writeOutputFile(path string, data []byte) error {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "-" {
+		_, err := os.Stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write output %s: %w", path, err)
 	}
 	return nil
 }

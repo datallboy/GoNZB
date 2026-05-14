@@ -3729,6 +3729,112 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedProbeErrorR
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMissingArticlesDetail(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.missingarticles.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-missingarticles-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-missingarticles-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Missing Articles Test",
+		SourceTitle:             "Archive.Missing.Articles.Test",
+		SearchTitle:             "archive missing articles test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "archive.missing.articles",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Archive Missing Articles Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "archive.missing.articles.7z.001",
+		FileName:          "archive.missing.articles.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "archive.missing.articles.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"probe_error_detail": "release file 922 has no articles", "probe_skip_reason": "not_archive_or_unsupported"},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete binary inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing-articles archive candidate to be retried")
+	}
+}
+
 func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

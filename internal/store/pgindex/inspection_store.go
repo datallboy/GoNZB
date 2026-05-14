@@ -697,6 +697,10 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
 			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
 			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	if stageName == "inspect_archive" {
+		errorRerunPredicate += `
+			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'`
+	}
 	filteredPredicate := `
 		  AND NOT EXISTS (
 			SELECT 1
