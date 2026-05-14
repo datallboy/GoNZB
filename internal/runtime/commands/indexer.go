@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 func (r *Runner) ExecuteIndexerScrape(once bool) {
@@ -414,6 +415,32 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance completed")
+}
+
+func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RunIndexerStorageReclaim(ctx, pgindex.IndexerStorageReclaimOptions{
+		Tables: tables,
+		Full:   full,
+	})
+	if err != nil {
+		appCtx.Logger.Fatal("indexer storage reclaim failed: %v", err)
+	}
+	if out != nil {
+		for _, table := range out.Tables {
+			appCtx.Logger.Info(
+				"indexer storage reclaim: mode=%s table=%s before_bytes=%d after_bytes=%d delta_bytes=%d",
+				out.Mode,
+				table.Table,
+				table.BeforeBytes,
+				table.AfterBytes,
+				table.AfterBytes-table.BeforeBytes,
+			)
+		}
+	}
+	appCtx.Logger.Info("indexer storage reclaim completed")
 }
 
 func (r *Runner) ExecuteIndexerRepairRuntime() {

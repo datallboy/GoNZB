@@ -368,6 +368,19 @@ Recommended order for the current growth-trim sprint:
 Recommended command pattern from the host:
 
 ```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full readiness
+```
+
+Then continue with:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full grouping-evidence
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full payloads
+```
+
+Direct `psql` fallback:
+
+```bash
 docker exec -it gonzb-postgres \
   psql -U postgres -d gonzb \
   -c "VACUUM (FULL, ANALYZE) release_family_readiness_summaries;"

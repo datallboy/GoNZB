@@ -700,6 +700,11 @@ Recommended trim policy:
 - live validation note: the successful local maintenance run on `2026-05-14` reported `purged_readiness_summaries=0`, so current live cleanup pressure is still much higher on ingest payloads than on already-eligible summary residue
 - live validation note: a follow-up `2026-05-14` maintenance run later reported `purged_readiness_summaries=9865`, confirming the bounded cleanup does remove aged residue once rows become eligible
 - follow-up `VACUUM (ANALYZE)` refreshed planner stats for `release_family_readiness_summaries` on `2026-05-14`
+- operator reclaim follow-up on `2026-05-14`:
+  - new CLI wrapper validation succeeded with `go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage readiness`
+  - live result logged `before_bytes=5490278400`, `after_bytes=5490286592`, `delta_bytes=8192`
+  - exact post-run stats for `release_family_readiness_summaries`: `n_live_tup=10551590`, `n_dead_tup=0`, `bytes=5490286592`
+  - live `VACUUM FULL` remains blocked for now because host `/` free space was only `5.3G`, below the smallest current hot-table rewrite target
 
 Reasoning:
 
