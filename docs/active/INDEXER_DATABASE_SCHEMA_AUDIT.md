@@ -726,6 +726,21 @@ Important audit observations from migration history:
 - `binaries` accumulated both inline grouping evidence and side-table grouping evidence instead of fully collapsing onto one storage surface
 - `release_family_readiness_summaries` absorbed queue state, stale placeholder rows, dominant-family hints, and archive coverage fields over several migrations and is now carrying multiple roles
 
+## Operator Reporting Status
+
+Current implementation status:
+
+- admin dashboard cached stats now expose exact row counts for:
+  - `article_header_ingest_payloads`
+  - `binary_grouping_evidence`
+  - `release_family_readiness_summaries`
+- admin dashboard cached stats now expose total on-disk bytes for those same tables
+- admin dashboard cached stats now expose planner-visible dead-tuple counts for those same tables
+- this gives operators a direct read on:
+  - current hot-table growth
+  - whether retention cleanup is reducing rows
+  - whether vacuum has caught up enough to clear dead tuples
+
 ## Table Audit Templates
 
 ### `article_headers`

@@ -252,6 +252,15 @@ Minimum reporting:
 - retained payload/evidence percentages
 - cleanup run history
 
+Implementation status:
+
+- completed in cleanup wave 1: admin dashboard cached stats now expose exact rows and on-disk bytes for:
+  - `article_header_ingest_payloads`
+  - `binary_grouping_evidence`
+  - `release_family_readiness_summaries`
+- completed in cleanup wave 1: admin dashboard cached stats now expose planner-visible dead-tuple counts for those same three tables
+- completed in cleanup wave 1: UI stat cards now format byte-based storage stats in human-readable units
+
 ## Handoff Action Items
 
 Use these as concise Codex-sized work chunks. Each chunk should update either this plan, the schema audit doc, or both.

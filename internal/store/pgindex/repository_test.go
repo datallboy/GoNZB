@@ -4364,6 +4364,43 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	if releaseAfter.Value < releaseBefore+1 {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
+
+	payloadRowsBefore := beforeByKey["payload_rows"].Value
+	payloadRowsAfter, ok := afterByKey["payload_rows"]
+	if !ok {
+		t.Fatalf("missing payload_rows stat")
+	}
+	if !payloadRowsAfter.Available || payloadRowsAfter.UpdatedAt == nil {
+		t.Fatalf("expected payload_rows to be cached, got %#v", payloadRowsAfter)
+	}
+	if payloadRowsAfter.Value < payloadRowsBefore+1 {
+		t.Fatalf("expected payload row count to increase by at least 1, before=%d after=%d", payloadRowsBefore, payloadRowsAfter.Value)
+	}
+
+	groupingRowsAfter, ok := afterByKey["grouping_evidence_rows"]
+	if !ok || !groupingRowsAfter.Available {
+		t.Fatalf("expected grouping_evidence_rows stat, got %#v", groupingRowsAfter)
+	}
+	groupingBytesAfter, ok := afterByKey["grouping_evidence_bytes"]
+	if !ok || !groupingBytesAfter.Available || groupingBytesAfter.Value <= 0 {
+		t.Fatalf("expected grouping_evidence_bytes stat, got %#v", groupingBytesAfter)
+	}
+
+	readinessRowsAfter, ok := afterByKey["readiness_rows"]
+	if !ok || !readinessRowsAfter.Available {
+		t.Fatalf("expected readiness_rows stat, got %#v", readinessRowsAfter)
+	}
+	readinessBytesAfter, ok := afterByKey["readiness_bytes"]
+	if !ok || !readinessBytesAfter.Available || readinessBytesAfter.Value <= 0 {
+		t.Fatalf("expected readiness_bytes stat, got %#v", readinessBytesAfter)
+	}
+
+	for _, key := range []string{"payload_dead_tuples", "grouping_evidence_dead_tuples", "readiness_dead_tuples"} {
+		stat, ok := afterByKey[key]
+		if !ok || !stat.Available || stat.UpdatedAt == nil {
+			t.Fatalf("expected %s stat to be cached, got %#v", key, stat)
+		}
+	}
 }
 
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
