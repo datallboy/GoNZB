@@ -121,6 +121,8 @@ Live validation:
 - exact live payload row count dropped from `79,109,360` to `70,909,141`
 - physical table size remained `23 GB` immediately after the run, which is expected until PostgreSQL reuses or vacuums dead tuples
 - total observed payload-row reduction exceeded the final-pass counter because earlier interrupted maintenance experiments had already removed additional rows while the purge execution shape was being tuned
+- a follow-up `2026-05-14` maintenance run reclaimed `389,908` additional payload rows, bringing the exact live row count to `70,519,233`
+- follow-up `VACUUM (ANALYZE)` completed for `article_header_ingest_payloads`; physical size still read `23 GB`, but planner stats are now current again
 
 Why this is the default:
 
@@ -173,6 +175,7 @@ Live validation:
 - the same run also reclaimed `389,908` additional payload rows and `9,865` readiness summary rows that had become eligible since the prior pass
 - exact live `binary_grouping_evidence` row count dropped to `10,341,903`
 - immediate physical side-table size still read `16 GB`, which again points to dead-tuple reuse/vacuum as the next operational concern after retention logic
+- follow-up `VACUUM (ANALYZE)` completed for `binary_grouping_evidence`; physical size still read `16 GB`, but planner stats are now refreshed for subsequent measurement
 
 Why this is the default:
 
@@ -224,6 +227,7 @@ Implementation status:
 - completed in cleanup wave 1: maintenance logging and metrics now expose `purged_readiness_summaries`
 - live validation on `2026-05-14`: the successful maintenance run reported `purged_readiness_summaries=0`, which means current live growth pressure is still dominated by payload retention and grouping evidence rather than already-eligible summary residue
 - live validation on a follow-up `2026-05-14` maintenance run: `purged_readiness_summaries=9865`, confirming the bounded cleanup is working once rows age into eligibility
+- follow-up `VACUUM (ANALYZE)` completed for `release_family_readiness_summaries`; physical size still read `5236 MB`, but planner stats are now refreshed
 
 Why this is the default:
 

@@ -302,6 +302,8 @@ Live validation note:
 - the first successful local maintenance run on `2026-05-14` reported `purged_header_payloads=7150219`
 - exact live payload row count dropped from `79,109,360` to `70,909,141`
 - immediate physical table size remained `23 GB`, which is expected before tuple reuse or vacuum reclaim
+- a follow-up `2026-05-14` maintenance run reclaimed `389,908` additional payload rows, bringing the exact live row count to `70,519,233`
+- follow-up `VACUUM (ANALYZE)` refreshed planner stats for `article_header_ingest_payloads` on `2026-05-14`
 
 ### `binaries` baseline
 
@@ -557,6 +559,7 @@ Live validation note:
 - a follow-up successful local maintenance run on `2026-05-14` reported `purged_grouping_evidence=523`
 - exact live `binary_grouping_evidence` row count dropped to `10,341,903`
 - immediate physical side-table size still read `16 GB`, so retention logic is now ahead of physical reclaim
+- follow-up `VACUUM (ANALYZE)` refreshed planner stats for `binary_grouping_evidence` on `2026-05-14`
 
 Reasoning:
 
@@ -696,6 +699,7 @@ Recommended trim policy:
 - implementation status: `RunIndexerMaintenance` now prunes non-pending `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` rows only when no recovery-eligible binaries remain
 - live validation note: the successful local maintenance run on `2026-05-14` reported `purged_readiness_summaries=0`, so current live cleanup pressure is still much higher on ingest payloads than on already-eligible summary residue
 - live validation note: a follow-up `2026-05-14` maintenance run later reported `purged_readiness_summaries=9865`, confirming the bounded cleanup does remove aged residue once rows become eligible
+- follow-up `VACUUM (ANALYZE)` refreshed planner stats for `release_family_readiness_summaries` on `2026-05-14`
 
 Reasoning:
 
