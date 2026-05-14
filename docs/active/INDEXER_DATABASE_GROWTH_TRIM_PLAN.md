@@ -84,6 +84,22 @@ Implementation notes:
 - do not remove payload fields until the audit confirms all remaining readers and writers
 - split low-risk retention cleanup from any schema move or field removal
 
+Recommended default policy:
+
+- stop treating `article_header_ingest_payloads` as a long-lived shadow copy of scrape input
+- keep structured payload fields only as long as assemble or yEnc recovery still needs them
+- reduce assembled payload retention from the current `7 days` to a staged policy:
+  - purge assembled rows with `subject_file_name <> ''` and no active yEnc retry state after `1 hour`
+  - purge assembled rows with missing structured file identity or non-zero recovery state after `24 hours`
+- stop writing `raw_overview_json` for new rows unless a current stage proves it still needs original raw JSON
+- plan a later schema cleanup to remove `raw_overview_json` once yEnc recovery no longer depends on it
+
+Why this is the default:
+
+- the database was able to reach roughly `100 GB` within one day, so a `7 day` payload horizon is far too permissive for this stage of development
+- live data already shows `raw_overview_json` is empty on stored rows
+- normal assemble hydration now rebuilds `RawOverview` from structured columns instead of reading stored raw JSON
+
 ### Phase 3. Trim grouping evidence retention
 
 Target:
@@ -100,6 +116,31 @@ Implementation notes:
 
 - audit whether `binaries.grouping_evidence_json` and `binary_grouping_evidence` currently duplicate each other
 - keep enough promotion history to debug grouping regressions after cleanup
+
+Recommended default policy:
+
+- keep `binaries.grouping_evidence_json` only as a compact inline summary surface
+- turn `binary_grouping_evidence` into a sparse audit table instead of a universal one-row-per-binary blob
+- retain side-table rows indefinitely only when at least one of these is true:
+  - matcher confidence is below high-confidence threshold
+  - fallback grouping was used
+  - recovery or inspect changed binary identity, family key, base stem, or archive file count
+  - the binary remains in a weak or overgrouped readiness state
+- for high-confidence stable binaries, either do not persist a side-table row at all or retain a compact row for at most `24 hours`
+- compact side-table payload shape to the minimum needed for debugging:
+  - keep `summary`
+  - keep only the specific evidence modules that explain a weak or changed decision
+  - drop full verbose module payloads for stable high-confidence rows
+
+Why this is the default:
+
+- `binary_grouping_evidence` currently averages about `1365` bytes per row across roughly one row per binary
+- inline grouping JSON is much sparser and already acts more like a compact summary layer
+- admin/debug detail views read the side-table payload today, so trimming should focus first on sparsifying and compacting that surface rather than removing core identity fields
+
+Operational note:
+
+- one audit query already failed with `No space left on device` while Postgres tried to spill temp files, which is another sign that oversized retained JSON surfaces are an immediate operational risk, not just a storage-usage concern
 
 ### Phase 4. Prune stale readiness and weak junk
 

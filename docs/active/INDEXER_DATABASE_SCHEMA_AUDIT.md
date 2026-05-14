@@ -277,6 +277,21 @@ Initial audit conclusion:
 - `raw_overview_json` is the strongest early trim candidate inside the table
 - if this table still grows too quickly with the existing `7 day` purge, the next likely levers are shorter assembled retention, recovery-state extraction, or more aggressive purging of rows no longer needed by yEnc recovery
 
+Recommended trim policy:
+
+- keep the structured columns needed by assemble and yEnc recovery
+- stop writing `raw_overview_json` for new rows unless a current reader still requires original raw NNTP payload data
+- replace the current flat `7 day` payload purge with a two-tier assembled-row policy:
+  - `1 hour` retention for assembled rows that already have `subject_file_name <> ''` and no active retry state
+  - `24 hours` retention for assembled rows that still lack structured filename identity or still participate in yEnc retry/backoff
+- if later code changes remove yEnc recovery dependence on `raw_overview_json`, drop the column entirely in a later migration wave
+
+Reasoning:
+
+- the live database reached roughly `100 GB` within one day, so current retention windows are too long for the ingest rate
+- live stored data shows `raw_overview_json` is effectively empty already
+- normal assemble hydration no longer relies on stored raw JSON
+
 ### `binaries` baseline
 
 Live size:
@@ -504,6 +519,33 @@ Initial audit conclusion:
   - compact payload shape aggressively
   - keep only the minimum summary needed for admin/debug
   - or move to change-point retention instead of universal per-binary evidence blobs
+
+Recommended trim policy:
+
+- keep `binaries.grouping_evidence_json` as the compact always-available summary surface
+- convert `binary_grouping_evidence` from universal retention to sparse retention
+- retain side-table evidence indefinitely only for:
+  - low-confidence or provisional matches
+  - fallback-driven matches
+  - binaries whose identity was later changed by recovery or inspect stages
+  - binaries that remain in weak or overgrouped readiness states
+- for high-confidence stable binaries:
+  - avoid writing side-table evidence rows when possible
+  - otherwise purge them after `24 hours`
+- compact payload shape:
+  - always keep `summary`
+  - keep only the evidence modules that explain a weak, fallback, or changed decision
+  - drop verbose module-by-module JSON for stable high-confidence rows
+
+Reasoning:
+
+- the side table currently averages about `1365` bytes per row across essentially the full binary population
+- inline evidence is much sparser and already close to a compact summary role
+- current admin/debug readers can continue working if they are pointed at a compacted, selective audit surface instead of a universal blob per binary
+
+Operational note:
+
+- a live audit query already failed with `No space left on device` while PostgreSQL tried to spill temp files, which reinforces that large retained JSON surfaces are an active operational problem
 
 ### `release_family_readiness_summaries` baseline
 
