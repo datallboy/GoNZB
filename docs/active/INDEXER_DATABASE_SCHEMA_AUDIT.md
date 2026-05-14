@@ -675,6 +675,8 @@ Recommended trim policy:
   - `weak_obfuscated_set` and `overgrouped_contextual`: purge after `24 hours` when not pending and no recovery-eligible binaries remain
   - `prefer_base_stem`: purge after `6 hours` when not pending
 - rely on normal summary refresh to recreate rows when new binary activity makes a family relevant again
+- implementation status: `RunIndexerMaintenance` now prunes non-pending `prefer_base_stem`, `fragment_only`, and `stale_cleanup_only` rows by age
+- implementation status: `RunIndexerMaintenance` now prunes non-pending `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` rows only when no recovery-eligible binaries remain
 
 Reasoning:
 

@@ -192,6 +192,15 @@ Recommended default policy:
   - `prefer_base_stem`: keep short-lived and purge after `6 hours` when not pending
 - if a family becomes active again, allow summary refresh to recreate the row rather than preserving it indefinitely
 
+Implementation status:
+
+- completed in cleanup wave 1: `RunIndexerMaintenance` now prunes non-pending readiness residue for:
+  - `prefer_base_stem` after `6 hours`
+  - `fragment_only` after `24 hours`
+  - `stale_cleanup_only` after `24 hours`
+  - `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` after `24 hours` when no recovery-eligible binaries remain
+- completed in cleanup wave 1: maintenance logging and metrics now expose `purged_readiness_summaries`
+
 Why this is the default:
 
 - the table has roughly `9.94M` rows, but only about `684k` are currently pending release work
