@@ -168,6 +168,28 @@ Baseline audit note:
 
 - this is still the single largest table and carries both durable article facts and hot-path claim state
 
+Ingest ownership map:
+
+- writer: `InsertArticleHeaders` in `internal/store/pgindex/repository.go` writes the durable article facts at scrape ingest time
+- writer: `ClaimUnassembledArticleHeaders`, retry release, and successful completion paths in `internal/store/pgindex/assembly_store.go` mutate `assembly_claimed_by`, `assembly_claimed_until`, and `assembled_at`
+- readers:
+  - assemble claim and candidate selection in `internal/store/pgindex/assembly_store.go`
+  - payload retention purge in `internal/store/pgindex/maintenance_store.go`
+  - article date range stats in `internal/store/pgindex/enrichment_store.go`
+  - joins through `binary_parts` in catalog and inspect reads
+
+Initial column classification and disposition:
+
+- `id`, `provider_id`, `newsgroup_id`, `article_number`, `message_id`: canonical ingest identity, keep
+- `date_utc`, `bytes`, `lines`, `scraped_at`: canonical article facts still used downstream, keep
+- `assembled_at`: hot-path workflow state and maintenance-retention anchor, keep
+- `assembly_claimed_by`, `assembly_claimed_until`: hot-path coordination state for assemble leasing, keep
+
+Initial audit conclusion:
+
+- `article_headers` is not a good early drop-column target
+- likely growth control here will come from retention policy decisions, not schema slimming, because all current columns still have active purpose
+
 ### `article_header_ingest_payloads` baseline
 
 Live size:
@@ -218,6 +240,42 @@ Measured live-shape notes:
 Baseline audit note:
 
 - this table is still huge even though its bulkiest JSON payload currently appears unused in stored data
+
+Ingest ownership map:
+
+- writer: `InsertArticleHeaders` in `internal/store/pgindex/repository.go` sanitizes NNTP header input, parses structured metadata from `subject`, and upserts payload rows
+- writer: duplicate ingest rows overwrite payload columns on conflict by `article_header_id`
+- writer: `RecordYEncRecoveryNotFound` and related update paths in `internal/store/pgindex/assembly_store.go` mutate `yenc_recovery_missing_count`, `yenc_recovery_last_missing_at`, and `yenc_recovery_retry_after`
+- writer: `ApplyYEncHeaderRecovery` in `internal/store/pgindex/yenc_recovery_store.go` clears `yenc_recovery_retry_after`
+- readers:
+  - assemble lane selection and candidate hydration in `internal/store/pgindex/assembly_store.go`
+  - subject matcher inputs in `internal/indexing/assemble/service.go` and `internal/indexing/match/*`
+  - yEnc recovery candidate selection in `internal/store/pgindex/yenc_recovery_store.go`
+  - maintenance retention purge in `internal/store/pgindex/maintenance_store.go`
+
+Important current behavior:
+
+- assemble no longer reads stored `raw_overview_json` on its normal hot path; hydrated candidates rebuild `RawOverview` from structured columns and article facts
+- yEnc recovery still reads `raw_overview_json` text and unmarshals it into candidate payloads
+- there is already a live maintenance delete for payload rows where the owning `article_headers.assembled_at` is older than `7 days`
+
+Initial column classification and disposition:
+
+- `article_header_id`: canonical join key back to the durable article row, keep
+- `subject`: active input to matcher and yEnc recovery, keep for now
+- `poster_id`: active normalized poster identity, keep
+- `poster`: fallback text only when poster normalization did not resolve; keep for now but treat as fallback data, not canonical identity
+- `xref`: active matcher and recovery input, keep for now
+- `subject_file_name`, `subject_file_index`, `subject_file_total`, `yenc_part_number`, `yenc_total_parts`, `yenc_file_size`: active structured hot-path fields for assemble and recovery, keep
+- `raw_overview_json`: no longer used by normal assemble hydration and currently empty in live stored data; compact or drop candidate after confirming yEnc recovery can stop depending on it
+- `created_at`: retention/debug support field, keep for now
+- `yenc_recovery_missing_count`, `yenc_recovery_last_missing_at`, `yenc_recovery_retry_after`: active recovery workflow state, keep unless moved to a smaller side surface later
+
+Initial audit conclusion:
+
+- this table is not just dead weight; most structured columns are still on the active assemble and recovery path
+- `raw_overview_json` is the strongest early trim candidate inside the table
+- if this table still grows too quickly with the existing `7 day` purge, the next likely levers are shorter assembled retention, recovery-state extraction, or more aggressive purging of rows no longer needed by yEnc recovery
 
 ### `binaries` baseline
 
