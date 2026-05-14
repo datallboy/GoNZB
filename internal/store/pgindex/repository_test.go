@@ -960,7 +960,7 @@ func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	assertReleaseCount("release_predb_matches", 0)
 }
 
-func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
+func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -1011,8 +1011,8 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 	).Scan(&inlineEvidence); err != nil {
 		t.Fatalf("query inline grouping evidence: %v", err)
 	}
-	if strings.TrimSpace(string(inlineEvidence)) != "{}" {
-		t.Fatalf("expected inline grouping evidence to be cleared, got %s", string(inlineEvidence))
+	if !strings.Contains(string(inlineEvidence), "\"readable_title\"") {
+		t.Fatalf("expected compact inline grouping evidence, got %s", string(inlineEvidence))
 	}
 
 	var sideEvidence []byte
@@ -1020,11 +1020,11 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 		SELECT payload_json
 		FROM binary_grouping_evidence
 		WHERE binary_id = $1`, binaryID,
-	).Scan(&sideEvidence); err != nil {
+	).Scan(&sideEvidence); err != nil && err != sql.ErrNoRows {
 		t.Fatalf("query side-table grouping evidence: %v", err)
 	}
-	if !strings.Contains(string(sideEvidence), "\"readable_title\"") {
-		t.Fatalf("expected side-table grouping evidence payload, got %s", string(sideEvidence))
+	if len(sideEvidence) != 0 {
+		t.Fatalf("expected stable evidence to skip side-table retention, got %s", string(sideEvidence))
 	}
 
 	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
@@ -1035,6 +1035,92 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 		t.Fatalf("expected binary detail for %d", binaryID)
 	}
 	if !strings.Contains(string(detail.GroupingEvidence), "\"readable_title\"") {
+		t.Fatalf("expected binary detail grouping evidence from inline summary fallback, got %s", string(detail.GroupingEvidence))
+	}
+}
+
+func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.evidence.weak.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "weak family key",
+		ReleaseKey:        "weak family key",
+		BinaryKey:         fmt.Sprintf("binary-evidence-weak-%d", time.Now().UnixNano()),
+		BinaryName:        "obfuscated.bin",
+		FileName:          "obfuscated.bin",
+		IdentityStrength:  "weak",
+		FamilyKind:        "contextual_obfuscated",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.70,
+		MatchStatus:       "probable",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "contextual_obfuscated",
+				"status":        "probable",
+				"fallback_used": true,
+			},
+			"fallback": map[string]any{
+				"used": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	var inlineEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT grouping_evidence_json
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&inlineEvidence); err != nil {
+		t.Fatalf("query inline grouping evidence: %v", err)
+	}
+	if !strings.Contains(string(inlineEvidence), "\"fallback_used\":true") {
+		t.Fatalf("expected inline summary to retain fallback flag, got %s", string(inlineEvidence))
+	}
+
+	var sideEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT payload_json
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, binaryID,
+	).Scan(&sideEvidence); err != nil {
+		t.Fatalf("query side-table grouping evidence: %v", err)
+	}
+	if !strings.Contains(string(sideEvidence), "\"fallback\"") {
+		t.Fatalf("expected weak evidence payload in side table, got %s", string(sideEvidence))
+	}
+
+	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
+	if err != nil {
+		t.Fatalf("get indexer binary detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected binary detail for %d", binaryID)
+	}
+	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback\"") {
 		t.Fatalf("expected binary detail grouping evidence from side table, got %s", string(detail.GroupingEvidence))
 	}
 }
