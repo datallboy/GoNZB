@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-05-12
+Snapshot date: 2026-05-14
 
 This file continues the prior indexer foundation doc and keeps the indexer docs organized as execution focus moves beyond the completed performance and process-execution phase.
 
@@ -15,7 +15,8 @@ We currently have several planning and reference documents. This file defines wh
 - the process execution and performance sprint is complete and archived
 - the backlog burn-down follow-up sprint is complete and archived
 - the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
-- the active indexer execution focus now centers on the grouping model re-evaluation for obfuscated posts
+- the grouping-model re-evaluation sprint is complete and ready to archive
+- the active indexer execution focus now centers on database growth trimming and retention reduction
 
 ## Current Active Docs
 
@@ -27,22 +28,13 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_GROUPING_MODEL_REEVALUATION_PLAN.md`
+### `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 
 Use for:
 
-- the active grouping-model follow-up after clean-database release validation
-- deciding how XOVER subject set tokens, yEnc file counts, and yEnc part counts should shape binaries and release-family keys
-- separating provisional obfuscated file-set identity from releasable release-family identity
-- planning schema/runtime changes for identity strength and readiness buckets
-
-### `docs/active/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md`
-
-Use for:
-
-- the current map of indexer table ownership and service responsibilities
-- understanding which `binary_*` tables are canonical identity tables versus inspection/evidence tables
-- tracing missing links between assemble, release, and inspect stages before making schema changes
+- the active storage-trim and retention-reduction sprint
+- deciding which hot tables need bounded retention or compaction first
+- reducing overnight database growth without regressing grouping and release quality
 
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
@@ -55,14 +47,13 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is grouping correctness for obfuscated posts.
+The current focus is database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
 Primary workstream:
 
-- separate provisional obfuscated file-set identity from releasable release-family identity
-- use subject set tokens, yEnc file count, and yEnc part count intentionally
-- keep yEnc recovery as a promotion path from weak/provisional groups into stronger archive/media/PAR families
-- prevent small opaque `misc` releases from forming solely because they are `100%` complete
+- reduce ingest and audit-table growth
+- distinguish canonical rows from debug/audit retention
+- preserve the landed grouping/release gains while making long-running supervisor operation sustainable
 
 Recent completed focus:
 
@@ -74,6 +65,7 @@ Recent completed focus:
 - release fragment selection and weak-candidate cooldowns
 - assemble lane A / lane B runtime split
 - initial yEnc recovery stage wiring
+- grouping-model re-evaluation, PAR2 target persistence, and recovery-driven promotion
 
 ### `docs/archive/completed/indexer/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
 
@@ -84,6 +76,21 @@ Use for:
 - maintenance configurability and frontend reporting requirements
 - NZB blob-cache/offload planning
 - evaluating whether `release_file_articles` can be consolidated into `binary_parts`
+
+### `docs/archive/completed/indexer/INDEXER_GROUPING_MODEL_REEVALUATION_PLAN.md`
+
+Use for:
+
+- the completed grouping-model sprint
+- yEnc recovery and PAR2 target persistence decisions
+- the live validation evidence that actionable archive/contextual families improved before storage trimming became the next blocker
+
+### `docs/archive/completed/indexer/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md`
+
+Use for:
+
+- the completed schema/dataflow reference map for current table ownership
+- understanding which `binary_*` tables are canonical identity tables versus inspection/evidence tables during the storage-trim sprint
 
 ### `docs/archive/completed/indexer/INDEXER_ASSEMBLE_RELEASE_QUEUE_AND_LANE_SPLIT_EVALUATION.md`
 

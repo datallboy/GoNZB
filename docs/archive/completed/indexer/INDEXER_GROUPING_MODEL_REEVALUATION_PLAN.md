@@ -639,3 +639,45 @@ Status: signed off for this slice.
 Validation:
 
 - `go test -count=1 ./internal/indexing/release ./internal/store/pgindex`
+
+## Clean-Database And Overnight Validation
+
+Status on 2026-05-14: signed off.
+
+Clean-database and overnight supervisor validation showed the grouping changes are landing materially better evidence instead of only producing weak opaque backlog.
+
+Key live results:
+
+- `releases`: `952`
+- `releases.expected_archive_file_count > 0`: `702`
+- `binaries.expected_archive_file_count > 0`: `13,481`
+- non-`.bin` named binaries: `230,679`
+- actionable families: `4,608`
+- actionable `archive_stem` families: `2,626`
+- actionable `contextual_obfuscated` families: `1,919`
+- families with PAR2-backed archive-count evidence:
+  - `archive_stem`: `2,015`
+  - `contextual_obfuscated`: `1,233`
+
+Important interpretation:
+
+- yEnc recovery and PAR2 target persistence made a positive difference
+- stronger file names, archive stems, and archive/protected-file denominators are reaching both `binaries` and `releases`
+- release formation is no longer the primary blocker for this sprint
+- the main operational problem has shifted to storage growth and retention
+
+Known remaining noise:
+
+- very large `weak_single_binary` and `fragment_only` populations still exist
+- large contextual/test families such as `anonymous anon nowhere invalid ... alt binaries test ...` still pollute backlog summaries
+- this is now primarily a retention/cleanup problem, not proof that the grouping work failed
+
+## Final Sign-Off
+
+Signed off on 2026-05-14.
+
+Disposition:
+
+- archive this plan as completed work
+- keep the landed yEnc/PAR2/release improvements
+- move the active execution focus to database growth trimming and retention reduction

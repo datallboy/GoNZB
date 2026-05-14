@@ -251,8 +251,28 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
 	}
+	if len(out) > 0 {
+		return out, nil
+	}
 
-	return out, nil
+	var binaryID int64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT binary_id
+		FROM release_files
+		WHERE id = $1`, releaseFileID,
+	).Scan(&binaryID)
+	if err == sql.ErrNoRows {
+		return out, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load release file binary %d: %w", releaseFileID, err)
+	}
+
+	fallback, err := s.ListCatalogBinaryArticles(ctx, binaryID)
+	if err != nil {
+		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, binaryID, err)
+	}
+	return fallback, nil
 }
 
 func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
