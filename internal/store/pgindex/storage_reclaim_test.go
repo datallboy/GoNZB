@@ -59,3 +59,23 @@ func TestIndexerStorageReclaimStatement(t *testing.T) {
 		t.Fatalf("unexpected analyze statement %q", statement)
 	}
 }
+
+func TestNormalizeIndexerStorageReclaimTablesSupportsCheckAliases(t *testing.T) {
+	tables, err := normalizeIndexerStorageReclaimTables([]string{
+		"readiness-summaries",
+		"grouping-evidence",
+		"article-header-ingest-payloads",
+	})
+	if err != nil {
+		t.Fatalf("normalize alias tables: %v", err)
+	}
+
+	expected := []string{
+		"release_family_readiness_summaries",
+		"binary_grouping_evidence",
+		"article_header_ingest_payloads",
+	}
+	if !reflect.DeepEqual(tables, expected) {
+		t.Fatalf("expected ordered alias tables %v, got %v", expected, tables)
+	}
+}

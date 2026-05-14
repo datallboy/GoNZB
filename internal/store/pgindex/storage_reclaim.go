@@ -2,6 +2,7 @@ package pgindex
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,8 +26,9 @@ var indexerStorageReclaimTableAliases = map[string]string{
 }
 
 type IndexerStorageReclaimOptions struct {
-	Tables []string
-	Full   bool
+	Tables    []string
+	Full      bool
+	CheckOnly bool
 }
 
 type IndexerStorageReclaimTableResult struct {
@@ -87,15 +89,21 @@ func (s *Store) RunIndexerStorageReclaim(ctx context.Context, options IndexerSto
 	}
 
 	mode := "analyze"
-	if options.Full {
+	if options.CheckOnly {
+		mode = "check"
+	} else if options.Full {
 		mode = "full"
 	}
 
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("open reclaim connection: %w", err)
+	var conn *sql.Conn
+	if !options.CheckOnly {
+		dbConn, err := s.db.Conn(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("open reclaim connection: %w", err)
+		}
+		defer dbConn.Close()
+		conn = dbConn
 	}
-	defer conn.Close()
 
 	result := &IndexerStorageReclaimResult{
 		Mode:   mode,
@@ -108,12 +116,14 @@ func (s *Store) RunIndexerStorageReclaim(ctx context.Context, options IndexerSto
 			return nil, err
 		}
 
-		statement, err := indexerStorageReclaimStatement(table, options.Full)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return nil, fmt.Errorf("run %s for %s: %w", mode, table, err)
+		if !options.CheckOnly {
+			statement, err := indexerStorageReclaimStatement(table, options.Full)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				return nil, fmt.Errorf("run %s for %s: %w", mode, table, err)
+			}
 		}
 
 		afterBytes, err := s.tableTotalBytes(ctx, table)

@@ -417,13 +417,14 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	appCtx.Logger.Info("indexer maintenance completed")
 }
 
-func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool) {
+func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
 	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
 	defer cleanup()
 
 	out, err := appCtx.PGIndexStore.RunIndexerStorageReclaim(ctx, pgindex.IndexerStorageReclaimOptions{
-		Tables: tables,
-		Full:   full,
+		Tables:    tables,
+		Full:      full,
+		CheckOnly: checkOnly,
 	})
 	if err != nil {
 		appCtx.Logger.Fatal("indexer storage reclaim failed: %v", err)
