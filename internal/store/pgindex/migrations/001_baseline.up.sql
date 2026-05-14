@@ -33,7 +33,6 @@ CREATE TABLE public.article_header_ingest_payloads (
     yenc_part_number integer DEFAULT 0 NOT NULL,
     yenc_total_parts integer DEFAULT 0 NOT NULL,
     yenc_file_size bigint DEFAULT 0 NOT NULL,
-    raw_overview_json jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
