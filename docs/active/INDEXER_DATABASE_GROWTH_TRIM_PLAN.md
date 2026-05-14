@@ -103,7 +103,6 @@ Recommended default policy:
   - purge assembled rows with `subject_file_name <> ''` and no active yEnc retry state after `1 hour`
   - purge assembled rows with missing structured file identity or non-zero recovery state after `24 hours`
 - stop writing `raw_overview_json` for new rows unless a current stage proves it still needs original raw JSON
-- plan a later schema cleanup to remove `raw_overview_json` once yEnc recovery no longer depends on it
 
 Implementation status:
 
@@ -113,7 +112,8 @@ Implementation status:
   - `1 hour` for rows with structured filename identity and no active recovery state
   - `24 hours` for rows that still lack structured identity or still carry recovery backoff state
 - completed in cleanup wave 1: payload purge execution now walks bounded `article_header_id` windows so maintenance can run on the live dev database without immediate temp-file spill failure
-- still pending: remove the `raw_overview_json` column in a later migration wave after old rows age out
+- completed in cleanup wave 2: `raw_overview_json` has been removed from the active schema, baseline migration, and payload upsert path
+- live migration validation on `2026-05-14`: opening the store against the Docker database advanced `pgindex` schema version to `21` and confirmed `article_header_ingest_payloads.raw_overview_json` is no longer present
 
 Live validation:
 

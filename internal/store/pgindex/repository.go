@@ -1177,12 +1177,11 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 			yenc_part_number,
 			yenc_total_parts,
 			yenc_file_size,
-			raw_overview_json,
 			created_at
 		)
 		VALUES `)
 
-	args := make([]any, 0, len(order)*12)
+	args := make([]any, 0, len(order)*11)
 	for idx, articleHeaderID := range order {
 		row := lastByArticleHeaderID[articleHeaderID]
 		if idx > 0 {
@@ -1211,8 +1210,7 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		args = append(args, row.YEncTotalParts)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
-		fmt.Fprintf(&query, "$%d::jsonb,NOW())", len(args)+1)
-		args = append(args, "{}")
+		query.WriteString("NOW())")
 	}
 
 	query.WriteString(`
@@ -1226,8 +1224,7 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		    subject_file_total = EXCLUDED.subject_file_total,
 		    yenc_part_number = EXCLUDED.yenc_part_number,
 		    yenc_total_parts = EXCLUDED.yenc_total_parts,
-		    yenc_file_size = EXCLUDED.yenc_file_size,
-		    raw_overview_json = EXCLUDED.raw_overview_json`)
+		    yenc_file_size = EXCLUDED.yenc_file_size`)
 
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("insert article header payload batch: %w", err)

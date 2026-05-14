@@ -69,13 +69,13 @@ Important columns:
 - `subject`
 - `poster`
 - `xref`
-- `raw_overview_json`
 - `created_at`
 
 What it means:
 
-- scrape stores the raw subject/poster/xref/XOVER payload here
+- scrape stores the transient structured subject/poster/xref payload here
 - assembly joins this table while a header is still pending
+- matcher-side `RawOverview` is reconstructed in memory from structured ingest fields and article facts rather than stored as a JSON column
 - old assembled payload rows are eligible for retention cleanup
 
 ### `binaries`
@@ -334,7 +334,7 @@ Matcher input from each header:
 - `bytes`
 - `lines`
 - `xref`
-- `raw_overview_json`
+- reconstructed `RawOverview` derived from structured ingest fields and article facts
 
 Matcher output drives:
 

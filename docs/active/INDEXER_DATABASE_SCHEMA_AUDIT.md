@@ -54,7 +54,7 @@ Known current-state risks to validate in code:
 - `article_header_ingest_payloads` is still read heavily by assemble and recovery paths
 - `binaries.grouping_evidence_json` is still present in the live schema and active code paths
 - `release_family_readiness_summaries` appears to be carrying a large amount of weak/stale queue state
-- `article_header_ingest_payloads` still stores `raw_overview_json`, but the live database currently has `0` rows with a non-empty JSON payload
+- `article_header_ingest_payloads` no longer keeps `raw_overview_json` in the active schema; before removal, the live database had `0` rows with a non-empty JSON payload
 - `article_header_ingest_payloads` still stores `yenc_recovery_*` backoff fields, but the live database currently has `0` rows with `yenc_recovery_retry_after IS NOT NULL`
 - `binaries.file_set_key` is populated on essentially all live rows, while only a small subset currently uses inline `grouping_evidence_json`, `expected_file_count`, or `expected_archive_file_count`
 
@@ -222,7 +222,6 @@ Live columns:
 - `yenc_part_number`
 - `yenc_total_parts`
 - `yenc_file_size`
-- `raw_overview_json`
 - `created_at`
 - `yenc_recovery_missing_count`
 - `yenc_recovery_last_missing_at`
@@ -235,7 +234,7 @@ Important live indexes:
 
 Measured live-shape notes:
 
-- rows with non-empty `raw_overview_json`: `0`
+- rows with non-empty `raw_overview_json` before removal: `0`
 - rows with non-empty `subject_file_name`: `33,315,428`
 - rows with active `yenc_recovery_retry_after`: `0`
 
@@ -269,14 +268,14 @@ Initial column classification and disposition:
 - `poster`: fallback text only when poster normalization did not resolve; keep for now but treat as fallback data, not canonical identity
 - `xref`: active matcher and recovery input, keep for now
 - `subject_file_name`, `subject_file_index`, `subject_file_total`, `yenc_part_number`, `yenc_total_parts`, `yenc_file_size`: active structured hot-path fields for assemble and recovery, keep
-- `raw_overview_json`: no longer used by assemble or yEnc recovery runtime paths and currently empty in live stored data; drop candidate after retention changes clear old rows
+- `raw_overview_json`: no longer used by assemble or yEnc recovery runtime paths, was empty in live stored data, and has now been removed from the active schema
 - `created_at`: retention/debug support field, keep for now
 - `yenc_recovery_missing_count`, `yenc_recovery_last_missing_at`, `yenc_recovery_retry_after`: active recovery workflow state, keep unless moved to a smaller side surface later
 
 Initial audit conclusion:
 
 - this table is not just dead weight; most structured columns are still on the active assemble and recovery path
-- `raw_overview_json` is the strongest early trim candidate inside the table
+- `raw_overview_json` was the strongest early trim candidate inside the table and has now been removed
 - if this table still grows too quickly with the existing `7 day` purge, the next likely levers are shorter assembled retention, recovery-state extraction, or more aggressive purging of rows no longer needed by yEnc recovery
 
 Recommended trim policy:
@@ -284,13 +283,13 @@ Recommended trim policy:
 - keep the structured columns needed by assemble and yEnc recovery
 - stop writing `raw_overview_json` for new rows unless a current reader still requires original raw NNTP payload data
 - implementation status: new ingest writes now persist `'{}'` instead of the incoming raw overview payload, and yEnc recovery no longer reads the column
+- implementation status: `raw_overview_json` has been removed from the active schema and baseline migration after verifying no runtime reader still selected the stored column
+- live validation on `2026-05-14`: the Docker database advanced to `pgindex` schema version `21` and `information_schema.columns` confirmed `article_header_ingest_payloads` no longer includes `raw_overview_json`
 - replace the current flat `7 day` payload purge with a two-tier assembled-row policy:
   - `1 hour` retention for assembled rows that already have `subject_file_name <> ''` and no active retry state
   - `24 hours` retention for assembled rows that still lack structured filename identity or still participate in yEnc retry/backoff
 - implementation status: the two-tier assembled-row purge now runs in `RunIndexerMaintenance`
 - implementation status: payload maintenance now walks bounded `article_header_id` windows instead of attempting one giant delete
-- if later code changes remove yEnc recovery dependence on `raw_overview_json`, drop the column entirely in a later migration wave
-
 Reasoning:
 
 - the live database reached roughly `100 GB` within one day, so current retention windows are too long for the ingest rate

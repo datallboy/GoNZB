@@ -189,7 +189,7 @@ These are the first place to seek storage reduction:
 
 - `binary_grouping_evidence`
 - verbose JSON in `grouping_evidence_json`
-- `raw_overview_json` on `article_header_ingest_payloads`
+- any unnecessary transient payload columns on `article_header_ingest_payloads`
 
 Why:
 
