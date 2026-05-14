@@ -258,7 +258,7 @@ Ingest ownership map:
 Important current behavior:
 
 - assemble no longer reads stored `raw_overview_json` on its normal hot path; hydrated candidates rebuild `RawOverview` from structured columns and article facts
-- yEnc recovery still reads `raw_overview_json` text and unmarshals it into candidate payloads
+- yEnc recovery now rebuilds recovery match input from structured columns and article facts instead of reading stored `raw_overview_json`
 - there is already a live maintenance delete for payload rows where the owning `article_headers.assembled_at` is older than `7 days`
 
 Initial column classification and disposition:
@@ -269,7 +269,7 @@ Initial column classification and disposition:
 - `poster`: fallback text only when poster normalization did not resolve; keep for now but treat as fallback data, not canonical identity
 - `xref`: active matcher and recovery input, keep for now
 - `subject_file_name`, `subject_file_index`, `subject_file_total`, `yenc_part_number`, `yenc_total_parts`, `yenc_file_size`: active structured hot-path fields for assemble and recovery, keep
-- `raw_overview_json`: no longer used by normal assemble hydration and currently empty in live stored data; compact or drop candidate after confirming yEnc recovery can stop depending on it
+- `raw_overview_json`: no longer used by assemble or yEnc recovery runtime paths and currently empty in live stored data; drop candidate after retention changes clear old rows
 - `created_at`: retention/debug support field, keep for now
 - `yenc_recovery_missing_count`, `yenc_recovery_last_missing_at`, `yenc_recovery_retry_after`: active recovery workflow state, keep unless moved to a smaller side surface later
 
@@ -283,6 +283,7 @@ Recommended trim policy:
 
 - keep the structured columns needed by assemble and yEnc recovery
 - stop writing `raw_overview_json` for new rows unless a current reader still requires original raw NNTP payload data
+- implementation status: new ingest writes now persist `'{}'` instead of the incoming raw overview payload, and yEnc recovery no longer reads the column
 - replace the current flat `7 day` payload purge with a two-tier assembled-row policy:
   - `1 hour` retention for assembled rows that already have `subject_file_name <> ''` and no active retry state
   - `24 hours` retention for assembled rows that still lack structured filename identity or still participate in yEnc retry/backoff
@@ -292,7 +293,7 @@ Reasoning:
 
 - the live database reached roughly `100 GB` within one day, so current retention windows are too long for the ingest rate
 - live stored data shows `raw_overview_json` is effectively empty already
-- normal assemble hydration no longer relies on stored raw JSON
+- normal assemble hydration and yEnc recovery no longer rely on stored raw JSON
 
 ### `binaries` baseline
 

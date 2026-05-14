@@ -1331,7 +1331,6 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 		subjectFileName string
 		yencPartNumber  int
 		xref            string
-		rawBytes        int64
 	)
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT
@@ -1339,12 +1338,11 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 			p.poster,
 			p.subject_file_name,
 			p.yenc_part_number,
-			p.xref,
-			COALESCE((p.raw_overview_json->>'Bytes')::bigint, 0)
+			p.xref
 		FROM article_header_ingest_payloads p
 		JOIN article_headers ah ON ah.id = p.article_header_id
 		WHERE ah.newsgroup_id = $1`, newsgroupID,
-	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref, &rawBytes); err != nil {
+	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref); err != nil {
 		t.Fatalf("query duplicate batch payload: %v", err)
 	}
 
@@ -1359,9 +1357,6 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 	}
 	if xref != "xref-second" {
 		t.Fatalf("expected last duplicate xref to win, got %q", xref)
-	}
-	if rawBytes != 2000 {
-		t.Fatalf("expected last duplicate raw overview bytes to win, got %d", rawBytes)
 	}
 }
 

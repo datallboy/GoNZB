@@ -105,6 +105,12 @@ Recommended default policy:
 - stop writing `raw_overview_json` for new rows unless a current stage proves it still needs original raw JSON
 - plan a later schema cleanup to remove `raw_overview_json` once yEnc recovery no longer depends on it
 
+Implementation status:
+
+- completed in cleanup wave 1: new ingest writes now persist empty JSON for `raw_overview_json`
+- completed in cleanup wave 1: yEnc recovery no longer reads `raw_overview_json` and rebuilds its matcher input from structured columns and article facts
+- still pending: shorten assembled-row retention and remove the column in a later migration wave
+
 Why this is the default:
 
 - the database was able to reach roughly `100 GB` within one day, so a `7 day` payload horizon is far too permissive for this stage of development
