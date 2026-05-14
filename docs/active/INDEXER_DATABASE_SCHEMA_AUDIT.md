@@ -361,6 +361,43 @@ Baseline audit note:
 
 - `file_set_key` is effectively universal in the live data, while inline grouping evidence is now sparse relative to total row count
 
+Binary identity ownership map:
+
+- writer: `UpsertBinary` in `internal/store/pgindex/assembly_store.go` writes the canonical binary identity fields produced by assemble and the matcher
+- writer: `ApplyYEncHeaderRecovery` in `internal/store/pgindex/yenc_recovery_store.go` rewrites identity fields when recovery promotes a better binary key and filename
+- writer: `ApplyBinaryRecovery` in `internal/store/pgindex/binary_recovery_store.go` writes recovery metadata and may canonicalize filenames across binaries, release files, and binary parts
+- writer: PAR2 coverage updates in `internal/store/pgindex/inspection_store.go` mutate `expected_archive_file_count`, `file_index`, `is_auxiliary`, `is_main_payload`, `base_stem`, and inline grouping summary fragments
+- readers:
+  - release-family summary refresh in `internal/store/pgindex/release_family_summary_store.go`
+  - release candidate selection and release formation in `internal/store/pgindex/release_store.go`
+  - yEnc recovery candidate selection in `internal/store/pgindex/yenc_recovery_store.go`
+  - catalog, inspect, and admin/debug reads across `catalog_reads.go`, `inspect_reads.go`, and UI admin detail pages
+
+Important current behavior:
+
+- assemble writes canonical identity fields such as `release_family_key`, `file_set_key`, `file_family_key`, `identity_strength`, `identity_reason`, `subject_set_token`, `subject_set_kind`, `base_stem`, `is_auxiliary`, and `is_main_payload`
+- `expected_file_count` is a core release/readiness input and is refreshed from matcher/assemble output
+- `expected_archive_file_count` is downstream enrichment from archive/PAR2 evidence and is actively consumed by release-family summary refresh and release selection
+- inline `grouping_evidence_json` is still updated on the binary row by assemble, yEnc recovery, and PAR2 coverage updates
+
+Initial column classification and disposition:
+
+- `binary_key`, `provider_id`, `newsgroup_id`: canonical binary identity, keep
+- `release_key`, `source_release_key`, `release_family_key`, `file_family_key`, `file_set_key`, `base_stem`, `family_kind`: canonical grouping and release identity surfaces, keep
+- `binary_name`, `file_name`, `file_index`, `total_parts`, `observed_parts`, `total_bytes`, `posted_at`: canonical binary/file facts, keep
+- `expected_file_count`: canonical release/readiness denominator, keep
+- `expected_archive_file_count`: active derived enrichment used by readiness and release logic, keep
+- `is_auxiliary`, `is_main_payload`: active release and inspect classification, keep
+- `identity_strength`, `identity_reason`, `subject_set_token`, `subject_set_kind`: active grouping model support fields and query surfaces, keep
+- `recovered_kind`, `recovered_extension`, `recovered_source`, `recovered_confidence`, `recovered_at`: active downstream recovery evidence and canonicalization state, keep
+- `grouping_evidence_json`: keep for now, but treat as a compact inline summary surface only; do not let it remain a second full audit trail
+
+Initial audit conclusion:
+
+- `binaries` itself is not dominated by dead columns; most fields still participate directly in grouping, readiness, release formation, recovery, or inspect gating
+- the strongest trim angle on `binaries` is reducing or standardizing inline `grouping_evidence_json`, not removing the core identity fields
+- because `file_set_key` is now universal, it has moved from “experimental helper” to “active identity key” status
+
 ### `binary_parts` baseline
 
 Live size:
@@ -427,6 +464,46 @@ Important live indexes:
 Baseline audit note:
 
 - the table is extremely large relative to its narrow shape, which points directly at `payload_json` retention as a primary audit target
+
+Grouping evidence ownership map:
+
+- writer: `upsertBinaryGroupingEvidence` in `internal/store/pgindex/assembly_store.go` deletes and rewrites the side-table row whenever assemble upserts a binary
+- readers:
+  - admin and inspect detail reads in `internal/store/pgindex/inspect_reads.go`
+  - admin UI JSON views in `ui/src/modules/admin/AdminReleaseDetailPage.tsx`
+
+Measured live-shape notes:
+
+- exact row count matches the binary population pattern: `9,714,680`
+- average `payload_json` size: about `1365` bytes
+- max `payload_json` size in the live sample: about `1962` bytes
+- all sampled rows currently use `evidence_source = 'matcher'`
+
+Relationship to inline evidence:
+
+- the side table currently behaves like a one-row-per-binary audit blob, not a sparse exception log
+- inline `binaries.grouping_evidence_json` is much sparser:
+  - rows with inline grouping JSON: `88,877`
+  - average inline JSON size when present: about `902` bytes
+  - max inline JSON size in the live sample: about `1412` bytes
+- admin/debug detail endpoints read the side-table payload, not the inline JSON field
+- yEnc recovery and PAR2 coverage logic still reads or appends some inline summary values on `binaries`
+
+Initial column classification and disposition:
+
+- `binary_id`: canonical join key, keep
+- `evidence_source`, `evidence_version`: audit metadata, keep if the table remains
+- `payload_json`: primary trim target in this table; compact or reduce retention scope
+- `updated_at`: audit/change tracking field, keep if the table remains
+
+Initial audit conclusion:
+
+- this is currently the clearest oversized derived surface in the binary identity layer
+- the table is not storing selective “interesting events”; it is storing matcher evidence for effectively every binary
+- likely trim directions are:
+  - compact payload shape aggressively
+  - keep only the minimum summary needed for admin/debug
+  - or move to change-point retention instead of universal per-binary evidence blobs
 
 ### `release_family_readiness_summaries` baseline
 
