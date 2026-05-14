@@ -25,6 +25,8 @@ var (
 	pipelineOnce    bool
 	inspectOnce     bool
 	enrichOnce      bool
+
+	indexerReclaimFull bool
 )
 
 var rootCmd = &cobra.Command{
@@ -153,6 +155,18 @@ var indexerMaintenanceRepairRuntimeCmd = &cobra.Command{
 	Short: "Repair stale indexer stage leases and running stage rows",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerRepairRuntime()
+	},
+}
+
+var indexerReclaimStorageCmd = &cobra.Command{
+	Use:   "reclaim-storage [table...]",
+	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
+	Long: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables.\n" +
+		"Without table arguments it uses the recommended order:\n" +
+		"release_family_readiness_summaries, binary_grouping_evidence, article_header_ingest_payloads.\n" +
+		"Use --full only when you need bytes returned to the Docker volume and host filesystem.",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerStorageReclaim(args, indexerReclaimFull)
 	},
 }
 
@@ -298,6 +312,7 @@ func init() {
 	indexerEnrichPreDBSyncFeedCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB feed sync pass and exit")
 	indexerEnrichPreDBSyncBackfillCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB backfill sync pass and exit")
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
+	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -311,6 +326,7 @@ func init() {
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
+	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
 	indexerInspectCmd.AddCommand(indexerInspectPAR2Cmd)
