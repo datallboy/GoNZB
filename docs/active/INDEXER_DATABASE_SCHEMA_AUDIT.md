@@ -565,6 +565,58 @@ Baseline audit note:
 
 - this is a derived read-model table that is now large enough to deserve explicit retention and pruning rules, not just refresh logic
 
+Readiness ownership map:
+
+- writer: `refreshReleaseFamilySummary` in `internal/store/pgindex/release_family_summary_store.go` rebuilds or updates summary rows from `binaries`
+- writer: zero-binary families are preserved as `stale_cleanup_only` placeholders rather than deleted outright
+- writer: release-processing acknowledgements in `internal/store/pgindex/release_store.go` update `processed_at` to mark rows as consumed
+- readers:
+  - release queue selection and candidate ranking in `internal/store/pgindex/release_store.go`
+  - yEnc recovery candidate selection in `internal/store/pgindex/yenc_recovery_store.go`
+  - overview/dashboard pending counts in `internal/store/pgindex/inspect_reads.go`
+  - tests and admin/debug diagnostics around queue state
+
+Important current behavior:
+
+- this table is the active release queue surface, not just a report table
+- release selection ranks directly out of `updated_at > COALESCE(processed_at, updated_at)` and then applies readiness-bucket ordering
+- `stale_cleanup_only` rows are intentionally retained when a family key has no remaining binaries so downstream cleanup can observe the disappearance
+- `weak_single_binary`, `weak_obfuscated_set`, `overgrouped_contextual`, and `prefer_base_stem` are active behavioral states, not documentation-only labels
+
+Measured live-shape notes:
+
+- total rows: `9,937,099`
+- pending rows by `updated_at > COALESCE(processed_at, updated_at)`: `684,790`
+- rows with `processed_at IS NULL`: `0`
+- `stale_cleanup_only` rows: `85,160`
+- key-kind distribution:
+  - `release_family`: `9,856,662` rows, `683,276` pending
+  - `base_stem`: `80,437` rows, `1,514` pending
+- readiness-bucket distribution:
+  - `weak_single_binary`: `9,489,493` rows, `662,671` pending
+  - `fragment_only`: `357,207` rows, `20,370` pending
+  - `stale_cleanup_only`: `85,160` rows, `1,336` pending
+  - `actionable`: `4,952` rows, `397` pending
+  - `weak_obfuscated_set`: `287` rows, `16` pending
+
+Initial column classification and disposition:
+
+- `provider_id`, `newsgroup_id`, `key_kind`, `family_key`: canonical queue/read-model key, keep
+- `source_release_key`, `release_key`, `release_name`: active release formation inputs, keep
+- `binary_count`, `complete_binary_count`, `incomplete_binary_count`, `complete_main_payload_binary_count`: active queue scoring and readiness logic, keep
+- `expected_file_count`, `expected_archive_file_count`, `has_expected_file_count`, `has_expected_archive_file_count`, `expected_file_coverage_pct`, `archive_file_coverage_pct`: active release gating and ordering inputs, keep
+- `readiness_bucket`: core queue-state field, keep
+- `processed_at`, `updated_at`: queue-state lifecycle fields, keep
+- `earliest_posted_at`, `total_bytes`: queue ordering and display support, keep
+- `dominant_family_kind`, `dominant_file_name`, `dominant_match_confidence`: active weak-family reclassification inputs in release selection, keep for now
+
+Initial audit conclusion:
+
+- this table is genuinely active, but the vast majority of stored rows are not currently pending release work
+- most growth is in retained weak-family state, especially `weak_single_binary`, not in actionable release candidates
+- early trim opportunities are more likely to come from pruning stale or long-idle weak-family summaries than from dropping columns
+- `stale_cleanup_only` is a minority of the table; the dominant cost driver is the huge retained `weak_single_binary` population
+
 ## Migration Reconciliation Summary
 
 Current reconciliation status:
