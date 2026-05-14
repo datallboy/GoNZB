@@ -37,7 +37,6 @@ type preparedArticleHeaderInsert struct {
 	Lines         int
 	Xref          string
 	Parsed        parsedArticleMetadata
-	RawOverview   string
 }
 
 type payloadUpsertRow struct {
@@ -52,7 +51,6 @@ type payloadUpsertRow struct {
 	YEncPart        int
 	YEncTotalParts  int
 	FileSize        int64
-	RawOverview     string
 }
 
 type BackfillCheckpointState struct {
@@ -851,16 +849,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		xref := sanitizeUTF8(h.Xref)
 		parsed := parseArticleIngestMetadata(subject)
 
-		raw := "{}"
-		if len(h.RawOverview) > 0 {
-			cleanRaw := sanitizeStringMap(h.RawOverview)
-			b, marshalErr := json.Marshal(cleanRaw)
-			if marshalErr != nil {
-				return 0, fmt.Errorf("marshal raw_overview for article %d: %w", h.ArticleNumber, marshalErr)
-			}
-			raw = string(bytes.ToValidUTF8(b, []byte{}))
-		}
-
 		var dateUTC *time.Time
 		if h.DateUTC != nil {
 			normalized := h.DateUTC.UTC()
@@ -877,7 +865,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			Lines:         h.Lines,
 			Xref:          xref,
 			Parsed:        parsed,
-			RawOverview:   raw,
 		})
 	}
 	if len(prepared) == 0 {
@@ -937,7 +924,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 				YEncPart:        item.Parsed.YEncPart,
 				YEncTotalParts:  item.Parsed.YEncTotalParts,
 				FileSize:        item.Parsed.FileSize,
-				RawOverview:     item.RawOverview,
 			})
 		}
 
@@ -1226,7 +1212,7 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
 		fmt.Fprintf(&query, "$%d::jsonb,NOW())", len(args)+1)
-		args = append(args, row.RawOverview)
+		args = append(args, "{}")
 	}
 
 	query.WriteString(`
