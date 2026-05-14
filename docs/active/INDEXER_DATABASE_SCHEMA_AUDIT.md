@@ -704,6 +704,11 @@ Recommended trim policy:
   - new CLI wrapper validation succeeded with `go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage readiness`
   - live result logged `before_bytes=5490278400`, `after_bytes=5490286592`, `delta_bytes=8192`
   - exact post-run stats for `release_family_readiness_summaries`: `n_live_tup=10551590`, `n_dead_tup=0`, `bytes=5490286592`
+  - check-only reclaim preflight also succeeded with `go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check`
+  - check-only sizes logged:
+    - `release_family_readiness_summaries=5490286592`
+    - `binary_grouping_evidence=17332527104`
+    - `article_header_ingest_payloads=24795742208`
   - live `VACUUM FULL` remains blocked for now because host `/` free space was only `5.3G`, below the smallest current hot-table rewrite target
 
 Reasoning:

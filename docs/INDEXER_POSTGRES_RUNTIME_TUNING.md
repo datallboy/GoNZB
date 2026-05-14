@@ -374,9 +374,18 @@ go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --fu
 Then continue with:
 
 ```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check
 go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full grouping-evidence
 go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full payloads
 ```
+
+Recommended preflight on a tight dev machine:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check
+```
+
+That reports the current bytes for the allowlisted tables in the same execution order without running `VACUUM`.
 
 Direct `psql` fallback:
 

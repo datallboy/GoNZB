@@ -290,10 +290,15 @@ Implementation status:
 - completed in cleanup wave 2: `indexer maintenance reclaim-storage` now runs the allowlisted reclaim sequence with a safe default:
   - `VACUUM (ANALYZE)` by default
   - `VACUUM (FULL, ANALYZE)` with `--full`
+  - `--check` reports current bytes without running `VACUUM`
 - live validation on `2026-05-14`: `go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage readiness` completed successfully and reported:
   - `before_bytes=5490278400`
   - `after_bytes=5490286592`
   - `delta_bytes=8192`
+- live validation on `2026-05-14`: `go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check` completed successfully and reported:
+  - `release_family_readiness_summaries=5490286592`
+  - `binary_grouping_evidence=17332527104`
+  - `article_header_ingest_payloads=24795742208`
 - current blocker on `2026-05-14`: host `/` free space was only `5.3G` while the smallest reclaim target still measured about `5.49 GB`, so a live `VACUUM (FULL, ANALYZE)` run is currently unsafe on this dev machine until more root-volume space is freed
 
 ## Handoff Action Items
