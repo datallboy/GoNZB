@@ -4500,6 +4500,109 @@ func TestRunIndexerMaintenancePurgesOrphanReleases(t *testing.T) {
 	}
 }
 
+func TestRunIndexerMaintenancePurgesArticleHeaderPayloadsByStagedRetention(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.payloads.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	headers := []ArticleHeader{
+		{ArticleNumber: 1001, MessageID: "<payload-1001@test>", Subject: `KeepFast [1/1] - "keepfast.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1001"},
+		{ArticleNumber: 1002, MessageID: "<payload-1002@test>", Subject: `NeedsStructuredRecovery placeholder`, Poster: "poster@test", Xref: groupName + ":1002"},
+		{ArticleNumber: 1003, MessageID: "<payload-1003@test>", Subject: `DropMissingIdentity placeholder`, Poster: "poster@test", Xref: groupName + ":1003"},
+		{ArticleNumber: 1004, MessageID: "<payload-1004@test>", Subject: `RetryLater [1/1] - "retrylater.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1004"},
+		{ArticleNumber: 1005, MessageID: "<payload-1005@test>", Subject: `FreshAssembled [1/1] - "freshassembled.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1005"},
+		{ArticleNumber: 1006, MessageID: "<payload-1006@test>", Subject: `PendingUnassembled [1/1] - "pendingunassembled.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1006"},
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, headers); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE article_headers
+		SET assembled_at = CASE article_number
+			WHEN 1001 THEN NOW() - INTERVAL '2 hours'
+			WHEN 1002 THEN NOW() - INTERVAL '2 hours'
+			WHEN 1003 THEN NOW() - INTERVAL '25 hours'
+			WHEN 1004 THEN NOW() - INTERVAL '25 hours'
+			WHEN 1005 THEN NOW() - INTERVAL '30 minutes'
+			ELSE assembled_at
+		END
+		WHERE newsgroup_id = $1`, newsgroupID,
+	); err != nil {
+		t.Fatalf("update assembled_at: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads p
+		SET yenc_recovery_missing_count = 2,
+		    yenc_recovery_last_missing_at = NOW() - INTERVAL '2 hours',
+		    yenc_recovery_retry_after = NOW() + INTERVAL '2 hours'
+		FROM article_headers ah
+		WHERE ah.id = p.article_header_id
+		  AND ah.newsgroup_id = $1
+		  AND ah.article_number = 1004`, newsgroupID,
+	); err != nil {
+		t.Fatalf("update payload retry state: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedHeaderPayloads != 3 {
+		t.Fatalf("expected 3 purged payload rows, got %+v", out)
+	}
+
+	type payloadState struct {
+		articleNumber int64
+		hasPayload    bool
+	}
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT ah.article_number, (p.article_header_id IS NOT NULL) AS has_payload
+		FROM article_headers ah
+		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		WHERE ah.newsgroup_id = $1
+		ORDER BY ah.article_number`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query payload states: %v", err)
+	}
+	defer rows.Close()
+
+	got := make(map[int64]bool, 6)
+	for rows.Next() {
+		var item payloadState
+		if err := rows.Scan(&item.articleNumber, &item.hasPayload); err != nil {
+			t.Fatalf("scan payload state: %v", err)
+		}
+		got[item.articleNumber] = item.hasPayload
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate payload states: %v", err)
+	}
+
+	want := map[int64]bool{
+		1001: false,
+		1002: true,
+		1003: false,
+		1004: false,
+		1005: true,
+		1006: true,
+	}
+	for articleNumber, hasPayload := range want {
+		if got[articleNumber] != hasPayload {
+			t.Fatalf("unexpected payload retention for article %d: got=%t want=%t", articleNumber, got[articleNumber], hasPayload)
+		}
+	}
+}
+
 func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

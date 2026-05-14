@@ -287,6 +287,7 @@ Recommended trim policy:
 - replace the current flat `7 day` payload purge with a two-tier assembled-row policy:
   - `1 hour` retention for assembled rows that already have `subject_file_name <> ''` and no active retry state
   - `24 hours` retention for assembled rows that still lack structured filename identity or still participate in yEnc retry/backoff
+- implementation status: the two-tier assembled-row purge now runs in `RunIndexerMaintenance`
 - if later code changes remove yEnc recovery dependence on `raw_overview_json`, drop the column entirely in a later migration wave
 
 Reasoning:

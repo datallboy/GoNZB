@@ -109,7 +109,10 @@ Implementation status:
 
 - completed in cleanup wave 1: new ingest writes now persist empty JSON for `raw_overview_json`
 - completed in cleanup wave 1: yEnc recovery no longer reads `raw_overview_json` and rebuilds its matcher input from structured columns and article facts
-- still pending: shorten assembled-row retention and remove the column in a later migration wave
+- completed in cleanup wave 1: assembled payload retention now uses a two-tier maintenance purge:
+  - `1 hour` for rows with structured filename identity and no active recovery state
+  - `24 hours` for rows that still lack structured identity or still carry recovery backoff state
+- still pending: remove the `raw_overview_json` column in a later migration wave after old rows age out
 
 Why this is the default:
 

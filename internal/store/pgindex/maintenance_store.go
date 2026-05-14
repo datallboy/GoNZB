@@ -120,7 +120,21 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		USING article_headers ah
 		WHERE ah.id = p.article_header_id
 		  AND ah.assembled_at IS NOT NULL
-		  AND ah.assembled_at < NOW() - INTERVAL '7 days'`); err != nil {
+		  AND (
+		  	(
+		  		ah.assembled_at < NOW() - INTERVAL '1 hour'
+		  		AND COALESCE(BTRIM(p.subject_file_name), '') <> ''
+		  		AND COALESCE(p.yenc_recovery_missing_count, 0) = 0
+		  		AND p.yenc_recovery_retry_after IS NULL
+		  	) OR (
+		  		ah.assembled_at < NOW() - INTERVAL '24 hours'
+		  		AND (
+		  			COALESCE(BTRIM(p.subject_file_name), '') = ''
+		  			OR COALESCE(p.yenc_recovery_missing_count, 0) > 0
+		  			OR p.yenc_recovery_retry_after IS NOT NULL
+		  		)
+		  	)
+		  )`); err != nil {
 		return nil, fmt.Errorf("purge old article header payloads: %w", err)
 	} else if result.PurgedHeaderPayloads, err = res.RowsAffected(); err != nil {
 		return nil, fmt.Errorf("purge old article header payloads rows affected: %w", err)
