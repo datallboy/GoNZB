@@ -165,7 +165,14 @@ Implementation status:
 - completed in cleanup wave 1: assemble now persists a compact inline `grouping_evidence_json.summary` on `binaries`
 - completed in cleanup wave 1: detailed `binary_grouping_evidence` rows are now retained only for weak, provisional, low-confidence, or fallback-driven matches
 - completed in cleanup wave 1: inspect and admin detail reads now fall back to inline grouping evidence when no side-table row exists
-- still pending: add maintenance cleanup for older high-confidence side-table rows that were written before sparse retention landed
+- completed in cleanup wave 1: maintenance now backfills inline `summary` from legacy side-table rows and purges older stable high-confidence `binary_grouping_evidence` rows
+
+Live validation:
+
+- on `2026-05-14`, a follow-up local maintenance run completed with `purged_grouping_evidence=523`
+- the same run also reclaimed `389,908` additional payload rows and `9,865` readiness summary rows that had become eligible since the prior pass
+- exact live `binary_grouping_evidence` row count dropped to `10,341,903`
+- immediate physical side-table size still read `16 GB`, which again points to dead-tuple reuse/vacuum as the next operational concern after retention logic
 
 Why this is the default:
 
@@ -216,6 +223,7 @@ Implementation status:
   - `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` after `24 hours` when no recovery-eligible binaries remain
 - completed in cleanup wave 1: maintenance logging and metrics now expose `purged_readiness_summaries`
 - live validation on `2026-05-14`: the successful maintenance run reported `purged_readiness_summaries=0`, which means current live growth pressure is still dominated by payload retention and grouping evidence rather than already-eligible summary residue
+- live validation on a follow-up `2026-05-14` maintenance run: `purged_readiness_summaries=9865`, confirming the bounded cleanup is working once rows age into eligibility
 
 Why this is the default:
 

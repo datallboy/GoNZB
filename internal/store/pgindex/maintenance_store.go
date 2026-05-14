@@ -16,6 +16,7 @@ type IndexerMaintenanceResult struct {
 	PurgedScrapeRuns           int64
 	PurgedBinaryInspections    int64
 	PurgedHeaderPayloads       int64
+	PurgedGroupingEvidence     int64
 	PurgedReadinessSummaries   int64
 	PurgedOrphanReleases       int64
 }
@@ -148,6 +149,41 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		return fmt.Errorf("begin indexer maintenance derived tx: %w", err)
 	}
 	defer rollbackTx(tx)
+
+	if res, err := tx.ExecContext(ctx, `
+		WITH eligible AS (
+			SELECT
+				b.id AS binary_id,
+				jsonb_build_object('summary', bge.payload_json->'summary') AS inline_summary
+			FROM binary_grouping_evidence bge
+			JOIN binaries b ON b.id = bge.binary_id
+			WHERE bge.updated_at < NOW() - INTERVAL '24 hours'
+			  AND b.match_confidence >= 0.85
+			  AND LOWER(COALESCE(b.identity_strength, '')) NOT IN ('weak', 'provisional')
+			  AND LOWER(COALESCE(b.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			  AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false
+			  AND bge.payload_json ? 'summary'
+		),
+		backfilled AS (
+			UPDATE binaries b
+			SET grouping_evidence_json = CASE
+				WHEN COALESCE(b.grouping_evidence_json, '{}'::jsonb) = '{}'::jsonb
+					OR NOT (COALESCE(b.grouping_evidence_json, '{}'::jsonb) ? 'summary')
+				THEN e.inline_summary
+				ELSE b.grouping_evidence_json
+			END,
+			updated_at = b.updated_at
+			FROM eligible e
+			WHERE b.id = e.binary_id
+			RETURNING b.id
+		)
+		DELETE FROM binary_grouping_evidence bge
+		USING eligible e
+		WHERE bge.binary_id = e.binary_id`); err != nil {
+		return fmt.Errorf("purge old stable grouping evidence: %w", err)
+	} else if result.PurgedGroupingEvidence, err = res.RowsAffected(); err != nil {
+		return fmt.Errorf("purge old stable grouping evidence rows affected: %w", err)
+	}
 
 	if res, err := tx.ExecContext(ctx, `
 		DELETE FROM release_family_readiness_summaries s

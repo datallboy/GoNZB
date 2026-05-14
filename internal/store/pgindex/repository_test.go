@@ -4784,6 +4784,136 @@ func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
 	}
 }
 
+func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.groupingevidence.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	stableBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "stable-family",
+		ReleaseKey:        "stable-family",
+		BinaryKey:         fmt.Sprintf("stable-binary-%d", time.Now().UnixNano()),
+		BinaryName:        "stable.release.mkv",
+		FileName:          "stable.release.mkv",
+		IdentityStrength:  "strong",
+		FamilyKind:        "readable_title",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "readable_title",
+				"status":        "matched",
+				"fallback_used": false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert stable binary: %v", err)
+	}
+
+	weakBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "weak-family",
+		ReleaseKey:        "weak-family",
+		BinaryKey:         fmt.Sprintf("weak-binary-%d", time.Now().UnixNano()),
+		BinaryName:        "weak.bin",
+		FileName:          "weak.bin",
+		IdentityStrength:  "weak",
+		FamilyKind:        "contextual_obfuscated",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.70,
+		MatchStatus:       "probable",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "contextual_obfuscated",
+				"status":        "probable",
+				"fallback_used": true,
+			},
+			"fallback": map[string]any{
+				"used": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert weak binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET grouping_evidence_json = '{}'::jsonb
+		WHERE id = $1`, stableBinaryID,
+	); err != nil {
+		t.Fatalf("clear stable inline summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_grouping_evidence
+		SET updated_at = NOW() - INTERVAL '25 hours'
+		WHERE binary_id IN ($1, $2)`, stableBinaryID, weakBinaryID,
+	); err != nil {
+		t.Fatalf("age grouping evidence rows: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedGroupingEvidence != 1 {
+		t.Fatalf("expected 1 purged grouping evidence row, got %+v", out)
+	}
+
+	var stableInline []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT grouping_evidence_json
+		FROM binaries
+		WHERE id = $1`, stableBinaryID,
+	).Scan(&stableInline); err != nil {
+		t.Fatalf("query stable inline evidence: %v", err)
+	}
+	if !strings.Contains(string(stableInline), "\"readable_title\"") {
+		t.Fatalf("expected stable inline summary to be backfilled, got %s", string(stableInline))
+	}
+
+	var stableSideCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, stableBinaryID,
+	).Scan(&stableSideCount); err != nil {
+		t.Fatalf("count stable side evidence: %v", err)
+	}
+	if stableSideCount != 0 {
+		t.Fatalf("expected stable side-table evidence to be purged, got %d rows", stableSideCount)
+	}
+
+	var weakSideCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, weakBinaryID,
+	).Scan(&weakSideCount); err != nil {
+		t.Fatalf("count weak side evidence: %v", err)
+	}
+	if weakSideCount != 1 {
+		t.Fatalf("expected weak side-table evidence to remain, got %d rows", weakSideCount)
+	}
+}
+
 func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

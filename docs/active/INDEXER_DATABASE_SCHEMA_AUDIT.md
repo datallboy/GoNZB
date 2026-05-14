@@ -550,6 +550,13 @@ Recommended trim policy:
 - implementation status: assemble now keeps a compact inline `summary` on `binaries.grouping_evidence_json`
 - implementation status: detailed `binary_grouping_evidence` rows are now skipped for stable high-confidence matches and retained only for weak, provisional, low-confidence, or fallback-driven cases
 - implementation status: inspect/admin detail reads now fall back to inline grouping evidence when the side-table row is absent
+- implementation status: maintenance now backfills inline `summary` from legacy side-table rows and purges older stable high-confidence side-table evidence
+
+Live validation note:
+
+- a follow-up successful local maintenance run on `2026-05-14` reported `purged_grouping_evidence=523`
+- exact live `binary_grouping_evidence` row count dropped to `10,341,903`
+- immediate physical side-table size still read `16 GB`, so retention logic is now ahead of physical reclaim
 
 Reasoning:
 
@@ -688,6 +695,7 @@ Recommended trim policy:
 - implementation status: `RunIndexerMaintenance` now prunes non-pending `prefer_base_stem`, `fragment_only`, and `stale_cleanup_only` rows by age
 - implementation status: `RunIndexerMaintenance` now prunes non-pending `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` rows only when no recovery-eligible binaries remain
 - live validation note: the successful local maintenance run on `2026-05-14` reported `purged_readiness_summaries=0`, so current live cleanup pressure is still much higher on ingest payloads than on already-eligible summary residue
+- live validation note: a follow-up `2026-05-14` maintenance run later reported `purged_readiness_summaries=9865`, confirming the bounded cleanup does remove aged residue once rows become eligible
 
 Reasoning:
 
