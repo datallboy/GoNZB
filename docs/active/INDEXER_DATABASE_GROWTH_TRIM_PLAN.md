@@ -575,6 +575,27 @@ Per implementation wave, also track:
 
 ## Sign-Off
 
-Open.
+Signed off on `2026-05-14`.
+
+Resolved in this sprint:
+
+- completed the live schema and code-usage audit for the hot growth tables
+- reduced ongoing ingest-payload retention from `7 days` to staged `1 hour` and `24 hour` windows
+- stopped persisting verbose raw overview payload data and removed `article_header_ingest_payloads.raw_overview_json` from the active schema
+- made `binary_grouping_evidence` sparse by default and added legacy stable-row cleanup
+- added bounded cleanup for non-pending readiness residue
+- added operator-visible storage stats and allowlisted reclaim tooling
+- validated the code paths with focused Go test coverage and live Docker-database checks
+
+Deferred outside the sprint code changes:
+
+- physical filesystem reclaim through `VACUUM (FULL, ANALYZE)` is still blocked by root-volume free space
+- longer-run post-trim growth measurement should be rerun after the next sustained ingest session on `dv`
+
+Closeout note:
+
+- this sprint no longer has open code or schema tasks
+- the remaining work is operational reclaim plus follow-up measurement after merge
+- once merged, these active docs can move to completed/archive status if you want to keep `docs/active/` limited to in-flight work
 
 This is now the active indexer execution doc after the grouping-model re-evaluation sprint was signed off on 2026-05-14.

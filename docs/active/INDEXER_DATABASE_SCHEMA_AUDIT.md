@@ -859,4 +859,20 @@ Codex is expected to perform:
 
 ## Sign-Off
 
-Open.
+Signed off on `2026-05-14`.
+
+Audit closeout:
+
+- live Docker Postgres remained the source of truth throughout the sprint
+- active code and migrations were reconciled without using `migrations_archive`
+- `article_header_ingest_payloads.raw_overview_json` was verified unused in active runtime reads, then removed from schema version `21`
+- the remaining large tables are still intentionally present:
+  - `article_header_ingest_payloads` for structured assemble and yEnc recovery fields
+  - `binary_grouping_evidence` for selective weak/fallback/change-point audit evidence
+  - `release_family_readiness_summaries` for the active release queue/read-model
+- the remaining blocker is physical reclaim on the Docker-backed Postgres volume, not uncertainty about column ownership or active code usage
+
+Deferred follow-up after merge:
+
+- rerun sustained ingest on `dv` and compare hourly growth against the pre-trim baseline
+- run `VACUUM (FULL, ANALYZE)` in the documented order once host root-volume headroom is available

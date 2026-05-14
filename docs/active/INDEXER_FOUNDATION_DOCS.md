@@ -16,7 +16,8 @@ We currently have several planning and reference documents. This file defines wh
 - the backlog burn-down follow-up sprint is complete and archived
 - the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
 - the grouping-model re-evaluation sprint is complete and ready to archive
-- the active indexer execution focus now centers on database growth trimming and retention reduction
+- the database growth trim sprint is complete from a code and schema standpoint
+- the only remaining follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
 
@@ -32,7 +33,7 @@ Use for:
 
 Use for:
 
-- the active storage-trim and retention-reduction sprint
+- the completed storage-trim and retention-reduction sprint closeout
 - deciding which hot tables need bounded retention or compaction first
 - reducing overnight database growth without regressing grouping and release quality
 
@@ -40,7 +41,7 @@ Use for:
 
 Use for:
 
-- the live schema and column-usage audit for the storage-trim sprint
+- the completed live schema and column-usage audit for the storage-trim sprint
 - documenting which hot-table columns are canonical, derived, debug-only, or drop candidates
 - reconciling Docker Postgres schema truth with active migrations and current code usage
 
@@ -63,13 +64,18 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
+The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
 Primary workstream:
 
 - reduce ingest and audit-table growth
 - distinguish canonical rows from debug/audit retention
 - preserve the landed grouping/release gains while making long-running supervisor operation sustainable
+
+Current remaining follow-up:
+
+- free root-volume space so the documented `VACUUM FULL` reclaim pass can run
+- rerun sustained ingest measurements on `dv` after merge
 
 Recent completed focus:
 
