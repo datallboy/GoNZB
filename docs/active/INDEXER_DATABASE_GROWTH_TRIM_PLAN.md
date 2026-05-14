@@ -160,6 +160,13 @@ Recommended default policy:
   - keep only the specific evidence modules that explain a weak or changed decision
   - drop full verbose module payloads for stable high-confidence rows
 
+Implementation status:
+
+- completed in cleanup wave 1: assemble now persists a compact inline `grouping_evidence_json.summary` on `binaries`
+- completed in cleanup wave 1: detailed `binary_grouping_evidence` rows are now retained only for weak, provisional, low-confidence, or fallback-driven matches
+- completed in cleanup wave 1: inspect and admin detail reads now fall back to inline grouping evidence when no side-table row exists
+- still pending: add maintenance cleanup for older high-confidence side-table rows that were written before sparse retention landed
+
 Why this is the default:
 
 - `binary_grouping_evidence` currently averages about `1365` bytes per row across roughly one row per binary

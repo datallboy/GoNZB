@@ -547,6 +547,9 @@ Recommended trim policy:
   - always keep `summary`
   - keep only the evidence modules that explain a weak, fallback, or changed decision
   - drop verbose module-by-module JSON for stable high-confidence rows
+- implementation status: assemble now keeps a compact inline `summary` on `binaries.grouping_evidence_json`
+- implementation status: detailed `binary_grouping_evidence` rows are now skipped for stable high-confidence matches and retained only for weak, provisional, low-confidence, or fallback-driven cases
+- implementation status: inspect/admin detail reads now fall back to inline grouping evidence when the side-table row is absent
 
 Reasoning:
 

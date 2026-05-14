@@ -1428,7 +1428,10 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status,
-			COALESCE(bge.payload_json, '{}'::jsonb),
+			CASE
+				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
+				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+			END,
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
 		FROM binaries b
@@ -1543,7 +1546,10 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
-			COALESCE(bge.payload_json, '{}'::jsonb),
+			CASE
+				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
+				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+			END,
 			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
 		FROM release_files rf
 		JOIN releases r ON r.release_id = rf.release_id
