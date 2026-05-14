@@ -14,6 +14,7 @@ type IndexerMaintenanceResult struct {
 	PurgedScrapeRuns           int64
 	PurgedBinaryInspections    int64
 	PurgedHeaderPayloads       int64
+	PurgedReadinessSummaries   int64
 	PurgedOrphanReleases       int64
 }
 
@@ -138,6 +139,62 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		return nil, fmt.Errorf("purge old article header payloads: %w", err)
 	} else if result.PurgedHeaderPayloads, err = res.RowsAffected(); err != nil {
 		return nil, fmt.Errorf("purge old article header payloads rows affected: %w", err)
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket = $1
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '6 hours'`,
+		releaseReadinessPreferBaseStem,
+	); err != nil {
+		return nil, fmt.Errorf("purge old prefer_base_stem readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return nil, fmt.Errorf("purge old prefer_base_stem readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket IN ($1, $2)
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '24 hours'`,
+		releaseReadinessFragmentOnly,
+		releaseReadinessStaleCleanupOnly,
+	); err != nil {
+		return nil, fmt.Errorf("purge old fragment/stale readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return nil, fmt.Errorf("purge old fragment/stale readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket IN ($1, $2, $3)
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '24 hours'
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binaries b
+		  	WHERE b.provider_id = s.provider_id
+		  	  AND b.newsgroup_id = s.newsgroup_id
+		  	  AND s.key_kind = 'release_family'
+		  	  AND b.release_family_key = s.family_key
+		  	  AND LOWER(COALESCE(b.family_kind, '')) IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+		  	  AND b.is_main_payload = TRUE
+		  	  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
+		  )`,
+		releaseReadinessWeakSingle,
+		releaseReadinessWeakObfuscated,
+		releaseReadinessOvergrouped,
+	); err != nil {
+		return nil, fmt.Errorf("purge old weak readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return nil, fmt.Errorf("purge old weak readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
 	}
 
 	if res, err := tx.ExecContext(ctx, `

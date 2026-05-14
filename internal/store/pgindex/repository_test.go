@@ -4603,6 +4603,101 @@ func TestRunIndexerMaintenancePurgesArticleHeaderPayloadsByStagedRetention(t *te
 	}
 }
 
+func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.readiness.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "keep-weak-family",
+		FileFamilyKey:    "keep-weak-family::part",
+		FamilyKind:       "contextual_obfuscated",
+		BaseStem:         "keep-weak-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "keep-weak-family",
+		ReleaseName:      "Keep Weak Family",
+		BinaryKey:        "keep-weak-family::binary",
+		BinaryName:       "keep-weak-family.bin",
+		FileName:         "keep-weak-family.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.70,
+		MatchStatus:      "matched",
+	}); err != nil {
+		t.Fatalf("upsert weak-family keeper binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'drop-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'drop-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'keep-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'keep-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'pending-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'pending-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'drop-fragment-family', '', '', '', 2, 1, 1, 1, 0, false, 200, NOW() - INTERVAL '25 hours', '', '', 0, 'fragment_only', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'drop-stale-family', '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, '', '', 0, 'stale_cleanup_only', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'base_stem', 'drop-base-stem', '', '', '', 2, 1, 1, 1, 3, true, 200, NOW() - INTERVAL '7 hours', '', '', 0, 'prefer_base_stem', 0, NOW() - INTERVAL '7 hours', NOW() - INTERVAL '7 hours')`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness rows: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedReadinessSummaries != 4 {
+		t.Fatalf("expected 4 purged readiness summaries, got %+v", out)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT family_key
+		FROM release_family_readiness_summaries
+		WHERE newsgroup_id = $1
+		ORDER BY family_key`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query remaining readiness rows: %v", err)
+	}
+	defer rows.Close()
+
+	var remaining []string
+	for rows.Next() {
+		var familyKey string
+		if err := rows.Scan(&familyKey); err != nil {
+			t.Fatalf("scan remaining readiness row: %v", err)
+		}
+		remaining = append(remaining, familyKey)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate remaining readiness rows: %v", err)
+	}
+
+	want := []string{"keep-weak-family", "pending-weak-family"}
+	if len(remaining) != len(want) {
+		t.Fatalf("unexpected remaining readiness rows: got=%v want=%v", remaining, want)
+	}
+	for i := range want {
+		if remaining[i] != want[i] {
+			t.Fatalf("unexpected remaining readiness row at %d: got=%q want=%q", i, remaining[i], want[i])
+		}
+	}
+}
+
 func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
