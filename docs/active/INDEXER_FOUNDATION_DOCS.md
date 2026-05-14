@@ -36,6 +36,14 @@ Use for:
 - deciding which hot tables need bounded retention or compaction first
 - reducing overnight database growth without regressing grouping and release quality
 
+### `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md`
+
+Use for:
+
+- the live schema and column-usage audit for the storage-trim sprint
+- documenting which hot-table columns are canonical, derived, debug-only, or drop candidates
+- reconciling Docker Postgres schema truth with active migrations and current code usage
+
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
 Use for:
@@ -225,7 +233,7 @@ Do not let this drive the current process-execution sprint.
 ## Guideline Rules
 
 1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
-2. Treat `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md` as the current active checklist for storage and retention work.
+2. Treat `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md` as the active execution checklist and `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md` as the live audit tracker for storage and retention work.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
 5. Keep measured bottlenecks ahead of speculative architectural change.
