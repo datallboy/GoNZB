@@ -288,6 +288,7 @@ Recommended trim policy:
   - `1 hour` retention for assembled rows that already have `subject_file_name <> ''` and no active retry state
   - `24 hours` retention for assembled rows that still lack structured filename identity or still participate in yEnc retry/backoff
 - implementation status: the two-tier assembled-row purge now runs in `RunIndexerMaintenance`
+- implementation status: payload maintenance now walks bounded `article_header_id` windows instead of attempting one giant delete
 - if later code changes remove yEnc recovery dependence on `raw_overview_json`, drop the column entirely in a later migration wave
 
 Reasoning:
@@ -295,6 +296,12 @@ Reasoning:
 - the live database reached roughly `100 GB` within one day, so current retention windows are too long for the ingest rate
 - live stored data shows `raw_overview_json` is effectively empty already
 - normal assemble hydration and yEnc recovery no longer rely on stored raw JSON
+
+Live validation note:
+
+- the first successful local maintenance run on `2026-05-14` reported `purged_header_payloads=7150219`
+- exact live payload row count dropped from `79,109,360` to `70,909,141`
+- immediate physical table size remained `23 GB`, which is expected before tuple reuse or vacuum reclaim
 
 ### `binaries` baseline
 
@@ -677,6 +684,7 @@ Recommended trim policy:
 - rely on normal summary refresh to recreate rows when new binary activity makes a family relevant again
 - implementation status: `RunIndexerMaintenance` now prunes non-pending `prefer_base_stem`, `fragment_only`, and `stale_cleanup_only` rows by age
 - implementation status: `RunIndexerMaintenance` now prunes non-pending `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` rows only when no recovery-eligible binaries remain
+- live validation note: the successful local maintenance run on `2026-05-14` reported `purged_readiness_summaries=0`, so current live cleanup pressure is still much higher on ingest payloads than on already-eligible summary residue
 
 Reasoning:
 

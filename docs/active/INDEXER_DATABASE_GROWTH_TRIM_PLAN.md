@@ -112,7 +112,15 @@ Implementation status:
 - completed in cleanup wave 1: assembled payload retention now uses a two-tier maintenance purge:
   - `1 hour` for rows with structured filename identity and no active recovery state
   - `24 hours` for rows that still lack structured identity or still carry recovery backoff state
+- completed in cleanup wave 1: payload purge execution now walks bounded `article_header_id` windows so maintenance can run on the live dev database without immediate temp-file spill failure
 - still pending: remove the `raw_overview_json` column in a later migration wave after old rows age out
+
+Live validation:
+
+- on `2026-05-14`, a successful local maintenance run completed with `purged_header_payloads=7150219` and `purged_readiness_summaries=0`
+- exact live payload row count dropped from `79,109,360` to `70,909,141`
+- physical table size remained `23 GB` immediately after the run, which is expected until PostgreSQL reuses or vacuums dead tuples
+- total observed payload-row reduction exceeded the final-pass counter because earlier interrupted maintenance experiments had already removed additional rows while the purge execution shape was being tuned
 
 Why this is the default:
 
@@ -200,6 +208,7 @@ Implementation status:
   - `stale_cleanup_only` after `24 hours`
   - `weak_single_binary`, `weak_obfuscated_set`, and `overgrouped_contextual` after `24 hours` when no recovery-eligible binaries remain
 - completed in cleanup wave 1: maintenance logging and metrics now expose `purged_readiness_summaries`
+- live validation on `2026-05-14`: the successful maintenance run reported `purged_readiness_summaries=0`, which means current live growth pressure is still dominated by payload retention and grouping evidence rather than already-eligible summary residue
 
 Why this is the default:
 
