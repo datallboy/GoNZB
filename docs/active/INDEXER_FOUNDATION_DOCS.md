@@ -29,29 +29,31 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
+### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
+
+Use for:
+
+- the living whole-system schema map for the current indexer
+- determining which tables are canonical versus derived before cleanup
+- tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
+
+## Recently Completed Sprint Docs
+
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 
 Use for:
 
 - the completed storage-trim and retention-reduction sprint closeout
-- deciding which hot tables need bounded retention or compaction first
-- reducing overnight database growth without regressing grouping and release quality
+- the execution history for the database growth trim workstream
+- the resolved versus deferred outcomes from that sprint
 
-### `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md`
-
-Use for:
-
-- the completed live schema and column-usage audit for the storage-trim sprint
-- documenting which hot-table columns are canonical, derived, debug-only, or drop candidates
-- reconciling Docker Postgres schema truth with active migrations and current code usage
-
-### `docs/active/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
 
 Use for:
 
-- the current whole-system schema map for the storage-trim sprint
-- determining which tables are canonical versus derived before cleanup
-- tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
+- the completed live schema and column-usage audit for the database growth trim sprint
+- documenting which hot-table columns were proven canonical, derived, debug-only, or drop candidates during that sprint
+- reconciling Docker Postgres schema truth with active migrations and current code usage at sprint close
 
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
@@ -247,7 +249,7 @@ Do not let this drive the current process-execution sprint.
 ## Guideline Rules
 
 1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
-2. Treat `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md` as the active execution checklist, `docs/active/INDEXER_DATABASE_SCHEMA_AUDIT.md` as the live audit tracker, and `docs/active/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the current system map for storage and retention work.
+2. Treat `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the living system map. Use the archived growth-trim sprint docs under `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/` when you need the completed audit or execution history.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
 5. Keep measured bottlenecks ahead of speculative architectural change.
