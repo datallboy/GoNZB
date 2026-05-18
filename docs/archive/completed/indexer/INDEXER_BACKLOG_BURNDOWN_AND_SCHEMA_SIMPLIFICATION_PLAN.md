@@ -147,7 +147,7 @@ Workstream 2 sign-off:
 - complete on `2026-05-05`
 - current source usage of `pending_headers` was confirmed to be stage metrics/logging plus operator SQL, not a pipeline correctness dependency
 - assemble no longer performs the blocking `COUNT(*)` during `RunOnceWithMetrics`
-- the latest live assemble run persisted metrics without `pending_headers` or `pending_count_duration_ms`, while operator/UI backlog visibility remains available through direct query paths such as [INDEXER_TEST_QUERIES.md](/mnt/home-datallboy/Projects/github.com/datallboy/gonzb/docs/INDEXER_TEST_QUERIES.md:122)
+- the latest live assemble run persisted metrics without `pending_headers` or `pending_count_duration_ms`, while operator/UI backlog visibility remains available through direct query paths such as [INDEXER_TEST_QUERIES.md](/mnt/home-datallboy/Projects/github.com/datallboy/gonzb/docs/archive/development/indexer/INDEXER_TEST_QUERIES.md:122)
 - on `2026-05-06`, admin dashboard support was added for an explicit manual backlog refresh via `/api/v1/admin/indexer/overview/backlog`, so operators can pull `unassembled_headers` on demand without reintroducing the count into assemble stage runs
 - on `2026-05-06`, that backlog path was refined into a persisted dashboard snapshot backed by `indexer_dashboard_stats`; dashboard loads now read the cached value instantly, and explicit refresh writes a new snapshot only when requested
 

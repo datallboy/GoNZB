@@ -1,10 +1,12 @@
 # Indexer Postgres Runtime Tuning
 
+Status: archived development reference
+
 Snapshot date: 2026-04-22
 
-This document records the PostgreSQL and runtime tuning reference for the indexer, including the completed WorkStream 1 baseline captured during the backlog burn-down phase.
+This document records a historical PostgreSQL and runtime tuning baseline captured during the backlog burn-down phase.
 
-Use it for:
+Keep it for:
 
 - the current developer-laptop PostgreSQL baseline
 - the exact settings applied to the local `gonzb-postgres` container
@@ -12,7 +14,9 @@ Use it for:
 - before/after baseline numbers for the current dev environment
 - tiered tuning guidance for lower-end and production systems
 
-Use `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` for the completed execution history of the backlog burn-down pass. This file is the durable tuning reference and measurement log for WorkStream 1 and later operator use.
+Use `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_PERFORMANCE_PLAN.md` for the completed execution history of the backlog burn-down pass.
+
+This file is preserved for historical context and old local validation notes. It should not be treated as the current primary runtime guidance for the project.
 
 ## Environment Snapshot
 

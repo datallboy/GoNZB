@@ -2,6 +2,8 @@
 
 Snapshot date: 2026-05-14
 
+This is an internal execution and planning index for ongoing indexer work. It is not intended to be an end-user documentation entrypoint.
+
 This file continues the prior indexer foundation doc and keeps the indexer docs organized as execution focus moves beyond the completed performance and process-execution phase.
 
 We currently have several planning and reference documents. This file defines which ones are the current execution guides, which older docs remain useful as reference, and which docs should not drive the current backlog.
@@ -211,14 +213,14 @@ Use for:
 - how the indexer fits into the larger app architecture
 - the current modular-monolith execution model
 
-### `docs/INDEXER_TEST_QUERIES.md`
+### `docs/archive/development/indexer/INDEXER_TEST_QUERIES.md`
 
 Use for:
 
 - validation queries and run commands while executing the current sprint
 - checking stage behavior, backlog movement, and release visibility after changes
 
-### `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+### `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md`
 
 Use for:
 
