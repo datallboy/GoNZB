@@ -449,74 +449,56 @@ type indexerDashboardStatDefinition struct {
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "unassembled_headers",
-		Label:       "Unassembled Headers",
+		Label:       "Assemble Backlog",
 		Description: "Article headers still waiting for assemble processing.",
 		Exact:       true,
 	},
 	{
-		Key:         "pending_media_inspection_binaries",
-		Label:       "Pending Media Inspection",
-		Description: "Binaries that inspect_media would claim if it ran now.",
-		Exact:       true,
-	},
-	{
 		Key:         "pending_release_candidate_families",
-		Label:       "Pending Release Families",
+		Label:       "Release Backlog",
 		Description: "Dirty release families still waiting for release processing.",
 		Exact:       true,
 	},
 	{
-		Key:         "payload_rows",
-		Label:       "Payload Rows",
-		Description: "Exact row count in article_header_ingest_payloads.",
-		Exact:       true,
-	},
-	{
-		Key:         "payload_bytes",
-		Label:       "Payload Table Bytes",
-		Description: "Total on-disk bytes currently used by article_header_ingest_payloads and its indexes.",
-		Exact:       true,
-	},
-	{
-		Key:         "payload_dead_tuples",
-		Label:       "Payload Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for article_header_ingest_payloads.",
+		Key:         "pending_yenc_recovery_binaries",
+		Label:       "yEnc Recovery Backlog",
+		Description: "Bounded count of binaries that recover_yenc can inspect now.",
 		Exact:       false,
 	},
 	{
-		Key:         "grouping_evidence_rows",
-		Label:       "Grouping Evidence Rows",
-		Description: "Exact row count in binary_grouping_evidence.",
-		Exact:       true,
-	},
-	{
-		Key:         "grouping_evidence_bytes",
-		Label:       "Grouping Evidence Bytes",
-		Description: "Total on-disk bytes currently used by binary_grouping_evidence and its indexes.",
-		Exact:       true,
-	},
-	{
-		Key:         "grouping_evidence_dead_tuples",
-		Label:       "Grouping Evidence Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for binary_grouping_evidence.",
+		Key:         "pending_inspect_discovery_binaries",
+		Label:       "Discovery Backlog",
+		Description: "Bounded count of binaries inspect_discovery can claim now.",
 		Exact:       false,
 	},
 	{
-		Key:         "readiness_rows",
-		Label:       "Readiness Rows",
-		Description: "Exact row count in release_family_readiness_summaries.",
-		Exact:       true,
+		Key:         "pending_inspect_par2_binaries",
+		Label:       "PAR2 Inspection Backlog",
+		Description: "Bounded count of PAR2 sets inspect_par2 can claim now.",
+		Exact:       false,
 	},
 	{
-		Key:         "readiness_bytes",
-		Label:       "Readiness Table Bytes",
-		Description: "Total on-disk bytes currently used by release_family_readiness_summaries and its indexes.",
-		Exact:       true,
+		Key:         "pending_inspect_nfo_binaries",
+		Label:       "NFO Inspection Backlog",
+		Description: "Bounded count of binaries inspect_nfo can claim now.",
+		Exact:       false,
 	},
 	{
-		Key:         "readiness_dead_tuples",
-		Label:       "Readiness Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for release_family_readiness_summaries.",
+		Key:         "pending_inspect_archive_binaries",
+		Label:       "Archive Inspection Backlog",
+		Description: "Bounded count of archive families inspect_archive can claim now.",
+		Exact:       false,
+	},
+	{
+		Key:         "pending_inspect_password_binaries",
+		Label:       "Password Inspection Backlog",
+		Description: "Bounded count of encrypted archive binaries inspect_password can claim now.",
+		Exact:       false,
+	},
+	{
+		Key:         "pending_inspect_media_binaries",
+		Label:       "Media Inspection Backlog",
+		Description: "Bounded count of media binaries inspect_media can claim now.",
 		Exact:       false,
 	},
 }
@@ -912,28 +894,22 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 	switch key {
 	case "unassembled_headers":
 		return s.CountUnassembledArticleHeaders(ctx)
-	case "pending_media_inspection_binaries":
-		return s.CountPendingInspectMediaBinaries(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
-	case "payload_rows":
-		return s.countTableRows(ctx, "article_header_ingest_payloads")
-	case "payload_bytes":
-		return s.tableTotalBytes(ctx, "article_header_ingest_payloads")
-	case "payload_dead_tuples":
-		return s.tableDeadTuples(ctx, "article_header_ingest_payloads")
-	case "grouping_evidence_rows":
-		return s.countTableRows(ctx, "binary_grouping_evidence")
-	case "grouping_evidence_bytes":
-		return s.tableTotalBytes(ctx, "binary_grouping_evidence")
-	case "grouping_evidence_dead_tuples":
-		return s.tableDeadTuples(ctx, "binary_grouping_evidence")
-	case "readiness_rows":
-		return s.countTableRows(ctx, "release_family_readiness_summaries")
-	case "readiness_bytes":
-		return s.tableTotalBytes(ctx, "release_family_readiness_summaries")
-	case "readiness_dead_tuples":
-		return s.tableDeadTuples(ctx, "release_family_readiness_summaries")
+	case "pending_yenc_recovery_binaries":
+		return s.CountPendingYEncRecoveryBinaries(ctx)
+	case "pending_inspect_discovery_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_discovery")
+	case "pending_inspect_par2_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_par2")
+	case "pending_inspect_nfo_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_nfo")
+	case "pending_inspect_archive_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_archive")
+	case "pending_inspect_password_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_password")
+	case "pending_inspect_media_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_media")
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
 	}
@@ -1030,6 +1006,24 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil
+}
+
+const dashboardBacklogEstimateLimit = 1000
+
+func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
+	candidates, err := s.ListYEncRecoveryCandidates(ctx, dashboardBacklogEstimateLimit)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(candidates)), nil
+}
+
+func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
+	candidates, err := s.ListBinaryInspectionCandidates(ctx, stageName, dashboardBacklogEstimateLimit)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(candidates)), nil
 }
 
 func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {

@@ -53,7 +53,7 @@ function statFootnote(stat: IndexerDashboardStat) {
   }
   const updatedAt = formatTimestamp(stat.updated_at)
   if (updatedAt) {
-    return `As of ${updatedAt}${stat.exact ? ' · exact count' : ''}`
+    return `As of ${updatedAt} · ${stat.exact ? 'exact count' : 'bounded estimate'}`
   }
   return 'Uses the last persisted snapshot.'
 }
@@ -75,6 +75,22 @@ function formatStatValue(stat: IndexerDashboardStat) {
     }
   }
   return stat.value.toLocaleString()
+}
+
+function isInspectBacklogStat(stat: IndexerDashboardStat) {
+  return stat.key.startsWith('pending_inspect_')
+}
+
+function backlogCard(stat: IndexerDashboardStat) {
+  return (
+    <div className="stat-card" key={stat.key}>
+      <span>{stat.label}</span>
+      <strong>{formatStatValue(stat)}</strong>
+      <small>{stat.description}</small>
+      <small>{statFootnote(stat)}</small>
+      {stat.last_error ? <small>{stat.last_error}</small> : null}
+    </div>
+  )
 }
 
 export function AdminDashboardPage() {
@@ -128,6 +144,9 @@ export function AdminDashboardPage() {
     ['Paused Stages', overview.paused_stage_count],
     ['Failed Runs', overview.failed_run_count],
   ]
+  const backlogStats = stats?.items ?? []
+  const commandBacklogStats = backlogStats.filter((stat) => !isInspectBacklogStat(stat))
+  const inspectBacklogStats = backlogStats.filter(isInspectBacklogStat)
 
   return (
     <div className="page-section stack">
@@ -157,25 +176,22 @@ export function AdminDashboardPage() {
       <div className="page-card stack">
         <div className="toolbar-row">
           <div>
-            <h2 className="section-title">Cached Backlog Stats</h2>
+            <h2 className="section-title">Operational Backlog</h2>
             <p className="muted-copy">
-              Heavy counts stay decoupled from stage runs and normal dashboard loads. Refresh them explicitly when you need a current snapshot.
+              Queue-focused snapshots for the stages operators tune most often. Refresh recomputes backlog counts without storage diagnostics.
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
-            {statsLoading ? 'Refreshing...' : 'Refresh All Stats'}
+            {statsLoading ? 'Refreshing...' : 'Refresh Backlog'}
           </button>
         </div>
         {statsError ? <div className="banner error">{statsError}</div> : null}
         <div className="hero-stat-grid">
-          {(stats?.items ?? []).map((stat) => (
-            <div className="stat-card" key={stat.key}>
-              <span>{stat.label}</span>
-              <strong>{formatStatValue(stat)}</strong>
-              <small>{statFootnote(stat)}</small>
-              {stat.last_error ? <small>{stat.last_error}</small> : null}
-            </div>
-          ))}
+          {commandBacklogStats.map(backlogCard)}
+        </div>
+        <div>
+          <h3 className="section-title">Inspection Backlog</h3>
+          <div className="hero-stat-grid">{inspectBacklogStats.map(backlogCard)}</div>
         </div>
       </div>
 

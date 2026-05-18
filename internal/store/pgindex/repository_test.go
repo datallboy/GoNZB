@@ -4341,13 +4341,13 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		afterByKey[item.Key] = item
 	}
 
-	mediaBefore := beforeByKey["pending_media_inspection_binaries"].Value
-	mediaAfter, ok := afterByKey["pending_media_inspection_binaries"]
+	mediaBefore := beforeByKey["pending_inspect_media_binaries"].Value
+	mediaAfter, ok := afterByKey["pending_inspect_media_binaries"]
 	if !ok {
-		t.Fatalf("missing pending_media_inspection_binaries stat")
+		t.Fatalf("missing pending_inspect_media_binaries stat")
 	}
 	if !mediaAfter.Available || mediaAfter.UpdatedAt == nil {
-		t.Fatalf("expected pending_media_inspection_binaries to be cached, got %#v", mediaAfter)
+		t.Fatalf("expected pending_inspect_media_binaries to be cached, got %#v", mediaAfter)
 	}
 	if mediaAfter.Value < mediaBefore+1 {
 		t.Fatalf("expected media backlog to increase by at least 1, before=%d after=%d", mediaBefore, mediaAfter.Value)
@@ -4365,40 +4365,36 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
 
-	payloadRowsBefore := beforeByKey["payload_rows"].Value
-	payloadRowsAfter, ok := afterByKey["payload_rows"]
-	if !ok {
-		t.Fatalf("missing payload_rows stat")
-	}
-	if !payloadRowsAfter.Available || payloadRowsAfter.UpdatedAt == nil {
-		t.Fatalf("expected payload_rows to be cached, got %#v", payloadRowsAfter)
-	}
-	if payloadRowsAfter.Value < payloadRowsBefore+1 {
-		t.Fatalf("expected payload row count to increase by at least 1, before=%d after=%d", payloadRowsBefore, payloadRowsAfter.Value)
-	}
-
-	groupingRowsAfter, ok := afterByKey["grouping_evidence_rows"]
-	if !ok || !groupingRowsAfter.Available {
-		t.Fatalf("expected grouping_evidence_rows stat, got %#v", groupingRowsAfter)
-	}
-	groupingBytesAfter, ok := afterByKey["grouping_evidence_bytes"]
-	if !ok || !groupingBytesAfter.Available || groupingBytesAfter.Value <= 0 {
-		t.Fatalf("expected grouping_evidence_bytes stat, got %#v", groupingBytesAfter)
-	}
-
-	readinessRowsAfter, ok := afterByKey["readiness_rows"]
-	if !ok || !readinessRowsAfter.Available {
-		t.Fatalf("expected readiness_rows stat, got %#v", readinessRowsAfter)
-	}
-	readinessBytesAfter, ok := afterByKey["readiness_bytes"]
-	if !ok || !readinessBytesAfter.Available || readinessBytesAfter.Value <= 0 {
-		t.Fatalf("expected readiness_bytes stat, got %#v", readinessBytesAfter)
-	}
-
-	for _, key := range []string{"payload_dead_tuples", "grouping_evidence_dead_tuples", "readiness_dead_tuples"} {
+	for _, key := range []string{
+		"unassembled_headers",
+		"pending_release_candidate_families",
+		"pending_yenc_recovery_binaries",
+		"pending_inspect_discovery_binaries",
+		"pending_inspect_par2_binaries",
+		"pending_inspect_nfo_binaries",
+		"pending_inspect_archive_binaries",
+		"pending_inspect_password_binaries",
+		"pending_inspect_media_binaries",
+	} {
 		stat, ok := afterByKey[key]
 		if !ok || !stat.Available || stat.UpdatedAt == nil {
 			t.Fatalf("expected %s stat to be cached, got %#v", key, stat)
+		}
+	}
+
+	for _, key := range []string{
+		"payload_rows",
+		"payload_bytes",
+		"payload_dead_tuples",
+		"grouping_evidence_rows",
+		"grouping_evidence_bytes",
+		"grouping_evidence_dead_tuples",
+		"readiness_rows",
+		"readiness_bytes",
+		"readiness_dead_tuples",
+	} {
+		if stat, ok := afterByKey[key]; ok {
+			t.Fatalf("did not expect storage diagnostic stat %s in dashboard backlog, got %#v", key, stat)
 		}
 	}
 }
