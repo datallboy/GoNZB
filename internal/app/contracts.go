@@ -168,6 +168,7 @@ type UsenetIndexStore interface {
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
 	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error

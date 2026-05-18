@@ -465,6 +465,60 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 		Description: "Dirty release families still waiting for release processing.",
 		Exact:       true,
 	},
+	{
+		Key:         "payload_rows",
+		Label:       "Payload Rows",
+		Description: "Exact row count in article_header_ingest_payloads.",
+		Exact:       true,
+	},
+	{
+		Key:         "payload_bytes",
+		Label:       "Payload Table Bytes",
+		Description: "Total on-disk bytes currently used by article_header_ingest_payloads and its indexes.",
+		Exact:       true,
+	},
+	{
+		Key:         "payload_dead_tuples",
+		Label:       "Payload Dead Tuples",
+		Description: "Planner-visible dead tuples currently tracked for article_header_ingest_payloads.",
+		Exact:       false,
+	},
+	{
+		Key:         "grouping_evidence_rows",
+		Label:       "Grouping Evidence Rows",
+		Description: "Exact row count in binary_grouping_evidence.",
+		Exact:       true,
+	},
+	{
+		Key:         "grouping_evidence_bytes",
+		Label:       "Grouping Evidence Bytes",
+		Description: "Total on-disk bytes currently used by binary_grouping_evidence and its indexes.",
+		Exact:       true,
+	},
+	{
+		Key:         "grouping_evidence_dead_tuples",
+		Label:       "Grouping Evidence Dead Tuples",
+		Description: "Planner-visible dead tuples currently tracked for binary_grouping_evidence.",
+		Exact:       false,
+	},
+	{
+		Key:         "readiness_rows",
+		Label:       "Readiness Rows",
+		Description: "Exact row count in release_family_readiness_summaries.",
+		Exact:       true,
+	},
+	{
+		Key:         "readiness_bytes",
+		Label:       "Readiness Table Bytes",
+		Description: "Total on-disk bytes currently used by release_family_readiness_summaries and its indexes.",
+		Exact:       true,
+	},
+	{
+		Key:         "readiness_dead_tuples",
+		Label:       "Readiness Dead Tuples",
+		Description: "Planner-visible dead tuples currently tracked for release_family_readiness_summaries.",
+		Exact:       false,
+	},
 }
 
 func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
@@ -862,8 +916,79 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 		return s.CountPendingInspectMediaBinaries(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
+	case "payload_rows":
+		return s.countTableRows(ctx, "article_header_ingest_payloads")
+	case "payload_bytes":
+		return s.tableTotalBytes(ctx, "article_header_ingest_payloads")
+	case "payload_dead_tuples":
+		return s.tableDeadTuples(ctx, "article_header_ingest_payloads")
+	case "grouping_evidence_rows":
+		return s.countTableRows(ctx, "binary_grouping_evidence")
+	case "grouping_evidence_bytes":
+		return s.tableTotalBytes(ctx, "binary_grouping_evidence")
+	case "grouping_evidence_dead_tuples":
+		return s.tableDeadTuples(ctx, "binary_grouping_evidence")
+	case "readiness_rows":
+		return s.countTableRows(ctx, "release_family_readiness_summaries")
+	case "readiness_bytes":
+		return s.tableTotalBytes(ctx, "release_family_readiness_summaries")
+	case "readiness_dead_tuples":
+		return s.tableDeadTuples(ctx, "release_family_readiness_summaries")
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
+	}
+}
+
+func (s *Store) countTableRows(ctx context.Context, table string) (int64, error) {
+	query, err := dashboardTableCountQuery(table)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count rows for %s: %w", table, err)
+	}
+	return count, nil
+}
+
+func (s *Store) tableTotalBytes(ctx context.Context, table string) (int64, error) {
+	if _, err := dashboardTableCountQuery(table); err != nil {
+		return 0, err
+	}
+	var bytes int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(pg_total_relation_size($1::regclass), 0)`, table,
+	).Scan(&bytes); err != nil {
+		return 0, fmt.Errorf("table bytes for %s: %w", table, err)
+	}
+	return bytes, nil
+}
+
+func (s *Store) tableDeadTuples(ctx context.Context, table string) (int64, error) {
+	if _, err := dashboardTableCountQuery(table); err != nil {
+		return 0, err
+	}
+	var dead int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(n_dead_tup, 0)
+		FROM pg_stat_user_tables
+		WHERE relname = $1`, table,
+	).Scan(&dead); err != nil {
+		return 0, fmt.Errorf("dead tuples for %s: %w", table, err)
+	}
+	return dead, nil
+}
+
+func dashboardTableCountQuery(table string) (string, error) {
+	switch table {
+	case "article_header_ingest_payloads":
+		return `SELECT COUNT(*) FROM article_header_ingest_payloads`, nil
+	case "binary_grouping_evidence":
+		return `SELECT COUNT(*) FROM binary_grouping_evidence`, nil
+	case "release_family_readiness_summaries":
+		return `SELECT COUNT(*) FROM release_family_readiness_summaries`, nil
+	default:
+		return "", fmt.Errorf("unsupported dashboard table %q", table)
 	}
 }
 
@@ -1428,7 +1553,10 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.last_article_number,
 			b.match_confidence,
 			b.match_status,
-			COALESCE(bge.payload_json, '{}'::jsonb),
+			CASE
+				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
+				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+			END,
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
 		FROM binaries b
@@ -1543,7 +1671,10 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
-			COALESCE(bge.payload_json, '{}'::jsonb),
+			CASE
+				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
+				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+			END,
 			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
 		FROM release_files rf
 		JOIN releases r ON r.release_id = rf.release_id

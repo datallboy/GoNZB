@@ -62,7 +62,6 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 			COALESCE(p.yenc_part_number, 0),
 			COALESCE(p.yenc_total_parts, 0),
 			COALESCE(p.yenc_file_size, 0),
-			COALESCE(p.raw_overview_json::text, '{}'),
 			COALESCE(p.yenc_recovery_missing_count, 0),
 			p.yenc_recovery_retry_after,
 			b.binary_key,
@@ -120,7 +119,6 @@ func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YE
 		item       YEncRecoveryCandidate
 		date       sql.NullTime
 		retryAfter sql.NullTime
-		raw        string
 	)
 	if err := scanner.Scan(
 		&item.BinaryID,
@@ -142,7 +140,6 @@ func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YE
 		&item.YEncPart,
 		&item.YEncTotal,
 		&item.YEncFileSize,
-		&raw,
 		&item.YEncRecoveryMissingCount,
 		&retryAfter,
 		&item.CurrentBinaryKey,
@@ -161,12 +158,7 @@ func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YE
 		t := retryAfter.Time.UTC()
 		item.YEncRecoveryRetryAfter = &t
 	}
-	if strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &item.RawOverview)
-	}
-	if item.RawOverview == nil {
-		item.RawOverview = map[string]any{}
-	}
+	item.RawOverview = map[string]any{}
 	return item, nil
 }
 
