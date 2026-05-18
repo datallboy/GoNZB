@@ -143,9 +143,15 @@ func runMessageHostModule(state *matchState) {
 		return
 	}
 
-	state.addEvidence("message_host", 0.05, map[string]any{
+	payload := map[string]any{
 		"value": host,
-	})
+	}
+	if part, total := parseMessagePartInfo(state.candidate.MessageID); total > 1 {
+		payload["part"] = part
+		payload["total"] = total
+	}
+
+	state.addEvidence("message_host", 0.05, payload)
 }
 
 func runExtensionModule(state *matchState) {

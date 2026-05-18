@@ -1,7 +1,11 @@
 package archive
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"hash/crc32"
+	"io"
 	"testing"
 	"time"
 
@@ -113,9 +117,65 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 	}
 }
 
+func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeArchiveRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        41,
+			ReleaseID:       "rel-password-prompt",
+			FileName:        "locked.release.2026.part01.rar",
+			SourceUpdatedAt: &now,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        501,
+			BinaryID:  41,
+			FileName:  "locked.release.2026.part01.rar",
+			FileIndex: 1,
+			SizeBytes: 2048,
+		}},
+		articlesByFileID: map[int64][]pgindex.CatalogArticleRef{
+			501: {{MessageID: "<part1@test>", PartNumber: 1, Bytes: 4}},
+		},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir(), SevenZipPath: "7z"}),
+		fakeArchiveFetcher{},
+		fakeArchiveCommandRunner{output: "Enter password (will not be echoed):", err: fmt.Errorf("password required")},
+		testArchiveLogger{},
+		inspectpkg.Options{SevenZipPath: "7z"},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed archive inspection, got %d", len(repo.completed))
+	}
+	summary := repo.completed[0].Summary
+	if got := summary["probe_skip_reason"]; got != "password_required" {
+		t.Fatalf("expected password_required skip reason, got %+v", got)
+	}
+	if got := summary["encrypted"]; got != true {
+		t.Fatalf("expected encrypted summary true, got %+v", got)
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
+	}
+	update := repo.releaseUpdates[0]
+	if !boolValue(update.Encrypted) || !boolValue(update.Passworded) || !boolValue(update.PasswordedUnknown) {
+		t.Fatalf("expected encrypted unresolved password update, got %+v", update)
+	}
+	if update.PasswordState != "passworded_unknown" {
+		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	}
+}
+
 type fakeArchiveRepository struct {
 	candidates         []pgindex.BinaryInspectionCandidate
 	files              []pgindex.CatalogReleaseFile
+	articlesByFileID   map[int64][]pgindex.CatalogArticleRef
 	completed          []pgindex.BinaryInspectionRecord
 	artifacts          [][]pgindex.BinaryInspectionArtifactRecord
 	archiveEntries     [][]pgindex.BinaryArchiveEntryRecord
@@ -168,8 +228,8 @@ func (f *fakeArchiveRepository) ListCatalogReleaseFiles(context.Context, string)
 	return f.files, nil
 }
 
-func (f *fakeArchiveRepository) ListCatalogReleaseFileArticles(context.Context, int64) ([]pgindex.CatalogArticleRef, error) {
-	return nil, nil
+func (f *fakeArchiveRepository) ListCatalogReleaseFileArticles(_ context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error) {
+	return f.articlesByFileID[releaseFileID], nil
 }
 
 func (f *fakeArchiveRepository) ListCatalogReleaseNewsgroups(context.Context, string) ([]string, error) {
@@ -192,4 +252,39 @@ func intValue(v *int) int {
 		return 0
 	}
 	return *v
+}
+
+type fakeArchiveFetcher struct{}
+
+func (fakeArchiveFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+	body := []byte("Rar!")
+	crc := crc32.ChecksumIEEE(body)
+	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=sample.part01.rar\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=%08x\r\n", len(body), len(body), encodeArchiveYEnc(body), len(body), crc)
+	return bytes.NewBufferString(payload), nil
+}
+
+type fakeArchiveCommandRunner struct {
+	output string
+	err    error
+}
+
+func (f fakeArchiveCommandRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return []byte(f.output), f.err
+}
+
+func (f fakeArchiveCommandRunner) RunInput(_ context.Context, _ io.Reader, _ string, _ ...string) ([]byte, error) {
+	return []byte(f.output), f.err
+}
+
+func encodeArchiveYEnc(data []byte) string {
+	out := make([]byte, 0, len(data))
+	for _, b := range data {
+		enc := b + 42
+		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
+			out = append(out, '=')
+			enc += 64
+		}
+		out = append(out, enc)
+	}
+	return string(out)
 }

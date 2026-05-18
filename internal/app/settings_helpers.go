@@ -25,9 +25,12 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeLatest:             defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:           defaultStage(false, 10, 5000, 0),
 			Assemble:                 defaultStage(false, 10, 5000, 1),
+			AssembleLaneA:            defaultStage(false, 2, 5000, 1),
+			AssembleLaneB:            defaultStage(false, 10, 2500, 1),
+			RecoverYEnc:              defaultStage(false, 10, 25, 1),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			InspectDiscovery:         defaultStage(false, 10, 100, 0),
 			InspectPAR2:              defaultStage(false, 10, 100, 0),
 			InspectNFO:               defaultStage(false, 10, 100, 0),
@@ -81,7 +84,7 @@ func defaultStage(enabled bool, interval float64, batch, concurrency int) Indexi
 func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 	return IndexingReleaseRuntimeSettings{
 		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, MinConfidence: 0.55,
-		MinCompletionPct: 0, RequireExpectedFileCountForContextualObfuscated: true,
+		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
 	}
 }
 
@@ -167,13 +170,17 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
 	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
+	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
+	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
+	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.Release = IndexingReleaseRuntimeSettings{
-		Enabled:          boolValue(cfg.Release.Enabled, true),
-		IntervalMinutes:  float64Value(cfg.Release.IntervalMinutes, 10),
-		BatchSize:        intValue(cfg.Release.BatchSize, 1000),
-		BackoffSeconds:   intValue(cfg.Release.BackoffSeconds, 0),
-		MinConfidence:    float64Value(cfg.Release.MinConfidence, 0.55),
-		MinCompletionPct: float64Value(cfg.Release.MinCompletionPct, 0),
+		Enabled:                    boolValue(cfg.Release.Enabled, true),
+		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
+		BatchSize:                  intValue(cfg.Release.BatchSize, 1000),
+		BackoffSeconds:             intValue(cfg.Release.BackoffSeconds, 0),
+		MinConfidence:              float64Value(cfg.Release.MinConfidence, 0.55),
+		MinCompletionPct:           float64Value(cfg.Release.MinCompletionPct, 0),
+		MinExpectedFileCoveragePct: float64Value(cfg.Release.MinExpectedFileCoveragePct, 90),
 		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
 	}
 	out.Match = IndexingMatchRuntimeSettings{
@@ -186,6 +193,9 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		WorkspaceBackend: firstNonEmpty(cfg.Inspect.WorkspaceBackend, "auto"),
 		MemoryWorkDir:    firstNonEmpty(cfg.Inspect.MemoryWorkDir, "/dev/shm/gonzb-inspect"),
 		MaxBytes:         firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MinBinaryBytes:   cfg.Inspect.MinBinaryBytes,
+		MaxBinaryBytes:   cfg.Inspect.MaxBinaryBytes,
+		BlockedMagicHex:  append([]string(nil), cfg.Inspect.BlockedMagicHex...),
 		MaxArchiveDepth:  firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
 		ToolTimeoutSecs:  firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
 		FFProbePath:      firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
@@ -296,13 +306,17 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ScrapeLatest = toStageConfigNoConcurrency(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
 		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
+		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
+		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
+		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
-			Enabled:          boolPtr(indexing.Release.Enabled),
-			IntervalMinutes:  float64Ptr(indexing.Release.IntervalMinutes),
-			BatchSize:        intPtr(indexing.Release.BatchSize),
-			BackoffSeconds:   intPtr(indexing.Release.BackoffSeconds),
-			MinConfidence:    float64Ptr(indexing.Release.MinConfidence),
-			MinCompletionPct: float64Ptr(indexing.Release.MinCompletionPct),
+			Enabled:                    boolPtr(indexing.Release.Enabled),
+			IntervalMinutes:            float64Ptr(indexing.Release.IntervalMinutes),
+			BatchSize:                  intPtr(indexing.Release.BatchSize),
+			BackoffSeconds:             intPtr(indexing.Release.BackoffSeconds),
+			MinConfidence:              float64Ptr(indexing.Release.MinConfidence),
+			MinCompletionPct:           float64Ptr(indexing.Release.MinCompletionPct),
+			MinExpectedFileCoveragePct: float64Ptr(indexing.Release.MinExpectedFileCoveragePct),
 			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
 		}
 		effective.Indexing.Match = config.IndexingMatchConfig{
@@ -315,6 +329,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			WorkspaceBackend: indexing.Inspect.WorkspaceBackend,
 			MemoryWorkDir:    indexing.Inspect.MemoryWorkDir,
 			MaxBytes:         indexing.Inspect.MaxBytes,
+			MinBinaryBytes:   indexing.Inspect.MinBinaryBytes,
+			MaxBinaryBytes:   indexing.Inspect.MaxBinaryBytes,
+			BlockedMagicHex:  append([]string(nil), indexing.Inspect.BlockedMagicHex...),
 			MaxArchiveDepth:  indexing.Inspect.MaxArchiveDepth,
 			ToolTimeoutSecs:  indexing.Inspect.ToolTimeoutSecs,
 			FFProbePath:      indexing.Inspect.FFProbePath,
@@ -548,6 +565,9 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ScrapeLatest.Enabled ||
 		in.ScrapeBackfill.Enabled ||
 		in.Assemble.Enabled ||
+		in.AssembleLaneA.Enabled ||
+		in.AssembleLaneB.Enabled ||
+		in.RecoverYEnc.Enabled ||
 		in.Release.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
@@ -626,15 +646,18 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	if in == nil {
 		return nil
 	}
-	return &IndexingRuntimeSettings{
+	out := &IndexingRuntimeSettings{
 		Newsgroups:               append([]string(nil), in.Newsgroups...),
 		BackfillUntilDateByGroup: cloneStringMap(in.BackfillUntilDateByGroup),
 		ScrapeLatest:             in.ScrapeLatest,
 		ScrapeBackfill:           in.ScrapeBackfill,
 		Assemble:                 in.Assemble,
+		AssembleLaneA:            mergeStageRuntimeSettings(defaultStage(false, 2, 5000, 1), in.AssembleLaneA),
+		AssembleLaneB:            mergeStageRuntimeSettings(defaultStage(false, 10, 2500, 1), in.AssembleLaneB),
+		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
 		Release:                  in.Release,
 		Match:                    in.Match,
-		Inspect:                  in.Inspect,
+		Inspect:                  cloneInspectRuntimeSettings(in.Inspect),
 		InspectDiscovery:         in.InspectDiscovery,
 		InspectPAR2:              in.InspectPAR2,
 		InspectNFO:               in.InspectNFO,
@@ -644,6 +667,32 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnrichPreDB:              in.EnrichPreDB,
 		EnrichTMDB:               in.EnrichTMDB,
 	}
+	return out
+}
+
+func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInspectRuntimeSettings {
+	out := in
+	out.BlockedMagicHex = append([]string(nil), in.BlockedMagicHex...)
+	return out
+}
+
+func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) IndexingStageRuntimeSettings {
+	if override.Enabled {
+		base.Enabled = true
+	}
+	if override.IntervalMinutes > 0 {
+		base.IntervalMinutes = override.IntervalMinutes
+	}
+	if override.BatchSize > 0 {
+		base.BatchSize = override.BatchSize
+	}
+	if override.Concurrency > 0 {
+		base.Concurrency = override.Concurrency
+	}
+	if override.BackoffSeconds > 0 {
+		base.BackoffSeconds = override.BackoffSeconds
+	}
+	return base
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

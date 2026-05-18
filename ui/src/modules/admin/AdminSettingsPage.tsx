@@ -15,6 +15,9 @@ type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
   | 'assemble'
+  | 'assemble_lane_a'
+  | 'assemble_lane_b'
+  | 'recover_yenc'
   | 'release'
   | 'inspect_discovery'
   | 'inspect_par2'
@@ -28,19 +31,22 @@ type StageKey =
 type BackfillRow = { group: string; until: string }
 type SettingsTab = 'downloader' | 'aggregator' | 'indexer'
 
-const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean }> = [
-  { key: 'scrape_latest', label: 'Scrape latest', concurrency: false },
-  { key: 'scrape_backfill', label: 'Scrape backfill', concurrency: false },
-  { key: 'assemble', label: 'Assemble', concurrency: true },
-  { key: 'release', label: 'Release', concurrency: false },
-  { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false },
-  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: false },
-  { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false },
-  { key: 'inspect_archive', label: 'Inspect archive', concurrency: true },
-  { key: 'inspect_password', label: 'Inspect password', concurrency: false },
-  { key: 'inspect_media', label: 'Inspect media', concurrency: true },
-  { key: 'enrich_predb', label: 'Enrich PreDB', concurrency: false },
-  { key: 'enrich_tmdb', label: 'Enrich TMDB', concurrency: false },
+const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; description: string }> = [
+  { key: 'scrape_latest', label: 'Scrape latest', concurrency: false, description: 'Fast forward scan for new article headers.' },
+  { key: 'scrape_backfill', label: 'Scrape backfill', concurrency: false, description: 'Older article scan toward each group cutoff date.' },
+  { key: 'assemble', label: 'Assemble', concurrency: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
+  { key: 'assemble_lane_a', label: 'Assemble lane A', concurrency: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
+  { key: 'assemble_lane_b', label: 'Assemble lane B', concurrency: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', concurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
+  { key: 'release', label: 'Release', concurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
+  { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false, description: 'Opaque-binary inspection discovery pass.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: false, description: 'PAR2 inspection and recovery metadata extraction.' },
+  { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false, description: 'NFO text extraction and evidence capture.' },
+  { key: 'inspect_archive', label: 'Inspect archive', concurrency: true, description: 'Archive listing and encrypted/password detection.' },
+  { key: 'inspect_password', label: 'Inspect password', concurrency: false, description: 'Password verification workflow.' },
+  { key: 'inspect_media', label: 'Inspect media', concurrency: true, description: 'Media probe and stream metadata extraction.' },
+  { key: 'enrich_predb', label: 'Enrich PreDB', concurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
+  { key: 'enrich_tmdb', label: 'Enrich TMDB', concurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
 ]
 
 const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
@@ -67,10 +73,14 @@ function defaultSettings(): RuntimeSettings {
       scrape_latest: stageDefaults(5000),
       scrape_backfill: stageDefaults(5000),
       assemble: stageDefaults(5000, 1),
+      assemble_lane_a: stageDefaults(5000, 1),
+      assemble_lane_b: stageDefaults(2500, 1),
+      recover_yenc: stageDefaults(25, 1),
       release: {
         ...stageDefaults(1000),
         min_confidence: 0.55,
         min_completion_pct: 0,
+        min_expected_file_coverage_pct: 90,
         require_expected_file_count_for_contextual_obfuscated: true,
       },
       match: {
@@ -83,6 +93,9 @@ function defaultSettings(): RuntimeSettings {
         workspace_backend: 'auto',
         memory_work_dir: '/dev/shm/gonzb-inspect',
         max_bytes: 2147483648,
+        min_binary_bytes: 0,
+        max_binary_bytes: 0,
+        blocked_magic_hex: ['52434C4F4E45'],
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
         ffprobe_path: 'ffprobe',
@@ -159,6 +172,9 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
+      assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
+      assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
+      recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
       release: { ...defaults.indexing!.release, ...indexing.release },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
@@ -235,6 +251,10 @@ function parseCleanupExtensions(value: string) {
   return value.split(',').map((item) => item.trim()).filter(Boolean)
 }
 
+function parseCSV(value: string) {
+  return value.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
 function serversForSave(servers: ServerRuntimeSettings[], prefix: string) {
   return servers.map((server, index) => ({
     ...server,
@@ -268,6 +288,7 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       backoff_seconds: indexing.release.backoff_seconds,
       min_confidence: indexing.release.min_confidence,
       min_completion_pct: indexing.release.min_completion_pct,
+      min_expected_file_coverage_pct: indexing.release.min_expected_file_coverage_pct,
       require_expected_file_count_for_contextual_obfuscated: indexing.release.require_expected_file_count_for_contextual_obfuscated,
     },
     enrich_predb: {
@@ -587,6 +608,9 @@ export function AdminSettingsPage() {
           </SettingsSection>
 
         <SettingsSection title="Indexer stages">
+          <div className="banner">
+            Stage settings control how often each pipeline stage runs and how much work it claims per pass. Larger batch sizes improve throughput when the queue is healthy, but they also make weak selection mistakes more expensive. Lane A is the fast feed into release. Lane B is the slower backlog-drain path.
+          </div>
           <div className="table-shell">
             <table className="data-table">
               <thead>
@@ -604,7 +628,10 @@ export function AdminSettingsPage() {
                   const value = indexing[stage.key] as AdminStageConfigPatch
                   return (
                     <tr key={stage.key}>
-                      <td>{stage.label}</td>
+                      <td>
+                        <div><strong>{stage.label}</strong></div>
+                        <div className="muted-copy">{stage.description}</div>
+                      </td>
                       <td><input type="checkbox" checked={Boolean(value.enabled)} onChange={(event) => updateStage(stage.key, { enabled: event.target.checked })} /></td>
                       <td><input type="number" value={value.interval_minutes ?? 0} onChange={(event) => updateStage(stage.key, { interval_minutes: fieldNumber(event.target.value) })} /></td>
                       <td><input type="number" value={value.batch_size ?? 0} onChange={(event) => updateStage(stage.key, { batch_size: fieldNumber(event.target.value) })} /></td>
@@ -618,20 +645,101 @@ export function AdminSettingsPage() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Release and matching">
+        <SettingsSection title="Release candidate selection and matching">
+          <div className="banner">
+            Release settings below affect two different parts of the pipeline. Candidate selection decides which release families are worth processing now. Matching settings affect how article headers are grouped into binaries during assemble.
+          </div>
           <div className="toolbar-grid">
-            <NumberField label="Minimum confidence" step="0.01" value={indexing.release.min_confidence} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })} />
-            <NumberField label="Minimum completion %" value={indexing.release.min_completion_pct} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })} />
-            <NumberField label="High confidence threshold" step="0.01" value={indexing.match.high_confidence_threshold} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })} />
-            <NumberField label="Probable confidence threshold" step="0.01" value={indexing.match.probable_confidence_threshold} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })} />
-            <NumberField label="Article bucket size" value={indexing.match.article_bucket_size} onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })} />
-            <CheckboxField label="Require expected file count" checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)} onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })} />
+            <NumberField
+              label="Minimum expected file coverage %"
+              min={0}
+              max={100}
+              value={indexing.release.min_expected_file_coverage_pct}
+              helpText="Used during release candidate selection. When a family has an expected file count, this percent of expected files must be complete before release prioritizes the family for formation."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
+            />
+            <NumberField
+              label="Minimum confidence"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.release.min_confidence}
+              helpText="Final release persistence gate. Lower values allow weaker release identities to be saved after clustering."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
+            />
+            <NumberField
+              label="Minimum completion %"
+              min={0}
+              max={100}
+              value={indexing.release.min_completion_pct}
+              helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
+            />
+            <CheckboxField
+              label="Require expected file count for contextual obfuscated releases"
+              helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
+              checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+            />
+            <NumberField
+              label="High confidence threshold"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.match.high_confidence_threshold}
+              helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
+            />
+            <NumberField
+              label="Probable confidence threshold"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.match.probable_confidence_threshold}
+              helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
+            />
+            <NumberField
+              label="Article bucket size"
+              min={1}
+              value={indexing.match.article_bucket_size}
+              helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
+              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+            />
           </div>
         </SettingsSection>
 
         <SettingsSection title="Inspection tools">
+          <div className="banner">
+            Content filters are conservative inspection guardrails. They mark completed opaque binaries as filtered so later inspect stages do not keep spending time on known-unwanted payloads.
+          </div>
           <div className="toolbar-grid">
-            <NumberField label="Max bytes" value={indexing.inspect.max_bytes} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })} />
+            <NumberField
+              label="Max inspect bytes"
+              value={indexing.inspect.max_bytes}
+              helpText="Safety cap for materializing a binary during deep inspection. This is not a release size filter."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })}
+            />
+            <NumberField
+              label="Minimum binary bytes"
+              min={0}
+              value={indexing.inspect.min_binary_bytes}
+              helpText="0 disables. Completed opaque binaries smaller than this are marked content-filtered during inspect discovery."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, min_binary_bytes: value } })}
+            />
+            <NumberField
+              label="Maximum binary bytes"
+              min={0}
+              value={indexing.inspect.max_binary_bytes}
+              helpText="0 disables. Completed opaque binaries larger than this are marked content-filtered during inspect discovery."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_binary_bytes: value } })}
+            />
+            <TextField
+              label="Blocked magic bytes"
+              value={(indexing.inspect.blocked_magic_hex ?? []).join(', ')}
+              helpText="Comma-separated hex prefixes to filter after sampling. Default RCLONE magic is 52434C4F4E45."
+              onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, blocked_magic_hex: parseCSV(value) } })}
+            />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
             <TextField label="ffprobe path" value={indexing.inspect.ffprobe_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, ffprobe_path: value } })} />
@@ -836,18 +944,21 @@ function TextField({
   value,
   type = 'text',
   required,
+  helpText,
   onChange,
 }: {
   label: string
   value: string
   type?: string
   required?: boolean
+  helpText?: string
   onChange: (value: string) => void
 }) {
   return (
     <label className="field">
       <span>{label}</span>
       <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
@@ -881,6 +992,7 @@ function NumberField({
   min,
   max,
   required,
+  helpText,
   onChange,
 }: {
   label: string
@@ -889,21 +1001,34 @@ function NumberField({
   min?: number
   max?: number
   required?: boolean
+  helpText?: string
   onChange: (value: number) => void
 }) {
   return (
     <label className="field">
       <span>{label}</span>
       <input type="number" step={step} min={min} max={max} required={required} value={value} onChange={(event) => onChange(fieldNumber(event.target.value))} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }
 
-function CheckboxField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function CheckboxField({
+  label,
+  checked,
+  helpText,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  helpText?: string
+  onChange: (value: boolean) => void
+}) {
   return (
     <label className="field checkbox-field">
       <span>{label}</span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {helpText ? <small>{helpText}</small> : null}
     </label>
   )
 }

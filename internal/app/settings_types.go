@@ -81,6 +81,7 @@ type IndexingReleaseRuntimeSettings struct {
 	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
 	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
+	MinExpectedFileCoveragePct                      float64 `json:"min_expected_file_coverage_pct,omitempty"`
 	RequireExpectedFileCountForContextualObfuscated bool    `json:"require_expected_file_count_for_contextual_obfuscated,omitempty"`
 }
 
@@ -91,16 +92,19 @@ type IndexingMatchRuntimeSettings struct {
 }
 
 type IndexingInspectRuntimeSettings struct {
-	WorkDir          string `json:"work_dir,omitempty"`
-	WorkspaceBackend string `json:"workspace_backend,omitempty"`
-	MemoryWorkDir    string `json:"memory_work_dir,omitempty"`
-	MaxBytes         int64  `json:"max_bytes,omitempty"`
-	MaxArchiveDepth  int    `json:"max_archive_depth,omitempty"`
-	ToolTimeoutSecs  int    `json:"tool_timeout_seconds,omitempty"`
-	FFProbePath      string `json:"ffprobe_path,omitempty"`
-	SevenZipPath     string `json:"seven_zip_path,omitempty"`
-	UnrarPath        string `json:"unrar_path,omitempty"`
-	PAR2Path         string `json:"par2_path,omitempty"`
+	WorkDir          string   `json:"work_dir,omitempty"`
+	WorkspaceBackend string   `json:"workspace_backend,omitempty"`
+	MemoryWorkDir    string   `json:"memory_work_dir,omitempty"`
+	MaxBytes         int64    `json:"max_bytes,omitempty"`
+	MinBinaryBytes   int64    `json:"min_binary_bytes,omitempty"`
+	MaxBinaryBytes   int64    `json:"max_binary_bytes,omitempty"`
+	BlockedMagicHex  []string `json:"blocked_magic_hex,omitempty"`
+	MaxArchiveDepth  int      `json:"max_archive_depth,omitempty"`
+	ToolTimeoutSecs  int      `json:"tool_timeout_seconds,omitempty"`
+	FFProbePath      string   `json:"ffprobe_path,omitempty"`
+	SevenZipPath     string   `json:"seven_zip_path,omitempty"`
+	UnrarPath        string   `json:"unrar_path,omitempty"`
+	PAR2Path         string   `json:"par2_path,omitempty"`
 }
 
 type IndexingPreDBRuntimeSettings struct {
@@ -137,6 +141,9 @@ type IndexingRuntimeSettings struct {
 	ScrapeLatest             IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
 	ScrapeBackfill           IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
 	Assemble                 IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
+	AssembleLaneA            IndexingStageRuntimeSettings   `json:"assemble_lane_a,omitempty"`
+	AssembleLaneB            IndexingStageRuntimeSettings   `json:"assemble_lane_b,omitempty"`
+	RecoverYEnc              IndexingStageRuntimeSettings   `json:"recover_yenc,omitempty"`
 	Release                  IndexingReleaseRuntimeSettings `json:"release,omitempty"`
 	Match                    IndexingMatchRuntimeSettings   `json:"match,omitempty"`
 	Inspect                  IndexingInspectRuntimeSettings `json:"inspect,omitempty"`

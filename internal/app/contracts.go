@@ -154,7 +154,7 @@ type UsenetIndexStore interface {
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
 
-	ListReleaseCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseCandidate, error)
+	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
@@ -166,7 +166,9 @@ type UsenetIndexStore interface {
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
+	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
 	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
@@ -177,7 +179,11 @@ type UsenetIndexStore interface {
 	ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []pgindex.BinaryMediaStreamRecord) error
 	ReplaceBinaryTextEvidence(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryTextEvidenceRecord) error
 	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
+	ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) error
+	ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) (*pgindex.BinaryPAR2TargetCoverageResult, error)
 	ApplyBinaryRecovery(ctx context.Context, in pgindex.BinaryRecoveryRecord) error
+	ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]pgindex.YEncRecoveryCandidate, error)
+	ApplyYEncHeaderRecovery(ctx context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error)
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
@@ -207,6 +213,9 @@ type UsenetIndexerService interface {
 	ScrapeLatestOnce(ctx context.Context) error
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
+	AssembleLaneAOnce(ctx context.Context) error
+	AssembleLaneBOnce(ctx context.Context) error
+	RecoverYEncOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
 	InspectOnce(ctx context.Context) error

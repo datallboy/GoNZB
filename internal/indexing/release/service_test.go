@@ -305,6 +305,158 @@ func TestRunOnceSkipsBinaryListingForFragmentOnlyCandidates(t *testing.T) {
 	}
 }
 
+func TestRunOnceCoolsDownLowCoverageCandidatesBeforeBinaryListing(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:                     1,
+				NewsgroupID:                    2,
+				KeyKind:                        "release_family",
+				ReleaseFamilyKey:               "low-coverage",
+				BinaryCount:                    8,
+				CompleteBinaryCount:            4,
+				CompleteMainPayloadBinaryCount: 4,
+				ExpectedFileCount:              10,
+				ExpectedFileCoveragePct:        40,
+				ReadinessBucket:                "actionable",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                         10,
+		ReleaseMinConfidence:              0.55,
+		ReleaseMinExpectedFileCoveragePct: 90,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for low-coverage candidate, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected 1 acked candidate, got %d", len(repo.ackedCandidates))
+	}
+	if got := metrics["cooled_down_low_coverage_families"]; got != 1 {
+		t.Fatalf("expected cooled_down_low_coverage_families=1, got %#v", got)
+	}
+}
+
+func TestRunOnceCoolsDownWeakSingleCandidatesBeforeBinaryListing(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:                     1,
+				NewsgroupID:                    2,
+				KeyKind:                        "release_family",
+				ReleaseFamilyKey:               "weak-single",
+				BinaryCount:                    1,
+				CompleteBinaryCount:            1,
+				CompleteMainPayloadBinaryCount: 1,
+				ReadinessBucket:                "weak_single_binary",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for weak-single candidate, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected 1 acked candidate, got %d", len(repo.ackedCandidates))
+	}
+	if got := metrics["cooled_down_weak_single_families"]; got != 1 {
+		t.Fatalf("expected cooled_down_weak_single_families=1, got %#v", got)
+	}
+}
+
+func TestRunOnceCoolsDownOvergroupedContextualCandidatesBeforeBinaryListing(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:                     1,
+				NewsgroupID:                    2,
+				KeyKind:                        "release_family",
+				ReleaseFamilyKey:               "overgrouped-contextual",
+				BinaryCount:                    1397,
+				CompleteBinaryCount:            2,
+				CompleteMainPayloadBinaryCount: 2,
+				ExpectedFileCount:              60,
+				ReadinessBucket:                "overgrouped_contextual",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for overgrouped contextual candidate, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected 1 acked candidate, got %d", len(repo.ackedCandidates))
+	}
+	if got := metrics["cooled_down_overgrouped_families"]; got != 1 {
+		t.Fatalf("expected cooled_down_overgrouped_families=1, got %#v", got)
+	}
+}
+
+func TestRunOnceCoolsDownPreferBaseStemCandidatesBeforeBinaryListing(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:                     1,
+				NewsgroupID:                    2,
+				KeyKind:                        "release_family",
+				ReleaseFamilyKey:               "prefer-base-stem",
+				BinaryCount:                    12,
+				CompleteBinaryCount:            4,
+				CompleteMainPayloadBinaryCount: 4,
+				ExpectedFileCount:              40,
+				ReadinessBucket:                "prefer_base_stem",
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.listBinariesCalls != 0 {
+		t.Fatalf("expected no binary listing for prefer-base-stem candidate, got %d calls", repo.listBinariesCalls)
+	}
+	if len(repo.promotedBaseStemCandidates) != 1 {
+		t.Fatalf("expected 1 promoted base-stem candidate, got %d", len(repo.promotedBaseStemCandidates))
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected 1 acked candidate, got %d", len(repo.ackedCandidates))
+	}
+	if got := metrics["cooled_down_prefer_base_stem_families"]; got != 1 {
+		t.Fatalf("expected cooled_down_prefer_base_stem_families=1, got %#v", got)
+	}
+}
+
 func TestRunOnceCoolsDownFragmentOnlyFamilyAndAcksDirtyCandidate(t *testing.T) {
 	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -370,6 +522,52 @@ func TestRunOnceCoolsDownFragmentOnlyFamilyAndAcksDirtyCandidate(t *testing.T) {
 	}
 	if repo.ackedCandidates[0].familyKey != "fragment-family" {
 		t.Fatalf("expected ack for fragment-family, got %q", repo.ackedCandidates[0].familyKey)
+	}
+}
+
+func TestRunOnceReportsSingleMainFragmentReasonMetrics(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			KeyKind:          "release_family",
+			ReleaseFamilyKey: "single-main-fragment",
+			ReleaseKey:       "single-main-fragment",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"single-main-fragment": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "single-main-fragment",
+					ReleaseKey:       "single-main-fragment",
+					ReleaseName:      "opaque release",
+					FileName:         "cf1b742a8362436c8a2a71369360b628.bin",
+					BinaryName:       "cf1b742a8362436c8a2a71369360b628.bin",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       10,
+					ObservedParts:    10,
+					TotalBytes:       1000,
+					MatchConfidence:  0.90,
+					IsMainPayload:    true,
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if got := metrics["skipped_fragments"]; got != 1 {
+		t.Fatalf("expected skipped_fragments=1, got %#v", got)
+	}
+	if got := metrics["skipped_fragments_single_main"]; got != 1 {
+		t.Fatalf("expected skipped_fragments_single_main=1, got %#v", got)
 	}
 }
 
@@ -460,6 +658,141 @@ func TestRunOnceSkipsWeakContextualObfuscatedClusterWithoutExpectedFileCountByDe
 
 	if len(repo.upsertedReleases) != 0 {
 		t.Fatalf("expected weak contextual_obfuscated cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+}
+
+func TestRunOnceSkipsNumericSubjectOpaqueExtensionlessCluster(t *testing.T) {
+	baseTime := time.Date(2026, 5, 7, 13, 38, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "80894690 n yuo",
+			ReleaseKey:       "80894690 n yuo",
+			ReleaseName:      "80894690 n YuO",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"80894690 n yuo": {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  "80894690 n yuo",
+					ReleaseKey:        "80894690 n yuo",
+					ReleaseName:       "80894690 n YuO",
+					FileName:          "0q2503mv5r4sp5gxg64bs9uqdzn0nq4k",
+					BinaryName:        `80894690-n-YuO [1/2] - "0q2503mv5r4sp5gxg64bs9uqdzn0nq4k" yEnc (1/1) 219`,
+					FileIndex:         1,
+					ExpectedFileCount: 2,
+					FamilyKind:        "readable_title",
+					Poster:            "poster-a",
+					PostedAt:          ptrTime(baseTime),
+					TotalParts:        1,
+					ObservedParts:     1,
+					TotalBytes:        931,
+					MatchConfidence:   1.0,
+					IsMainPayload:     true,
+				},
+				{
+					BinaryID:          2,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  "80894690 n yuo",
+					ReleaseKey:        "80894690 n yuo",
+					ReleaseName:       "80894690 n YuO",
+					FileName:          "e81q5yfbwtk46b9n5szq5mdk740cl1v1",
+					BinaryName:        `80894690-n-YuO [2/2] - "e81q5yfbwtk46b9n5szq5mdk740cl1v1" yEnc (1/1) 496746`,
+					FileIndex:         2,
+					ExpectedFileCount: 2,
+					FamilyKind:        "readable_title",
+					Poster:            "poster-a",
+					PostedAt:          ptrTime(baseTime.Add(time.Minute)),
+					TotalParts:        1,
+					ObservedParts:     1,
+					TotalBytes:        513_077,
+					MatchConfidence:   1.0,
+					IsMainPayload:     true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    true,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected numeric opaque cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_contextual_weak"]; got != 1 {
+		t.Fatalf("expected skipped_fragments_contextual_weak=1, got %#v", got)
+	}
+}
+
+func TestRunOnceSkipsContextualSingleFileOpaqueStandalone(t *testing.T) {
+	baseTime := time.Date(2026, 5, 12, 8, 46, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "poster alt binaries misc release files 1",
+			ReleaseKey:       "poster alt binaries misc release files 1",
+			ReleaseName:      "bf92f9bdd9b11f143d0e1a9bcd778121",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"poster alt binaries misc release files 1": {{
+				BinaryID:          1,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseFamilyKey:  "poster alt binaries misc release files 1",
+				ReleaseKey:        "poster alt binaries misc release files 1",
+				ReleaseName:       "bf92f9bdd9b11f143d0e1a9bcd778121",
+				FileName:          "bf92f9bdd9b11f143d0e1a9bcd778121",
+				BinaryName:        "bf92f9bdd9b11f143d0e1a9bcd778121",
+				FileIndex:         1,
+				ExpectedFileCount: 1,
+				FamilyKind:        "contextual_obfuscated",
+				Poster:            "poster-a",
+				PostedAt:          ptrTime(baseTime),
+				TotalParts:        1,
+				ObservedParts:     1,
+				TotalBytes:        4_616,
+				MatchConfidence:   1.0,
+				IsMainPayload:     true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    true,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected contextual opaque standalone to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_single_main"]; got != 1 {
+		t.Fatalf("expected skipped_fragments_single_main=1, got %#v", got)
 	}
 }
 
@@ -646,6 +979,88 @@ func TestRunOnceSkipsFragmentaryMultiFileClustersUntilMultipleMainFilesExist(t *
 	}
 	if len(repo.deletedStaleCalls) != 1 {
 		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	}
+}
+
+func TestRunOnceSkipsSplitArchiveClusterWithoutExpectedFileCount(t *testing.T) {
+	baseTime := time.Date(2026, 5, 12, 6, 13, 10, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			ReleaseFamilyKey: "wbostp9yf138oybk1yc93o",
+			ReleaseKey:       "wbostp9yf138oybk1yc93o",
+			ReleaseName:      "Wbostp9Yf138Oybk1yc93o",
+			BinaryCount:      3,
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"wbostp9yf138oybk1yc93o": {
+				{
+					BinaryID:           1,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part01.rar",
+					FileIndex:          1,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925049,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+				{
+					BinaryID:           2,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part02.rar",
+					FileIndex:          2,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925329,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+				{
+					BinaryID:           3,
+					ProviderID:         1,
+					NewsgroupID:        2,
+					ReleaseFamilyKey:   "wbostp9yf138oybk1yc93o",
+					ReleaseKey:         "wbostp9yf138oybk1yc93o",
+					FileName:           "Wbostp9Yf138Oybk1yc93o.part03.rar",
+					FileIndex:          3,
+					Poster:             "poster-a",
+					PostedAt:           ptrTime(baseTime),
+					FirstArticleNumber: 51659925600,
+					TotalParts:         62,
+					ObservedParts:      62,
+					TotalBytes:         44040192,
+					MatchConfidence:    0.92,
+					IsMainPayload:      true,
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected split archive without expected file count to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_contextual_weak"]; got != 1 {
+		t.Fatalf("expected contextual weak skip metric, got %#v", got)
 	}
 }
 
@@ -1550,6 +1965,7 @@ type fakeReleaseRepository struct {
 	listBinariesCalls                  int
 	deletedStaleCalls                  []staleDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
+	promotedBaseStemCandidates         []promotedBaseStemCandidate
 }
 
 type staleDeleteCall struct {
@@ -1565,7 +1981,13 @@ type ackedReleaseCandidate struct {
 	familyKey   string
 }
 
-func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int) ([]pgindex.ReleaseCandidate, error) {
+type promotedBaseStemCandidate struct {
+	providerID       int64
+	newsgroupID      int64
+	releaseFamilyKey string
+}
+
+func (f *fakeReleaseRepository) ListReleaseCandidates(context.Context, int, pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error) {
 	f.listReleaseCandidatesCalls++
 	return f.candidates, nil
 }
@@ -1658,6 +2080,15 @@ func (f *fakeReleaseRepository) AckReleaseCandidates(_ context.Context, candidat
 			familyKey:   candidate.FamilyKey,
 		})
 	}
+	return nil
+}
+
+func (f *fakeReleaseRepository) PromoteBaseStemCandidatesForReleaseFamily(_ context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error {
+	f.promotedBaseStemCandidates = append(f.promotedBaseStemCandidates, promotedBaseStemCandidate{
+		providerID:       providerID,
+		newsgroupID:      newsgroupID,
+		releaseFamilyKey: releaseFamilyKey,
+	})
 	return nil
 }
 

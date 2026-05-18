@@ -56,7 +56,12 @@ type BinaryRecord struct {
 	PosterID          int64
 	SourceReleaseKey  string
 	ReleaseFamilyKey  string
+	FileSetKey        string
 	FileFamilyKey     string
+	IdentityStrength  string
+	IdentityReason    string
+	SubjectSetToken   string
+	SubjectSetKind    string
 	FamilyKind        string
 	BaseStem          string
 	IsAuxiliary       bool
@@ -90,7 +95,14 @@ type AssemblyClaimRequest struct {
 	Limit         int
 	Owner         string
 	LeaseDuration time.Duration
+	Lane          string
 }
+
+const (
+	AssemblyClaimLaneCombined = ""
+	AssemblyClaimLaneA        = "lane_a"
+	AssemblyClaimLaneB        = "lane_b"
+)
 
 type assemblyQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -132,7 +144,7 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 		return nil, fmt.Errorf("lock assembly claim selector: %w", err)
 	}
 
-	candidates, err := s.listUnassembledArticleHeaders(ctx, tx, req.Limit)
+	candidates, err := s.listUnassembledArticleHeadersForLane(ctx, tx, req.Limit, req.Lane)
 	if err != nil {
 		return nil, err
 	}
@@ -199,53 +211,83 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 }
 
 func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
+	return s.listUnassembledArticleHeadersForLane(ctx, q, limit, AssemblyClaimLaneCombined)
+}
+
+func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q assemblyQueryer, limit int, lane string) ([]AssemblyCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 
-	laneALimit := 1
-	if limit > 1 {
-		laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
-		if laneALimit <= 0 {
-			laneALimit = 1
+	lane = strings.TrimSpace(strings.ToLower(lane))
+	laneALimit := limit
+	switch lane {
+	case AssemblyClaimLaneCombined:
+		laneALimit = 1
+		if limit > 1 {
+			laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
+			if laneALimit <= 0 {
+				laneALimit = 1
+			}
 		}
+	case AssemblyClaimLaneA:
+		laneALimit = limit
+	case AssemblyClaimLaneB:
+		laneALimit = 0
+	default:
+		return nil, fmt.Errorf("unknown assembly claim lane %q", lane)
 	}
 
-	priorityHeaderWindow := laneALimit * assemblePriorityHeaderWindowMultiplier
-	if priorityHeaderWindow < assemblePriorityHeaderMinScan {
-		priorityHeaderWindow = assemblePriorityHeaderMinScan
+	priorityHeaderWindow := assemblePriorityHeaderMinScan
+	if laneALimit > 0 {
+		priorityHeaderWindow = laneALimit * assemblePriorityHeaderWindowMultiplier
+		if priorityHeaderWindow < assemblePriorityHeaderMinScan {
+			priorityHeaderWindow = assemblePriorityHeaderMinScan
+		}
+		if priorityHeaderWindow > assemblePriorityHeaderMaxScan {
+			priorityHeaderWindow = assemblePriorityHeaderMaxScan
+		}
 	}
-	if priorityHeaderWindow > assemblePriorityHeaderMaxScan {
-		priorityHeaderWindow = assemblePriorityHeaderMaxScan
+	recentHeaderWindow := limit * assemblePriorityHeaderWindowMultiplier
+	if recentHeaderWindow < assemblePriorityHeaderMinScan {
+		recentHeaderWindow = assemblePriorityHeaderMinScan
+	}
+	if recentHeaderWindow > assemblePriorityHeaderMaxScan {
+		recentHeaderWindow = assemblePriorityHeaderMaxScan
 	}
 
 	selected := make([]assemblyCandidateSelection, 0, limit)
 	selectedIDs := make(map[int64]struct{}, limit)
 
-	priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range priorityIDs {
-		if len(selected) >= laneALimit {
-			break
+	if laneALimit > 0 {
+		priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
+		if err != nil {
+			return nil, err
 		}
-		if _, exists := selectedIDs[id]; exists {
-			continue
+		for _, id := range priorityIDs {
+			if len(selected) >= laneALimit {
+				break
+			}
+			if _, exists := selectedIDs[id]; exists {
+				continue
+			}
+			selectedIDs[id] = struct{}{}
+			selected = append(selected, assemblyCandidateSelection{
+				ID:                              id,
+				StructuredIdentityBinaryMatched: true,
+			})
 		}
-		selectedIDs[id] = struct{}{}
-		selected = append(selected, assemblyCandidateSelection{
-			ID:                              id,
-			StructuredIdentityBinaryMatched: true,
-		})
 	}
 
 	remaining := limit - len(selected)
+	if lane == AssemblyClaimLaneA {
+		return s.hydrateAssemblyCandidates(ctx, q, selected)
+	}
 	if remaining <= 0 {
 		return s.hydrateAssemblyCandidates(ctx, q, selected)
 	}
 
-	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, selectedIDs)
+	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, recentHeaderWindow, selectedIDs, lane == AssemblyClaimLaneB)
 	if err != nil {
 		return nil, err
 	}
@@ -609,20 +651,33 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 	return out, nil
 }
 
-func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit int, excludeIDs map[int64]struct{}) ([]int64, error) {
+func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int, excludeIDs map[int64]struct{}, excludeStructuredMatches bool) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
+	if pendingWindow < limit {
+		pendingWindow = limit
+	}
 
-	args := []any{limit}
+	args := []any{limit, pendingWindow}
 	query := `
-		SELECT ah.id
-		FROM article_headers ah
-		WHERE ah.assembled_at IS NULL
-		  AND (
-		  	ah.assembly_claimed_until IS NULL
-		  	OR ah.assembly_claimed_until < NOW()
-		  )`
+		WITH recent_pending AS (
+			SELECT
+				ah.id,
+				ah.provider_id,
+				ah.newsgroup_id
+			FROM article_headers ah
+			WHERE ah.assembled_at IS NULL
+			  AND (
+			  	ah.assembly_claimed_until IS NULL
+			  	OR ah.assembly_claimed_until < NOW()
+			  )
+			ORDER BY ah.id DESC
+			LIMIT $2
+		)
+		SELECT rp.id
+		FROM recent_pending rp
+		WHERE TRUE`
 	if len(excludeIDs) > 0 {
 		ids := make([]int64, 0, len(excludeIDs))
 		for id := range excludeIDs {
@@ -631,10 +686,26 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		args = append(args, ids)
 		query += fmt.Sprintf(`
-		  AND NOT (ah.id = ANY($%d::bigint[]))`, len(args))
+		  AND NOT (rp.id = ANY($%d::bigint[]))`, len(args))
+	}
+	if excludeStructuredMatches {
+		query += `
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM article_header_ingest_payloads p
+		  	JOIN binaries b
+		  	  ON b.provider_id = rp.provider_id
+		  	 AND b.newsgroup_id = rp.newsgroup_id
+		  	 AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
+		  	 AND b.total_parts > 0
+		  	 AND b.observed_parts < b.total_parts
+		  	 AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+		  	WHERE p.article_header_id = rp.id
+		  	  AND BTRIM(p.subject_file_name) <> ''
+		  )`
 	}
 	query += `
-		ORDER BY ah.id DESC
+		ORDER BY rp.id DESC
 		LIMIT $1`
 
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -899,12 +970,15 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	}
 
 	evidenceJSON := []byte(`{}`)
-	if cleanEvidence := sanitizeStringMap(in.GroupingEvidence); len(cleanEvidence) > 0 {
+	inlineEvidenceJSON := []byte(`{}`)
+	cleanEvidence := sanitizeStringMap(in.GroupingEvidence)
+	if len(cleanEvidence) > 0 {
 		b, err := json.Marshal(cleanEvidence)
 		if err != nil {
 			return 0, fmt.Errorf("marshal binary grouping evidence %q: %w", in.BinaryKey, err)
 		}
 		evidenceJSON = b
+		inlineEvidenceJSON = marshalInlineGroupingEvidence(cleanEvidence)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -913,7 +987,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	}
 	defer rollbackTx(tx)
 
+	if err := lockBinaryIdentityKey(ctx, tx, in.ProviderID, in.NewsgroupID, in.BinaryKey); err != nil {
+		return 0, err
+	}
+
 	var (
+		hadExistingBinary         bool
 		existingReleaseFamilyKey  string
 		existingBaseStem          string
 		existingExpectedFileCount int
@@ -934,8 +1013,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		&existingReleaseFamilyKey,
 		&existingBaseStem,
 		&existingExpectedFileCount,
-	); err != nil && err != sql.ErrNoRows {
-		return 0, fmt.Errorf("lookup existing binary %q: %w", in.BinaryKey, err)
+	); err != nil {
+		if err != sql.ErrNoRows {
+			return 0, fmt.Errorf("lookup existing binary %q: %w", in.BinaryKey, err)
+		}
+	} else {
+		hadExistingBinary = true
 	}
 
 	var id int64
@@ -946,7 +1029,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			poster_id,
 			source_release_key,
 			release_family_key,
+			file_set_key,
 			file_family_key,
+			identity_strength,
+			identity_reason,
+			subject_set_token,
+			subject_set_kind,
 			family_kind,
 			base_stem,
 			is_auxiliary,
@@ -965,12 +1053,17 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 			grouping_evidence_json,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())
 		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
 		SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
 		    source_release_key = EXCLUDED.source_release_key,
 		    release_family_key = EXCLUDED.release_family_key,
+		    file_set_key = EXCLUDED.file_set_key,
 		    file_family_key = EXCLUDED.file_family_key,
+		    identity_strength = EXCLUDED.identity_strength,
+		    identity_reason = EXCLUDED.identity_reason,
+		    subject_set_token = EXCLUDED.subject_set_token,
+		    subject_set_kind = EXCLUDED.subject_set_kind,
 		    family_kind = EXCLUDED.family_kind,
 		    base_stem = EXCLUDED.base_stem,
 		    is_auxiliary = EXCLUDED.is_auxiliary,
@@ -1002,7 +1095,12 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		posterID,
 		strings.TrimSpace(in.SourceReleaseKey),
 		strings.TrimSpace(in.ReleaseFamilyKey),
+		strings.TrimSpace(in.FileSetKey),
 		strings.TrimSpace(in.FileFamilyKey),
+		strings.TrimSpace(in.IdentityStrength),
+		strings.TrimSpace(in.IdentityReason),
+		strings.TrimSpace(in.SubjectSetToken),
+		strings.TrimSpace(in.SubjectSetKind),
 		strings.TrimSpace(in.FamilyKind),
 		strings.TrimSpace(in.BaseStem),
 		in.IsAuxiliary,
@@ -1018,34 +1116,49 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		postedAt,
 		in.MatchConfidence,
 		in.MatchStatus,
-		[]byte(`{}`),
+		inlineEvidenceJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert binary %q: %w", in.BinaryKey, err)
 	}
 
-	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON); err != nil {
+	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON, shouldPersistDetailedGroupingEvidence(in, cleanEvidence)); err != nil {
 		return 0, err
 	}
 
-	summaryKeys := make([]releaseFamilySummaryKey, 0, 4)
-	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 4)
-	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", existingReleaseFamilyKey)
-	if existingExpectedFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", existingBaseStem)
-	}
-	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey)
-	if in.ExpectedFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
-	}
-	sortReleaseFamilySummaryKeys(summaryKeys)
-
-	for _, key := range summaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return 0, err
+	// The assemble hot path already refreshes binary stats and the current release-family
+	// queue state in one set-based batch after all binary parts are written. Avoid doing
+	// that same work eagerly for brand-new binaries here; only reconcile summaries inline
+	// when an existing binary actually moves between release-family identities.
+	if hadExistingBinary {
+		identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(in.ReleaseFamilyKey)
+		existingBaseStemKey := ""
+		if existingExpectedFileCount > 1 {
+			existingBaseStemKey = strings.ToLower(strings.TrimSpace(existingBaseStem))
 		}
-		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-			return 0, err
+		newBaseStemKey := ""
+		if in.ExpectedFileCount > 1 {
+			newBaseStemKey = strings.ToLower(strings.TrimSpace(in.BaseStem))
+		}
+		identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
+		if identityChanged {
+			summaryKeys := make([]releaseFamilySummaryKey, 0, 4)
+			seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 4)
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", existingReleaseFamilyKey)
+			if existingExpectedFileCount > 1 {
+				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", existingBaseStem)
+			}
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "release_family", in.ReleaseFamilyKey)
+			if in.ExpectedFileCount > 1 {
+				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, in.ProviderID, in.NewsgroupID, "base_stem", in.BaseStem)
+			}
+			sortReleaseFamilySummaryKeys(summaryKeys)
+
+			for _, key := range summaryKeys {
+				if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 
@@ -1056,14 +1169,58 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	return id, nil
 }
 
-func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte) error {
+func marshalInlineGroupingEvidence(evidence map[string]any) []byte {
+	if len(evidence) == 0 {
+		return []byte(`{}`)
+	}
+	summary, ok := evidence["summary"]
+	if !ok {
+		return []byte(`{}`)
+	}
+	raw, err := json.Marshal(map[string]any{"summary": summary})
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
+}
+
+func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]any) bool {
+	if len(evidence) == 0 {
+		return false
+	}
+	if in.MatchConfidence < 0.85 {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(in.IdentityStrength)) {
+	case "weak", "provisional":
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(in.FamilyKind)) {
+	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
+		return true
+	}
+
+	summary, _ := evidence["summary"].(map[string]any)
+	if status, _ := summary["status"].(string); strings.TrimSpace(strings.ToLower(status)) != "" && strings.TrimSpace(strings.ToLower(status)) != "matched" {
+		return true
+	}
+	if fallbackUsed, _ := summary["fallback_used"].(bool); fallbackUsed {
+		return true
+	}
+
+	return false
+}
+
+func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte, keepDetailed bool) error {
 	if tx == nil {
 		return fmt.Errorf("binary grouping evidence tx is required")
 	}
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
-	if len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
+	if !keepDetailed || len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM binary_grouping_evidence
 			WHERE binary_id = $1`, binaryID); err != nil {
@@ -1088,37 +1245,6 @@ func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int6
 		payload,
 	); err != nil {
 		return fmt.Errorf("upsert binary grouping evidence %d: %w", binaryID, err)
-	}
-	return nil
-}
-
-func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, keyKind, familyKey string) error {
-	if tx == nil {
-		return fmt.Errorf("release dirty queue tx is required")
-	}
-	familyKey = strings.TrimSpace(familyKey)
-	if providerID <= 0 || newsgroupID <= 0 || familyKey == "" {
-		return nil
-	}
-
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO release_stage_dirty_families (
-			provider_id,
-			newsgroup_id,
-			key_kind,
-			family_key,
-			updated_at
-		)
-		VALUES ($1,$2,$3,$4,NOW())
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-		SET updated_at = NOW()`,
-		providerID,
-		newsgroupID,
-		strings.TrimSpace(keyKind),
-		familyKey,
-	)
-	if err != nil {
-		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", providerID, newsgroupID, keyKind, familyKey, err)
 	}
 	return nil
 }
@@ -1161,11 +1287,56 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
 	dedupedRecords := dedupeBinaryPartRecords(records)
+	sort.Slice(dedupedRecords, func(i, j int) bool {
+		if dedupedRecords[i].BinaryID != dedupedRecords[j].BinaryID {
+			return dedupedRecords[i].BinaryID < dedupedRecords[j].BinaryID
+		}
+		if dedupedRecords[i].PartNumber != dedupedRecords[j].PartNumber {
+			return dedupedRecords[i].PartNumber < dedupedRecords[j].PartNumber
+		}
+		return dedupedRecords[i].ArticleHeaderID < dedupedRecords[j].ArticleHeaderID
+	})
+	headerIDs := uniqueSortedArticleHeaderIDs(records)
+	existingBinaryIDs, err := existingBinaryIDsForPartRecords(ctx, tx, dedupedRecords)
+	if err != nil {
+		return err
+	}
+	validRecords := make([]BinaryPartRecord, 0, len(dedupedRecords))
+	validHeaderIDs := make([]int64, 0, len(headerIDs))
+	retryHeaderIDs := make([]int64, 0, 8)
+	retrySeen := make(map[int64]struct{}, 8)
+	for _, record := range dedupedRecords {
+		if _, ok := existingBinaryIDs[record.BinaryID]; ok {
+			validRecords = append(validRecords, record)
+			continue
+		}
+		if record.ArticleHeaderID > 0 {
+			if _, seen := retrySeen[record.ArticleHeaderID]; !seen {
+				retrySeen[record.ArticleHeaderID] = struct{}{}
+				retryHeaderIDs = append(retryHeaderIDs, record.ArticleHeaderID)
+			}
+		}
+	}
+	for _, articleHeaderID := range headerIDs {
+		if _, retry := retrySeen[articleHeaderID]; !retry {
+			validHeaderIDs = append(validHeaderIDs, articleHeaderID)
+		}
+	}
+	dedupedRecords = validRecords
+	headerIDs = validHeaderIDs
+	if len(retryHeaderIDs) > 0 {
+		if err := releaseAssemblyClaims(ctx, tx, retryHeaderIDs); err != nil {
+			return err
+		}
+	}
+	if len(dedupedRecords) == 0 {
+		return nil
+	}
 
 	partArgs := make([]any, 0, len(dedupedRecords)*7)
-	headerArgs := make([]any, 0, len(records))
+	headerArgs := make([]any, 0, len(headerIDs))
 	partValues := make([]string, 0, len(dedupedRecords))
-	headerValues := make([]string, 0, len(records))
+	headerValues := make([]string, 0, len(headerIDs))
 	for i, record := range dedupedRecords {
 		if record.BinaryID <= 0 || record.ArticleHeaderID <= 0 {
 			return fmt.Errorf("binary id and article header id are required")
@@ -1196,9 +1367,9 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			strings.TrimSpace(record.FileName),
 		)
 	}
-	for i, record := range records {
+	for i, articleHeaderID := range headerIDs {
 		headerValues = append(headerValues, fmt.Sprintf("($%d::bigint)", i+1))
-		headerArgs = append(headerArgs, record.ArticleHeaderID)
+		headerArgs = append(headerArgs, articleHeaderID)
 	}
 
 	query := fmt.Sprintf(`
@@ -1237,10 +1408,110 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		WHERE article_headers.id = claimed_headers.id`,
 		strings.Join(headerValues, ","))
 	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
-		return fmt.Errorf("mark %d article headers assembled: %w", len(records), err)
+		return fmt.Errorf("mark %d article headers assembled: %w", len(headerIDs), err)
 	}
 
 	return nil
+}
+
+func existingBinaryIDsForPartRecords(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) (map[int64]struct{}, error) {
+	if len(records) == 0 {
+		return map[int64]struct{}{}, nil
+	}
+	ids := make([]int64, 0, len(records))
+	seen := make(map[int64]struct{}, len(records))
+	for _, record := range records {
+		if record.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[record.BinaryID]; ok {
+			continue
+		}
+		seen[record.BinaryID] = struct{}{}
+		ids = append(ids, record.BinaryID)
+	}
+	if len(ids) == 0 {
+		return map[int64]struct{}{}, nil
+	}
+
+	args := make([]any, 0, len(ids))
+	values := make([]string, 0, len(ids))
+	for i, id := range ids {
+		args = append(args, id)
+		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(id) AS (
+			VALUES %s
+		)
+		SELECT b.id
+		FROM binaries b
+		JOIN requested r ON r.id = b.id`, strings.Join(values, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query existing binary ids for part upsert: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]struct{}, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan existing binary id for part upsert: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing binary ids for part upsert: %w", err)
+	}
+	return out, nil
+}
+
+func releaseAssemblyClaims(ctx context.Context, tx *sql.Tx, articleHeaderIDs []int64) error {
+	if len(articleHeaderIDs) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(articleHeaderIDs))
+	values := make([]string, 0, len(articleHeaderIDs))
+	for i, id := range articleHeaderIDs {
+		args = append(args, id)
+		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
+	}
+	query := fmt.Sprintf(`
+		WITH retry_headers(id) AS (
+			VALUES %s
+		)
+		UPDATE article_headers
+		SET assembly_claimed_by = '',
+		    assembly_claimed_until = NULL
+		FROM retry_headers
+		WHERE article_headers.id = retry_headers.id`, strings.Join(values, ","))
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("release %d assembly header claims for retry: %w", len(articleHeaderIDs), err)
+	}
+	return nil
+}
+
+func uniqueSortedArticleHeaderIDs(records []BinaryPartRecord) []int64 {
+	if len(records) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(records))
+	seen := make(map[int64]struct{}, len(records))
+	for _, record := range records {
+		if record.ArticleHeaderID <= 0 {
+			continue
+		}
+		if _, ok := seen[record.ArticleHeaderID]; ok {
+			continue
+		}
+		seen[record.ArticleHeaderID] = struct{}{}
+		ids = append(ids, record.ArticleHeaderID)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return ids[i] < ids[j]
+	})
+	return ids
 }
 
 func dedupeBinaryPartRecords(records []BinaryPartRecord) []BinaryPartRecord {
@@ -1360,9 +1631,6 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
 			return err
 		}
-		if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-			return err
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1374,11 +1642,12 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 
 func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]releaseFamilySummaryKey, error) {
 	var (
-		providerID        int64
-		newsgroupID       int64
-		releaseFamilyKey  string
-		baseStem          string
-		expectedFileCount int
+		providerID               int64
+		newsgroupID              int64
+		releaseFamilyKey         string
+		baseStem                 string
+		expectedFileCount        int
+		expectedArchiveFileCount int
 	)
 	err := tx.QueryRowContext(ctx, `
 		WITH agg AS (
@@ -1408,7 +1677,8 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 			b.newsgroup_id,
 			b.release_family_key,
 			b.base_stem,
-			b.expected_file_count`,
+			b.expected_file_count,
+			b.expected_archive_file_count`,
 		binaryID,
 	).Scan(
 		&providerID,
@@ -1416,6 +1686,7 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 		&releaseFamilyKey,
 		&baseStem,
 		&expectedFileCount,
+		&expectedArchiveFileCount,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
@@ -1425,6 +1696,9 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 2)
 	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
 	if expectedFileCount > 1 {
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+	}
+	if expectedArchiveFileCount > 1 {
 		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
 	}
 

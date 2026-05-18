@@ -135,6 +135,7 @@ type Provider interface {
 	Priority() int
 	MaxConnection() int
 	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
+	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 	GroupStats(ctx context.Context, group string) (GroupStats, error)
 	XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error)
 	TestConnection() error
@@ -179,6 +180,38 @@ func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string)
 		if retry && attempt == 0 {
 			p.stats.fetchRetries.Add(1)
 			p.logRecoverableRetry("fetch", err, formattedID)
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, lastErr
+}
+
+func (p *nntpProvider) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
+	formattedID := strings.TrimSpace(msgID)
+	if !strings.HasPrefix(formattedID, "<") {
+		formattedID = "<" + formattedID + ">"
+	}
+	if maxBytes <= 0 {
+		maxBytes = 8192
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		conn, err := p.getConn()
+		if err != nil {
+			return nil, err
+		}
+
+		data, retry, err := p.fetchBodyPrefixWithConn(ctx, conn, formattedID, groups, maxBytes)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if retry && attempt == 0 {
+			p.stats.fetchRetries.Add(1)
+			p.logRecoverableRetry("fetch_body_prefix", err, formattedID)
 			continue
 		}
 		return nil, err
@@ -369,9 +402,9 @@ func parseOverviewLine(line string) (OverviewHeader, bool) {
 		xref = strings.TrimSpace(fields[8])
 	}
 
-	raw := map[string]any{
-		"line":       line,
-		"references": strings.TrimSpace(fields[5]),
+	raw := map[string]any{}
+	if references := strings.TrimSpace(fields[5]); references != "" {
+		raw["references"] = references
 	}
 
 	return OverviewHeader{
@@ -575,6 +608,27 @@ func (p *nntpProvider) fetchWithConn(ctx context.Context, conn *nntpConn, format
 		p:      p,
 		ctx:    ctx,
 	}, false, nil
+}
+
+func (p *nntpProvider) fetchBodyPrefixWithConn(ctx context.Context, conn *nntpConn, formattedID string, groups []string, maxBytes int64) ([]byte, bool, error) {
+	reader, retry, err := p.fetchWithConn(ctx, conn, formattedID, groups)
+	if err != nil {
+		return nil, retry, err
+	}
+
+	limited := io.LimitReader(reader, maxBytes)
+	data, readErr := io.ReadAll(limited)
+	if closer, ok := reader.(*pooledReader); ok {
+		// Prefix callers intentionally do not drain the dot body. Returning this
+		// connection to the pool would corrupt the next command, so discard it.
+		closer.Discard()
+	} else if closer, ok := reader.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	if readErr != nil {
+		return nil, isRecoverableConnError(readErr), readErr
+	}
+	return data, false, nil
 }
 
 func isRecoverableConnError(err error) bool {
@@ -862,6 +916,9 @@ func (pr *pooledReader) Read(b []byte) (n int, err error) {
 }
 
 func (pr *pooledReader) Close() error {
+	if pr == nil || pr.conn == nil {
+		return nil
+	}
 	// Ensure we read the rest of the article before returning to pool
 	pr.conn.raw.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, err := io.Copy(io.Discard, pr.Reader)
@@ -874,4 +931,12 @@ func (pr *pooledReader) Close() error {
 
 	pr.p.returnConn(pr.conn)
 	return nil
+}
+
+func (pr *pooledReader) Discard() {
+	if pr == nil || pr.conn == nil {
+		return
+	}
+	pr.p.discardConn(pr.conn, discardError)
+	pr.conn = nil
 }

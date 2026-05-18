@@ -37,6 +37,30 @@ func TestParseOverviewLineParsesTwoDigitYearDate(t *testing.T) {
 	if !got.DateUTC.Equal(want) {
 		t.Fatalf("expected %s, got %s", want.Format(time.RFC3339), got.DateUTC.Format(time.RFC3339))
 	}
+	if _, ok := got.RawOverview["line"]; ok {
+		t.Fatalf("expected raw overview to omit full XOVER line, got %#v", got.RawOverview)
+	}
+}
+
+func TestParseOverviewLinePreservesPosterAndMessageIDPartCounter(t *testing.T) {
+	line := "2390174988\tMicrosoft Office Pro Plus 2021-2024 v2604 Build 19929.20106 (x64) Incl. Activator - [23/35] - \"Microsoft Office Pro Plus 2021-2024 v2604 Build 19929.20106 (x64) Incl. Activator.part21.rar\" yEnc (84/700)\tboob@mail.com (boobus)\tSat, 09 May 2026 10:08:11 GMT\t<Part84of700.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>\t\t399016\t3062"
+
+	got, ok := parseOverviewLine(line)
+	if !ok {
+		t.Fatal("expected overview line to parse")
+	}
+	if got.ArticleNumber != 2390174988 {
+		t.Fatalf("expected article number 2390174988, got %d", got.ArticleNumber)
+	}
+	if got.Poster != "boob@mail.com (boobus)" {
+		t.Fatalf("expected poster to be preserved, got %q", got.Poster)
+	}
+	if got.MessageID != "<Part84of700.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>" {
+		t.Fatalf("expected message-id to be preserved, got %q", got.MessageID)
+	}
+	if got.Bytes != 399016 || got.Lines != 3062 {
+		t.Fatalf("expected bytes/lines 399016/3062, got %d/%d", got.Bytes, got.Lines)
+	}
 }
 
 func TestReturnConnAfterCloseDoesNotPanic(t *testing.T) {

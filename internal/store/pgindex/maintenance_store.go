@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+const articleHeaderPayloadPurgeWindowSize = 250000
+
 type IndexerMaintenanceResult struct {
 	AbandonedStageRuns         int64
 	ClearedStageLeases         int64
@@ -14,6 +16,8 @@ type IndexerMaintenanceResult struct {
 	PurgedScrapeRuns           int64
 	PurgedBinaryInspections    int64
 	PurgedHeaderPayloads       int64
+	PurgedGroupingEvidence     int64
+	PurgedReadinessSummaries   int64
 	PurgedOrphanReleases       int64
 }
 
@@ -33,9 +37,27 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		result.ClearedStageLeases = repair.ClearedStaleLeases
 	}
 
+	if err := s.runIndexerMaintenanceMetadataCleanup(ctx, result); err != nil {
+		return nil, err
+	}
+
+	purgedHeaderPayloads, err := s.purgeArticleHeaderPayloadsInBatches(ctx, articleHeaderPayloadPurgeWindowSize)
+	if err != nil {
+		return nil, err
+	}
+	result.PurgedHeaderPayloads = purgedHeaderPayloads
+
+	if err := s.runIndexerMaintenanceDerivedCleanup(ctx, result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (s *Store) runIndexerMaintenanceMetadataCleanup(ctx context.Context, result *IndexerMaintenanceResult) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin indexer maintenance tx: %w", err)
+		return fmt.Errorf("begin indexer maintenance metadata tx: %w", err)
 	}
 	defer rollbackTx(tx)
 
@@ -50,9 +72,9 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		WHERE status = 'running'
 		  AND finished_at IS NULL
 		  AND started_at < NOW() - INTERVAL '1 hour'`); err != nil {
-		return nil, fmt.Errorf("abandon stale scrape runs: %w", err)
+		return fmt.Errorf("abandon stale scrape runs: %w", err)
 	} else if result.AbandonedScrapeRuns, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("abandon stale scrape runs rows affected: %w", err)
+		return fmt.Errorf("abandon stale scrape runs rows affected: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
@@ -68,9 +90,9 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		    updated_at = NOW()
 		WHERE status = 'running'
 		  AND updated_at < NOW() - INTERVAL '15 minutes'`); err != nil {
-		return nil, fmt.Errorf("abandon stale binary inspections: %w", err)
+		return fmt.Errorf("abandon stale binary inspections: %w", err)
 	} else if result.AbandonedBinaryInspections, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("abandon stale binary inspections rows affected: %w", err)
+		return fmt.Errorf("abandon stale binary inspections rows affected: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
@@ -82,9 +104,9 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 			status = 'failed'
 			AND started_at < NOW() - INTERVAL '30 days'
 		)`); err != nil {
-		return nil, fmt.Errorf("purge old indexer stage runs: %w", err)
+		return fmt.Errorf("purge old indexer stage runs: %w", err)
 	} else if result.PurgedStageRuns, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("purge old indexer stage runs rows affected: %w", err)
+		return fmt.Errorf("purge old indexer stage runs rows affected: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
@@ -96,9 +118,9 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 			status = 'failed'
 			AND started_at < NOW() - INTERVAL '30 days'
 		)`); err != nil {
-		return nil, fmt.Errorf("purge old scrape runs: %w", err)
+		return fmt.Errorf("purge old scrape runs: %w", err)
 	} else if result.PurgedScrapeRuns, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("purge old scrape runs rows affected: %w", err)
+		return fmt.Errorf("purge old scrape runs rows affected: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
@@ -110,20 +132,113 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 			status = 'failed'
 			AND updated_at < NOW() - INTERVAL '30 days'
 		)`); err != nil {
-		return nil, fmt.Errorf("purge old binary inspections: %w", err)
+		return fmt.Errorf("purge old binary inspections: %w", err)
 	} else if result.PurgedBinaryInspections, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("purge old binary inspections rows affected: %w", err)
+		return fmt.Errorf("purge old binary inspections rows affected: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit indexer maintenance metadata tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result *IndexerMaintenanceResult) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin indexer maintenance derived tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if res, err := tx.ExecContext(ctx, `
+		WITH eligible AS (
+			SELECT
+				b.id AS binary_id,
+				jsonb_build_object('summary', bge.payload_json->'summary') AS inline_summary
+			FROM binary_grouping_evidence bge
+			JOIN binaries b ON b.id = bge.binary_id
+			WHERE bge.updated_at < NOW() - INTERVAL '24 hours'
+			  AND b.match_confidence >= 0.85
+			  AND LOWER(COALESCE(b.identity_strength, '')) NOT IN ('weak', 'provisional')
+			  AND LOWER(COALESCE(b.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			  AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false
+			  AND bge.payload_json ? 'summary'
+		),
+		backfilled AS (
+			UPDATE binaries b
+			SET grouping_evidence_json = CASE
+				WHEN COALESCE(b.grouping_evidence_json, '{}'::jsonb) = '{}'::jsonb
+					OR NOT (COALESCE(b.grouping_evidence_json, '{}'::jsonb) ? 'summary')
+				THEN e.inline_summary
+				ELSE b.grouping_evidence_json
+			END,
+			updated_at = b.updated_at
+			FROM eligible e
+			WHERE b.id = e.binary_id
+			RETURNING b.id
+		)
+		DELETE FROM binary_grouping_evidence bge
+		USING eligible e
+		WHERE bge.binary_id = e.binary_id`); err != nil {
+		return fmt.Errorf("purge old stable grouping evidence: %w", err)
+	} else if result.PurgedGroupingEvidence, err = res.RowsAffected(); err != nil {
+		return fmt.Errorf("purge old stable grouping evidence rows affected: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
-		DELETE FROM article_header_ingest_payloads p
-		USING article_headers ah
-		WHERE ah.id = p.article_header_id
-		  AND ah.assembled_at IS NOT NULL
-		  AND ah.assembled_at < NOW() - INTERVAL '7 days'`); err != nil {
-		return nil, fmt.Errorf("purge old article header payloads: %w", err)
-	} else if result.PurgedHeaderPayloads, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("purge old article header payloads rows affected: %w", err)
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket = $1
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '6 hours'`,
+		releaseReadinessPreferBaseStem,
+	); err != nil {
+		return fmt.Errorf("purge old prefer_base_stem readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return fmt.Errorf("purge old prefer_base_stem readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket IN ($1, $2)
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '24 hours'`,
+		releaseReadinessFragmentOnly,
+		releaseReadinessStaleCleanupOnly,
+	); err != nil {
+		return fmt.Errorf("purge old fragment/stale readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return fmt.Errorf("purge old fragment/stale readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
+	}
+
+	if res, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries s
+		WHERE s.readiness_bucket IN ($1, $2, $3)
+		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND s.updated_at < NOW() - INTERVAL '24 hours'
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binaries b
+		  	WHERE b.provider_id = s.provider_id
+		  	  AND b.newsgroup_id = s.newsgroup_id
+		  	  AND s.key_kind = 'release_family'
+		  	  AND b.release_family_key = s.family_key
+		  	  AND LOWER(COALESCE(b.family_kind, '')) IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+		  	  AND b.is_main_payload = TRUE
+		  	  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
+		  )`,
+		releaseReadinessWeakSingle,
+		releaseReadinessWeakObfuscated,
+		releaseReadinessOvergrouped,
+	); err != nil {
+		return fmt.Errorf("purge old weak readiness summaries: %w", err)
+	} else if rows, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return fmt.Errorf("purge old weak readiness summaries rows affected: %w", rowsErr)
+	} else {
+		result.PurgedReadinessSummaries += rows
 	}
 
 	if res, err := tx.ExecContext(ctx, `
@@ -133,14 +248,65 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 			FROM release_files rf
 			WHERE rf.release_id = r.release_id
 		)`); err != nil {
-		return nil, fmt.Errorf("purge orphan releases: %w", err)
+		return fmt.Errorf("purge orphan releases: %w", err)
 	} else if result.PurgedOrphanReleases, err = res.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("purge orphan releases rows affected: %w", err)
+		return fmt.Errorf("purge orphan releases rows affected: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit indexer maintenance tx: %w", err)
+		return fmt.Errorf("commit indexer maintenance derived tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) purgeArticleHeaderPayloadsInBatches(ctx context.Context, batchSize int64) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = articleHeaderPayloadPurgeWindowSize
 	}
 
-	return result, nil
+	var maxID int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(article_header_id), 0)
+		FROM article_header_ingest_payloads`).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("query max article header payload id: %w", err)
+	}
+
+	var total int64
+	for low := int64(0); low < maxID; low += batchSize {
+		high := low + batchSize
+		res, err := s.db.ExecContext(ctx, `
+			DELETE FROM article_header_ingest_payloads p
+			USING article_headers ah
+			WHERE p.article_header_id > $1
+			  AND p.article_header_id <= $2
+			  AND ah.id = p.article_header_id
+			  AND ah.assembled_at IS NOT NULL
+			  AND (
+			  	(
+			  		ah.assembled_at < NOW() - INTERVAL '1 hour'
+			  		AND COALESCE(BTRIM(p.subject_file_name), '') <> ''
+			  		AND COALESCE(p.yenc_recovery_missing_count, 0) = 0
+			  		AND p.yenc_recovery_retry_after IS NULL
+			  	) OR (
+			  		ah.assembled_at < NOW() - INTERVAL '24 hours'
+			  		AND (
+			  			COALESCE(BTRIM(p.subject_file_name), '') = ''
+			  			OR COALESCE(p.yenc_recovery_missing_count, 0) > 0
+			  			OR p.yenc_recovery_retry_after IS NOT NULL
+			  		)
+			  	)
+			  )`,
+			low,
+			high,
+		)
+		if err != nil {
+			return total, fmt.Errorf("purge old article header payloads: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("purge old article header payloads rows affected: %w", err)
+		}
+		total += affected
+	}
+	return total, nil
 }

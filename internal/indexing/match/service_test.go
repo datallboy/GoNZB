@@ -295,6 +295,83 @@ func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) 
 	}
 }
 
+func TestMatchUsesMessageIDPartCounterWhenSubjectCounterIsWeak(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: `<Part84of700.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>`,
+		Subject:   `opaque "opaque-token" yEnc (1/1)`,
+	})
+
+	if got.PartNumber != 84 || got.TotalParts != 700 {
+		t.Fatalf("expected message-id part counter 84/700, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	evidence, ok := got.GroupingEvidence["message_host"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected message_host evidence, got %#v", got.GroupingEvidence["message_host"])
+	}
+	if evidence["part"] != 84 || evidence["total"] != 700 {
+		t.Fatalf("expected message-id counter evidence, got %#v", evidence)
+	}
+}
+
+func TestMatchKeepsSubjectYEncCounterWhenItIsStrongerThanMessageID(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: `<Part2of10.88B60C1037DB48589E2DC79BE09F92DA@1778298129.local>`,
+		Subject:   `Example [1/1] - "example.part01.rar" yEnc (84/700)`,
+	})
+
+	if got.PartNumber != 84 || got.TotalParts != 700 {
+		t.Fatalf("expected subject yEnc counter 84/700, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+}
+
+func TestMatchInfersArchiveVolumeIndexFromRecoveredYEncName(t *testing.T) {
+	svc := NewService()
+
+	cases := []struct {
+		name string
+		want int
+	}{
+		{name: "Wbostp9Yf138Oybk1yc93o.part02.rar", want: 2},
+		{name: "Wbostp9Yf138Oybk1yc93o.part001.rar", want: 1},
+		{name: "archive.r00", want: 2},
+		{name: "archive.r04", want: 6},
+		{name: "archive.7z.003", want: 3},
+		{name: "archive.zip.005", want: 5},
+	}
+
+	for _, tc := range cases {
+		got := svc.Match(Candidate{
+			MessageID: "<recovered@indexer.test>",
+			Subject:   `opaque`,
+			RawOverview: map[string]any{
+				"name":  tc.name,
+				"part":  1,
+				"total": 10,
+			},
+		})
+		if got.FileIndex != tc.want {
+			t.Fatalf("%s: expected inferred file index %d, got %d", tc.name, tc.want, got.FileIndex)
+		}
+	}
+}
+
+func TestMatchKeepsExplicitFileCounterOverArchiveVolumeIndex(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<explicit@indexer.test>",
+		Subject:   `[12/40] - "archive.part02.rar" yEnc (1/10)`,
+	})
+
+	if got.FileIndex != 12 || got.ExpectedFileCount != 40 {
+		t.Fatalf("expected explicit file counter 12/40, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+}
+
 func TestMatchDoesNotMergeNearbyPostsWithDifferentExplicitFilenames(t *testing.T) {
 	svc := NewService()
 	postedAt := time.Date(2026, 4, 9, 21, 0, 0, 0, time.UTC)
@@ -399,5 +476,65 @@ func TestMatchKeepsSmallIndexedArchiveFamilyTogetherByStem(t *testing.T) {
 
 	if first.ReleaseKey != second.ReleaseKey {
 		t.Fatalf("expected small indexed archive family to stay together, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+}
+
+func TestMatchPromotesLargeIndexedArchiveFamilyBySharedStem(t *testing.T) {
+	svc := NewService()
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 10001,
+		MessageID:     "<large-archive-a@host.example>",
+		Subject:       `[001/287] - "sharedopaquearchive.part001.rar" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:10001`,
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 10002,
+		MessageID:     "<large-archive-b@host.example>",
+		Subject:       `[002/287] - "sharedopaquearchive.part002.rar" yEnc (1/220) 157286400`,
+		Poster:        `same.poster@example.com`,
+		Xref:          `news.example alt.binaries.test:10002`,
+	})
+
+	if first.FamilyKind != "archive_stem" || second.FamilyKind != "archive_stem" {
+		t.Fatalf("expected archive_stem family kind, got %q / %q", first.FamilyKind, second.FamilyKind)
+	}
+	if first.ReleaseKey != second.ReleaseKey {
+		t.Fatalf("expected shared archive stem to group large family, got %q vs %q", first.ReleaseKey, second.ReleaseKey)
+	}
+	if first.BaseStem != "sharedopaquearchive" || second.BaseStem != "sharedopaquearchive" {
+		t.Fatalf("expected base stem %q, got %q / %q", "sharedopaquearchive", first.BaseStem, second.BaseStem)
+	}
+}
+
+func TestMatchClassifiesNumericPrefixAsWeakSubjectSet(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		ArticleNumber: 80894690,
+		MessageID:     "<rclone-crypt@host.example>",
+		Subject:       `80894690-n-YuO [1/4] - "bkkm2n3j3pl45ts1taahvgmj4bd6c0uthe84f72v8o8tn0or9icg" yEnc (1/1) 144259`,
+		Poster:        `backup.poster@example.com`,
+		Xref:          `news.example alt.binaries.misc:80894690`,
+	})
+
+	if got.SubjectSetToken != "80894690 n yuo" {
+		t.Fatalf("expected numeric subject set token, got %q", got.SubjectSetToken)
+	}
+	if got.SubjectSetKind != "numeric_obfuscated_set" {
+		t.Fatalf("expected numeric_obfuscated_set, got %q", got.SubjectSetKind)
+	}
+	if got.FamilyKind != "numeric_obfuscated_set" {
+		t.Fatalf("expected family kind numeric_obfuscated_set, got %q", got.FamilyKind)
+	}
+	if got.IdentityStrength != "provisional" || got.IdentityReason != "numeric_obfuscated_set" {
+		t.Fatalf("expected provisional numeric identity, got %q/%q", got.IdentityStrength, got.IdentityReason)
+	}
+	if got.ReleaseKey != "80894690 n yuo" {
+		t.Fatalf("expected release key to preserve set token, got %q", got.ReleaseKey)
+	}
+	if got.FileSetKey != "80894690 n yuo files 4" {
+		t.Fatalf("expected file set key to include expected files, got %q", got.FileSetKey)
 	}
 }

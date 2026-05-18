@@ -38,6 +38,12 @@ type BinaryPrefixSample struct {
 
 var tokenSplitRE = regexp.MustCompile(`[^a-z0-9._-]+`)
 
+type standaloneBinaryCatalogReader interface {
+	GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*pgindex.CatalogReleaseFile, error)
+	ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]pgindex.CatalogArticleRef, error)
+	ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error)
+}
+
 func MaterializeBinaryToWorkspace(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, candidate pgindex.BinaryInspectionCandidate, outputPath string, maxBytes int64) (*MaterializedBinary, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("catalog repo is required")
@@ -145,9 +151,6 @@ func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher Article
 	if maxBytes > 0 && int64(len(prefix)) > maxBytes {
 		prefix = prefix[:maxBytes]
 	}
-	if int64(len(prefix)) > 4096 {
-		prefix = prefix[:4096]
-	}
 	sig := DetectSignature(prefix, file.FileName)
 	return &BinaryPrefixSample{
 		File:       file,
@@ -162,6 +165,10 @@ func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher Article
 }
 
 func loadBinaryMaterializationInputs(ctx context.Context, repo CatalogReader, candidate pgindex.BinaryInspectionCandidate) (pgindex.CatalogReleaseFile, []pgindex.CatalogArticleRef, []string, error) {
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		return loadStandaloneBinaryMaterializationInputs(ctx, repo, candidate)
+	}
+
 	files, err := repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
 	if err != nil {
 		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)
@@ -198,12 +205,44 @@ func loadBinaryMaterializationInputs(ctx context.Context, repo CatalogReader, ca
 	return file, refs, groups, nil
 }
 
+func loadStandaloneBinaryMaterializationInputs(ctx context.Context, repo CatalogReader, candidate pgindex.BinaryInspectionCandidate) (pgindex.CatalogReleaseFile, []pgindex.CatalogArticleRef, []string, error) {
+	standaloneRepo, ok := repo.(standaloneBinaryCatalogReader)
+	if !ok {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("standalone binary materialization is not supported")
+	}
+	file, err := standaloneRepo.GetCatalogBinaryFile(ctx, candidate.BinaryID)
+	if err != nil {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("get catalog binary file %d: %w", candidate.BinaryID, err)
+	}
+	if file == nil {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("binary %d not found", candidate.BinaryID)
+	}
+	refs, err := standaloneRepo.ListCatalogBinaryArticles(ctx, candidate.BinaryID)
+	if err != nil {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("list binary articles %d: %w", candidate.BinaryID, err)
+	}
+	if len(refs) == 0 {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("binary %d has no articles", candidate.BinaryID)
+	}
+	groups, err := standaloneRepo.ListCatalogBinaryNewsgroups(ctx, candidate.BinaryID)
+	if err != nil {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("list binary newsgroups %d: %w", candidate.BinaryID, err)
+	}
+	if len(groups) == 0 {
+		return pgindex.CatalogReleaseFile{}, nil, nil, fmt.Errorf("binary %d has no newsgroups", candidate.BinaryID)
+	}
+	return *file, refs, groups, nil
+}
+
 func DetectSignature(data []byte, fileName string) string {
 	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
 		return "png"
 	}
 	if len(data) >= 6 && string(data[:6]) == "PAR2\x00P" {
 		return "par2"
+	}
+	if len(data) >= 6 && string(data[:6]) == "RCLONE" {
+		return "rclone"
 	}
 	if len(data) >= 6 && string(data[:6]) == "7z\xbc\xaf'\x1c" {
 		return "7z"
@@ -253,6 +292,8 @@ func DetectSignature(data []byte, fileName string) string {
 
 func DetectMIMEType(data []byte, fileName string) string {
 	switch DetectSignature(data, fileName) {
+	case "rclone":
+		return "application/octet-stream"
 	case "par2":
 		return "application/x-par2"
 	case "7z":

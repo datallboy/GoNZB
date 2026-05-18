@@ -15,13 +15,19 @@ var (
 	nzbPath   string
 	cfgFile   string = "config.yaml"
 
-	scrapeOnce    bool
-	assembleOnce  bool
-	releaseOnce   bool
-	releaseReform bool
-	pipelineOnce  bool
-	inspectOnce   bool
-	enrichOnce    bool
+	serveWithoutIndexerSupervisor bool
+
+	scrapeOnce      bool
+	assembleOnce    bool
+	recoverYEncOnce bool
+	releaseOnce     bool
+	releaseReform   bool
+	pipelineOnce    bool
+	inspectOnce     bool
+	enrichOnce      bool
+
+	indexerReclaimFull  bool
+	indexerReclaimCheck bool
 )
 
 var rootCmd = &cobra.Command{
@@ -52,7 +58,9 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Starts GoNZB in server mode. Start HTTP server.",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteServer()
+		commands.New(cfgFile).ExecuteServerWithOptions(commands.ServerOptions{
+			DisableIndexerSupervisor: serveWithoutIndexerSupervisor,
+		})
 	},
 }
 
@@ -95,11 +103,35 @@ var indexerAssembleCmd = &cobra.Command{
 	},
 }
 
+var indexerAssembleLaneACmd = &cobra.Command{
+	Use:   "lane-a",
+	Short: "Run the priority assemble lane that feeds existing incomplete binaries first",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerAssembleLaneA(assembleOnce)
+	},
+}
+
+var indexerAssembleLaneBCmd = &cobra.Command{
+	Use:   "lane-b",
+	Short: "Run the backlog-drain assemble lane for recent unmatched headers",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerAssembleLaneB(assembleOnce)
+	},
+}
+
 var indexerReleaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Form releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform)
+	},
+}
+
+var indexerRecoverYEncCmd = &cobra.Command{
+	Use:   "recover-yenc",
+	Short: "Recover obfuscated binary names from yEnc body headers; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerRecoverYEnc(recoverYEncOnce)
 	},
 }
 
@@ -124,6 +156,19 @@ var indexerMaintenanceRepairRuntimeCmd = &cobra.Command{
 	Short: "Repair stale indexer stage leases and running stage rows",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerRepairRuntime()
+	},
+}
+
+var indexerReclaimStorageCmd = &cobra.Command{
+	Use:   "reclaim-storage [table...]",
+	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
+	Long: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables.\n" +
+		"Without table arguments it uses the recommended order:\n" +
+		"release_family_readiness_summaries, binary_grouping_evidence, article_header_ingest_payloads.\n" +
+		"Use --check to inspect current table sizes without vacuuming.\n" +
+		"Use --full only when you need bytes returned to the Docker volume and host filesystem.",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerStorageReclaim(args, indexerReclaimFull, indexerReclaimCheck)
 	},
 }
 
@@ -243,12 +288,16 @@ func init() {
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
+	serveCmd.Flags().BoolVar(&serveWithoutIndexerSupervisor, "no-indexer-supervisor", false, "serve API/UI without starting the built-in indexer supervisor")
 
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
 
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
+	indexerAssembleLaneACmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane A assemble pass and exit instead of continuous mode")
+	indexerAssembleLaneBCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane B assemble pass and exit instead of continuous mode")
+	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
@@ -265,16 +314,22 @@ func init() {
 	indexerEnrichPreDBSyncFeedCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB feed sync pass and exit")
 	indexerEnrichPreDBSyncBackfillCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one PreDB backfill sync pass and exit")
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
+	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimCheck, "check", false, "Report current bytes for the allowlisted reclaim tables without running VACUUM")
+	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
 
 	indexerCmd.AddCommand(indexerAssembleCmd)
+	indexerAssembleCmd.AddCommand(indexerAssembleLaneACmd)
+	indexerAssembleCmd.AddCommand(indexerAssembleLaneBCmd)
+	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
+	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
 	indexerInspectCmd.AddCommand(indexerInspectPAR2Cmd)

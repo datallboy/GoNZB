@@ -661,9 +661,13 @@ export type IndexingRuntimeSettings = {
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
+  assemble_lane_a: AdminStageConfigPatch
+  assemble_lane_b: AdminStageConfigPatch
+  recover_yenc: AdminStageConfigPatch
   release: AdminStageConfigPatch & {
     min_confidence: number
     min_completion_pct: number
+    min_expected_file_coverage_pct: number
     require_expected_file_count_for_contextual_obfuscated: boolean
   }
   match: {
@@ -676,6 +680,9 @@ export type IndexingRuntimeSettings = {
     workspace_backend: string
     memory_work_dir: string
     max_bytes: number
+    min_binary_bytes: number
+    max_binary_bytes: number
+    blocked_magic_hex: string[]
     max_archive_depth: number
     tool_timeout_seconds: number
     ffprobe_path: string
