@@ -970,12 +970,15 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	}
 
 	evidenceJSON := []byte(`{}`)
-	if cleanEvidence := sanitizeStringMap(in.GroupingEvidence); len(cleanEvidence) > 0 {
+	inlineEvidenceJSON := []byte(`{}`)
+	cleanEvidence := sanitizeStringMap(in.GroupingEvidence)
+	if len(cleanEvidence) > 0 {
 		b, err := json.Marshal(cleanEvidence)
 		if err != nil {
 			return 0, fmt.Errorf("marshal binary grouping evidence %q: %w", in.BinaryKey, err)
 		}
 		evidenceJSON = b
+		inlineEvidenceJSON = marshalInlineGroupingEvidence(cleanEvidence)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1113,13 +1116,13 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 		postedAt,
 		in.MatchConfidence,
 		in.MatchStatus,
-		[]byte(`{}`),
+		inlineEvidenceJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert binary %q: %w", in.BinaryKey, err)
 	}
 
-	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON); err != nil {
+	if err := upsertBinaryGroupingEvidence(ctx, tx, id, evidenceJSON, shouldPersistDetailedGroupingEvidence(in, cleanEvidence)); err != nil {
 		return 0, err
 	}
 
@@ -1166,14 +1169,58 @@ func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error
 	return id, nil
 }
 
-func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte) error {
+func marshalInlineGroupingEvidence(evidence map[string]any) []byte {
+	if len(evidence) == 0 {
+		return []byte(`{}`)
+	}
+	summary, ok := evidence["summary"]
+	if !ok {
+		return []byte(`{}`)
+	}
+	raw, err := json.Marshal(map[string]any{"summary": summary})
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return raw
+}
+
+func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]any) bool {
+	if len(evidence) == 0 {
+		return false
+	}
+	if in.MatchConfidence < 0.85 {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(in.IdentityStrength)) {
+	case "weak", "provisional":
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(in.FamilyKind)) {
+	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
+		return true
+	}
+
+	summary, _ := evidence["summary"].(map[string]any)
+	if status, _ := summary["status"].(string); strings.TrimSpace(strings.ToLower(status)) != "" && strings.TrimSpace(strings.ToLower(status)) != "matched" {
+		return true
+	}
+	if fallbackUsed, _ := summary["fallback_used"].(bool); fallbackUsed {
+		return true
+	}
+
+	return false
+}
+
+func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte, keepDetailed bool) error {
 	if tx == nil {
 		return fmt.Errorf("binary grouping evidence tx is required")
 	}
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
-	if len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
+	if !keepDetailed || len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM binary_grouping_evidence
 			WHERE binary_id = $1`, binaryID); err != nil {

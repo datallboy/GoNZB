@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 func (r *Runner) ExecuteIndexerScrape(once bool) {
@@ -399,7 +400,7 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -408,10 +409,39 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 			out.PurgedScrapeRuns,
 			out.PurgedBinaryInspections,
 			out.PurgedHeaderPayloads,
+			out.PurgedGroupingEvidence,
+			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance completed")
+}
+
+func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RunIndexerStorageReclaim(ctx, pgindex.IndexerStorageReclaimOptions{
+		Tables:    tables,
+		Full:      full,
+		CheckOnly: checkOnly,
+	})
+	if err != nil {
+		appCtx.Logger.Fatal("indexer storage reclaim failed: %v", err)
+	}
+	if out != nil {
+		for _, table := range out.Tables {
+			appCtx.Logger.Info(
+				"indexer storage reclaim: mode=%s table=%s before_bytes=%d after_bytes=%d delta_bytes=%d",
+				out.Mode,
+				table.Table,
+				table.BeforeBytes,
+				table.AfterBytes,
+				table.AfterBytes-table.BeforeBytes,
+			)
+		}
+	}
+	appCtx.Logger.Info("indexer storage reclaim completed")
 }
 
 func (r *Runner) ExecuteIndexerRepairRuntime() {

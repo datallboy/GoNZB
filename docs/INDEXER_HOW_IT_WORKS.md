@@ -69,13 +69,13 @@ Important columns:
 - `subject`
 - `poster`
 - `xref`
-- `raw_overview_json`
 - `created_at`
 
 What it means:
 
-- scrape stores the raw subject/poster/xref/XOVER payload here
+- scrape stores the transient structured subject/poster/xref payload here
 - assembly joins this table while a header is still pending
+- matcher-side `RawOverview` is reconstructed in memory from structured ingest fields and article facts rather than stored as a JSON column
 - old assembled payload rows are eligible for retention cleanup
 
 ### `binaries`
@@ -334,7 +334,7 @@ Matcher input from each header:
 - `bytes`
 - `lines`
 - `xref`
-- `raw_overview_json`
+- reconstructed `RawOverview` derived from structured ingest fields and article facts
 
 Matcher output drives:
 
@@ -723,6 +723,15 @@ It currently:
 - purges old `indexer_stage_runs`
 - purges old `scrape_runs`
 - purges retained `article_header_ingest_payloads` older than policy
+- prunes eligible stale `release_family_readiness_summaries`
+- backfills compact inline grouping summaries and purges eligible stable `binary_grouping_evidence`
+
+Important operational note:
+
+- `indexer maintenance` is the application retention pass
+- it reduces row counts and dead-row growth
+- if PostgreSQL files still need to shrink on disk after retention cleanup, that is a separate operator step using `VACUUM (ANALYZE)` or `VACUUM FULL`
+- for the current growth-trim sprint, use the reclaim runbook in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md` for the exact table order and downtime expectations
 
 ## How Metadata Flows Back Into Releases
 

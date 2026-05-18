@@ -340,6 +340,77 @@ VACUUM (ANALYZE) binaries;
 VACUUM (ANALYZE) release_stage_dirty_families;
 ```
 
+## Reclaim Runbook For Growth-Trim Tables
+
+Use this when row retention has already been reduced and the host filesystem still has not recovered space. `VACUUM (ANALYZE)` updates planner stats and marks space reusable inside PostgreSQL. It does not usually shrink table files on disk. Use `VACUUM FULL` only when you need bytes returned to the Docker volume and host filesystem.
+
+When to use it:
+
+- after application-side retention cleanup is already in place
+- after a normal maintenance run has removed rows successfully
+- after a follow-up `VACUUM (ANALYZE)` confirms dead tuples are no longer the main blocker
+- when host free space is still too tight for the next ingest or maintenance cycle
+
+Operational constraints:
+
+- stop the app and any background indexer stages first
+- run one table at a time
+- expect an exclusive lock for the duration of each table rewrite
+- make sure the Docker volume and underlying host filesystem both have enough temporary free space for the rewrite
+- prefer running the smallest rewrite first so you learn whether space is being returned as expected before touching the largest table
+
+Recommended order for the current growth-trim sprint:
+
+1. `release_family_readiness_summaries`
+2. `binary_grouping_evidence`
+3. `article_header_ingest_payloads`
+
+Recommended command pattern from the host:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full readiness
+```
+
+Then continue with:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full grouping-evidence
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --full payloads
+```
+
+Recommended preflight on a tight dev machine:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer maintenance reclaim-storage --check
+```
+
+That reports the current bytes for the allowlisted tables in the same execution order without running `VACUUM`.
+
+Direct `psql` fallback:
+
+```bash
+docker exec -it gonzb-postgres \
+  psql -U postgres -d gonzb \
+  -c "VACUUM (FULL, ANALYZE) release_family_readiness_summaries;"
+```
+
+Repeat the same pattern for the next table only after the previous command completes and host free space is rechecked.
+
+Suggested live checks between tables:
+
+```sql
+SELECT pg_size_pretty(pg_total_relation_size('release_family_readiness_summaries'));
+SELECT pg_size_pretty(pg_total_relation_size('binary_grouping_evidence'));
+SELECT pg_size_pretty(pg_total_relation_size('article_header_ingest_payloads'));
+```
+
+Docker-volume note:
+
+- nothing special is required just because PostgreSQL is running in Docker
+- the reclaimed bytes return to the filesystem that backs the Postgres data directory, not to the running process directly
+- if the table rewrite cannot finish because the host or volume is already too full, `VACUUM FULL` can fail partway through, so do not start with the largest table first on a nearly-full dev machine
+
 - plan inspection:
 
 ```sql

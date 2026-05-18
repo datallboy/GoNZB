@@ -960,7 +960,7 @@ func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	assertReleaseCount("release_predb_matches", 0)
 }
 
-func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
+func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -1011,8 +1011,8 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 	).Scan(&inlineEvidence); err != nil {
 		t.Fatalf("query inline grouping evidence: %v", err)
 	}
-	if strings.TrimSpace(string(inlineEvidence)) != "{}" {
-		t.Fatalf("expected inline grouping evidence to be cleared, got %s", string(inlineEvidence))
+	if !strings.Contains(string(inlineEvidence), "\"readable_title\"") {
+		t.Fatalf("expected compact inline grouping evidence, got %s", string(inlineEvidence))
 	}
 
 	var sideEvidence []byte
@@ -1020,11 +1020,11 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 		SELECT payload_json
 		FROM binary_grouping_evidence
 		WHERE binary_id = $1`, binaryID,
-	).Scan(&sideEvidence); err != nil {
+	).Scan(&sideEvidence); err != nil && err != sql.ErrNoRows {
 		t.Fatalf("query side-table grouping evidence: %v", err)
 	}
-	if !strings.Contains(string(sideEvidence), "\"readable_title\"") {
-		t.Fatalf("expected side-table grouping evidence payload, got %s", string(sideEvidence))
+	if len(sideEvidence) != 0 {
+		t.Fatalf("expected stable evidence to skip side-table retention, got %s", string(sideEvidence))
 	}
 
 	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
@@ -1035,6 +1035,92 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTable(t *testing.T) {
 		t.Fatalf("expected binary detail for %d", binaryID)
 	}
 	if !strings.Contains(string(detail.GroupingEvidence), "\"readable_title\"") {
+		t.Fatalf("expected binary detail grouping evidence from inline summary fallback, got %s", string(detail.GroupingEvidence))
+	}
+}
+
+func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.evidence.weak.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "weak family key",
+		ReleaseKey:        "weak family key",
+		BinaryKey:         fmt.Sprintf("binary-evidence-weak-%d", time.Now().UnixNano()),
+		BinaryName:        "obfuscated.bin",
+		FileName:          "obfuscated.bin",
+		IdentityStrength:  "weak",
+		FamilyKind:        "contextual_obfuscated",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.70,
+		MatchStatus:       "probable",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "contextual_obfuscated",
+				"status":        "probable",
+				"fallback_used": true,
+			},
+			"fallback": map[string]any{
+				"used": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	var inlineEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT grouping_evidence_json
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&inlineEvidence); err != nil {
+		t.Fatalf("query inline grouping evidence: %v", err)
+	}
+	if !strings.Contains(string(inlineEvidence), "\"fallback_used\":true") {
+		t.Fatalf("expected inline summary to retain fallback flag, got %s", string(inlineEvidence))
+	}
+
+	var sideEvidence []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT payload_json
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, binaryID,
+	).Scan(&sideEvidence); err != nil {
+		t.Fatalf("query side-table grouping evidence: %v", err)
+	}
+	if !strings.Contains(string(sideEvidence), "\"fallback\"") {
+		t.Fatalf("expected weak evidence payload in side table, got %s", string(sideEvidence))
+	}
+
+	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
+	if err != nil {
+		t.Fatalf("get indexer binary detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected binary detail for %d", binaryID)
+	}
+	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback\"") {
 		t.Fatalf("expected binary detail grouping evidence from side table, got %s", string(detail.GroupingEvidence))
 	}
 }
@@ -1331,7 +1417,6 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 		subjectFileName string
 		yencPartNumber  int
 		xref            string
-		rawBytes        int64
 	)
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT
@@ -1339,12 +1424,11 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 			p.poster,
 			p.subject_file_name,
 			p.yenc_part_number,
-			p.xref,
-			COALESCE((p.raw_overview_json->>'Bytes')::bigint, 0)
+			p.xref
 		FROM article_header_ingest_payloads p
 		JOIN article_headers ah ON ah.id = p.article_header_id
 		WHERE ah.newsgroup_id = $1`, newsgroupID,
-	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref, &rawBytes); err != nil {
+	).Scan(&subject, &posterText, &subjectFileName, &yencPartNumber, &xref); err != nil {
 		t.Fatalf("query duplicate batch payload: %v", err)
 	}
 
@@ -1359,9 +1443,6 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 	}
 	if xref != "xref-second" {
 		t.Fatalf("expected last duplicate xref to win, got %q", xref)
-	}
-	if rawBytes != 2000 {
-		t.Fatalf("expected last duplicate raw overview bytes to win, got %d", rawBytes)
 	}
 }
 
@@ -4283,6 +4364,43 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	if releaseAfter.Value < releaseBefore+1 {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
+
+	payloadRowsBefore := beforeByKey["payload_rows"].Value
+	payloadRowsAfter, ok := afterByKey["payload_rows"]
+	if !ok {
+		t.Fatalf("missing payload_rows stat")
+	}
+	if !payloadRowsAfter.Available || payloadRowsAfter.UpdatedAt == nil {
+		t.Fatalf("expected payload_rows to be cached, got %#v", payloadRowsAfter)
+	}
+	if payloadRowsAfter.Value < payloadRowsBefore+1 {
+		t.Fatalf("expected payload row count to increase by at least 1, before=%d after=%d", payloadRowsBefore, payloadRowsAfter.Value)
+	}
+
+	groupingRowsAfter, ok := afterByKey["grouping_evidence_rows"]
+	if !ok || !groupingRowsAfter.Available {
+		t.Fatalf("expected grouping_evidence_rows stat, got %#v", groupingRowsAfter)
+	}
+	groupingBytesAfter, ok := afterByKey["grouping_evidence_bytes"]
+	if !ok || !groupingBytesAfter.Available || groupingBytesAfter.Value <= 0 {
+		t.Fatalf("expected grouping_evidence_bytes stat, got %#v", groupingBytesAfter)
+	}
+
+	readinessRowsAfter, ok := afterByKey["readiness_rows"]
+	if !ok || !readinessRowsAfter.Available {
+		t.Fatalf("expected readiness_rows stat, got %#v", readinessRowsAfter)
+	}
+	readinessBytesAfter, ok := afterByKey["readiness_bytes"]
+	if !ok || !readinessBytesAfter.Available || readinessBytesAfter.Value <= 0 {
+		t.Fatalf("expected readiness_bytes stat, got %#v", readinessBytesAfter)
+	}
+
+	for _, key := range []string{"payload_dead_tuples", "grouping_evidence_dead_tuples", "readiness_dead_tuples"} {
+		stat, ok := afterByKey[key]
+		if !ok || !stat.Available || stat.UpdatedAt == nil {
+			t.Fatalf("expected %s stat to be cached, got %#v", key, stat)
+		}
+	}
 }
 
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
@@ -4502,6 +4620,334 @@ func TestRunIndexerMaintenancePurgesOrphanReleases(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected orphan release to be purged, got %d rows", count)
+	}
+}
+
+func TestRunIndexerMaintenancePurgesArticleHeaderPayloadsByStagedRetention(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.payloads.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	headers := []ArticleHeader{
+		{ArticleNumber: 1001, MessageID: "<payload-1001@test>", Subject: `KeepFast [1/1] - "keepfast.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1001"},
+		{ArticleNumber: 1002, MessageID: "<payload-1002@test>", Subject: `NeedsStructuredRecovery placeholder`, Poster: "poster@test", Xref: groupName + ":1002"},
+		{ArticleNumber: 1003, MessageID: "<payload-1003@test>", Subject: `DropMissingIdentity placeholder`, Poster: "poster@test", Xref: groupName + ":1003"},
+		{ArticleNumber: 1004, MessageID: "<payload-1004@test>", Subject: `RetryLater [1/1] - "retrylater.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1004"},
+		{ArticleNumber: 1005, MessageID: "<payload-1005@test>", Subject: `FreshAssembled [1/1] - "freshassembled.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1005"},
+		{ArticleNumber: 1006, MessageID: "<payload-1006@test>", Subject: `PendingUnassembled [1/1] - "pendingunassembled.rar" yEnc (1/10)`, Poster: "poster@test", Xref: groupName + ":1006"},
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, headers); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE article_headers
+		SET assembled_at = CASE article_number
+			WHEN 1001 THEN NOW() - INTERVAL '2 hours'
+			WHEN 1002 THEN NOW() - INTERVAL '2 hours'
+			WHEN 1003 THEN NOW() - INTERVAL '25 hours'
+			WHEN 1004 THEN NOW() - INTERVAL '25 hours'
+			WHEN 1005 THEN NOW() - INTERVAL '30 minutes'
+			ELSE assembled_at
+		END
+		WHERE newsgroup_id = $1`, newsgroupID,
+	); err != nil {
+		t.Fatalf("update assembled_at: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads p
+		SET yenc_recovery_missing_count = 2,
+		    yenc_recovery_last_missing_at = NOW() - INTERVAL '2 hours',
+		    yenc_recovery_retry_after = NOW() + INTERVAL '2 hours'
+		FROM article_headers ah
+		WHERE ah.id = p.article_header_id
+		  AND ah.newsgroup_id = $1
+		  AND ah.article_number = 1004`, newsgroupID,
+	); err != nil {
+		t.Fatalf("update payload retry state: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedHeaderPayloads != 3 {
+		t.Fatalf("expected 3 purged payload rows, got %+v", out)
+	}
+
+	type payloadState struct {
+		articleNumber int64
+		hasPayload    bool
+	}
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT ah.article_number, (p.article_header_id IS NOT NULL) AS has_payload
+		FROM article_headers ah
+		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		WHERE ah.newsgroup_id = $1
+		ORDER BY ah.article_number`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query payload states: %v", err)
+	}
+	defer rows.Close()
+
+	got := make(map[int64]bool, 6)
+	for rows.Next() {
+		var item payloadState
+		if err := rows.Scan(&item.articleNumber, &item.hasPayload); err != nil {
+			t.Fatalf("scan payload state: %v", err)
+		}
+		got[item.articleNumber] = item.hasPayload
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate payload states: %v", err)
+	}
+
+	want := map[int64]bool{
+		1001: false,
+		1002: true,
+		1003: false,
+		1004: false,
+		1005: true,
+		1006: true,
+	}
+	for articleNumber, hasPayload := range want {
+		if got[articleNumber] != hasPayload {
+			t.Fatalf("unexpected payload retention for article %d: got=%t want=%t", articleNumber, got[articleNumber], hasPayload)
+		}
+	}
+}
+
+func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.readiness.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "keep-weak-family",
+		FileFamilyKey:    "keep-weak-family::part",
+		FamilyKind:       "contextual_obfuscated",
+		BaseStem:         "keep-weak-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "keep-weak-family",
+		ReleaseName:      "Keep Weak Family",
+		BinaryKey:        "keep-weak-family::binary",
+		BinaryName:       "keep-weak-family.bin",
+		FileName:         "keep-weak-family.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.70,
+		MatchStatus:      "matched",
+	}); err != nil {
+		t.Fatalf("upsert weak-family keeper binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'drop-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'drop-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'keep-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'keep-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'pending-weak-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'pending-weak-family.bin', 0.70, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'drop-fragment-family', '', '', '', 2, 1, 1, 1, 0, false, 200, NOW() - INTERVAL '25 hours', '', '', 0, 'fragment_only', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'release_family', 'drop-stale-family', '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, '', '', 0, 'stale_cleanup_only', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours'),
+			(1, $1, 'base_stem', 'drop-base-stem', '', '', '', 2, 1, 1, 1, 3, true, 200, NOW() - INTERVAL '7 hours', '', '', 0, 'prefer_base_stem', 0, NOW() - INTERVAL '7 hours', NOW() - INTERVAL '7 hours')`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness rows: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedReadinessSummaries != 4 {
+		t.Fatalf("expected 4 purged readiness summaries, got %+v", out)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT family_key
+		FROM release_family_readiness_summaries
+		WHERE newsgroup_id = $1
+		ORDER BY family_key`, newsgroupID)
+	if err != nil {
+		t.Fatalf("query remaining readiness rows: %v", err)
+	}
+	defer rows.Close()
+
+	var remaining []string
+	for rows.Next() {
+		var familyKey string
+		if err := rows.Scan(&familyKey); err != nil {
+			t.Fatalf("scan remaining readiness row: %v", err)
+		}
+		remaining = append(remaining, familyKey)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate remaining readiness rows: %v", err)
+	}
+
+	want := []string{"keep-weak-family", "pending-weak-family"}
+	if len(remaining) != len(want) {
+		t.Fatalf("unexpected remaining readiness rows: got=%v want=%v", remaining, want)
+	}
+	for i := range want {
+		if remaining[i] != want[i] {
+			t.Fatalf("unexpected remaining readiness row at %d: got=%q want=%q", i, remaining[i], want[i])
+		}
+	}
+}
+
+func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.groupingevidence.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	stableBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "stable-family",
+		ReleaseKey:        "stable-family",
+		BinaryKey:         fmt.Sprintf("stable-binary-%d", time.Now().UnixNano()),
+		BinaryName:        "stable.release.mkv",
+		FileName:          "stable.release.mkv",
+		IdentityStrength:  "strong",
+		FamilyKind:        "readable_title",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "readable_title",
+				"status":        "matched",
+				"fallback_used": false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert stable binary: %v", err)
+	}
+
+	weakBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "weak-family",
+		ReleaseKey:        "weak-family",
+		BinaryKey:         fmt.Sprintf("weak-binary-%d", time.Now().UnixNano()),
+		BinaryName:        "weak.bin",
+		FileName:          "weak.bin",
+		IdentityStrength:  "weak",
+		FamilyKind:        "contextual_obfuscated",
+		IsMainPayload:     true,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.70,
+		MatchStatus:       "probable",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"kind":          "contextual_obfuscated",
+				"status":        "probable",
+				"fallback_used": true,
+			},
+			"fallback": map[string]any{
+				"used": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert weak binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET grouping_evidence_json = '{}'::jsonb
+		WHERE id = $1`, stableBinaryID,
+	); err != nil {
+		t.Fatalf("clear stable inline summary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_grouping_evidence
+		SET updated_at = NOW() - INTERVAL '25 hours'
+		WHERE binary_id IN ($1, $2)`, stableBinaryID, weakBinaryID,
+	); err != nil {
+		t.Fatalf("age grouping evidence rows: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if out.PurgedGroupingEvidence != 1 {
+		t.Fatalf("expected 1 purged grouping evidence row, got %+v", out)
+	}
+
+	var stableInline []byte
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT grouping_evidence_json
+		FROM binaries
+		WHERE id = $1`, stableBinaryID,
+	).Scan(&stableInline); err != nil {
+		t.Fatalf("query stable inline evidence: %v", err)
+	}
+	if !strings.Contains(string(stableInline), "\"readable_title\"") {
+		t.Fatalf("expected stable inline summary to be backfilled, got %s", string(stableInline))
+	}
+
+	var stableSideCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, stableBinaryID,
+	).Scan(&stableSideCount); err != nil {
+		t.Fatalf("count stable side evidence: %v", err)
+	}
+	if stableSideCount != 0 {
+		t.Fatalf("expected stable side-table evidence to be purged, got %d rows", stableSideCount)
+	}
+
+	var weakSideCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_grouping_evidence
+		WHERE binary_id = $1`, weakBinaryID,
+	).Scan(&weakSideCount); err != nil {
+		t.Fatalf("count weak side evidence: %v", err)
+	}
+	if weakSideCount != 1 {
+		t.Fatalf("expected weak side-table evidence to remain, got %d rows", weakSideCount)
 	}
 }
 

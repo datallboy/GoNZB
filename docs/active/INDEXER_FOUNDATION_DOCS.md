@@ -16,7 +16,8 @@ We currently have several planning and reference documents. This file defines wh
 - the backlog burn-down follow-up sprint is complete and archived
 - the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
 - the grouping-model re-evaluation sprint is complete and ready to archive
-- the active indexer execution focus now centers on database growth trimming and retention reduction
+- the database growth trim sprint is complete from a code and schema standpoint
+- the only remaining follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
 
@@ -28,13 +29,31 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
+### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
 
-- the active storage-trim and retention-reduction sprint
-- deciding which hot tables need bounded retention or compaction first
-- reducing overnight database growth without regressing grouping and release quality
+- the living whole-system schema map for the current indexer
+- determining which tables are canonical versus derived before cleanup
+- tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
+
+## Recently Completed Sprint Docs
+
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
+
+Use for:
+
+- the completed storage-trim and retention-reduction sprint closeout
+- the execution history for the database growth trim workstream
+- the resolved versus deferred outcomes from that sprint
+
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
+
+Use for:
+
+- the completed live schema and column-usage audit for the database growth trim sprint
+- documenting which hot-table columns were proven canonical, derived, debug-only, or drop candidates during that sprint
+- reconciling Docker Postgres schema truth with active migrations and current code usage at sprint close
 
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
@@ -47,13 +66,18 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
+The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
 Primary workstream:
 
 - reduce ingest and audit-table growth
 - distinguish canonical rows from debug/audit retention
 - preserve the landed grouping/release gains while making long-running supervisor operation sustainable
+
+Current remaining follow-up:
+
+- free root-volume space so the documented `VACUUM FULL` reclaim pass can run
+- rerun sustained ingest measurements on `dv` after merge
 
 Recent completed focus:
 
@@ -225,7 +249,7 @@ Do not let this drive the current process-execution sprint.
 ## Guideline Rules
 
 1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
-2. Treat `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md` as the current active checklist for storage and retention work.
+2. Treat `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the living system map. Use the archived growth-trim sprint docs under `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/` when you need the completed audit or execution history.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
 5. Keep measured bottlenecks ahead of speculative architectural change.

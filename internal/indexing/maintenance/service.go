@@ -44,7 +44,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics := map[string]any{}
 	if s.log != nil && out != nil {
 		s.log.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -53,6 +53,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			out.PurgedScrapeRuns,
 			out.PurgedBinaryInspections,
 			out.PurgedHeaderPayloads,
+			out.PurgedGroupingEvidence,
+			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
 		)
 	}
@@ -65,6 +67,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		metrics["purged_scrape_runs"] = out.PurgedScrapeRuns
 		metrics["purged_binary_inspections"] = out.PurgedBinaryInspections
 		metrics["purged_header_payloads"] = out.PurgedHeaderPayloads
+		metrics["purged_grouping_evidence"] = out.PurgedGroupingEvidence
+		metrics["purged_readiness_summaries"] = out.PurgedReadinessSummaries
 		metrics["purged_orphan_releases"] = out.PurgedOrphanReleases
 	}
 	return metrics, nil
