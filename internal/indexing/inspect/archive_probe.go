@@ -976,6 +976,7 @@ func parseSevenZipListingDetails(output []byte, probePath string) ([]ArchiveEntr
 	text := string(output)
 	lower := strings.ToLower(text)
 	encrypted := strings.Contains(lower, "encrypted = +") ||
+		strings.Contains(lower, "enter password") ||
 		strings.Contains(lower, "wrong password") ||
 		strings.Contains(lower, "can not open encrypted archive")
 

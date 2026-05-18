@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,48 +15,58 @@ import (
 
 // binary summary returned to release formation.
 type BinarySummary struct {
-	BinaryID           int64
-	ProviderID         int64
-	NewsgroupID        int64
-	SourceReleaseKey   string
-	ReleaseFamilyKey   string
-	FileFamilyKey      string
-	FamilyKind         string
-	BaseStem           string
-	IsAuxiliary        bool
-	IsMainPayload      bool
-	ReleaseKey         string
-	ReleaseName        string
-	BinaryKey          string
-	BinaryName         string
-	FileName           string
-	FileIndex          int
-	ExpectedFileCount  int
-	Poster             string
-	PostedAt           *time.Time
-	TotalParts         int
-	ObservedParts      int
-	TotalBytes         int64
-	FirstArticleNumber int64
-	LastArticleNumber  int64
-	MatchConfidence    float64
-	MatchStatus        string
+	BinaryID                 int64
+	ProviderID               int64
+	NewsgroupID              int64
+	SourceReleaseKey         string
+	ReleaseFamilyKey         string
+	FileFamilyKey            string
+	FamilyKind               string
+	BaseStem                 string
+	IsAuxiliary              bool
+	IsMainPayload            bool
+	ReleaseKey               string
+	ReleaseName              string
+	BinaryKey                string
+	BinaryName               string
+	FileName                 string
+	FileIndex                int
+	ExpectedFileCount        int
+	ExpectedArchiveFileCount int
+	Poster                   string
+	PostedAt                 *time.Time
+	TotalParts               int
+	ObservedParts            int
+	TotalBytes               int64
+	FirstArticleNumber       int64
+	LastArticleNumber        int64
+	MatchConfidence          float64
+	MatchStatus              string
 }
 
 // grouped release candidate used by release formation.
 type ReleaseCandidate struct {
-	ProviderID          int64
-	NewsgroupID         int64
-	KeyKind             string
-	SourceReleaseKey    string
-	ReleaseFamilyKey    string
-	ReleaseKey          string
-	ReleaseName         string
-	PostedAt            *time.Time
-	BinaryCount         int
-	CompleteBinaryCount int
-	ReadinessBucket     string
-	TotalBytes          int64
+	ProviderID                     int64
+	NewsgroupID                    int64
+	KeyKind                        string
+	SourceReleaseKey               string
+	ReleaseFamilyKey               string
+	ReleaseKey                     string
+	ReleaseName                    string
+	PostedAt                       *time.Time
+	BinaryCount                    int
+	CompleteBinaryCount            int
+	CompleteMainPayloadBinaryCount int
+	ExpectedFileCount              int
+	ExpectedArchiveFileCount       int
+	ExpectedFileCoveragePct        float64
+	ArchiveFileCoveragePct         float64
+	ReadinessBucket                string
+	TotalBytes                     int64
+}
+
+type ReleaseCandidateSelectionOptions struct {
+	MinExpectedFileCoveragePct float64
 }
 
 type ReleaseCandidateAck struct {
@@ -65,58 +76,74 @@ type ReleaseCandidateAck struct {
 	FamilyKey   string
 }
 
+func sortReleaseCandidateAcks(acks []ReleaseCandidateAck) {
+	sort.Slice(acks, func(i, j int) bool {
+		if acks[i].ProviderID != acks[j].ProviderID {
+			return acks[i].ProviderID < acks[j].ProviderID
+		}
+		if acks[i].NewsgroupID != acks[j].NewsgroupID {
+			return acks[i].NewsgroupID < acks[j].NewsgroupID
+		}
+		if acks[i].KeyKind != acks[j].KeyKind {
+			return acks[i].KeyKind < acks[j].KeyKind
+		}
+		return acks[i].FamilyKey < acks[j].FamilyKey
+	})
+}
+
 // release catalog upsert input.
 type ReleaseRecord struct {
-	ReleaseID               string
-	GUID                    string
-	ProviderID              int64
-	SourceReleaseKey        string
-	ReleaseFamilyKey        string
-	ReleaseKey              string
-	GroupName               string
-	Title                   string
-	SourceTitle             string
-	DeobfuscatedTitle       string
-	MatchedMediaTitle       string
-	TitleSource             string
-	TitleConfidence         float64
-	SearchTitle             string
-	CategoryID              int
-	Category                string
-	Classification          string
-	Poster                  string
-	SizeBytes               int64
-	PostedAt                *time.Time
-	FileCount               int
-	ExpectedFileCount       int
-	ParFileCount            int
-	CompletionPct           float64
-	MatchConfidence         float64
-	IdentityStatus          string
-	Passworded              bool
-	PasswordedKnown         bool
-	PasswordedUnknown       bool
-	PasswordState           string
-	PreferredPasswordID     int64
-	Encrypted               bool
-	HasPAR2                 bool
-	HasNFO                  bool
-	ArchiveCount            int
-	VideoCount              int
-	AudioCount              int
-	SamplePresent           bool
-	AvailabilityScore       float64
-	AvailabilityTier        string
-	MediaQualityScore       float64
-	MediaQualityTier        string
-	IdentityConfidenceScore float64
-	RuntimeSeconds          int
-	PrimaryResolution       string
-	PrimaryVideoCodec       string
-	PrimaryAudioCodec       string
-	SubtitleLanguages       []string
-	MediaTags               []string
-	MetadataUpdatedAt       *time.Time
+	ReleaseID                string
+	GUID                     string
+	ProviderID               int64
+	SourceReleaseKey         string
+	ReleaseFamilyKey         string
+	ReleaseKey               string
+	GroupName                string
+	Title                    string
+	SourceTitle              string
+	DeobfuscatedTitle        string
+	MatchedMediaTitle        string
+	TitleSource              string
+	TitleConfidence          float64
+	SearchTitle              string
+	CategoryID               int
+	Category                 string
+	Classification           string
+	Poster                   string
+	SizeBytes                int64
+	PostedAt                 *time.Time
+	FileCount                int
+	ExpectedFileCount        int
+	ExpectedArchiveFileCount int
+	ParFileCount             int
+	CompletionPct            float64
+	MatchConfidence          float64
+	IdentityStatus           string
+	Passworded               bool
+	PasswordedKnown          bool
+	PasswordedUnknown        bool
+	PasswordState            string
+	PreferredPasswordID      int64
+	Encrypted                bool
+	HasPAR2                  bool
+	HasNFO                   bool
+	ArchiveCount             int
+	VideoCount               int
+	AudioCount               int
+	SamplePresent            bool
+	AvailabilityScore        float64
+	AvailabilityTier         string
+	MediaQualityScore        float64
+	MediaQualityTier         string
+	IdentityConfidenceScore  float64
+	RuntimeSeconds           int
+	PrimaryResolution        string
+	PrimaryVideoCodec        string
+	PrimaryAudioCodec        string
+	SubtitleLanguages        []string
+	MediaTags                []string
+	MetadataUpdatedAt        *time.Time
 }
 
 // article mapping row per release file.
@@ -156,9 +183,15 @@ func normalizeReleaseIdentity(in *ReleaseRecord) {
 }
 
 // CHANGED: return release groups whose binaries are new or changed since last formation.
-func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]ReleaseCandidate, error) {
+func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts ReleaseCandidateSelectionOptions) ([]ReleaseCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	if opts.MinExpectedFileCoveragePct < 0 {
+		opts.MinExpectedFileCoveragePct = 0
+	}
+	if opts.MinExpectedFileCoveragePct > 100 {
+		opts.MinExpectedFileCoveragePct = 100
 	}
 
 	query := fmt.Sprintf(`
@@ -169,13 +202,47 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		),
 		queue_window AS (
 			SELECT
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key,
-				updated_at
-			FROM release_stage_dirty_families
-			ORDER BY updated_at, family_key
+				s.provider_id,
+				s.newsgroup_id,
+				s.key_kind,
+				s.family_key,
+				s.updated_at
+			FROM release_family_readiness_summaries s
+			WHERE s.updated_at > COALESCE(s.processed_at, s.updated_at)
+			ORDER BY
+				CASE
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 0
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND (
+					 	(COALESCE(s.has_expected_file_count, FALSE) OR COALESCE(s.has_expected_archive_file_count, FALSE))
+					 	AND (
+					 		CASE
+					 			WHEN COALESCE(s.expected_archive_file_count, 0) > 0 THEN COALESCE(s.archive_file_coverage_pct, 0)
+					 			ELSE COALESCE(s.expected_file_coverage_pct, 0)
+					 		END
+					 	) >= $2
+					 ) THEN 1
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 2
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 3
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 4
+					ELSE 5
+				END ASC,
+				CASE
+					WHEN COALESCE(s.expected_archive_file_count, 0) > 0 THEN COALESCE(s.archive_file_coverage_pct, 0)
+					ELSE COALESCE(s.expected_file_coverage_pct, 0)
+				END DESC,
+				COALESCE(s.complete_main_payload_binary_count, 0) DESC,
+				COALESCE(s.complete_binary_count, 0) DESC,
+				CASE
+					WHEN COALESCE(s.has_expected_file_count, FALSE) OR COALESCE(s.has_expected_archive_file_count, FALSE) THEN 1
+					ELSE 0
+				END DESC,
+				CASE
+					WHEN s.key_kind = 'base_stem' THEN 0
+					ELSE 1
+				END ASC,
+				s.updated_at ASC,
+				s.family_key ASC
 			LIMIT (SELECT queue_window_limit FROM limits)
 		),
 		candidate_summaries AS (
@@ -191,15 +258,104 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				s.earliest_posted_at AS posted_at,
 				COALESCE(s.binary_count, 0) AS binary_count,
 				COALESCE(s.total_bytes, 0)::BIGINT AS total_bytes,
+				COALESCE(s.expected_file_count, 0) AS expected_file_count,
+				COALESCE(s.expected_archive_file_count, 0) AS expected_archive_file_count,
 				COALESCE(s.has_expected_file_count, FALSE) AS has_expected_file_count,
+				COALESCE(s.has_expected_archive_file_count, FALSE) AS has_expected_archive_file_count,
 				COALESCE(s.complete_binary_count, 0) AS complete_binary_count,
-				COALESCE(s.readiness_bucket, '%s') AS readiness_bucket
+				COALESCE(s.complete_main_payload_binary_count, 0) AS complete_main_payload_binary_count,
+				COALESCE(s.expected_file_coverage_pct, 0)::DOUBLE PRECISION AS expected_file_coverage_pct,
+				COALESCE(s.archive_file_coverage_pct, 0)::DOUBLE PRECISION AS archive_file_coverage_pct,
+				CASE
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(s.binary_count, 0) = 1
+					 AND COALESCE(s.complete_main_payload_binary_count, 0) = 1
+					 AND COALESCE(s.expected_file_count, 0) <= 0
+					 AND COALESCE(s.expected_archive_file_count, 0) <= 0
+					 AND (
+					 	LOWER(COALESCE(NULLIF(s.dominant_family_kind, ''), dominant.family_kind, '')) = 'contextual_obfuscated'
+						OR LOWER(COALESCE(NULLIF(s.dominant_file_name, ''), dominant.file_name, '')) ~ '\\.(bin|r[0-9]+|part[0-9]+|vol[0-9]+\\+[0-9]+)$'
+					 	OR COALESCE(NULLIF(s.dominant_match_confidence, 0), dominant.match_confidence, 0) < 0.85
+					 ) THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND REGEXP_REPLACE(
+					 	REPLACE(REPLACE(REPLACE(LOWER(BTRIM(COALESCE(NULLIF(s.release_name, ''), q.family_key))), '_', ' '), '.', ' '), '-', ' '),
+					 	'[[:space:]]+',
+					 	' ',
+					 	'g'
+					 ) ~ '^[0-9]{5,}[[:space:]]+[a-z]([[:space:]]+[a-z]{2,4})?$'
+					 AND NOT COALESCE(shape.has_usable_file_identity, FALSE)
+					 THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(shape.all_contextual, FALSE)
+					 AND COALESCE(shape.max_expected_any_file_count, 0) > 1
+					 AND COALESCE(shape.indexed_file_count, 0) >= 2
+					 AND COALESCE(shape.base_stem_file_count, 0) = COALESCE(shape.distinct_base_stem_count, 0)
+					 AND COALESCE(shape.distinct_base_stem_count, 0) >= GREATEST(COALESCE(shape.max_expected_any_file_count, 0), 8)
+					 AND COALESCE(s.binary_count, 0) >= GREATEST(COALESCE(shape.max_expected_any_file_count, 0) * 3, 24)
+					 THEN '%s'
+					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
+					 AND q.key_kind = 'release_family'
+					 AND COALESCE(shape.all_contextual, FALSE)
+					 AND COALESCE(shape.max_expected_any_file_count, 0) > 1
+					 AND COALESCE(shape.indexed_file_count, 0) >= 2
+					 AND COALESCE(shape.base_stem_file_count, 0) >= 2
+					 AND COALESCE(shape.distinct_base_stem_count, 0) < COALESCE(shape.base_stem_file_count, 0)
+					 THEN '%s'
+					ELSE COALESCE(s.readiness_bucket, '%s')
+				END AS readiness_bucket
 			FROM queue_window q
 			LEFT JOIN release_family_readiness_summaries s
 			  ON s.provider_id = q.provider_id
 			 AND s.newsgroup_id = q.newsgroup_id
 			 AND s.key_kind = q.key_kind
 			 AND s.family_key = q.family_key
+			LEFT JOIN LATERAL (
+				SELECT
+					COALESCE(b.family_kind, '') AS family_kind,
+					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS file_name,
+					COALESCE(b.match_confidence, 0)::DOUBLE PRECISION AS match_confidence
+				FROM binaries b
+				WHERE q.key_kind = 'release_family'
+				  AND b.provider_id = q.provider_id
+				  AND b.newsgroup_id = q.newsgroup_id
+				  AND b.release_family_key = q.family_key
+				ORDER BY
+					CASE
+						WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
+						ELSE 1
+					END ASC,
+					CASE
+						WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
+						ELSE 1
+					END ASC,
+					b.observed_parts DESC,
+					b.total_bytes DESC,
+					b.match_confidence DESC,
+					b.id ASC
+				LIMIT 1
+			) dominant ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT
+					COALESCE(BOOL_AND(LOWER(COALESCE(b.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
+					COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0)::INTEGER AS max_expected_any_file_count,
+					COUNT(*) FILTER (WHERE b.file_index > 0) AS indexed_file_count,
+					COUNT(*) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS base_stem_file_count,
+					COUNT(DISTINCT LOWER(BTRIM(COALESCE(b.base_stem, '')))) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS distinct_base_stem_count,
+					COALESCE(BOOL_OR(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~
+						'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
+					), FALSE) AS has_usable_file_identity
+				FROM binaries b
+				WHERE q.key_kind = 'release_family'
+				  AND b.provider_id = q.provider_id
+				  AND b.newsgroup_id = q.newsgroup_id
+				  AND b.release_family_key = q.family_key
+				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+			) shape ON TRUE
 		),
 		next_queue AS (
 			SELECT
@@ -214,21 +370,47 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 				posted_at,
 				binary_count,
 				total_bytes,
+				expected_file_count,
+				expected_archive_file_count,
 				complete_binary_count,
+				complete_main_payload_binary_count,
+				expected_file_coverage_pct,
+				archive_file_coverage_pct,
 				has_expected_file_count,
+				has_expected_archive_file_count,
 				readiness_bucket
 			FROM candidate_summaries
 			ORDER BY
 				CASE
 					WHEN readiness_bucket = '%s' THEN 0
-					WHEN readiness_bucket = '%s' THEN 1
-					ELSE 2
+					WHEN readiness_bucket = '%s'
+					 AND (
+					 	(NOT has_expected_file_count AND NOT has_expected_archive_file_count)
+					 	OR (expected_file_count <= 0 AND expected_archive_file_count <= 0)
+					 	OR CASE
+					 		WHEN expected_archive_file_count > 0 THEN archive_file_coverage_pct >= $2
+					 		ELSE expected_file_coverage_pct >= $2
+					 	END
+					 ) THEN 1
+					WHEN readiness_bucket = '%s' THEN 2
+					WHEN readiness_bucket = '%s' THEN 3
+					WHEN readiness_bucket = '%s' THEN 4
+					ELSE 5
 				END ASC,
+				CASE
+					WHEN expected_archive_file_count > 0 THEN archive_file_coverage_pct
+					ELSE expected_file_coverage_pct
+				END DESC,
+				complete_main_payload_binary_count DESC,
 				complete_binary_count DESC,
 				CASE
-					WHEN has_expected_file_count THEN 1
+					WHEN has_expected_file_count OR has_expected_archive_file_count THEN 1
 					ELSE 0
 				END DESC,
+				CASE
+					WHEN key_kind = 'base_stem' THEN 0
+					ELSE 1
+				END ASC,
 				updated_at ASC,
 				family_key ASC
 			LIMIT (SELECT total_limit FROM limits)
@@ -244,20 +426,45 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			q.posted_at,
 			q.binary_count,
 			q.complete_binary_count,
+			q.complete_main_payload_binary_count,
+			q.expected_file_count,
+			q.expected_archive_file_count,
+			q.expected_file_coverage_pct,
+			q.archive_file_coverage_pct,
 			q.readiness_bucket,
 			q.total_bytes
 		FROM next_queue q
-		ORDER BY
-			CASE
-				WHEN q.readiness_bucket = '%s' THEN 0
-				WHEN q.readiness_bucket = '%s' THEN 1
-				ELSE 2
-			END ASC,
+			ORDER BY
+				CASE
+					WHEN q.readiness_bucket = '%s' THEN 0
+					WHEN q.readiness_bucket = '%s'
+					 AND (
+					 	(NOT q.has_expected_file_count AND NOT q.has_expected_archive_file_count)
+					 	OR (q.expected_file_count <= 0 AND q.expected_archive_file_count <= 0)
+					 	OR CASE
+					 		WHEN q.expected_archive_file_count > 0 THEN q.archive_file_coverage_pct >= $2
+					 		ELSE q.expected_file_coverage_pct >= $2
+					 	END
+					 ) THEN 1
+					WHEN q.readiness_bucket = '%s' THEN 2
+					WHEN q.readiness_bucket = '%s' THEN 3
+					WHEN q.readiness_bucket = '%s' THEN 4
+					ELSE 5
+				END ASC,
+				CASE
+					WHEN q.expected_archive_file_count > 0 THEN q.archive_file_coverage_pct
+					ELSE q.expected_file_coverage_pct
+				END DESC,
+				q.complete_main_payload_binary_count DESC,
 			q.complete_binary_count DESC,
 			CASE
-				WHEN q.has_expected_file_count THEN 1
+				WHEN q.has_expected_file_count OR q.has_expected_archive_file_count THEN 1
 				ELSE 0
 			END DESC,
+			CASE
+				WHEN q.key_kind = 'base_stem' THEN 0
+				ELSE 1
+			END ASC,
 			q.updated_at ASC,
 			q.family_key ASC`,
 		releaseReadinessStaleCleanupOnly,
@@ -265,8 +472,36 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 		releaseReadinessStaleCleanupOnly,
 		releaseReadinessActionable,
 		releaseReadinessStaleCleanupOnly,
+		releaseReadinessFragmentOnly,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessWeakSingle,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessOvergrouped,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
+		releaseReadinessActionable,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessFragmentOnly,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessOvergrouped,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessPreferBaseStem,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
+		releaseReadinessOvergrouped,
+		releaseReadinessPreferBaseStem,
+		releaseReadinessStaleCleanupOnly,
+		releaseReadinessActionable,
+		releaseReadinessWeakSingle,
+		releaseReadinessOvergrouped,
+		releaseReadinessPreferBaseStem,
 	)
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.db.QueryContext(ctx, query, limit, opts.MinExpectedFileCoveragePct)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
@@ -288,6 +523,11 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int) ([]Release
 			&postedAt,
 			&item.BinaryCount,
 			&item.CompleteBinaryCount,
+			&item.CompleteMainPayloadBinaryCount,
+			&item.ExpectedFileCount,
+			&item.ExpectedArchiveFileCount,
+			&item.ExpectedFileCoveragePct,
+			&item.ArchiveFileCoveragePct,
 			&item.ReadinessBucket,
 			&item.TotalBytes,
 		); err != nil {
@@ -323,9 +563,9 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				b.*,
 				CASE
 					WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-					 AND b.expected_file_count > 1
+					 AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
 					 AND COUNT(*) OVER (
-						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), b.expected_file_count
+						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), GREATEST(b.expected_file_count, b.expected_archive_file_count)
 					 ) > 1
 					THEN LOWER(BTRIM(b.base_stem))
 					ELSE b.release_family_key
@@ -359,7 +599,7 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		 AND b.effective_release_family_key = r.release_family_key
 		GROUP BY b.provider_id, b.effective_release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
-		    OR COALESCE(MAX(b.expected_file_count), 0) <= 1
+		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.effective_release_family_key
 		LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
@@ -430,7 +670,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
-			  AND b.expected_file_count > 1
+			  AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
 			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
@@ -444,7 +684,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
-			  AND b.expected_file_count > 1
+			  AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
 			  AND BTRIM(b.base_stem) <> ''
 			  AND LOWER(BTRIM(b.base_stem)) = $2`
 		if newsgroupID > 0 {
@@ -464,7 +704,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.source_release_key,
 			CASE
 				WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-				 AND b.expected_file_count > 1
+				 AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
 				 AND LOWER(BTRIM(b.base_stem)) = $2
 				THEN LOWER(BTRIM(b.base_stem))
 				ELSE b.release_family_key
@@ -481,6 +721,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			b.file_name,
 			b.file_index,
 			b.expected_file_count,
+			b.expected_archive_file_count,
 			COALESCE(p.poster_name, ''),
 			b.posted_at,
 			b.total_parts,
@@ -529,6 +770,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			&item.FileName,
 			&item.FileIndex,
 			&item.ExpectedFileCount,
+			&item.ExpectedArchiveFileCount,
 			&item.Poster,
 			&postedAt,
 			&item.TotalParts,
@@ -591,6 +833,7 @@ func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCa
 		seen[candidate] = struct{}{}
 		unique = append(unique, candidate)
 	}
+	sortReleaseCandidateAcks(unique)
 
 	const maxAckBatchRows = 1000
 	for start := 0; start < len(unique); start += maxAckBatchRows {
@@ -605,6 +848,50 @@ func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCa
 	return nil
 }
 
+func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+	releaseFamilyKey = strings.TrimSpace(releaseFamilyKey)
+	if releaseFamilyKey == "" {
+		return fmt.Errorf("release family key is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		WITH target_stems AS (
+			SELECT DISTINCT LOWER(BTRIM(b.base_stem)) AS family_key
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.newsgroup_id = $2
+			  AND b.release_family_key = $3
+			  AND b.expected_file_count > 1
+			  AND b.file_index > 0
+			  AND BTRIM(COALESCE(b.base_stem, '')) <> ''
+			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+		)
+		UPDATE release_family_readiness_summaries s
+		SET updated_at = NOW()
+		FROM target_stems t
+		WHERE s.provider_id = $1
+		  AND s.newsgroup_id = $2
+		  AND s.key_kind = 'base_stem'
+		  AND s.family_key = t.family_key`,
+		providerID,
+		newsgroupID,
+		releaseFamilyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("promote base-stem candidates for provider=%d group=%d family=%q: %w", providerID, newsgroupID, releaseFamilyKey, err)
+	}
+	return nil
+}
+
 func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []ReleaseCandidateAck) error {
 	args := make([]any, 0, len(candidates)*4)
 	values := make([]string, 0, len(candidates))
@@ -615,12 +902,13 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 	}
 
 	_, err := db.ExecContext(ctx, `
-		DELETE FROM release_stage_dirty_families d
-		USING (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-		WHERE d.provider_id = v.provider_id
-		  AND d.newsgroup_id = v.newsgroup_id
-		  AND d.key_kind = v.key_kind
-		  AND d.family_key = v.family_key`,
+		UPDATE release_family_readiness_summaries s
+		SET processed_at = s.updated_at
+		FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+		WHERE s.provider_id = v.provider_id
+		  AND s.newsgroup_id = v.newsgroup_id
+		  AND s.key_kind = v.key_kind
+		  AND s.family_key = v.family_key`,
 		args...,
 	)
 	if err != nil {
@@ -759,6 +1047,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			posted_at,
 			file_count,
 			expected_file_count,
+			expected_archive_file_count,
 			par_file_count,
 			completion_pct,
 			match_confidence,
@@ -790,7 +1079,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 			source_kind,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,'usenet_index',NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,'usenet_index',NOW())
 		ON CONFLICT (provider_id, group_name) DO UPDATE
 		SET guid = EXCLUDED.guid,
 		    source_release_key = EXCLUDED.source_release_key,
@@ -844,6 +1133,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		    posted_at = EXCLUDED.posted_at,
 		    file_count = EXCLUDED.file_count,
 		    expected_file_count = GREATEST(releases.expected_file_count, EXCLUDED.expected_file_count),
+		    expected_archive_file_count = GREATEST(releases.expected_archive_file_count, EXCLUDED.expected_archive_file_count),
 		    par_file_count = EXCLUDED.par_file_count,
 		    completion_pct = EXCLUDED.completion_pct,
 		    match_confidence = EXCLUDED.match_confidence,
@@ -923,6 +1213,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 		postedAt,
 		in.FileCount,
 		in.ExpectedFileCount,
+		in.ExpectedArchiveFileCount,
 		in.ParFileCount,
 		in.CompletionPct,
 		in.MatchConfidence,

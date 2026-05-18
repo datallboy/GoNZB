@@ -3,6 +3,7 @@ package par2
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -26,6 +27,8 @@ type repository interface {
 	FailBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
 	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
 	ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2SetRecord) error
+	ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) error
+	ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) (*pgindex.BinaryPAR2TargetCoverageResult, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
 	inspectpkg.CatalogReader
 }
@@ -103,7 +106,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	defer workspace.Cleanup()
 
-	sample, err := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, candidate, 4096)
+	sample, err := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, candidate, minInt64PAR2(s.opts.MaxBytes, 256*1024))
 	if err != nil {
 		if isRecoverablePAR2InspectionError(err) {
 			_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -139,6 +142,44 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		recoveryBlocks = parseInt(match[2])
 	}
 	signatureOK := sample.Signature == "par2"
+	targets := parseTargetFiles(sample.Prefix)
+	usedFullMaterialization := false
+	if shouldMaterializePAR2Manifest(candidate.FileName, isVolume, sample, targets) {
+		full, fullErr := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, workspaceBinaryPath(workspace, candidate), s.opts.MaxBytes)
+		if fullErr != nil {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_par2: manifest materialization fallback failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, fullErr)
+			}
+		} else {
+			data, readErr := os.ReadFile(full.OutputPath)
+			if readErr != nil {
+				if s != nil && s.log != nil {
+					s.log.Warn("inspect_par2: manifest materialization read failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, readErr)
+				}
+			} else {
+				workspace.MaterializedBytes += full.BytesWritten
+				targets = parseTargetFiles(data)
+				usedFullMaterialization = len(targets) > 0
+			}
+		}
+	}
+	targetMetadata := make([]map[string]any, 0, len(targets))
+	targetRows := make([]pgindex.BinaryPAR2TargetRecord, 0, len(targets))
+	for _, target := range targets {
+		targetMetadata = append(targetMetadata, map[string]any{
+			"name": target.Name,
+			"size": target.Size,
+		})
+		targetRows = append(targetRows, pgindex.BinaryPAR2TargetRecord{
+			BinaryID:  candidate.BinaryID,
+			ReleaseID: candidate.ReleaseID,
+			FileName:  target.Name,
+			FileSize:  int64(target.Size),
+			Metadata: map[string]any{
+				"source": "par2_file_description_packet",
+			},
+		})
+	}
 
 	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
 		BinaryID:     candidate.BinaryID,
@@ -153,6 +194,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		Metadata: map[string]any{
 			"bytes_sampled": sample.BytesRead,
 			"exact_size":    sample.ExactSize,
+			"full_manifest_fallback": usedFullMaterialization,
 		},
 	}}); err != nil {
 		return err
@@ -168,8 +210,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		SignatureOK:    signatureOK,
 		Metadata: map[string]any{
 			"file_name": candidate.FileName,
+			"targets":   targetMetadata,
 		},
 	}}); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceBinaryPAR2Targets(ctx, candidate.BinaryID, targetRows); err != nil {
+		return err
+	}
+	coverage, err := s.repo.ApplyBinaryPAR2TargetCoverage(ctx, candidate.BinaryID, targetRows)
+	if err != nil {
 		return err
 	}
 
@@ -180,6 +230,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"set_name":        setName,
 		"signature_ok":    signatureOK,
 		"repairable_hint": true,
+		"target_count":    len(targets),
+		"targets":         targetMetadata,
+		"full_manifest_fallback": usedFullMaterialization,
+	}
+	if coverage != nil {
+		summary["main_target_count"] = coverage.MainTargetCount
+		summary["target_coverage_updates"] = coverage.UpdatedBinaryCount
 	}
 
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -196,6 +253,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 
 	hasPAR2 := true
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		return nil
+	}
 	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasPAR2:           &hasPAR2,
@@ -210,6 +270,47 @@ func parseInt(v string) int {
 	return int(n)
 }
 
+func minInt64PAR2(values ...int64) int64 {
+	out := int64(0)
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if out == 0 || value < out {
+			out = value
+		}
+	}
+	return out
+}
+
+func shouldMaterializePAR2Manifest(fileName string, isVolume bool, sample *inspectpkg.BinaryPrefixSample, targets []targetFile) bool {
+	if isVolume {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" || !strings.HasSuffix(lower, ".par2") {
+		return false
+	}
+	if sample == nil || sample.Signature != "par2" {
+		return false
+	}
+	if len(targets) > 0 {
+		return false
+	}
+	if sample.ExactSize <= 0 {
+		return false
+	}
+	return sample.BytesRead < sample.ExactSize
+}
+
+func workspaceBinaryPath(workspace *inspectpkg.Workspace, candidate pgindex.BinaryInspectionCandidate) string {
+	name := strings.TrimSpace(candidate.FileName)
+	if name == "" {
+		name = fmt.Sprintf("binary-%d.par2", candidate.BinaryID)
+	}
+	return workspace.Dir + string(os.PathSeparator) + name
+}
+
 func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, _ string, cause error) error {
 	stageName := string(supervisor.StageInspectPAR2)
 	summary := map[string]any{
@@ -222,6 +323,9 @@ func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgind
 		return err
 	}
 	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, nil); err != nil {
+		return err
+	}
+	if err := s.repo.ReplaceBinaryPAR2Targets(ctx, candidate.BinaryID, nil); err != nil {
 		return err
 	}
 	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{

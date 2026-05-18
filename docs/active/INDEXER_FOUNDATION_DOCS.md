@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-04-29
+Snapshot date: 2026-05-14
 
 This is an internal execution and planning index for ongoing indexer work. It is not intended to be an end-user documentation entrypoint.
 
@@ -16,7 +16,10 @@ We currently have several planning and reference documents. This file defines wh
 - the first API/UI expansion phase is done
 - the process execution and performance sprint is complete and archived
 - the backlog burn-down follow-up sprint is complete and archived
-- the active indexer execution focus now centers on storage retention, maintenance/reporting, and later operational tuning work
+- the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
+- the grouping-model re-evaluation sprint is complete and ready to archive
+- the database growth trim sprint is complete from a code and schema standpoint
+- the only remaining follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
 
@@ -28,15 +31,31 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
+### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
 
-- the active database space-reduction and retention backlog
-- table/index size findings from the live dev database
-- maintenance configurability and frontend reporting requirements
-- NZB blob-cache/offload planning
-- evaluating whether `release_file_articles` can be consolidated into `binary_parts`
+- the living whole-system schema map for the current indexer
+- determining which tables are canonical versus derived before cleanup
+- tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
+
+## Recently Completed Sprint Docs
+
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
+
+Use for:
+
+- the completed storage-trim and retention-reduction sprint closeout
+- the execution history for the database growth trim workstream
+- the resolved versus deferred outcomes from that sprint
+
+### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
+
+Use for:
+
+- the completed live schema and column-usage audit for the database growth trim sprint
+- documenting which hot-table columns were proven canonical, derived, debug-only, or drop candidates during that sprint
+- reconciling Docker Postgres schema truth with active migrations and current code usage at sprint close
 
 ### `docs/archive/completed/indexer/RUNTIME_SETTINGS_AND_CONTROL_PLANE_PLAN.md`
 
@@ -49,14 +68,18 @@ Use for:
 
 ## Current Execution Focus
 
-The current focus is database storage retention and reclaim planning.
+The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
 Primary workstream:
 
-- make maintenance retention windows configurable
-- add maintenance reporting and admin UI controls
-- reduce `article_header_ingest_payloads` retention safely
-- evaluate longer-term NZB blob caching/offload so article mappings can eventually be pruned more aggressively
+- reduce ingest and audit-table growth
+- distinguish canonical rows from debug/audit retention
+- preserve the landed grouping/release gains while making long-running supervisor operation sustainable
+
+Current remaining follow-up:
+
+- free root-volume space so the documented `VACUUM FULL` reclaim pass can run
+- rerun sustained ingest measurements on `dv` after merge
 
 Recent completed focus:
 
@@ -65,6 +88,53 @@ Recent completed focus:
 - release query/write batching
 - inspect archive/media concurrency with database reservations
 - deferring cross-process topology until measurements justify it
+- release fragment selection and weak-candidate cooldowns
+- assemble lane A / lane B runtime split
+- initial yEnc recovery stage wiring
+- grouping-model re-evaluation, PAR2 target persistence, and recovery-driven promotion
+
+### `docs/archive/completed/indexer/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md`
+
+Use for:
+
+- the completed database space-reduction and retention planning notes
+- table/index size findings from the live dev database
+- maintenance configurability and frontend reporting requirements
+- NZB blob-cache/offload planning
+- evaluating whether `release_file_articles` can be consolidated into `binary_parts`
+
+### `docs/archive/completed/indexer/INDEXER_GROUPING_MODEL_REEVALUATION_PLAN.md`
+
+Use for:
+
+- the completed grouping-model sprint
+- yEnc recovery and PAR2 target persistence decisions
+- the live validation evidence that actionable archive/contextual families improved before storage trimming became the next blocker
+
+### `docs/archive/completed/indexer/INDEXER_SCHEMA_AND_SERVICE_DATAFLOW.md`
+
+Use for:
+
+- the completed schema/dataflow reference map for current table ownership
+- understanding which `binary_*` tables are canonical identity tables versus inspection/evidence tables during the storage-trim sprint
+
+### `docs/archive/completed/indexer/INDEXER_ASSEMBLE_RELEASE_QUEUE_AND_LANE_SPLIT_EVALUATION.md`
+
+Use for:
+
+- the completed assemble/release stabilization sprint
+- measured before/after live backlog benchmarks
+- assemble lane A and lane B runtime-control rationale
+- the release queue coordination baseline
+
+### `docs/archive/completed/indexer/INDEXER_RELEASE_FRAGMENT_SELECTION_PLAN.md`
+
+Use for:
+
+- the completed release-fragment selection sprint
+- why release skipped most candidates as fragments
+- which fragment checks moved into summary-time candidate selection
+- the baseline for richer release-family readiness summaries before the grouping model re-evaluation
 
 ### `docs/archive/completed/indexer/INDEXER_BACKLOG_BURNDOWN_AND_SCHEMA_SIMPLIFICATION_PLAN.md`
 
@@ -181,7 +251,7 @@ Do not let this drive the current process-execution sprint.
 ## Guideline Rules
 
 1. Open a new focused doc in `docs/active/` before starting a new indexer execution sprint.
-2. Treat `docs/active/INDEXER_DATABASE_STORAGE_RETENTION_AND_OFFLOAD_PLAN.md` as the current active checklist for storage and retention work.
+2. Treat `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` as the living system map. Use the archived growth-trim sprint docs under `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/` when you need the completed audit or execution history.
 3. Keep the single-binary modular-monolith architecture as the default unless new evidence proves it is the primary bottleneck.
 4. Treat multi-worker and multi-process scaling as runtime-topology options, not as a mandate to split the codebase into separate products.
 5. Keep measured bottlenecks ahead of speculative architectural change.

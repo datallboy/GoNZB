@@ -58,6 +58,25 @@ function statFootnote(stat: IndexerDashboardStat) {
   return 'Uses the last persisted snapshot.'
 }
 
+function formatStatValue(stat: IndexerDashboardStat) {
+  if (!stat.available) {
+    return 'Not Cached'
+  }
+  if (stat.key.endsWith('_bytes')) {
+    const value = stat.value
+    if (value >= 1024 ** 3) {
+      return `${(value / 1024 ** 3).toFixed(1)} GB`
+    }
+    if (value >= 1024 ** 2) {
+      return `${(value / 1024 ** 2).toFixed(1)} MB`
+    }
+    if (value >= 1024) {
+      return `${(value / 1024).toFixed(1)} KB`
+    }
+  }
+  return stat.value.toLocaleString()
+}
+
 export function AdminDashboardPage() {
   const [overview, setOverview] = useState<IndexerOverview | null>(null)
   const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
@@ -152,7 +171,7 @@ export function AdminDashboardPage() {
           {(stats?.items ?? []).map((stat) => (
             <div className="stat-card" key={stat.key}>
               <span>{stat.label}</span>
-              <strong>{stat.available ? stat.value.toLocaleString() : 'Not Cached'}</strong>
+              <strong>{formatStatValue(stat)}</strong>
               <small>{statFootnote(stat)}</small>
               {stat.last_error ? <small>{stat.last_error}</small> : null}
             </div>

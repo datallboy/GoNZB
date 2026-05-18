@@ -53,6 +53,7 @@ var (
 	yencPartRE       = regexp.MustCompile(`(?i)\bpart\s*[:=]\s*(\d{1,5})\b`)
 	yencTotalRE      = regexp.MustCompile(`(?i)\btotal\s*[:=]\s*(\d{1,5})\b`)
 	yencSizeRE       = regexp.MustCompile(`(?i)\bsize\s*[:=]\s*(\d{1,18})\b`)
+	messagePartRE    = regexp.MustCompile(`(?i)\bpart\s*(\d{1,6})\s*of\s*(\d{1,6})\b`)
 	extensionHintRE  = regexp.MustCompile(`(?i)\.(par2|vol\d+\+\d+\.par2|nfo|sfv|srr|rar|r\d{2,3}|zip|7z|mkv|avi|mp4|mp3|flac)\b`)
 	multiSpaceRE     = regexp.MustCompile(`\s+`)
 	separatorRE      = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
@@ -62,10 +63,14 @@ var (
 	parVolumeStemRE  = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
 	splitArchiveRE   = regexp.MustCompile(`(?i)\.(7z|zip)\.\d{3}$`)
 	rarFamilyRE      = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	rarPartIndexRE   = regexp.MustCompile(`(?i)\.part0*(\d+)\.rar$`)
+	rarRIndexRE      = regexp.MustCompile(`(?i)\.r(\d{2,3})$`)
+	splitIndexRE     = regexp.MustCompile(`(?i)\.(?:7z|zip)\.0*(\d+)$`)
 	volumeTokenRE    = regexp.MustCompile(`(?i)^vol\d+$`)
 	partTokenRE      = regexp.MustCompile(`(?i)^part\d+$`)
 	rarTokenRE       = regexp.MustCompile(`(?i)^r\d{2,3}$`)
 	opaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	numericSetRE     = regexp.MustCompile(`(?i)^[0-9]{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
 )
 
 func newMatchState(candidate Candidate, opts Options) *matchState {
@@ -84,6 +89,14 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 	}
 	if structured.Total > totalParts {
 		totalParts = structured.Total
+	}
+	messagePartNumber, messageTotalParts := parseMessagePartInfo(candidate.MessageID)
+	if messageTotalParts > totalParts {
+		partNumber = messagePartNumber
+		totalParts = messageTotalParts
+	}
+	if fileIndex <= 0 {
+		fileIndex = inferArchiveVolumeIndex(firstNonEmpty(structured.Name, extractQuotedFilename(clean)))
 	}
 
 	return &matchState{
@@ -310,8 +323,9 @@ func (s *matchState) finalize(opts Options) Result {
 		s.partNumber = 1
 	}
 
+	subjectSetToken, subjectSetKind := subjectSetToken(s.cleanSubject, explicitFileName)
 	sourceReleaseKey := s.sourceReleaseKey(releaseName, explicitFileName)
-	releaseFamilyKey, familyKind, baseStem := s.releaseFamilyKey(releaseName, explicitFileName)
+	releaseFamilyKey, familyKind, baseStem := s.releaseFamilyKey(releaseName, explicitFileName, subjectSetToken, subjectSetKind)
 	if baseStem == "" {
 		for _, value := range []string{explicitFileName, s.quotedFilename, s.structured.Name, s.fileName} {
 			if stem := archiveFamilyBaseStem(value); stem != "" {
@@ -334,6 +348,8 @@ func (s *matchState) finalize(opts Options) Result {
 	if explicitFileName == "" && s.fileIndex > 0 && s.expectedFileCount > 0 {
 		fileKey = normalizeKey("file " + strconv.Itoa(s.fileIndex) + " of " + strconv.Itoa(s.expectedFileCount))
 	}
+	fileSetKey := s.fileSetKey(releaseFamilyKey, subjectSetToken)
+	identityStrength, identityReason := identityClassification(familyKind, subjectSetKind, baseStem, explicitFileName, s.confidence)
 
 	status := "low_confidence"
 	if s.confidence >= opts.HighConfidenceThreshold {
@@ -350,6 +366,11 @@ func (s *matchState) finalize(opts Options) Result {
 		"expected_file_count":   s.expectedFileCount,
 		"source_release_key":    sourceReleaseKey,
 		"release_family_key":    releaseFamilyKey,
+		"file_set_key":          fileSetKey,
+		"identity_strength":     identityStrength,
+		"identity_reason":       identityReason,
+		"subject_set_token":     subjectSetToken,
+		"subject_set_kind":      subjectSetKind,
 		"family_kind":           familyKind,
 		"base_stem":             baseStem,
 		"short_circuited_after": s.shortCircuitedAfter,
@@ -368,7 +389,12 @@ func (s *matchState) finalize(opts Options) Result {
 	return Result{
 		SourceReleaseKey:  sourceReleaseKey,
 		ReleaseFamilyKey:  releaseFamilyKey,
+		FileSetKey:        fileSetKey,
 		FileFamilyKey:     fileFamilyKey,
+		IdentityStrength:  identityStrength,
+		IdentityReason:    identityReason,
+		SubjectSetToken:   subjectSetToken,
+		SubjectSetKind:    subjectSetKind,
 		FamilyKind:        familyKind,
 		BaseStem:          baseStem,
 		IsAuxiliary:       isAuxiliary,
@@ -408,8 +434,11 @@ func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) stri
 	return releaseKey
 }
 
-func (s *matchState) releaseFamilyKey(releaseName, explicitFileName string) (string, string, string) {
-	if key := readableReleaseFamilyKey(releaseName); key != "" {
+func (s *matchState) releaseFamilyKey(releaseName, explicitFileName, subjectSetToken, subjectSetKind string) (string, string, string) {
+	if subjectSetKind == "readable_title" {
+		return subjectSetToken, "readable_title", archiveFamilyBaseStem(explicitFileName)
+	}
+	if key := readableReleaseFamilyKey(releaseName); key != "" && !isNumericObfuscatedSetKey(key) {
 		return key, "readable_title", archiveFamilyBaseStem(explicitFileName)
 	}
 
@@ -419,10 +448,97 @@ func (s *matchState) releaseFamilyKey(releaseName, explicitFileName string) (str
 		}
 	}
 
+	if subjectSetToken != "" {
+		switch subjectSetKind {
+		case "numeric_obfuscated_set":
+			return subjectSetToken, "numeric_obfuscated_set", ""
+		case "opaque_set":
+			return subjectSetToken, "opaque_set", ""
+		}
+	}
+
 	if key := canonicalReleaseKey(s.releaseFamilyContextSeed()); key != "" {
 		return key, "contextual_obfuscated", ""
 	}
 	return canonicalReleaseKey(s.contextSeed()), "contextual_obfuscated", ""
+}
+
+func (s *matchState) fileSetKey(releaseFamilyKey, subjectSetToken string) string {
+	if subjectSetToken != "" && s.expectedFileCount > 0 {
+		return strings.TrimSpace(fmt.Sprintf("%s files %d", subjectSetToken, s.expectedFileCount))
+	}
+	if s.expectedFileCount > 0 && releaseFamilyKey != "" {
+		return strings.TrimSpace(fmt.Sprintf("%s files %d", releaseFamilyKey, s.expectedFileCount))
+	}
+	return releaseFamilyKey
+}
+
+func subjectSetToken(subject, fileName string) (string, string) {
+	base := stripYEnc(subject)
+	if match := partMarkerRE.FindStringIndex(base); match != nil && match[0] > 0 {
+		base = base[:match[0]]
+	} else if match := partLooseRE.FindStringIndex(base); match != nil && match[0] > 0 {
+		base = base[:match[0]]
+	}
+	for _, quoted := range quotedFilenameRE.FindAllStringSubmatch(base, -1) {
+		if len(quoted) > 1 {
+			base = strings.ReplaceAll(base, quoted[0], " ")
+		}
+	}
+	if fileName != "" {
+		base = strings.ReplaceAll(base, fileName, " ")
+	}
+	token := canonicalReleaseKey(base)
+	if token == "" {
+		token = normalizeKey(base)
+	}
+	if token == "" {
+		return "", ""
+	}
+	if isNumericObfuscatedSetKey(token) {
+		return token, "numeric_obfuscated_set"
+	}
+	fields := strings.Fields(token)
+	if len(fields) > 0 {
+		opaque := 0
+		for _, field := range fields {
+			if opaqueTokenRE.MatchString(field) {
+				opaque++
+			}
+		}
+		if opaque == len(fields) {
+			return token, "opaque_set"
+		}
+	}
+	if readableReleaseFamilyKey(token) != "" {
+		return token, "readable_title"
+	}
+	return token, "opaque_set"
+}
+
+func identityClassification(familyKind, subjectSetKind, baseStem, explicitFileName string, confidence float64) (string, string) {
+	switch familyKind {
+	case "archive_stem":
+		return "strong", "archive_stem"
+	case "readable_title":
+		if archiveFamilyBaseStem(explicitFileName) != "" || baseStem != "" {
+			return "strong", "readable_archive_filename"
+		}
+		return "probable", "readable_title"
+	case "numeric_obfuscated_set":
+		return "provisional", "numeric_obfuscated_set"
+	case "opaque_set":
+		return "provisional", "opaque_subject_set"
+	case "contextual_obfuscated":
+		return "weak", "contextual_fallback"
+	}
+	if subjectSetKind != "" {
+		return "provisional", subjectSetKind
+	}
+	if confidence >= 0.85 {
+		return "probable", "matcher_confidence"
+	}
+	return "weak", "matcher_fallback"
 }
 
 func (s *matchState) smallArchiveFamilyReleaseKey(fileName string) (string, string) {
@@ -434,7 +550,7 @@ func (s *matchState) smallArchiveFamilyReleaseKey(fileName string) (string, stri
 	if !splitArchiveRE.MatchString(lower) && !rarFamilyRE.MatchString(lower) && !strings.HasSuffix(lower, ".rar") && !parFileRE.MatchString(lower) {
 		return "", ""
 	}
-	if s.fileIndex > 0 && s.expectedFileCount > 16 {
+	if s.fileIndex > 0 && s.expectedFileCount > 16 && splitArchiveRE.MatchString(lower) {
 		return "", ""
 	}
 	baseStem := archiveFamilyBaseStem(fileName)
@@ -557,6 +673,9 @@ func readableReleaseFamilyKey(releaseName string) string {
 	if key == "" {
 		return ""
 	}
+	if isNumericObfuscatedSetKey(key) {
+		return ""
+	}
 	fields := strings.Fields(key)
 	if len(fields) == 0 {
 		return ""
@@ -571,6 +690,10 @@ func readableReleaseFamilyKey(releaseName string) string {
 		return ""
 	}
 	return key
+}
+
+func isNumericObfuscatedSetKey(key string) bool {
+	return numericSetRE.MatchString(strings.ToLower(strings.TrimSpace(key)))
 }
 
 func archiveFamilyBaseStem(fileName string) string {
@@ -675,6 +798,49 @@ func parsePartInfo(subject string) (int, int) {
 	}
 
 	return bestCounterPair(subject)
+}
+
+func parseMessagePartInfo(messageID string) (int, int) {
+	value := strings.TrimSpace(strings.Trim(messageID, "<>"))
+	if value == "" {
+		return 0, 0
+	}
+	match := messagePartRE.FindStringSubmatch(value)
+	if len(match) != 3 {
+		return 0, 0
+	}
+	part, errPart := strconv.Atoi(match[1])
+	total, errTotal := strconv.Atoi(match[2])
+	if errPart != nil || errTotal != nil || part <= 0 || total <= 0 {
+		return 0, 0
+	}
+	if part > total {
+		total = part
+	}
+	return part, total
+}
+
+func inferArchiveVolumeIndex(fileName string) int {
+	fileName = strings.ToLower(strings.TrimSpace(sanitizeFileName(fileName)))
+	if fileName == "" {
+		return 0
+	}
+	for _, re := range []*regexp.Regexp{rarPartIndexRE, splitIndexRE} {
+		if match := re.FindStringSubmatch(fileName); len(match) == 2 {
+			if index, err := strconv.Atoi(match[1]); err == nil && index > 0 {
+				return index
+			}
+		}
+	}
+	if match := rarRIndexRE.FindStringSubmatch(fileName); len(match) == 2 {
+		if index, err := strconv.Atoi(match[1]); err == nil && index >= 0 {
+			return index + 2
+		}
+	}
+	if strings.HasSuffix(fileName, ".rar") {
+		return 1
+	}
+	return 0
 }
 
 func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {

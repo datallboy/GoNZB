@@ -3,6 +3,7 @@ package par2
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"testing"
@@ -33,7 +34,7 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	svc := NewService(
 		repo,
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
-		par2Fetcher{body: []byte("PAR2\x00P\x01\x02"), fileName: "example.vol03+04.par2"},
+		par2Fetcher{body: buildPAR2Sample("target.part01.rar", 123456), fileName: "example.vol03+04.par2"},
 		testPAR2Logger{},
 		inspectpkg.Options{MaxBytes: 1024},
 	)
@@ -54,11 +55,29 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if len(repo.releaseUpdates) != 1 || !boolValuePAR2(repo.releaseUpdates[0].HasPAR2) {
 		t.Fatalf("expected has_par2 update, got %+v", repo.releaseUpdates)
 	}
+	if len(repo.par2Targets) != 1 {
+		t.Fatalf("expected one par2 target, got %+v", repo.par2Targets)
+	}
+	if repo.par2Targets[0].FileName != "target.part01.rar" || repo.par2Targets[0].FileSize != 123456 {
+		t.Fatalf("unexpected par2 target %+v", repo.par2Targets[0])
+	}
+	if len(repo.coverageRows) != 1 || repo.coverageRows[0].FileName != "target.part01.rar" {
+		t.Fatalf("expected par2 target coverage rows, got %+v", repo.coverageRows)
+	}
 	if len(repo.completed) != 1 {
 		t.Fatalf("expected one completed inspection, got %+v", repo.completed)
 	}
 	if got := repo.completed[0].Summary["signature_ok"]; got != true {
 		t.Fatalf("expected signature_ok summary, got %+v", repo.completed[0].Summary)
+	}
+	if got := repo.completed[0].Summary["target_count"]; got != 1 {
+		t.Fatalf("expected target_count=1, got %+v", repo.completed[0].Summary)
+	}
+	if got := repo.completed[0].Summary["main_target_count"]; got != 1 {
+		t.Fatalf("expected main_target_count=1, got %+v", repo.completed[0].Summary)
+	}
+	if got := repo.completed[0].Summary["target_coverage_updates"]; got != 3 {
+		t.Fatalf("expected target_coverage_updates=3, got %+v", repo.completed[0].Summary)
 	}
 	if len(repo.artifacts) != 1 || repo.artifacts[0].ArtifactRole != "prefix_sample" {
 		t.Fatalf("expected one prefix sample artifact, got %+v", repo.artifacts)
@@ -72,6 +91,92 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
+	}
+}
+
+func TestRunOnceInspectsStandalonePAR2BinaryBeforeReleaseFormation(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakePAR2Repository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        73,
+			FileName:        "standalone.par2",
+			SourceUpdatedAt: &now,
+			TotalBytes:      8,
+		}},
+		standaloneFile: &pgindex.CatalogReleaseFile{
+			BinaryID:  73,
+			FileName:  "standalone.par2",
+			SizeBytes: 8,
+			IsPars:    true,
+		},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		par2Fetcher{body: buildPAR2Sample("target.part01.rar", 123456), fileName: "standalone.par2"},
+		testPAR2Logger{},
+		inspectpkg.Options{MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected completed standalone inspection, got %+v", repo.completed)
+	}
+	if len(repo.releaseUpdates) != 0 {
+		t.Fatalf("expected no release update before release exists, got %+v", repo.releaseUpdates)
+	}
+	if len(repo.coverageRows) != 1 {
+		t.Fatalf("expected coverage to apply for standalone par2, got %+v", repo.coverageRows)
+	}
+}
+
+func TestRunOnceFallsBackToFullManifestMaterializationForPlainPAR2(t *testing.T) {
+	now := time.Now().UTC()
+	full := buildPAR2Sample("target.part01.rar", 123456)
+	split := len(full) / 2
+	repo := &fakePAR2Repository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        74,
+			FileName:        "manifest.par2",
+			SourceUpdatedAt: &now,
+			TotalBytes:      int64(len(full)),
+		}},
+		standaloneFile: &pgindex.CatalogReleaseFile{
+			BinaryID:  74,
+			FileName:  "manifest.par2",
+			SizeBytes: int64(len(full)),
+			IsPars:    true,
+		},
+		standaloneArticles: []pgindex.CatalogArticleRef{
+			{MessageID: "<manifest-par2-1>", Bytes: int64(split), PartNumber: 1},
+			{MessageID: "<manifest-par2-2>", Bytes: int64(len(full) - split), PartNumber: 2},
+		},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		par2Fetcher{
+			parts: map[string]par2Part{
+				"<manifest-par2-1>": {body: full[:split], fileName: "manifest.par2", begin: 1, totalSize: len(full)},
+				"<manifest-par2-2>": {body: full[split:], fileName: "manifest.par2", begin: split + 1, totalSize: len(full)},
+			},
+		},
+		testPAR2Logger{},
+		inspectpkg.Options{MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.par2Targets) != 1 {
+		t.Fatalf("expected one par2 target after full manifest fallback, got %+v", repo.par2Targets)
+	}
+	if got := repo.completed[0].Summary["full_manifest_fallback"]; got != true {
+		t.Fatalf("expected full_manifest_fallback=true, got %+v", repo.completed[0].Summary)
 	}
 }
 
@@ -116,14 +221,31 @@ func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *tes
 	}
 }
 
+func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
+	sample := append(buildPAR2Sample("valid.part01.rar", 1234), buildPAR2Sample("\x7f\x12\x15\x1e", 1234)...)
+	sample = append(sample, buildPAR2Sample("absurd.part02.rar", 1<<60)...)
+
+	targets := parseTargetFiles(sample)
+	if len(targets) != 1 {
+		t.Fatalf("expected one valid target, got %+v", targets)
+	}
+	if targets[0].Name != "valid.part01.rar" || targets[0].Size != 1234 {
+		t.Fatalf("unexpected valid target %+v", targets[0])
+	}
+}
+
 type fakePAR2Repository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile
+	standaloneArticles []pgindex.CatalogArticleRef
 	completed      []pgindex.BinaryInspectionRecord
 	failed         []pgindex.BinaryInspectionRecord
 	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	par2Sets       []pgindex.BinaryPAR2SetRecord
+	par2Targets    []pgindex.BinaryPAR2TargetRecord
+	coverageRows   []pgindex.BinaryPAR2TargetRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
+	standaloneFile *pgindex.CatalogReleaseFile
 }
 
 func (f *fakePAR2Repository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
@@ -154,6 +276,16 @@ func (f *fakePAR2Repository) ReplaceBinaryPAR2Sets(_ context.Context, _ int64, r
 	return nil
 }
 
+func (f *fakePAR2Repository) ReplaceBinaryPAR2Targets(_ context.Context, _ int64, rows []pgindex.BinaryPAR2TargetRecord) error {
+	f.par2Targets = append(f.par2Targets, rows...)
+	return nil
+}
+
+func (f *fakePAR2Repository) ApplyBinaryPAR2TargetCoverage(_ context.Context, _ int64, rows []pgindex.BinaryPAR2TargetRecord) (*pgindex.BinaryPAR2TargetCoverageResult, error) {
+	f.coverageRows = append(f.coverageRows, rows...)
+	return &pgindex.BinaryPAR2TargetCoverageResult{TargetCount: len(rows), MainTargetCount: len(rows), UpdatedBinaryCount: 3}, nil
+}
+
 func (f *fakePAR2Repository) ApplyReleaseInspectionUpdate(_ context.Context, in pgindex.ReleaseInspectionUpdate) error {
 	f.releaseUpdates = append(f.releaseUpdates, in)
 	return nil
@@ -171,12 +303,52 @@ func (f *fakePAR2Repository) ListCatalogReleaseNewsgroups(context.Context, strin
 	return []string{"alt.binaries.test"}, nil
 }
 
+func (f *fakePAR2Repository) GetCatalogBinaryFile(context.Context, int64) (*pgindex.CatalogReleaseFile, error) {
+	return f.standaloneFile, nil
+}
+
+func (f *fakePAR2Repository) ListCatalogBinaryArticles(context.Context, int64) ([]pgindex.CatalogArticleRef, error) {
+	if len(f.standaloneArticles) > 0 {
+		return f.standaloneArticles, nil
+	}
+	return []pgindex.CatalogArticleRef{{MessageID: "<standalone-par2-1>", Bytes: 8, PartNumber: 1}}, nil
+}
+
+func (f *fakePAR2Repository) ListCatalogBinaryNewsgroups(context.Context, int64) ([]string, error) {
+	return []string{"alt.binaries.test"}, nil
+}
+
 type par2Fetcher struct {
 	body     []byte
 	fileName string
+	parts    map[string]par2Part
 }
 
-func (f par2Fetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+type par2Part struct {
+	body      []byte
+	fileName  string
+	begin     int
+	totalSize int
+}
+
+func (f par2Fetcher) Fetch(_ context.Context, messageID string, _ []string) (io.Reader, error) {
+	if len(f.parts) > 0 {
+		part, ok := f.parts[messageID]
+		if !ok {
+			return nil, fmt.Errorf("missing par2 test part for %s", messageID)
+		}
+		begin := part.begin
+		if begin <= 0 {
+			begin = 1
+		}
+		totalSize := part.totalSize
+		if totalSize <= 0 {
+			totalSize = len(part.body)
+		}
+		end := begin + len(part.body) - 1
+		payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=%d end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", totalSize, part.fileName, begin, end, encodeYEncPAR2(part.body), len(part.body))
+		return bytes.NewBufferString(payload), nil
+	}
 	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(f.body), f.fileName, len(f.body), encodeYEncPAR2(f.body), len(f.body))
 	return bytes.NewBufferString(payload), nil
 }
@@ -203,4 +375,19 @@ func encodeYEncPAR2(data []byte) string {
 
 func boolValuePAR2(v *bool) bool {
 	return v != nil && *v
+}
+
+func buildPAR2Sample(fileName string, fileSize uint64) []byte {
+	name := append([]byte(fileName), 0)
+	for len(name)%4 != 0 {
+		name = append(name, 0)
+	}
+	packetLen := 64 + 56 + len(name)
+	packet := make([]byte, packetLen)
+	copy(packet[:8], []byte("PAR2\x00PKT"))
+	binary.LittleEndian.PutUint64(packet[8:16], uint64(packetLen))
+	copy(packet[48:64], []byte("PAR 2.0\x00FileDesc"))
+	binary.LittleEndian.PutUint64(packet[64+48:64+56], fileSize)
+	copy(packet[64+56:], name)
+	return packet
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -91,6 +92,9 @@ type IndexingConfig struct {
 	ScrapeLatest             IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
 	ScrapeBackfill           IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
 	Assemble                 IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	AssembleLaneA            IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
+	AssembleLaneB            IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
+	RecoverYEnc              IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
 	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
 	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
 	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
@@ -125,20 +129,24 @@ type IndexingReleaseConfig struct {
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
+	MinExpectedFileCoveragePct                      *float64 `mapstructure:"min_expected_file_coverage_pct" yaml:"min_expected_file_coverage_pct"`
 	RequireExpectedFileCountForContextualObfuscated *bool    `mapstructure:"require_expected_file_count_for_contextual_obfuscated" yaml:"require_expected_file_count_for_contextual_obfuscated"`
 }
 
 type IndexingInspectConfig struct {
-	WorkDir          string `mapstructure:"work_dir" yaml:"work_dir"`
-	WorkspaceBackend string `mapstructure:"workspace_backend" yaml:"workspace_backend"`
-	MemoryWorkDir    string `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
-	MaxBytes         int64  `mapstructure:"max_bytes" yaml:"max_bytes"`
-	MaxArchiveDepth  int    `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
-	ToolTimeoutSecs  int    `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
-	FFProbePath      string `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
-	SevenZipPath     string `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
-	UnrarPath        string `mapstructure:"unrar_path" yaml:"unrar_path"`
-	PAR2Path         string `mapstructure:"par2_path" yaml:"par2_path"`
+	WorkDir          string   `mapstructure:"work_dir" yaml:"work_dir"`
+	WorkspaceBackend string   `mapstructure:"workspace_backend" yaml:"workspace_backend"`
+	MemoryWorkDir    string   `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
+	MaxBytes         int64    `mapstructure:"max_bytes" yaml:"max_bytes"`
+	MinBinaryBytes   int64    `mapstructure:"min_binary_bytes" yaml:"min_binary_bytes"`
+	MaxBinaryBytes   int64    `mapstructure:"max_binary_bytes" yaml:"max_binary_bytes"`
+	BlockedMagicHex  []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
+	MaxArchiveDepth  int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
+	ToolTimeoutSecs  int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFProbePath      string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath     string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath        string   `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path         string   `mapstructure:"par2_path" yaml:"par2_path"`
 }
 
 type IndexingPreDBConfig struct {
@@ -251,6 +259,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
+	v.SetDefault("indexing.release.min_expected_file_coverage_pct", 90.0)
 	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
@@ -259,6 +268,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.workspace_backend", "auto")
 	v.SetDefault("indexing.inspect.memory_work_dir", "/dev/shm/gonzb-inspect")
 	v.SetDefault("indexing.inspect.max_bytes", int64(2*1024*1024*1024))
+	v.SetDefault("indexing.inspect.min_binary_bytes", int64(0))
+	v.SetDefault("indexing.inspect.max_binary_bytes", int64(0))
+	v.SetDefault("indexing.inspect.blocked_magic_hex", []string{"52434C4F4E45"})
 	v.SetDefault("indexing.inspect.max_archive_depth", 3)
 	v.SetDefault("indexing.inspect.tool_timeout_seconds", 30)
 	v.SetDefault("indexing.inspect.ffprobe_path", "ffprobe")
@@ -291,6 +303,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_media.batch_size", 100)
 	v.SetDefault("indexing.inspect_media.concurrency", 1)
 	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
+	v.SetDefault("indexing.recover_yenc.enabled", false)
+	v.SetDefault("indexing.recover_yenc.interval_minutes", 10.0)
+	v.SetDefault("indexing.recover_yenc.batch_size", 25)
+	v.SetDefault("indexing.recover_yenc.concurrency", 1)
+	v.SetDefault("indexing.recover_yenc.backoff_seconds", 0)
 	v.SetDefault("indexing.enrich_predb.enabled", false)
 	v.SetDefault("indexing.enrich_predb.interval_minutes", 10.0)
 	v.SetDefault("indexing.enrich_predb.batch_size", 100)
@@ -382,6 +399,15 @@ func (c *Config) validate() error {
 	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
 		return err
 	}
+	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.assemble_lane_b", c.Indexing.AssembleLaneB); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
+		return err
+	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
 		Enabled:         c.Indexing.Release.Enabled,
 		IntervalMinutes: c.Indexing.Release.IntervalMinutes,
@@ -398,6 +424,11 @@ func (c *Config) validate() error {
 	if c.Indexing.Release.MinCompletionPct != nil {
 		if *c.Indexing.Release.MinCompletionPct < 0 || *c.Indexing.Release.MinCompletionPct > 100 {
 			return errors.New("indexing.release.min_completion_pct must be between 0 and 100")
+		}
+	}
+	if c.Indexing.Release.MinExpectedFileCoveragePct != nil {
+		if *c.Indexing.Release.MinExpectedFileCoveragePct < 0 || *c.Indexing.Release.MinExpectedFileCoveragePct > 100 {
+			return errors.New("indexing.release.min_expected_file_coverage_pct must be between 0 and 100")
 		}
 	}
 	if err := validateIndexingStageConfig("indexing.inspect_par2", c.Indexing.InspectPAR2); err != nil {
@@ -450,6 +481,31 @@ func (c *Config) validate() error {
 	}
 	if c.Indexing.Inspect.MaxBytes < 0 {
 		return errors.New("indexing.inspect.max_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.Inspect.MinBinaryBytes < 0 {
+		return errors.New("indexing.inspect.min_binary_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.Inspect.MaxBinaryBytes < 0 {
+		return errors.New("indexing.inspect.max_binary_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.Inspect.MinBinaryBytes > 0 && c.Indexing.Inspect.MaxBinaryBytes > 0 && c.Indexing.Inspect.MinBinaryBytes > c.Indexing.Inspect.MaxBinaryBytes {
+		return errors.New("indexing.inspect.min_binary_bytes must be less than or equal to indexing.inspect.max_binary_bytes")
+	}
+	for i, rule := range c.Indexing.Inspect.BlockedMagicHex {
+		clean := strings.ToUpper(strings.TrimSpace(rule))
+		clean = strings.ReplaceAll(clean, "0X", "")
+		clean = strings.ReplaceAll(clean, " ", "")
+		clean = strings.ReplaceAll(clean, ":", "")
+		clean = strings.ReplaceAll(clean, "-", "")
+		if clean == "" {
+			continue
+		}
+		if len(clean)%2 != 0 {
+			return fmt.Errorf("indexing.inspect.blocked_magic_hex[%d] must contain an even number of hex characters", i)
+		}
+		if _, err := hex.DecodeString(clean); err != nil {
+			return fmt.Errorf("indexing.inspect.blocked_magic_hex[%d] must be hex encoded", i)
+		}
 	}
 	if c.Indexing.Inspect.MaxArchiveDepth < 0 {
 		return errors.New("indexing.inspect.max_archive_depth must be greater than or equal to 0")

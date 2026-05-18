@@ -87,32 +87,34 @@ func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) 
 	repo := &fakeRepository{
 		headers: []pgindex.AssemblyCandidate{
 			{
-				ID:            21,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 1001,
-				MessageID:     "<opaque-a@test.example>",
-				Subject:       "ZxZzCeWW8ECJExG13i891fyVBUCommbINJNQNqdTam9KYctnYSWQI7Q1JXWeOPwA",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         740189,
-				Lines:         100,
-				Xref:          `alt.binaries.test:1001`,
+				ID:                              21,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   1001,
+				MessageID:                       "<opaque-a@test.example>",
+				Subject:                         "ZxZzCeWW8ECJExG13i891fyVBUCommbINJNQNqdTam9KYctnYSWQI7Q1JXWeOPwA",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           740189,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:1001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
-				ID:            22,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 1002,
-				MessageID:     "<opaque-b@test.example>",
-				Subject:       "2SyfBuDdgET6VKdhFnWPdQcQfHIzOdmE2qRrhv43KiKF1YJWfRVJMCFVJcsYV9ue",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         740369,
-				Lines:         100,
-				Xref:          `alt.binaries.test:1002`,
+				ID:                              22,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   1002,
+				MessageID:                       "<opaque-b@test.example>",
+				Subject:                         "2SyfBuDdgET6VKdhFnWPdQcQfHIzOdmE2qRrhv43KiKF1YJWfRVJMCFVJcsYV9ue",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           740369,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:1002`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -263,46 +265,49 @@ func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 	repo := &fakeRepository{
 		headers: []pgindex.AssemblyCandidate{
 			{
-				ID:            51,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 4001,
-				MessageID:     "<opaque-cap-a@test.example>",
-				Subject:       "ABCDEF1234567890opaquecapaaaa",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         1024,
-				Lines:         100,
-				Xref:          `alt.binaries.test:4001`,
+				ID:                              51,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   4001,
+				MessageID:                       "<opaque-cap-a@test.example>",
+				Subject:                         "ABCDEF1234567890opaquecapaaaa",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           1024,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:4001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
-				ID:            52,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 4002,
-				MessageID:     "<opaque-cap-b@test.example>",
-				Subject:       "ABCDEF1234567890opaquecapbbbb",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         1024,
-				Lines:         100,
-				Xref:          `alt.binaries.test:4002`,
+				ID:                              52,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   4002,
+				MessageID:                       "<opaque-cap-b@test.example>",
+				Subject:                         "ABCDEF1234567890opaquecapbbbb",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           1024,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:4002`,
+				StructuredIdentityBinaryMatched: true,
 			},
 			{
-				ID:            53,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 4003,
-				MessageID:     "<opaque-cap-c@test.example>",
-				Subject:       "ABCDEF1234567890opaquecapcccc",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         1024,
-				Lines:         100,
-				Xref:          `alt.binaries.test:4003`,
+				ID:                              53,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   4003,
+				MessageID:                       "<opaque-cap-c@test.example>",
+				Subject:                         "ABCDEF1234567890opaquecapcccc",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           1024,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:4003`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -338,19 +343,20 @@ func TestRunOnceSkipsYEncRecoveryDuringPersistedBackoff(t *testing.T) {
 	repo := &fakeRepository{
 		headers: []pgindex.AssemblyCandidate{
 			{
-				ID:                     61,
-				ProviderID:             1,
-				NewsgroupID:            2,
-				NewsgroupName:          "alt.binaries.test",
-				ArticleNumber:          5001,
-				MessageID:              "<opaque-backoff@test.example>",
-				Subject:                "ABCDEF1234567890opaquebackoff",
-				Poster:                 `Poster <poster@example.com>`,
-				DateUTC:                &postedAt,
-				Bytes:                  1024,
-				Lines:                  100,
-				Xref:                   `alt.binaries.test:5001`,
-				YEncRecoveryRetryAfter: &retryAfter,
+				ID:                              61,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   5001,
+				MessageID:                       "<opaque-backoff@test.example>",
+				Subject:                         "ABCDEF1234567890opaquebackoff",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           1024,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:5001`,
+				YEncRecoveryRetryAfter:          &retryAfter,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -379,18 +385,19 @@ func TestRunOncePersistsYEncNotFoundBackoff(t *testing.T) {
 	repo := &fakeRepository{
 		headers: []pgindex.AssemblyCandidate{
 			{
-				ID:            71,
-				ProviderID:    1,
-				NewsgroupID:   2,
-				NewsgroupName: "alt.binaries.test",
-				ArticleNumber: 6001,
-				MessageID:     "<opaque-notfound@test.example>",
-				Subject:       "ABCDEF1234567890opaquenotfound",
-				Poster:        `Poster <poster@example.com>`,
-				DateUTC:       &postedAt,
-				Bytes:         1024,
-				Lines:         100,
-				Xref:          `alt.binaries.test:6001`,
+				ID:                              71,
+				ProviderID:                      1,
+				NewsgroupID:                     2,
+				NewsgroupName:                   "alt.binaries.test",
+				ArticleNumber:                   6001,
+				MessageID:                       "<opaque-notfound@test.example>",
+				Subject:                         "ABCDEF1234567890opaquenotfound",
+				Poster:                          `Poster <poster@example.com>`,
+				DateUTC:                         &postedAt,
+				Bytes:                           1024,
+				Lines:                           100,
+				Xref:                            `alt.binaries.test:6001`,
+				StructuredIdentityBinaryMatched: true,
 			},
 		},
 	}
@@ -415,13 +422,15 @@ type fakeRepository struct {
 	upsertedBinaries     []pgindex.BinaryRecord
 	upsertedParts        []pgindex.BinaryPartRecord
 	yencNotFoundRecorded []int64
+	lastClaimRequest     pgindex.AssemblyClaimRequest
 }
 
 func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
 	return f.headers, nil
 }
 
-func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, _ pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+	f.lastClaimRequest = req
 	return f.headers, nil
 }
 
@@ -538,6 +547,19 @@ func intValue(v any) int {
 		return int(tv)
 	default:
 		return 0
+	}
+}
+
+func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
+	repo := &fakeRepository{}
+	svc := NewService(repo, &fakeMatcher{}, nil, testLogger{}, Options{BatchSize: 25, Lane: pgindex.AssemblyClaimLaneB})
+
+	if _, err := svc.RunOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if repo.lastClaimRequest.Lane != pgindex.AssemblyClaimLaneB {
+		t.Fatalf("expected lane-b claim request, got %+v", repo.lastClaimRequest)
 	}
 }
 

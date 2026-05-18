@@ -293,6 +293,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	if probe != nil {
 		encrypted = encrypted || probe.Encrypted
+		encrypted = encrypted || isArchivePasswordPromptError(probe.ProbeError)
 		if s != nil && s.log != nil {
 			s.log.Debug(
 				"inspect_archive: binary_id=%d release_id=%s strategy=%s files=%d materialized_bytes=%d",
@@ -409,6 +410,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if skipReason == "" {
 			skipReason = "not_archive_or_unsupported"
 		}
+		if encrypted && skipReason == "not_archive_or_unsupported" {
+			skipReason = "password_required"
+		}
 		summary["probe_skip_reason"] = skipReason
 		summary["probe_error_detail"] = probe.ProbeError
 	}
@@ -434,6 +438,23 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		)
 	}
 	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" {
+		if encrypted {
+			archiveCount := 1
+			passworded := true
+			passwordedUnknown := true
+			passwordState := "passworded_unknown"
+			tags := []string{"archive", "unresolved_password"}
+			return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+				ReleaseID:         candidate.ReleaseID,
+				Encrypted:         &encrypted,
+				Passworded:        &passworded,
+				PasswordedUnknown: &passwordedUnknown,
+				PasswordState:     passwordState,
+				ArchiveCount:      &archiveCount,
+				MediaTags:         tags,
+				MetadataUpdatedAt: ptrTime(time.Now().UTC()),
+			})
+		}
 		return nil
 	}
 
@@ -514,6 +535,10 @@ func probeError(probe *inspectpkg.ArchiveProbeResult) string {
 func archiveProbeSkipReason(probeError string) string {
 	probeError = strings.TrimSpace(strings.ToLower(probeError))
 	switch {
+	case strings.Contains(probeError, "enter password"),
+		strings.Contains(probeError, "wrong password"),
+		strings.Contains(probeError, "can not open encrypted archive"):
+		return "password_required"
 	case strings.Contains(probeError, "7z header declares archive size"):
 		return "incomplete_archive_family"
 	case strings.Contains(probeError, "insufficient bytes for 7z next header"):
@@ -521,4 +546,11 @@ func archiveProbeSkipReason(probeError string) string {
 	default:
 		return ""
 	}
+}
+
+func isArchivePasswordPromptError(probeError string) bool {
+	probeError = strings.TrimSpace(strings.ToLower(probeError))
+	return strings.Contains(probeError, "enter password") ||
+		strings.Contains(probeError, "wrong password") ||
+		strings.Contains(probeError, "can not open encrypted archive")
 }

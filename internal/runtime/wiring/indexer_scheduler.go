@@ -30,6 +30,18 @@ func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error
 	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
 }
 
+func RunIndexerAssembleLaneAScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneA)
+}
+
+func RunIndexerAssembleLaneBScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneB)
+}
+
+func RunIndexerRecoverYEncScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageRecoverYEnc)
+}
+
 // Long-running release mode restart loop lives outside cmd/main.
 func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)

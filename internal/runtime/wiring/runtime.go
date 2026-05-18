@@ -7,6 +7,10 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 )
 
+type ServerStartOptions struct {
+	SkipModuleStarts map[string]bool
+}
+
 // Central runtime assembly entrypoint so cmd/main stays thin
 func BuildInitialRuntime(appCtx *app.Context) error {
 	if appCtx == nil {
@@ -35,7 +39,7 @@ func BuildInitialRuntime(appCtx *app.Context) error {
 
 // StartServerBackgroundLoops starts only the long-running loops that should
 // exist in API/server mode after runtime validation has passed.
-func StartServerBackgroundLoops(ctx context.Context, appCtx *app.Context) error {
+func StartServerBackgroundLoops(ctx context.Context, appCtx *app.Context, opts ServerStartOptions) error {
 	if appCtx == nil {
 		return fmt.Errorf("app context is required")
 	}
@@ -46,6 +50,10 @@ func StartServerBackgroundLoops(ctx context.Context, appCtx *app.Context) error 
 	}
 
 	for _, module := range appCtx.RuntimeModules() {
+		if opts.SkipModuleStarts != nil && opts.SkipModuleStarts[module.Name()] {
+			appCtx.Logger.Info("skipping server start for runtime module=%s", module.Name())
+			continue
+		}
 		if err := module.Start(ctx); err != nil {
 			return fmt.Errorf("start %s module: %w", module.Name(), err)
 		}

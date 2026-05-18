@@ -37,7 +37,6 @@ type preparedArticleHeaderInsert struct {
 	Lines         int
 	Xref          string
 	Parsed        parsedArticleMetadata
-	RawOverview   string
 }
 
 type payloadUpsertRow struct {
@@ -52,7 +51,6 @@ type payloadUpsertRow struct {
 	YEncPart        int
 	YEncTotalParts  int
 	FileSize        int64
-	RawOverview     string
 }
 
 type BackfillCheckpointState struct {
@@ -122,6 +120,106 @@ type BinaryRecoveryRecord struct {
 	Canonicalize bool
 }
 
+type YEncRecoveryCandidate struct {
+	BinaryID                        int64
+	ArticleHeaderID                 int64
+	ProviderID                      int64
+	NewsgroupID                     int64
+	NewsgroupName                   string
+	ArticleNumber                   int64
+	MessageID                       string
+	Subject                         string
+	Poster                          string
+	DateUTC                         *time.Time
+	Bytes                           int64
+	Lines                           int
+	Xref                            string
+	FileName                        string
+	FileIndex                       int
+	FileTotal                       int
+	YEncPart                        int
+	YEncTotal                       int
+	YEncFileSize                    int64
+	RawOverview                     map[string]any
+	YEncRecoveryMissingCount        int
+	YEncRecoveryRetryAfter          *time.Time
+	CurrentBinaryKey                string
+	CurrentReleaseFamilyKey         string
+	CurrentBaseStem                 string
+	CurrentReadinessBucket          string
+	StructuredIdentityBinaryMatched bool
+}
+
+func (c YEncRecoveryCandidate) FetchGroups() []string {
+	if strings.TrimSpace(c.NewsgroupName) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(c.NewsgroupName)}
+}
+
+func (c YEncRecoveryCandidate) CloneRawOverview() map[string]any {
+	out := make(map[string]any, len(c.RawOverview)+8)
+	for k, v := range c.RawOverview {
+		out[k] = v
+	}
+	if strings.TrimSpace(c.FileName) != "" {
+		out["name"] = c.FileName
+	}
+	if c.FileIndex > 0 {
+		out["file_index"] = c.FileIndex
+	}
+	if c.FileTotal > 0 {
+		out["file_total"] = c.FileTotal
+	}
+	if c.YEncPart > 0 {
+		out["part"] = c.YEncPart
+	}
+	if c.YEncTotal > 0 {
+		out["total"] = c.YEncTotal
+	}
+	if c.YEncFileSize > 0 {
+		out["size"] = c.YEncFileSize
+	}
+	if c.Bytes > 0 {
+		out["bytes"] = c.Bytes
+	}
+	return out
+}
+
+type YEncHeaderRecoveryRecord struct {
+	BinaryID          int64
+	ArticleHeaderID   int64
+	SourceReleaseKey  string
+	ReleaseFamilyKey  string
+	FileSetKey        string
+	FileFamilyKey     string
+	IdentityStrength  string
+	IdentityReason    string
+	SubjectSetToken   string
+	SubjectSetKind    string
+	FamilyKind        string
+	BaseStem          string
+	IsAuxiliary       bool
+	IsMainPayload     bool
+	ReleaseKey        string
+	ReleaseName       string
+	BinaryKey         string
+	BinaryName        string
+	FileName          string
+	FileIndex         int
+	ExpectedFileCount int
+	TotalParts        int
+	MatchConfidence   float64
+	MatchStatus       string
+	GroupingEvidence  map[string]any
+}
+
+type YEncHeaderRecoveryResult struct {
+	BinaryID       int64
+	TargetBinaryID int64
+	Merged         bool
+}
+
 type BinaryInspectionArtifactRecord struct {
 	BinaryID     int64
 	ReleaseID    string
@@ -189,6 +287,29 @@ type BinaryPAR2SetRecord struct {
 	RecoveryBlocks int
 	SignatureOK    bool
 	Metadata       map[string]any
+}
+
+type BinaryPAR2TargetRecord struct {
+	BinaryID  int64
+	ReleaseID string
+	FileName  string
+	FileSize  int64
+	Metadata  map[string]any
+}
+
+type BinaryPAR2TargetCoverageResult struct {
+	TargetCount        int
+	MainTargetCount    int
+	UpdatedBinaryCount int
+}
+
+type CatalogReader interface {
+	ListCatalogReleaseFiles(ctx context.Context, releaseID string) ([]CatalogReleaseFile, error)
+	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]CatalogArticleRef, error)
+	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
+	GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*CatalogReleaseFile, error)
+	ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error)
+	ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error)
 }
 
 type PasswordVerificationCandidate struct {
@@ -728,16 +849,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		xref := sanitizeUTF8(h.Xref)
 		parsed := parseArticleIngestMetadata(subject)
 
-		raw := "{}"
-		if len(h.RawOverview) > 0 {
-			cleanRaw := sanitizeStringMap(h.RawOverview)
-			b, marshalErr := json.Marshal(cleanRaw)
-			if marshalErr != nil {
-				return 0, fmt.Errorf("marshal raw_overview for article %d: %w", h.ArticleNumber, marshalErr)
-			}
-			raw = string(bytes.ToValidUTF8(b, []byte{}))
-		}
-
 		var dateUTC *time.Time
 		if h.DateUTC != nil {
 			normalized := h.DateUTC.UTC()
@@ -754,7 +865,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			Lines:         h.Lines,
 			Xref:          xref,
 			Parsed:        parsed,
-			RawOverview:   raw,
 		})
 	}
 	if len(prepared) == 0 {
@@ -814,7 +924,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 				YEncPart:        item.Parsed.YEncPart,
 				YEncTotalParts:  item.Parsed.YEncTotalParts,
 				FileSize:        item.Parsed.FileSize,
-				RawOverview:     item.RawOverview,
 			})
 		}
 
@@ -1068,12 +1177,11 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 			yenc_part_number,
 			yenc_total_parts,
 			yenc_file_size,
-			raw_overview_json,
 			created_at
 		)
 		VALUES `)
 
-	args := make([]any, 0, len(order)*12)
+	args := make([]any, 0, len(order)*11)
 	for idx, articleHeaderID := range order {
 		row := lastByArticleHeaderID[articleHeaderID]
 		if idx > 0 {
@@ -1102,8 +1210,7 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		args = append(args, row.YEncTotalParts)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
-		fmt.Fprintf(&query, "$%d::jsonb,NOW())", len(args)+1)
-		args = append(args, row.RawOverview)
+		query.WriteString("NOW())")
 	}
 
 	query.WriteString(`
@@ -1117,8 +1224,7 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		    subject_file_total = EXCLUDED.subject_file_total,
 		    yenc_part_number = EXCLUDED.yenc_part_number,
 		    yenc_total_parts = EXCLUDED.yenc_total_parts,
-		    yenc_file_size = EXCLUDED.yenc_file_size,
-		    raw_overview_json = EXCLUDED.raw_overview_json`)
+		    yenc_file_size = EXCLUDED.yenc_file_size`)
 
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("insert article header payload batch: %w", err)
@@ -1193,6 +1299,9 @@ func sanitizeStringMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		cleanKey := sanitizeUTF8(k)
+		if strings.EqualFold(cleanKey, "line") {
+			continue
+		}
 
 		switch tv := v.(type) {
 		case string:

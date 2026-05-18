@@ -55,6 +55,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 	}
 
 	newName := recoveredFileName(seed.FileName, seed.ReleaseName, seed.BinaryName, seed.FileIndex, seed.ExpectedFileCount, in.Kind, in.Extension)
+	renamePredicate := `file_name = '' OR LOWER(file_name) LIKE '%.bin' OR file_name !~ '\.[A-Za-z0-9]{1,8}$'`
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binaries
 		SET recovered_kind = $2,
@@ -63,7 +64,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		    recovered_confidence = GREATEST(recovered_confidence, $5),
 		    recovered_at = NOW(),
 		    file_name = CASE
-		    	WHEN $6 AND (file_name = '' OR LOWER(file_name) LIKE '%.bin') THEN $7
+		    	WHEN $6 AND (`+renamePredicate+`) THEN $7
 		    	ELSE file_name
 		    END,
 		    updated_at = NOW()
@@ -82,11 +83,13 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 	if in.Canonicalize {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE release_files
-			SET file_name = $2
+			SET file_name = $2,
+			    is_pars = CASE WHEN $3 THEN TRUE ELSE is_pars END
 			WHERE binary_id = $1
-			  AND (file_name = '' OR LOWER(file_name) LIKE '%.bin')`,
+			  AND (`+renamePredicate+`)`,
 			in.BinaryID,
 			newName,
+			in.Kind == "par2",
 		); err != nil {
 			return fmt.Errorf("update release file recovery %d: %w", in.BinaryID, err)
 		}
@@ -94,11 +97,30 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 			UPDATE binary_parts
 			SET file_name = $2
 			WHERE binary_id = $1
-			  AND (file_name = '' OR LOWER(file_name) LIKE '%.bin')`,
+			  AND (`+renamePredicate+`)`,
 			in.BinaryID,
 			newName,
 		); err != nil {
 			return fmt.Errorf("update binary part recovery %d: %w", in.BinaryID, err)
+		}
+	}
+	if in.Kind == "par2" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE release_files
+			SET is_pars = TRUE
+			WHERE binary_id = $1`, in.BinaryID); err != nil {
+			return fmt.Errorf("mark release file par2 recovery %d: %w", in.BinaryID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE releases
+			SET has_par2 = TRUE,
+			    updated_at = NOW()
+			WHERE release_id IN (
+				SELECT release_id
+				FROM release_files
+				WHERE binary_id = $1
+			)`, in.BinaryID); err != nil {
+			return fmt.Errorf("mark release par2 recovery %d: %w", in.BinaryID, err)
 		}
 	}
 
@@ -131,7 +153,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					    recovered_confidence = GREATEST(recovered_confidence, $5),
 					    recovered_at = NOW(),
 					    file_name = CASE
-					    	WHEN file_name = '' OR LOWER(file_name) LIKE '%.bin' THEN $6
+					    	WHEN `+renamePredicate+` THEN $6
 					    	ELSE file_name
 					    END,
 					    updated_at = NOW()
@@ -149,7 +171,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					UPDATE release_files
 					SET file_name = $2
 					WHERE binary_id = $1
-					  AND (file_name = '' OR LOWER(file_name) LIKE '%.bin')`,
+					  AND (`+renamePredicate+`)`,
 					sibling.ID,
 					recoveredName,
 				); err != nil {
@@ -159,7 +181,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					UPDATE binary_parts
 					SET file_name = $2
 					WHERE binary_id = $1
-					  AND (file_name = '' OR LOWER(file_name) LIKE '%.bin')`,
+					  AND (`+renamePredicate+`)`,
 					sibling.ID,
 					recoveredName,
 				); err != nil {
@@ -374,5 +396,5 @@ func shouldApplyArchiveFamilyRecovery(seed binaryRecoverySeed, siblings []binary
 
 func isOpaqueRecoveryName(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
-	return lower == "" || strings.HasSuffix(lower, ".bin")
+	return lower == "" || strings.HasSuffix(lower, ".bin") || filepath.Ext(lower) == ""
 }

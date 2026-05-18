@@ -26,9 +26,10 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			BatchSize: func() *int { v := 5000; return &v }(),
 		},
 		Release: config.IndexingReleaseConfig{
-			IntervalMinutes:  func() *float64 { v := 10.0; return &v }(),
-			MinConfidence:    &high,
-			MinCompletionPct: func() *float64 { v := 34.0; return &v }(),
+			IntervalMinutes:            func() *float64 { v := 10.0; return &v }(),
+			MinConfidence:              &high,
+			MinCompletionPct:           func() *float64 { v := 34.0; return &v }(),
+			MinExpectedFileCoveragePct: func() *float64 { v := 88.0; return &v }(),
 			RequireExpectedFileCountForContextualObfuscated: func() *bool { v := false; return &v }(),
 		},
 		Inspect: config.IndexingInspectConfig{
@@ -82,7 +83,7 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	if runtime.ScrapeLatest.Enabled {
 		t.Fatalf("expected scrape_latest to be disabled")
 	}
-	if runtime.Release.MinConfidence != high || runtime.Release.MinCompletionPct != 34 || runtime.Release.RequireExpectedFileCountForContextualObfuscated {
+	if runtime.Release.MinConfidence != high || runtime.Release.MinCompletionPct != 34 || runtime.Release.MinExpectedFileCoveragePct != 88 || runtime.Release.RequireExpectedFileCountForContextualObfuscated {
 		t.Fatalf("unexpected release config: %+v", runtime.Release)
 	}
 	if runtime.ScrapeLatest.IntervalMinutes != interval || runtime.ScrapeLatest.BatchSize != batch {
@@ -119,6 +120,24 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	}
 	if runtime.Indexing.Inspect.WorkspaceBackend != "auto" || runtime.Indexing.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect" {
 		t.Fatalf("expected auto inspect workspace defaults, got %+v", runtime.Indexing.Inspect)
+	}
+}
+
+func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			Assemble: IndexingStageRuntimeSettings{Enabled: true, IntervalMinutes: 5, BatchSize: 4000, Concurrency: 2},
+		},
+	})
+
+	if runtime.Indexing == nil {
+		t.Fatalf("expected indexing settings")
+	}
+	if runtime.Indexing.AssembleLaneA.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneA.BatchSize <= 0 {
+		t.Fatalf("expected lane A defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneA)
+	}
+	if runtime.Indexing.AssembleLaneB.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneB.BatchSize <= 0 {
+		t.Fatalf("expected lane B defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneB)
 	}
 }
 

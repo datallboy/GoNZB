@@ -42,19 +42,20 @@ type localTitleCandidate struct {
 }
 
 var (
-	multiSpaceRE       = regexp.MustCompile(`\s+`)
-	separatorRE        = regexp.MustCompile(`[._\-]+`)
-	resolutionRE       = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
-	videoCodecRE       = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
-	audioCodecRE       = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
-	sourceTagRE        = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
-	subtitleLanguageRE = regexp.MustCompile(`(?i)\b(eng|english|spa|spanish|fre|french|ger|german|ita|italian|jpn|japanese)\b`)
-	rarPartRE          = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
-	splitSevenZipRE    = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
-	splitZipRE         = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
-	parVolumeRE        = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
-	numericNoiseOnlyRE = regexp.MustCompile(`^[a-f0-9]{8,}$`)
-	longOpaqueTokenRE  = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	multiSpaceRE         = regexp.MustCompile(`\s+`)
+	separatorRE          = regexp.MustCompile(`[._\-]+`)
+	resolutionRE         = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|576p|480p)\b`)
+	videoCodecRE         = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
+	audioCodecRE         = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
+	sourceTagRE          = regexp.MustCompile(`(?i)\b(remux|bluray|bdrip|webrip|web[- ]?dl|hdtv|dvdrip|cam)\b`)
+	subtitleLanguageRE   = regexp.MustCompile(`(?i)\b(eng|english|spa|spanish|fre|french|ger|german|ita|italian|jpn|japanese)\b`)
+	rarPartRE            = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
+	splitSevenZipRE      = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
+	splitZipRE           = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
+	parVolumeRE          = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
+	numericNoiseOnlyRE   = regexp.MustCompile(`^[a-f0-9]{8,}$`)
+	longOpaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+	numberedNoiseTitleRE = regexp.MustCompile(`^\d{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
 )
 
 func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) []releaseCluster {
@@ -303,53 +304,54 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	})
 
 	return pgindex.ReleaseRecord{
-		ProviderID:              candidate.ProviderID,
-		SourceReleaseKey:        dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey, familyKey),
-		ReleaseFamilyKey:        familyKey,
-		ReleaseKey:              familyKey,
-		GroupName:               deriveGroupName(candidate, cluster.Binaries),
-		Title:                   finalTitle,
-		SourceTitle:             titleInfo.SourceTitle,
-		DeobfuscatedTitle:       titleInfo.DeobfuscatedTitle,
-		MatchedMediaTitle:       titleInfo.MatchedMediaTitle,
-		TitleSource:             titleInfo.TitleSource,
-		TitleConfidence:         titleInfo.TitleConfidence,
-		SearchTitle:             normalizeSearchTitle(finalTitle),
-		CategoryID:              category.ID,
-		Category:                category.Name,
-		Classification:          classification,
-		Poster:                  dominantPoster(cluster.Binaries),
-		SizeBytes:               totalBytes(cluster.Binaries),
-		PostedAt:                postedAt,
-		FileCount:               clusterObservedFileCount(cluster.Binaries),
-		ExpectedFileCount:       clusterExpectedFileCount(cluster.Binaries),
-		ParFileCount:            countPARFiles(cluster.Binaries),
-		CompletionPct:           clusterCompletionPct(cluster.Binaries),
-		MatchConfidence:         clamp01(cluster.MatchConfidence),
-		IdentityStatus:          identityStatus,
-		Passworded:              passworded,
-		PasswordedKnown:         passwordedKnown,
-		PasswordedUnknown:       passwordedUnknown,
-		PasswordState:           passwordState,
-		Encrypted:               false,
-		HasPAR2:                 hasPAR2,
-		HasNFO:                  hasNFO,
-		ArchiveCount:            archiveCount,
-		VideoCount:              videoCount,
-		AudioCount:              audioCount,
-		SamplePresent:           samplePresent,
-		AvailabilityScore:       availabilityScore,
-		AvailabilityTier:        releasepolicy.AvailabilityTier(availabilityScore),
-		MediaQualityScore:       mediaQualityScore,
-		MediaQualityTier:        mediaQualityTier(mediaQualityScore),
-		IdentityConfidenceScore: identityScore,
-		RuntimeSeconds:          0,
-		PrimaryResolution:       primaryResolution,
-		PrimaryVideoCodec:       primaryVideoCodec,
-		PrimaryAudioCodec:       primaryAudioCodec,
-		SubtitleLanguages:       subtitles,
-		MediaTags:               mediaTags,
-		MetadataUpdatedAt:       &now,
+		ProviderID:               candidate.ProviderID,
+		SourceReleaseKey:         dominantSourceReleaseKey(cluster.Binaries, candidate.SourceReleaseKey, familyKey),
+		ReleaseFamilyKey:         familyKey,
+		ReleaseKey:               familyKey,
+		GroupName:                deriveGroupName(candidate, cluster.Binaries),
+		Title:                    finalTitle,
+		SourceTitle:              titleInfo.SourceTitle,
+		DeobfuscatedTitle:        titleInfo.DeobfuscatedTitle,
+		MatchedMediaTitle:        titleInfo.MatchedMediaTitle,
+		TitleSource:              titleInfo.TitleSource,
+		TitleConfidence:          titleInfo.TitleConfidence,
+		SearchTitle:              normalizeSearchTitle(finalTitle),
+		CategoryID:               category.ID,
+		Category:                 category.Name,
+		Classification:           classification,
+		Poster:                   dominantPoster(cluster.Binaries),
+		SizeBytes:                totalBytes(cluster.Binaries),
+		PostedAt:                 postedAt,
+		FileCount:                clusterObservedFileCount(cluster.Binaries),
+		ExpectedFileCount:        clusterExpectedFileCount(cluster.Binaries),
+		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(cluster.Binaries),
+		ParFileCount:             countPARFiles(cluster.Binaries),
+		CompletionPct:            clusterCompletionPct(cluster.Binaries),
+		MatchConfidence:          clamp01(cluster.MatchConfidence),
+		IdentityStatus:           identityStatus,
+		Passworded:               passworded,
+		PasswordedKnown:          passwordedKnown,
+		PasswordedUnknown:        passwordedUnknown,
+		PasswordState:            passwordState,
+		Encrypted:                false,
+		HasPAR2:                  hasPAR2,
+		HasNFO:                   hasNFO,
+		ArchiveCount:             archiveCount,
+		VideoCount:               videoCount,
+		AudioCount:               audioCount,
+		SamplePresent:            samplePresent,
+		AvailabilityScore:        availabilityScore,
+		AvailabilityTier:         releasepolicy.AvailabilityTier(availabilityScore),
+		MediaQualityScore:        mediaQualityScore,
+		MediaQualityTier:         mediaQualityTier(mediaQualityScore),
+		IdentityConfidenceScore:  identityScore,
+		RuntimeSeconds:           0,
+		PrimaryResolution:        primaryResolution,
+		PrimaryVideoCodec:        primaryVideoCodec,
+		PrimaryAudioCodec:        primaryAudioCodec,
+		SubtitleLanguages:        subtitles,
+		MediaTags:                mediaTags,
+		MetadataUpdatedAt:        &now,
 	}
 }
 
@@ -834,11 +836,18 @@ func clusterCompletionPct(binaries []pgindex.BinarySummary) float64 {
 	}
 
 	expectedFiles := clusterExpectedFileCount(binaries)
-	if expectedFiles <= 0 {
+	expectedArchiveFiles := clusterExpectedArchiveFileCount(binaries)
+	if expectedFiles <= 0 && expectedArchiveFiles <= 0 {
 		return partPct
 	}
 
-	filePct := (float64(clusterObservedFileCount(binaries)) / float64(expectedFiles)) * 100
+	filePct := 100.0
+	if expectedFiles > 0 {
+		filePct = (float64(clusterObservedFileCount(binaries)) / float64(expectedFiles)) * 100
+	}
+	if expectedArchiveFiles > 0 {
+		filePct = (float64(countMainPayloadBinaries(binaries)) / float64(expectedArchiveFiles)) * 100
+	}
 	if filePct > 100 {
 		filePct = 100
 	}
@@ -853,6 +862,16 @@ func clusterExpectedFileCount(binaries []pgindex.BinarySummary) int {
 	for _, binary := range binaries {
 		if binary.ExpectedFileCount > best {
 			best = binary.ExpectedFileCount
+		}
+	}
+	return best
+}
+
+func clusterExpectedArchiveFileCount(binaries []pgindex.BinarySummary) int {
+	best := 0
+	for _, binary := range binaries {
+		if binary.ExpectedArchiveFileCount > best {
+			best = binary.ExpectedArchiveFileCount
 		}
 	}
 	return best
@@ -889,9 +908,6 @@ func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgin
 		return false
 	}
 
-	if main.ExpectedFileCount == 1 {
-		return true
-	}
 	if main.ExpectedFileCount > 1 {
 		return false
 	}
@@ -927,6 +943,43 @@ func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgin
 	}
 
 	return isVideoFile(name) || isAudioFile(name)
+}
+
+func clusterHasUsableFileIdentity(binaries []pgindex.BinarySummary, record pgindex.ReleaseRecord) bool {
+	if hasArchiveOrMediaMix(binaries) || hasPARRelation(binaries) {
+		return true
+	}
+	if record.TitleSource != "" && record.TitleSource != "source" && record.TitleConfidence >= 0.82 {
+		return true
+	}
+
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if name == "" {
+			continue
+		}
+		ext := filepath.Ext(name)
+		if ext == "" || ext == ".bin" {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(name), ext)
+		if looksReadableReleaseTitle(stem) && !looksObfuscatedReleaseTitle(stem) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func looksWeakGeneratedReleaseTitle(title string) bool {
+	normalized := normalizeSearchTitle(title)
+	if normalized == "" {
+		return false
+	}
+	return numberedNoiseTitleRE.MatchString(normalized)
 }
 
 func dominantMainPayloadBinary(binaries []pgindex.BinarySummary) *pgindex.BinarySummary {
@@ -1492,6 +1545,9 @@ func looksReadableReleaseTitle(title string) bool {
 
 	normalized := normalizeSearchTitle(title)
 	if normalized == "" {
+		return false
+	}
+	if numberedNoiseTitleRE.MatchString(normalized) {
 		return false
 	}
 	parts := strings.Fields(normalized)
