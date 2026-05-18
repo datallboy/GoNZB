@@ -733,7 +733,7 @@ Important operational note:
 - `indexer maintenance` is the application retention pass
 - it reduces row counts and dead-row growth
 - if PostgreSQL files still need to shrink on disk after retention cleanup, that is a separate operator step using `VACUUM (ANALYZE)` or `VACUUM FULL`
-- for the current growth-trim sprint, use the reclaim runbook in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md` for the exact table order and downtime expectations
+- for the current growth-trim sprint, use the reclaim runbook in `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md` for the exact table order and downtime expectations
 
 ## How Metadata Flows Back Into Releases
 

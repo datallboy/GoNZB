@@ -286,7 +286,7 @@ Why this order:
 
 Implementation status:
 
-- completed in cleanup wave 2: operator reclaim runbook documented in `docs/INDEXER_POSTGRES_RUNTIME_TUNING.md`
+- completed in cleanup wave 2: operator reclaim runbook documented in `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md`
 - completed in cleanup wave 2: `indexer maintenance reclaim-storage` now runs the allowlisted reclaim sequence with a safe default:
   - `VACUUM (ANALYZE)` by default
   - `VACUUM (FULL, ANALYZE)` with `--full`
