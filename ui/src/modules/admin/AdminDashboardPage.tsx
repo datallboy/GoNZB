@@ -93,30 +93,113 @@ function backlogCard(stat: IndexerDashboardStat) {
   )
 }
 
+function LoadingBlock({ label }: { label: string }) {
+  return (
+    <div className="loading-panel" role="status" aria-live="polite">
+      <span className="loading-spinner" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  )
+}
+
 export function AdminDashboardPage() {
   const [overview, setOverview] = useState<IndexerOverview | null>(null)
   const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
   const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [backfillLoading, setBackfillLoading] = useState(false)
+  const [throughputLoading, setThroughputLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [throughputError, setThroughputError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
+
     void getAdminOverview()
-      .then(setOverview)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load overview'))
-    void getAdminDashboardStats()
-      .then(setStats)
-      .catch((err) => setStatsError(err instanceof Error ? err.message : 'Failed to load dashboard stats'))
-    void getAdminBackfillProgress()
-      .then(setBackfill)
-      .catch((err) => setBackfillError(err instanceof Error ? err.message : 'Failed to load backfill progress'))
-    void getAdminStageThroughput()
-      .then(setThroughput)
-      .catch((err) => setThroughputError(err instanceof Error ? err.message : 'Failed to load stage throughput'))
+      .then((value) => {
+        if (!cancelled) {
+          setOverview(value)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load overview')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setOverviewLoading(false)
+        }
+      })
+
+    const timer = window.setTimeout(() => {
+      if (cancelled) {
+        return
+      }
+
+      setStatsLoading(true)
+      void getAdminDashboardStats()
+        .then((value) => {
+          if (!cancelled) {
+            setStats(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStatsError(err instanceof Error ? err.message : 'Failed to load dashboard stats')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStatsLoading(false)
+          }
+        })
+
+      setThroughputLoading(true)
+      void getAdminStageThroughput()
+        .then((value) => {
+          if (!cancelled) {
+            setThroughput(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setThroughputError(err instanceof Error ? err.message : 'Failed to load stage throughput')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setThroughputLoading(false)
+          }
+        })
+
+      setBackfillLoading(true)
+      void getAdminBackfillProgress()
+        .then((value) => {
+          if (!cancelled) {
+            setBackfill(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setBackfillError(err instanceof Error ? err.message : 'Failed to load backfill progress')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setBackfillLoading(false)
+          }
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [])
 
   function refreshStats() {
@@ -128,21 +211,14 @@ export function AdminDashboardPage() {
       .finally(() => setStatsLoading(false))
   }
 
-  if (error) {
-    return <div className="banner error">{error}</div>
-  }
-  if (!overview) {
-    return <div className="banner">Loading indexer overview...</div>
-  }
-
   const cards = [
-    ['Releases', overview.release_count],
-    ['Files', overview.file_count],
-    ['Ready Releases', overview.ready_release_count],
-    ['Cached NZBs', overview.ready_nzb_count],
-    ['Running Stages', overview.running_stage_count],
-    ['Paused Stages', overview.paused_stage_count],
-    ['Failed Runs', overview.failed_run_count],
+    ['Releases', overview?.release_count],
+    ['Files', overview?.file_count],
+    ['Ready Releases', overview?.ready_release_count],
+    ['Cached NZBs', overview?.ready_nzb_count],
+    ['Running Stages', overview?.running_stage_count],
+    ['Paused Stages', overview?.paused_stage_count],
+    ['Failed Runs', overview?.failed_run_count],
   ]
   const backlogStats = stats?.items ?? []
   const commandBacklogStats = backlogStats.filter((stat) => !isInspectBacklogStat(stat))
@@ -164,11 +240,13 @@ export function AdminDashboardPage() {
           </Link>
         </div>
       </div>
+      {error ? <div className="banner error">{error}</div> : null}
       <div className="hero-stat-grid">
         {cards.map(([label, value]) => (
           <div className="stat-card" key={label}>
             <span>{label}</span>
-            <strong>{value}</strong>
+            <strong>{typeof value === 'number' ? value.toLocaleString() : '...'}</strong>
+            {overviewLoading && typeof value !== 'number' ? <small>Loading overview</small> : null}
           </div>
         ))}
       </div>
@@ -182,17 +260,21 @@ export function AdminDashboardPage() {
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
-            {statsLoading ? 'Refreshing...' : 'Refresh Backlog'}
+            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Backlog'}
           </button>
         </div>
         {statsError ? <div className="banner error">{statsError}</div> : null}
-        <div className="hero-stat-grid">
-          {commandBacklogStats.map(backlogCard)}
-        </div>
-        <div>
-          <h3 className="section-title">Inspection Backlog</h3>
-          <div className="hero-stat-grid">{inspectBacklogStats.map(backlogCard)}</div>
-        </div>
+        {statsLoading && !stats ? (
+          <LoadingBlock label="Loading backlog snapshot..." />
+        ) : (
+          <>
+            <div className="hero-stat-grid">{commandBacklogStats.map(backlogCard)}</div>
+            <div>
+              <h3 className="section-title">Inspection Backlog</h3>
+              <div className="hero-stat-grid">{inspectBacklogStats.map(backlogCard)}</div>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="page-card stack">
@@ -214,6 +296,13 @@ export function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
+              {throughputLoading && !throughput ? (
+                <tr>
+                  <td colSpan={4}>
+                    <LoadingBlock label="Loading stage throughput..." />
+                  </td>
+                </tr>
+              ) : null}
               {(throughput?.items ?? []).map((item) => (
                 <tr key={item.stage_name}>
                   <td>
@@ -232,7 +321,7 @@ export function AdminDashboardPage() {
                   ))}
                 </tr>
               ))}
-              {!throughputError && (throughput?.items.length ?? 0) === 0 ? (
+              {!throughputLoading && !throughputError && (throughput?.items.length ?? 0) === 0 ? (
                 <tr>
                   <td colSpan={4} className="muted-copy">
                     No recent stage throughput data yet.
@@ -266,6 +355,13 @@ export function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
+              {backfillLoading && !backfill ? (
+                <tr>
+                  <td colSpan={7}>
+                    <LoadingBlock label="Loading backfill progress..." />
+                  </td>
+                </tr>
+              ) : null}
               {(backfill?.items ?? []).map((item) => (
                 <tr key={item.group_name}>
                   <td>
@@ -287,7 +383,7 @@ export function AdminDashboardPage() {
                   <td>{item.latest_article_number > 0 ? item.latest_article_number.toLocaleString() : 'Not observed'}</td>
                 </tr>
               ))}
-              {!backfillError && (backfill?.items.length ?? 0) === 0 ? (
+              {!backfillLoading && !backfillError && (backfill?.items.length ?? 0) === 0 ? (
                 <tr>
                   <td colSpan={7} className="muted-copy">
                     No backfill checkpoint data yet.
