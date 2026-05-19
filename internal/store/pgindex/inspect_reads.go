@@ -570,15 +570,7 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 
 func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfillProgress, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH article_date_bounds AS (
-			SELECT
-				newsgroup_id,
-				MIN(date_utc) AS oldest_scraped_article_date,
-				MAX(date_utc) AS latest_scraped_article_date
-			FROM article_headers
-			GROUP BY newsgroup_id
-		),
-		checkpoint_rollup AS (
+		WITH checkpoint_rollup AS (
 			SELECT
 				sc.newsgroup_id,
 				MAX(sc.backfill_until_date) AS configured_cutoff_date,
@@ -596,13 +588,28 @@ func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfil
 			cr.cutoff_reached,
 			COALESCE(cr.backfill_cursor_article_number, 0) AS backfill_cursor_article_number,
 			COALESCE(cr.latest_article_number, 0) AS latest_article_number,
-			adb.oldest_scraped_article_date,
-			adb.latest_scraped_article_date,
+			oldest.date_utc AS oldest_scraped_article_date,
+			latest.date_utc AS latest_scraped_article_date,
 			cr.provider_count,
 			cr.last_checkpoint_updated_at
 		FROM checkpoint_rollup cr
 		JOIN newsgroups ng ON ng.id = cr.newsgroup_id
-		LEFT JOIN article_date_bounds adb ON adb.newsgroup_id = cr.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT ah.date_utc
+			FROM article_headers ah
+			WHERE ah.newsgroup_id = cr.newsgroup_id
+			  AND ah.date_utc IS NOT NULL
+			ORDER BY ah.date_utc ASC
+			LIMIT 1
+		) oldest ON true
+		LEFT JOIN LATERAL (
+			SELECT ah.date_utc
+			FROM article_headers ah
+			WHERE ah.newsgroup_id = cr.newsgroup_id
+			  AND ah.date_utc IS NOT NULL
+			ORDER BY ah.date_utc DESC
+			LIMIT 1
+		) latest ON true
 		ORDER BY
 			CASE
 				WHEN cr.configured_cutoff_date IS NULL THEN 1
