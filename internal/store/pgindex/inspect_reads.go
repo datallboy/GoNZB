@@ -395,7 +395,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM releases),
-			(SELECT COUNT(*) FROM binaries),
+			(SELECT GREATEST(COALESCE(reltuples, 0), 0)::bigint FROM pg_class WHERE oid = 'binaries'::regclass),
 			(SELECT COUNT(*) FROM release_files),
 			(SELECT COUNT(*) FROM binary_inspections),
 			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
