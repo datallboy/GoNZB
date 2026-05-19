@@ -4361,6 +4361,9 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	if !releaseAfter.Available || releaseAfter.UpdatedAt == nil {
 		t.Fatalf("expected pending_release_candidate_families to be cached, got %#v", releaseAfter)
 	}
+	if !releaseAfter.Exact {
+		t.Fatalf("expected pending_release_candidate_families to remain exact")
+	}
 	if releaseAfter.Value < releaseBefore+1 {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
@@ -4379,6 +4382,20 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		stat, ok := afterByKey[key]
 		if !ok || !stat.Available || stat.UpdatedAt == nil {
 			t.Fatalf("expected %s stat to be cached, got %#v", key, stat)
+		}
+	}
+	for _, key := range []string{
+		"unassembled_headers",
+		"pending_yenc_recovery_binaries",
+		"pending_inspect_discovery_binaries",
+		"pending_inspect_par2_binaries",
+		"pending_inspect_nfo_binaries",
+		"pending_inspect_archive_binaries",
+		"pending_inspect_password_binaries",
+		"pending_inspect_media_binaries",
+	} {
+		if stat := afterByKey[key]; stat.Exact {
+			t.Fatalf("expected %s to be marked as estimated, got %#v", key, stat)
 		}
 	}
 
