@@ -42,20 +42,13 @@ function formatDuration(ms: number) {
   return `${formatRate(minutes)}m`
 }
 
-function statFootnote(stat: IndexerDashboardStat) {
+function statFreshness(stat: IndexerDashboardStat) {
   if (stat.last_error) {
     const attemptedAt = formatTimestamp(stat.refresh_attempted_at)
-    const snapshotAt = formatTimestamp(stat.updated_at)
-    if (snapshotAt) {
-      return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. Showing last good snapshot from ${snapshotAt}.`
-    }
-    return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. No cached snapshot yet.`
+    return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}`
   }
   const updatedAt = formatTimestamp(stat.updated_at)
-  if (updatedAt) {
-    return `As of ${updatedAt} · ${stat.exact ? 'exact count' : 'bounded estimate'}`
-  }
-  return 'Uses the last persisted snapshot.'
+  return updatedAt ? `Updated ${updatedAt}` : 'Waiting for first snapshot'
 }
 
 function formatStatValue(stat: IndexerDashboardStat) {
@@ -81,14 +74,42 @@ function isInspectBacklogStat(stat: IndexerDashboardStat) {
   return stat.key.startsWith('pending_inspect_')
 }
 
+function backlogCommand(stat: IndexerDashboardStat) {
+  switch (stat.key) {
+    case 'unassembled_headers':
+      return 'indexer assemble'
+    case 'pending_release_candidate_families':
+      return 'indexer release'
+    case 'pending_yenc_recovery_binaries':
+      return 'indexer recover-yenc'
+    case 'pending_inspect_discovery_binaries':
+      return 'indexer inspect discovery'
+    case 'pending_inspect_par2_binaries':
+      return 'indexer inspect par2'
+    case 'pending_inspect_nfo_binaries':
+      return 'indexer inspect nfo'
+    case 'pending_inspect_archive_binaries':
+      return 'indexer inspect archive'
+    case 'pending_inspect_password_binaries':
+      return 'indexer inspect password'
+    case 'pending_inspect_media_binaries':
+      return 'indexer inspect media'
+    default:
+      return 'indexer stage'
+  }
+}
+
 function backlogCard(stat: IndexerDashboardStat) {
   return (
-    <div className="stat-card" key={stat.key}>
-      <span>{stat.label}</span>
+    <div className="stat-card backlog-stat-card" key={stat.key}>
+      <div className="backlog-stat-card__header">
+        <span>{stat.label}</span>
+        <small>{stat.exact ? 'exact' : 'estimate'}</small>
+      </div>
       <strong>{formatStatValue(stat)}</strong>
-      <small>{stat.description}</small>
-      <small>{statFootnote(stat)}</small>
-      {stat.last_error ? <small>{stat.last_error}</small> : null}
+      <code>{backlogCommand(stat)}</code>
+      <small>{statFreshness(stat)}</small>
+      {stat.last_error ? <small className="backlog-stat-card__error">{stat.last_error}</small> : null}
     </div>
   )
 }

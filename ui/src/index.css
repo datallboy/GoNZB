@@ -839,6 +839,60 @@ textarea {
   font-size: 1.8rem;
 }
 
+.backlog-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 0;
+  padding: 0.85rem;
+  border-radius: 12px;
+}
+
+.backlog-stat-card span {
+  margin: 0;
+}
+
+.backlog-stat-card strong {
+  line-height: 1;
+}
+
+.backlog-stat-card code {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 999px;
+  border: 1px solid rgba(174, 216, 198, 0.12);
+  background: rgba(99, 200, 160, 0.1);
+  color: var(--accent-strong);
+  padding: 0.22rem 0.55rem;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.backlog-stat-card small {
+  color: var(--text-muted);
+}
+
+.backlog-stat-card__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.backlog-stat-card__header small {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0.12rem 0.45rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.backlog-stat-card__error {
+  color: #ffd2cb;
+}
+
 .auth-screen {
   min-height: 100vh;
   display: grid;
