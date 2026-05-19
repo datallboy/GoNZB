@@ -241,15 +241,18 @@ export function AdminDashboardPage() {
         </div>
       </div>
       {error ? <div className="banner error">{error}</div> : null}
-      <div className="hero-stat-grid">
-        {cards.map(([label, value]) => (
-          <div className="stat-card" key={label}>
-            <span>{label}</span>
-            <strong>{typeof value === 'number' ? value.toLocaleString() : '...'}</strong>
-            {overviewLoading && typeof value !== 'number' ? <small>Loading overview</small> : null}
-          </div>
-        ))}
-      </div>
+      {overviewLoading && !overview ? (
+        <LoadingBlock label="Loading overview cards..." />
+      ) : (
+        <div className="hero-stat-grid">
+          {cards.map(([label, value]) => (
+            <div className="stat-card" key={label}>
+              <span>{label}</span>
+              <strong>{typeof value === 'number' ? value.toLocaleString() : 'Unavailable'}</strong>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="page-card stack">
         <div className="toolbar-row">
