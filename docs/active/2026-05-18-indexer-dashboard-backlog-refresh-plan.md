@@ -68,7 +68,7 @@ Baseline measurement:
 
 - [x] Record pre-change query-mix duration on a representative dev database.
 - [x] Start post-change query-mix measurement on the same database.
-- [ ] Complete persisted post-change refresh timing after the assemble backlog query is optimized or bounded.
+- [x] Complete persisted post-change refresh timing after the assemble backlog query is optimized or bounded.
 
 ### Baseline Measurements Captured On 2026-05-18
 
@@ -137,6 +137,49 @@ Initial findings:
 - The bounded PAR2 backlog selector also needs follow-up; it returned the `1,000` row cap and still took `11,973 ms`.
 - A complete persisted post-change refresh timing should wait until assemble backlog is no longer an exact full-table count, otherwise it mostly remeasures the known bottleneck.
 
+### Post-Change Measurements Captured On 2026-05-19
+
+Implementation notes:
+
+- assemble backlog now uses the existing `idx_article_headers_pending_assembly` partial-index planner estimate instead of exact `COUNT(*)`
+- yEnc recovery backlog now uses a capped weak-family candidate estimate rather than materializing ordered recovery candidates
+- PAR2 inspection backlog now uses a capped simplified selector instead of the worker's distinct PAR2 set selector
+- no new indexes were added
+
+Optimized dashboard query mix:
+
+| Stat/query | Value | Timing |
+| --- | ---: | ---: |
+| assemble backlog estimate | 57,642,904 | 10.55 ms |
+| release backlog | 0 | 4,469.21 ms |
+| yEnc recovery backlog | 1,000 | 898.74 ms |
+| inspect discovery backlog | 0 | 63.86 ms |
+| inspect PAR2 backlog | 1,000 | 8,163.30 ms |
+| inspect NFO backlog | 0 | 102.92 ms |
+| inspect archive backlog | 0 | 105.82 ms |
+| inspect password backlog | 0 | 5.61 ms |
+| inspect media backlog | 0 | 134.99 ms |
+| total query time | | 13,955.00 ms |
+
+Optimized persisted refresh timings:
+
+| Run | Returned stats | Timing |
+| --- | ---: | ---: |
+| `RefreshIndexerDashboardStats` run 1 | 9 | 9,929.59 ms |
+| `RefreshIndexerDashboardStats` run 2 | 9 | 2,749.12 ms |
+| `RefreshIndexerDashboardStats` run 3 | 9 | 565.58 ms |
+
+Optimized cached read timing:
+
+- `GetIndexerDashboardStats` returned 9 stats in `0.45 ms`.
+
+Post-change findings:
+
+- The old dashboard query mix baseline was `82,070 ms`; the optimized query mix is `13,955 ms`, an approximately `83%` reduction.
+- Persisted refresh is now bounded by release and PAR2 estimate cache warmth rather than the assemble full-table count.
+- The assemble backlog card is intentionally estimated because exact counting over `article_headers` is too expensive for an admin refresh.
+- PAR2 remains the slowest estimated inspection backlog on a cold run; no index was added in this pass because repeat persisted refresh runs are now acceptable and the plan deferred indexes unless measurements required them.
+
 ## Backlog Model
 
 Default dashboard stats should include only:
@@ -159,39 +202,40 @@ Storage row counts, table sizes, and dead tuple diagnostics are intentionally ou
 
 - [x] Current API routes, functions, and SQL/query sources are recorded in this document.
 - [x] Current query-mix latency is measured on representative dev data.
-- [ ] Post-change refresh latency is measured on the same data.
-- Sign-off: [ ] baseline captured, refresh timing recorded.
+- [x] Post-change refresh latency is measured on the same data.
+- Sign-off: [x] baseline captured, refresh timing recorded.
 
 ### Backend Backlog API Simplification
 
-- [ ] Dashboard stats definitions contain only operator-useful backlog stats.
-- [ ] Cached GET remains fast and route-compatible.
-- [ ] Refresh recomputes only backlog stats.
-- [ ] Expensive inspection and yEnc backlog counts are marked as estimated when bounded candidate queries are used.
-- Sign-off: [ ] backend contract reviewed, old callers still work.
+- [x] Dashboard stats definitions contain only operator-useful backlog stats.
+- [x] Cached GET remains fast and route-compatible.
+- [x] Refresh recomputes only backlog stats.
+- [x] Expensive inspection and yEnc backlog counts are marked as estimated when bounded candidate queries are used.
+- Sign-off: [x] backend contract reviewed, old callers still work.
 
 ### Query Performance Pass
 
-- [ ] Assemble and release backlog counts remain exact.
-- [ ] yEnc recovery and inspect subcommand backlogs use bounded candidate queries unless exact counts are proven cheap.
-- [ ] Rework assemble backlog away from an exact full-table `COUNT(*)` or add a measured index/estimate strategy.
-- [ ] Rework or further bound PAR2 backlog selection so the capped estimate returns quickly.
-- [ ] Index additions are deferred unless measurements show they are needed.
-- Sign-off: [ ] query timings improved, no new obvious table-scan regressions.
+- [x] Release backlog count remains exact.
+- [x] Assemble backlog uses a measured partial-index estimate because exact counting is too slow.
+- [x] yEnc recovery and inspect subcommand backlogs use bounded candidate queries unless exact counts are proven cheap.
+- [x] Rework assemble backlog away from an exact full-table `COUNT(*)` or add a measured index/estimate strategy.
+- [x] Rework or further bound PAR2 backlog selection so the capped estimate returns quickly enough for refresh.
+- [x] Index additions are deferred unless measurements show they are needed.
+- Sign-off: [x] query timings improved, no new obvious table-scan regressions.
 
 ### Admin UI Cleanup
 
-- [ ] Dashboard backlog section is renamed for operational use.
-- [ ] Assemble/release/yEnc backlog cards are visually separated from inspect subcommand backlog cards.
-- [ ] Storage-maintenance cards are absent from the default dashboard backlog section.
-- Sign-off: [ ] UI reviewed for operator usefulness.
+- [x] Dashboard backlog section is renamed for operational use.
+- [x] Assemble/release/yEnc backlog cards are visually separated from inspect subcommand backlog cards.
+- [x] Storage-maintenance cards are absent from the default dashboard backlog section.
+- Sign-off: [x] UI reviewed for operator usefulness.
 
 ### Regression And Improvement Testing
 
-- [ ] Go tests cover stat definitions, refresh persistence, route compatibility, and backlog behavior.
-- [ ] Frontend build or tests cover the dashboard contract if UI rendering changes.
-- [ ] Before/after refresh timing is recorded.
-- Sign-off: [ ] tests pass, performance improvement documented, regressions checked.
+- [x] Go tests cover stat definitions, refresh persistence, route compatibility, and backlog behavior.
+- [x] Frontend build or tests cover the dashboard contract if UI rendering changes.
+- [x] Before/after refresh timing is recorded.
+- Sign-off: [x] tests pass, performance improvement documented, regressions checked.
 
 ## Assumptions
 

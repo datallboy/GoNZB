@@ -450,8 +450,8 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "unassembled_headers",
 		Label:       "Assemble Backlog",
-		Description: "Article headers still waiting for assemble processing.",
-		Exact:       true,
+		Description: "Planner-estimated article headers still waiting for assemble processing.",
+		Exact:       false,
 	},
 	{
 		Key:         "pending_release_candidate_families",
@@ -893,7 +893,7 @@ func dashboardStatKeys() []string {
 func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (int64, error) {
 	switch key {
 	case "unassembled_headers":
-		return s.CountUnassembledArticleHeaders(ctx)
+		return s.EstimateUnassembledArticleHeaders(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
 	case "pending_yenc_recovery_binaries":
@@ -1011,19 +1011,79 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 const dashboardBacklogEstimateLimit = 1000
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	candidates, err := s.ListYEncRecoveryCandidates(ctx, dashboardBacklogEstimateLimit)
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT b.id
+			FROM binaries b
+			JOIN release_family_readiness_summaries s
+			  ON s.provider_id = b.provider_id
+			 AND s.newsgroup_id = b.newsgroup_id
+			 AND s.key_kind = 'release_family'
+			 AND s.family_key = b.release_family_key
+			WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
+			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			  AND b.is_main_payload = TRUE
+			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
+			LIMIT $1
+		) pending`, dashboardBacklogEstimateLimit).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
+	if strings.TrimSpace(stageName) == "inspect_par2" {
+		return s.CountPendingPAR2InspectionBacklog(ctx)
+	}
+	candidates, err := s.ListBinaryInspectionCandidates(ctx, stageName, dashboardBacklogEstimateLimit)
 	if err != nil {
 		return 0, err
 	}
 	return int64(len(candidates)), nil
 }
 
-func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
-	candidates, err := s.ListBinaryInspectionCandidates(ctx, stageName, dashboardBacklogEstimateLimit)
-	if err != nil {
-		return 0, err
+func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT b.id
+			FROM binaries b
+			LEFT JOIN binary_inspections bi
+				ON bi.stage_name = 'inspect_par2'
+				AND bi.binary_id = b.id
+			WHERE b.observed_parts > 0
+			  AND (
+				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
+				COALESCE(b.recovered_kind, '') = 'par2' OR
+				COALESCE(b.recovered_extension, '') = '.par2'
+			  )
+			  AND (
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					bi.inspection_claimed_until IS NOT NULL AND
+					bi.inspection_claimed_until < NOW()
+				) OR
+				b.updated_at > bi.updated_at OR
+				NOT EXISTS (
+					SELECT 1
+					FROM binary_par2_targets bpt
+					WHERE bpt.binary_id = b.id
+				)
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
+				bi.inspection_claimed_until < NOW()
+			  )
+			LIMIT $1
+		) pending`, dashboardBacklogEstimateLimit).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending inspect_par2 backlog: %w", err)
 	}
-	return int64(len(candidates)), nil
+	return count, nil
 }
 
 func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {

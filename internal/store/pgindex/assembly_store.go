@@ -920,6 +920,21 @@ func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, erro
 	return count, nil
 }
 
+func (s *Store) EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error) {
+	var estimated float64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(reltuples, 0)
+		FROM pg_class
+		WHERE oid = 'idx_article_headers_pending_assembly'::regclass`,
+	).Scan(&estimated); err != nil {
+		return 0, fmt.Errorf("estimate unassembled article headers: %w", err)
+	}
+	if estimated <= 0 {
+		return 0, nil
+	}
+	return int64(estimated + 0.5), nil
+}
+
 // CHANGED: normalize posters into a dimension table.
 func (s *Store) EnsurePoster(ctx context.Context, posterName string) (int64, error) {
 	posterName = strings.TrimSpace(posterName)
