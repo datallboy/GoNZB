@@ -466,8 +466,9 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_yenc_recovery_binaries",
 		Label:       "yEnc Recovery Backlog",
-		Description: "Exact count of binaries that recover_yenc can inspect now.",
-		Exact:       true,
+		Description: "Bounded count of binaries that recover_yenc can inspect now. Values at the cap mean there may be more recoverable work behind the current snapshot.",
+		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_discovery_binaries",
@@ -1028,32 +1029,11 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 }
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM binaries b
-		JOIN release_family_readiness_summaries s
-		  ON s.provider_id = b.provider_id
-		 AND s.newsgroup_id = b.newsgroup_id
-		 AND s.key_kind = 'release_family'
-		 AND s.family_key = b.release_family_key
-		JOIN LATERAL (
-			SELECT bp.article_header_id
-			FROM binary_parts bp
-			WHERE bp.binary_id = b.id
-			ORDER BY bp.part_number, bp.id
-			LIMIT 1
-		) bp ON true
-		JOIN article_header_ingest_payloads p ON p.article_header_id = bp.article_header_id
-		WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
-		  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-		  AND b.is_main_payload = TRUE
-		  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
-		  AND p.subject_file_name = ''
-		  AND (p.yenc_recovery_retry_after IS NULL OR p.yenc_recovery_retry_after <= NOW())`).Scan(&count); err != nil {
+	candidates, err := s.ListYEncRecoveryCandidates(ctx, dashboardBacklogEstimateLimit)
+	if err != nil {
 		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
-	return count, nil
+	return int64(len(candidates)), nil
 }
 
 func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
