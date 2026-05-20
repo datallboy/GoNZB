@@ -289,11 +289,20 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if strings.TrimSpace(candidate.ReleaseID) == "" {
 		return nil
 	}
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasPAR2:           &hasPAR2,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_par2: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

@@ -844,6 +844,97 @@ func TestReplaceBinaryInspectionPersistenceHelpersBatchAndClearRows(t *testing.T
 	assertTableCount("binary_par2_sets", 0)
 }
 
+func TestReplaceBinaryInspectionPersistenceHelpersDropStaleReleaseIDs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.stale.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	releaseID := seedTestRelease(t, store, "inspect-stale-artifacts")
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_inspection_artifacts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_archive_entries WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_media_streams WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID)
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "inspect-stale-source",
+		ReleaseFamilyKey:  "inspect-stale-family",
+		BinaryKey:         fmt.Sprintf("inspect-stale-%d", time.Now().UnixNano()),
+		BinaryName:        "inspect.stale.sample.bin",
+		FileName:          "inspect.stale.sample.bin",
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.99,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	staleReleaseID := "missing-release-id"
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, []BinaryInspectionArtifactRecord{
+		{ReleaseID: staleReleaseID, ArtifactRole: "primary", ArtifactName: "sample.7z", SourceKind: "archive"},
+		{ReleaseID: releaseID, ArtifactRole: "sidecar", ArtifactName: "sample.nfo", SourceKind: "archive"},
+	}); err != nil {
+		t.Fatalf("replace inspection artifacts with stale release id: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{
+		{ReleaseID: staleReleaseID, EntryName: "video.mkv", MediaType: "video"},
+	}); err != nil {
+		t.Fatalf("replace archive entries with stale release id: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{
+		{ReleaseID: staleReleaseID, StreamIndex: 0, StreamType: "video", CodecName: "h264"},
+	}); err != nil {
+		t.Fatalf("replace media streams with stale release id: %v", err)
+	}
+
+	var staleArtifacts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND release_id IS NULL`, binaryID,
+	).Scan(&staleArtifacts); err != nil {
+		t.Fatalf("count null artifact release ids: %v", err)
+	}
+	if staleArtifacts != 1 {
+		t.Fatalf("expected one stale artifact release id to be stored as NULL, got %d", staleArtifacts)
+	}
+
+	var validArtifacts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND release_id = $2`, binaryID, releaseID,
+	).Scan(&validArtifacts); err != nil {
+		t.Fatalf("count retained artifact release ids: %v", err)
+	}
+	if validArtifacts != 1 {
+		t.Fatalf("expected valid artifact release id to be retained, got %d", validArtifacts)
+	}
+
+	for _, table := range []string{"binary_archive_entries", "binary_media_streams"} {
+		var nullRows int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE binary_id = $1 AND release_id IS NULL`, binaryID).Scan(&nullRows); err != nil {
+			t.Fatalf("count null release ids in %s: %v", table, err)
+		}
+		if nullRows != 1 {
+			t.Fatalf("expected stale release id in %s to be stored as NULL, got %d", table, nullRows)
+		}
+	}
+}
+
 func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

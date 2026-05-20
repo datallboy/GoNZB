@@ -7,11 +7,18 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+var ErrReleaseNotFound = errors.New("release not found")
+
+func IsReleaseNotFound(err error) bool {
+	return errors.Is(err, ErrReleaseNotFound)
+}
 
 type ArticleHeader struct {
 	ArticleNumber int64

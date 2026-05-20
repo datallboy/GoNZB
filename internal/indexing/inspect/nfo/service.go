@@ -184,11 +184,20 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasNFO:            &hasNFO,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_nfo: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

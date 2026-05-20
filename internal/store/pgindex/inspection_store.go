@@ -68,6 +68,81 @@ func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix st
 	return nil
 }
 
+type inspectionReleaseIDQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspectionReleaseIDQueryer, releaseIDs []string) (map[string]bool, error) {
+	uniqueIDs := make([]string, 0, len(releaseIDs))
+	seen := make(map[string]bool, len(releaseIDs))
+	for _, releaseID := range releaseIDs {
+		releaseID = strings.TrimSpace(releaseID)
+		if releaseID == "" || seen[releaseID] {
+			continue
+		}
+		seen[releaseID] = true
+		uniqueIDs = append(uniqueIDs, releaseID)
+	}
+	if len(uniqueIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	placeholders := make([]string, 0, len(uniqueIDs))
+	args := make([]any, 0, len(uniqueIDs))
+	for i, releaseID := range uniqueIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, releaseID)
+	}
+
+	rows, err := q.QueryContext(ctx, `
+		SELECT release_id
+		FROM releases
+		WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool, len(uniqueIDs))
+	for rows.Next() {
+		var releaseID string
+		if err := rows.Scan(&releaseID); err != nil {
+			return nil, err
+		}
+		existing[strings.TrimSpace(releaseID)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
+func archiveEntryReleaseIDs(rows []BinaryArchiveEntryRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
+func mediaStreamReleaseIDs(rows []BinaryMediaStreamRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
 func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]ReleaseTitleCandidate, error) {
 	if len(binaryIDs) == 0 {
 		return nil, nil
@@ -1766,7 +1841,7 @@ func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspec
 		in.ReleaseID,
 	).Scan(&completionPct, &availabilityScore, &passwordedKnown, &passwordedUnknown); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, "", fmt.Errorf("release %s not found", in.ReleaseID)
+			return nil, "", fmt.Errorf("%w: %s", ErrReleaseNotFound, in.ReleaseID)
 		}
 		return nil, "", fmt.Errorf("load current availability for %s: %w", in.ReleaseID, err)
 	}
@@ -1816,6 +1891,11 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load artifact release ids %s/%d: %w", stageName, binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1823,8 +1903,8 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -1882,6 +1962,11 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, archiveEntryReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load archive entry release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1889,8 +1974,8 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 			return fmt.Errorf("marshal archive entry metadata %d: %w", binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -1948,6 +2033,11 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, mediaStreamReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load media stream release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1955,8 +2045,8 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 			return fmt.Errorf("marshal media stream metadata %d: %w", binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
