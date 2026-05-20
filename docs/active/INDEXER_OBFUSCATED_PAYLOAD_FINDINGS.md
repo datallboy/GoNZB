@@ -45,6 +45,7 @@ Dashboard and backlog-count baseline:
 - cached dashboard rows were stale, so the UI could keep showing the old capped value even after query logic changed
 - direct PAR2 exact backlog measurement returned `18060` rows during the session
 - exact yEnc recovery measurement needed query support before it was safe to use as a routine dashboard stat
+- the exact yEnc dashboard count later hung during refresh because the count path had to evaluate the first-part payload relationship for every eligible weak/obfuscated binary
 
 Schema-change baseline:
 
@@ -121,6 +122,8 @@ Indexer backlog visibility:
 - exact dashboard counts need supporting indexes before replacing capped estimates
 - UI values equal to the measurement cap must be visibly treated as capped or stale until refreshed
 - old cached capped rows can become misleading when a stat definition changes from bounded to exact, so definition-changing migrations should invalidate affected cached dashboard rows
+- yEnc recovery is not currently safe as a full exact dashboard count; bounded selector-backed measurement is preferred until a dedicated rollup or materially faster count path exists
+- dashboard refresh must protect itself with per-stat timeouts so one bad backlog query cannot hang the whole admin view
 - stage metrics should expose whether configured batches fill and what effective concurrency was used
 
 Release grouping:
@@ -197,6 +200,12 @@ Guardrails:
 
    Status: done on 2026-05-20. Migration `024` deletes the affected cached rows and bumps the expected pgindex schema version to `24`. After this migration applies, the UI should show those stats as uncached until the refresh endpoint recomputes them with the exact-count queries.
 
+8. yEnc dashboard refresh hang fix
+
+   Keep yEnc backlog refresh bounded to the actual recovery selector rather than running a full exact count across every eligible weak/obfuscated binary.
+
+   Status: done on 2026-05-20. The yEnc dashboard stat is again a capped backlog snapshot (`1000+` when saturated), backed by `ListYEncRecoveryCandidates`, and migration `025` invalidates the affected cached row. Dashboard stat refresh also has a per-stat timeout so a future slow stat persists an error instead of hanging the whole refresh.
+
 ## Action Item Sign-Off
 
 Done:
@@ -212,11 +221,14 @@ Done:
 - [x] Add migration-backed invalidation for stale yEnc/PAR2 cached dashboard stats
 - [x] Audit downloader yEnc filename adoption risk
 - [x] Audit release candidate grouping boundaries for recovered cross-group identity
+- [x] Bound yEnc dashboard backlog refresh after exact count hang
+- [x] Add per-stat dashboard refresh timeout guardrail
 
 Needs completion:
 
-- [ ] Refresh dashboard stat rows after migrations `023` and `024` apply and verify yEnc/PAR2 UI values are no longer stale `1000` cap values
+- [ ] Refresh dashboard stat rows after migrations `023`, `024`, and `025` apply and verify yEnc shows capped truthfully while PAR2 no longer shows stale `1000`
 - [ ] Audit yEnc recovery selection after live stats refresh to confirm it is keeping pace with assemble under current settings
+- [ ] Design a fast full-cardinality yEnc recovery backlog rollup if operators need exact yEnc backlog size instead of a capped claimable snapshot
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
 - [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples
