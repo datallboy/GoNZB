@@ -59,11 +59,18 @@ func (s *Service) RunOnce(ctx context.Context) error {
 }
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	selectionStarted := time.Now()
 	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectPAR2), s.opts.CandidateBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("list inspect_par2 candidates: %w", err)
 	}
-	metrics := map[string]any{"candidate_count": len(candidates), "processed_count": 0, "batch_size": s.opts.CandidateBatchSize}
+	metrics := map[string]any{
+		"candidate_count":        len(candidates),
+		"processed_count":        0,
+		"batch_size":             s.opts.CandidateBatchSize,
+		"candidate_selection_ms": durationMillis(time.Since(selectionStarted)),
+		"processing_ms":          float64(0),
+	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_par2: no inspection candidates available")
@@ -72,18 +79,44 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	processed := 0
+	processingStarted := time.Now()
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			metrics["processed_count"] = processed
+			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 			return metrics, err
 		}
+		candidateStarted := time.Now()
 		if err := s.inspectCandidate(ctx, candidate); err != nil {
 			metrics["processed_count"] = processed
+			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_par2: failed binary_id=%d release_id=%s file=%s processed=%d/%d duration_ms=%.2f err=%v",
+					candidate.BinaryID,
+					candidate.ReleaseID,
+					candidate.FileName,
+					processed,
+					len(candidates),
+					durationMillis(time.Since(candidateStarted)),
+					err,
+				)
+			}
 			return metrics, err
 		}
 		processed++
+		candidateDurationMS := durationMillis(time.Since(candidateStarted))
+		if s != nil && s.log != nil && (processed == len(candidates) || processed%10 == 0 || candidateDurationMS >= 5000) {
+			s.log.Info("inspect_par2: progress processed=%d/%d binary_id=%d file=%s duration_ms=%.2f",
+				processed,
+				len(candidates),
+				candidate.BinaryID,
+				candidate.FileName,
+				candidateDurationMS,
+			)
+		}
 	}
 	metrics["processed_count"] = processed
+	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	return metrics, nil
 }
 
@@ -192,8 +225,8 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		Signature:    sample.Signature,
 		SourceKind:   "inspect_par2",
 		Metadata: map[string]any{
-			"bytes_sampled": sample.BytesRead,
-			"exact_size":    sample.ExactSize,
+			"bytes_sampled":          sample.BytesRead,
+			"exact_size":             sample.ExactSize,
 			"full_manifest_fallback": usedFullMaterialization,
 		},
 	}}); err != nil {
@@ -224,14 +257,14 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 
 	summary := map[string]any{
-		"has_par2":        true,
-		"file_name":       candidate.FileName,
-		"base_name":       base,
-		"set_name":        setName,
-		"signature_ok":    signatureOK,
-		"repairable_hint": true,
-		"target_count":    len(targets),
-		"targets":         targetMetadata,
+		"has_par2":               true,
+		"file_name":              candidate.FileName,
+		"base_name":              base,
+		"set_name":               setName,
+		"signature_ok":           signatureOK,
+		"repairable_hint":        true,
+		"target_count":           len(targets),
+		"targets":                targetMetadata,
 		"full_manifest_fallback": usedFullMaterialization,
 	}
 	if coverage != nil {
@@ -264,6 +297,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func durationMillis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000.0
+}
 
 func parseInt(v string) int {
 	n := inspectpkg.ParseInt64(v)
