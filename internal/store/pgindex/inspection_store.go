@@ -2300,35 +2300,46 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 	}
 
 	updatedIDs := map[int64]struct{}{}
-	for _, target := range targets {
+	for start := 0; start < len(targets); start += inspectionReplaceInsertBatchSize {
+		end := start + inspectionReplaceInsertBatchSize
+		if end > len(targets) {
+			end = len(targets)
+		}
+
+		args := []any{seed.providerID, seed.newsgroupID, len(targets), binaryID}
+		values := make([]string, 0, end-start)
+		for _, target := range targets[start:end] {
+			base := len(args)
+			args = append(args, target.normalizedName, target.fileIndex, target.fileName)
+			values = append(values, fmt.Sprintf("($%d::text,$%d::integer,$%d::text)", base+1, base+2, base+3))
+		}
+
 		rows, err := tx.QueryContext(ctx, `
-			UPDATE binaries
-			SET expected_archive_file_count = GREATEST(expected_archive_file_count, $4::integer),
+			WITH target_values(normalized_name, file_index, file_name) AS (
+				VALUES `+strings.Join(values, ",")+`
+			)
+			UPDATE binaries b
+			SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $3::integer),
 			    file_index = CASE
-			    	WHEN file_index <= 0 AND $5::integer > 0 THEN $5::integer
-			    	ELSE file_index
+			    	WHEN b.file_index <= 0 AND tv.file_index > 0 THEN tv.file_index
+			    	ELSE b.file_index
 			    END,
-			    grouping_evidence_json = grouping_evidence_json || jsonb_build_object(
-			    	'par2_archive_file_count', $4::integer,
-			    	'par2_target_file_name', $6::text,
-			    	'par2_source_binary_id', $7::bigint,
+			    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
+			    	'par2_archive_file_count', $3::integer,
+			    	'par2_target_file_name', tv.file_name,
+			    	'par2_source_binary_id', $4::bigint,
 			    	'par2_target_coverage_source', 'inspect_par2'
 			    ),
 			    updated_at = NOW()
-			WHERE provider_id = $1
-			  AND newsgroup_id = $2
-			  AND LOWER(BTRIM(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, '')))) = $3::text
-			RETURNING id, release_family_key, base_stem, expected_file_count, expected_archive_file_count`,
-			seed.providerID,
-			seed.newsgroupID,
-			target.normalizedName,
-			len(targets),
-			target.fileIndex,
-			target.fileName,
-			binaryID,
+			FROM target_values tv
+			WHERE b.provider_id = $1
+			  AND b.newsgroup_id = $2
+			  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = tv.normalized_name
+			RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
+			args...,
 		)
 		if err != nil {
-			return result, fmt.Errorf("apply par2 target coverage %q: %w", target.fileName, err)
+			return result, fmt.Errorf("apply par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 		for rows.Next() {
 			var updatedID int64
@@ -2337,7 +2348,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 			var expectedArchiveFileCount int
 			if err := rows.Scan(&updatedID, &releaseFamilyKey, &baseStem, &expectedFileCount, &expectedArchiveFileCount); err != nil {
 				rows.Close()
-				return result, fmt.Errorf("scan par2 target coverage %q: %w", target.fileName, err)
+				return result, fmt.Errorf("scan par2 target coverage batch %d-%d: %w", start, end, err)
 			}
 			if _, ok := updatedIDs[updatedID]; !ok {
 				updatedIDs[updatedID] = struct{}{}
@@ -2352,7 +2363,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 			}
 		}
 		if err := rows.Close(); err != nil {
-			return result, fmt.Errorf("iterate par2 target coverage %q: %w", target.fileName, err)
+			return result, fmt.Errorf("iterate par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 	}
 
