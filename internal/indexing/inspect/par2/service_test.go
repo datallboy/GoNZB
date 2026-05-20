@@ -221,6 +221,27 @@ func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *tes
 	}
 }
 
+func TestPAR2RunBudgetIsBounded(t *testing.T) {
+	cases := []struct {
+		name        string
+		toolTimeout time.Duration
+		want        time.Duration
+	}{
+		{name: "default", toolTimeout: 0, want: 2 * time.Minute},
+		{name: "small timeout has floor", toolTimeout: time.Second, want: 30 * time.Second},
+		{name: "normal timeout multiplies", toolTimeout: 20 * time.Second, want: 80 * time.Second},
+		{name: "large timeout has ceiling", toolTimeout: 10 * time.Minute, want: 2 * time.Minute},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := par2RunBudget(inspectpkg.Options{ToolTimeout: tc.toolTimeout}); got != tc.want {
+				t.Fatalf("expected run budget %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
 	sample := append(buildPAR2Sample("valid.part01.rar", 1234), buildPAR2Sample("\x7f\x12\x15\x1e", 1234)...)
 	sample = append(sample, buildPAR2Sample("absurd.part02.rar", 1<<60)...)
@@ -235,17 +256,17 @@ func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
 }
 
 type fakePAR2Repository struct {
-	candidates     []pgindex.BinaryInspectionCandidate
-	files          []pgindex.CatalogReleaseFile
+	candidates         []pgindex.BinaryInspectionCandidate
+	files              []pgindex.CatalogReleaseFile
 	standaloneArticles []pgindex.CatalogArticleRef
-	completed      []pgindex.BinaryInspectionRecord
-	failed         []pgindex.BinaryInspectionRecord
-	artifacts      []pgindex.BinaryInspectionArtifactRecord
-	par2Sets       []pgindex.BinaryPAR2SetRecord
-	par2Targets    []pgindex.BinaryPAR2TargetRecord
-	coverageRows   []pgindex.BinaryPAR2TargetRecord
-	releaseUpdates []pgindex.ReleaseInspectionUpdate
-	standaloneFile *pgindex.CatalogReleaseFile
+	completed          []pgindex.BinaryInspectionRecord
+	failed             []pgindex.BinaryInspectionRecord
+	artifacts          []pgindex.BinaryInspectionArtifactRecord
+	par2Sets           []pgindex.BinaryPAR2SetRecord
+	par2Targets        []pgindex.BinaryPAR2TargetRecord
+	coverageRows       []pgindex.BinaryPAR2TargetRecord
+	releaseUpdates     []pgindex.ReleaseInspectionUpdate
+	standaloneFile     *pgindex.CatalogReleaseFile
 }
 
 func (f *fakePAR2Repository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {

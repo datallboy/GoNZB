@@ -224,7 +224,7 @@ Guardrails:
 
    Keep PAR2 inspection observable and prevent target coverage updates from becoming the bottleneck for obfuscated archive sets.
 
-   Status: done on 2026-05-20. `inspect_par2` now reports candidate-selection, processing, and per-candidate progress timing. PAR2 target coverage updates use the normalized file identity expression that matches the existing index and batch target updates per candidate. Live one-shot testing still showed that `batch_size=250` is too large for the current data shape when periodic slow candidates appear; the default remains lower, and operator tuning should prefer smaller batches until per-candidate budgets exist.
+   Status: done on 2026-05-20. `inspect_par2` now reports candidate-selection, processing, and per-candidate progress timing. PAR2 target coverage updates use the normalized file identity expression that matches the existing index and batch target updates per candidate. Live one-shot testing still showed that `batch_size=250` is too large for the current data shape when periodic slow candidates appear, so the PAR2 one-shot loop now stops cleanly after a bounded run budget and leaves remaining candidates for the next scheduler tick.
 
 11. Stale release-link inspection hardening
 
@@ -255,12 +255,12 @@ Done:
 - [x] Add PAR2 inspection candidate-selection and per-candidate progress timing metrics
 - [x] Align PAR2 target coverage updates with normalized file identity index support
 - [x] Batch PAR2 target coverage updates per candidate
+- [x] Add a bounded PAR2 run budget so large configured batches cannot monopolize the scheduler loop
 - [x] Harden inspection artifact and release-rollup writes against stale release links
 
 Needs completion:
 
 - [ ] Design a fast full-cardinality yEnc recovery backlog rollup if operators need exact yEnc backlog size instead of a capped claimable snapshot
-- [ ] Tune live PAR2 inspection settings or add per-candidate budgets so a filled batch cannot monopolize the stage loop for several minutes
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
 - [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples

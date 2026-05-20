@@ -64,12 +64,15 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if err != nil {
 		return nil, fmt.Errorf("list inspect_par2 candidates: %w", err)
 	}
+	runBudget := par2RunBudget(s.opts)
 	metrics := map[string]any{
 		"candidate_count":        len(candidates),
 		"processed_count":        0,
 		"batch_size":             s.opts.CandidateBatchSize,
 		"candidate_selection_ms": durationMillis(time.Since(selectionStarted)),
 		"processing_ms":          float64(0),
+		"run_budget_ms":          durationMillis(runBudget),
+		"run_budget_exhausted":   false,
 	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
@@ -114,10 +117,37 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 				candidateDurationMS,
 			)
 		}
+		if runBudget > 0 && time.Since(processingStarted) >= runBudget && processed < len(candidates) {
+			metrics["processed_count"] = processed
+			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
+			metrics["run_budget_exhausted"] = true
+			if s != nil && s.log != nil {
+				s.log.Info("inspect_par2: run budget exhausted processed=%d/%d budget_ms=%.2f",
+					processed,
+					len(candidates),
+					durationMillis(runBudget),
+				)
+			}
+			return metrics, nil
+		}
 	}
 	metrics["processed_count"] = processed
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	return metrics, nil
+}
+
+func par2RunBudget(opts inspectpkg.Options) time.Duration {
+	if opts.ToolTimeout <= 0 {
+		return 2 * time.Minute
+	}
+	budget := opts.ToolTimeout * 4
+	if budget < 30*time.Second {
+		return 30 * time.Second
+	}
+	if budget > 2*time.Minute {
+		return 2 * time.Minute
+	}
+	return budget
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
