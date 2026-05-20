@@ -74,25 +74,29 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	metrics := map[string]any{
-		"batch_size":            s.opts.BatchSize,
-		"max_header_bytes":      s.opts.MaxHeaderBytes,
-		"concurrency":           s.opts.Concurrency,
-		"effective_concurrency": 0,
-		"batch_full":            false,
-		"candidates":            0,
-		"attempted":             0,
-		"recovered":             0,
-		"merged":                0,
-		"noops":                 0,
-		"fetch_failures":        0,
-		"not_found":             0,
-		"parse_failures":        0,
+		"batch_size":             s.opts.BatchSize,
+		"max_header_bytes":       s.opts.MaxHeaderBytes,
+		"concurrency":            s.opts.Concurrency,
+		"effective_concurrency":  0,
+		"batch_full":             false,
+		"candidates":             0,
+		"attempted":              0,
+		"candidate_selection_ms": float64(0),
+		"processing_ms":          float64(0),
+		"recovered":              0,
+		"merged":                 0,
+		"noops":                  0,
+		"fetch_failures":         0,
+		"not_found":              0,
+		"parse_failures":         0,
 	}
 	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
 		return metrics, fmt.Errorf("yenc recovery service is not configured")
 	}
 
+	selectionStarted := time.Now()
 	candidates, err := s.repo.ListYEncRecoveryCandidates(ctx, s.opts.BatchSize)
+	metrics["candidate_selection_ms"] = durationMillis(time.Since(selectionStarted))
 	if err != nil {
 		return metrics, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
@@ -155,6 +159,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		}
 	}
 
+	processingStarted := time.Now()
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -179,6 +184,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	close(jobs)
 	wg.Wait()
+	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	if firstErr != nil {
 		return metrics, firstErr
 	}
@@ -199,6 +205,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		)
 	}
 	return metrics, nil
+}
+
+func durationMillis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000.0
 }
 
 func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate) (*pgindex.YEncHeaderRecoveryResult, string, error) {
