@@ -449,6 +449,7 @@ type indexerDashboardStatDefinition struct {
 }
 
 const dashboardBacklogEstimateLimit = 1000
+const dashboardStatRefreshTimeout = 20 * time.Second
 
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
@@ -887,7 +888,9 @@ func maxInt(value, fallback int) int {
 func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
 	for _, def := range indexerDashboardStatDefinitions {
 		now := time.Now().UTC()
-		value, err := s.computeIndexerDashboardStat(ctx, def.Key)
+		statCtx, cancel := context.WithTimeout(ctx, dashboardStatRefreshTimeout)
+		value, err := s.computeIndexerDashboardStat(statCtx, def.Key)
+		cancel()
 		if err != nil {
 			if persistErr := s.persistIndexerDashboardStatFailure(ctx, def.Key, now, err); persistErr != nil {
 				return nil, persistErr
