@@ -125,6 +125,7 @@ Indexer backlog visibility:
 - yEnc recovery is not currently safe as a full exact dashboard count; bounded selector-backed measurement is preferred until a dedicated rollup or materially faster count path exists
 - dashboard refresh must protect itself with per-stat timeouts so one bad backlog query cannot hang the whole admin view
 - stage metrics should expose whether configured batches fill and what effective concurrency was used
+- yEnc recovery stage metrics should also separate candidate-selection time from fetch/process time so selector regressions are visible
 
 Release grouping:
 
@@ -206,6 +207,12 @@ Guardrails:
 
    Status: done on 2026-05-20. The yEnc dashboard stat is again a capped backlog snapshot (`1000+` when saturated), backed by `ListYEncRecoveryCandidates`, and migration `025` invalidates the affected cached row. Dashboard stat refresh also has a per-stat timeout so a future slow stat persists an error instead of hanging the whole refresh.
 
+9. yEnc recovery timing metrics
+
+   Add timing fields that distinguish slow candidate selection from slow article prefix recovery.
+
+   Status: done on 2026-05-20. `recover_yenc` metrics now include `candidate_selection_ms` and `processing_ms` alongside `batch_full`, `effective_concurrency`, `attempted`, and `recovered`.
+
 ## Action Item Sign-Off
 
 Done:
@@ -223,6 +230,7 @@ Done:
 - [x] Audit release candidate grouping boundaries for recovered cross-group identity
 - [x] Bound yEnc dashboard backlog refresh after exact count hang
 - [x] Add per-stat dashboard refresh timeout guardrail
+- [x] Add yEnc recovery candidate-selection and processing timing metrics
 
 Needs completion:
 
