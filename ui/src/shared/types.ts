@@ -119,6 +119,7 @@ export type IndexerDashboardStat = {
   value: number
   available: boolean
   exact: boolean
+  capped: boolean
   updated_at?: string
   refresh_attempted_at?: string
   last_error?: string

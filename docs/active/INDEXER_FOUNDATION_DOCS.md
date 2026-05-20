@@ -31,6 +31,14 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
+### `docs/active/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`
+
+Use for:
+
+- current findings from obfuscated header patterns and legacy NZB import encoding
+- downloader parser hardening follow-up for legacy XML charset declarations
+- evaluating cross-newsgroup release grouping only when recovered identity evidence is strong
+
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
