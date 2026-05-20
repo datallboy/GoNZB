@@ -46,6 +46,9 @@ Dashboard and backlog-count baseline:
 - direct PAR2 exact backlog measurement returned `18060` rows during the session
 - exact yEnc recovery measurement needed query support before it was safe to use as a routine dashboard stat
 - the exact yEnc dashboard count later hung during refresh because the count path had to evaluate the first-part payload relationship for every eligible weak/obfuscated binary
+- after cache invalidation, the live stats endpoint reported yEnc and PAR2 backlog rows as unavailable while refresh data was missing instead of continuing to show stale `1000` values
+- a direct yEnc recovery one-shot completed `100/100` attempted and recovered with no fetch or parse failures under live settings (`batch_size=100`, `concurrency=4`)
+- a direct PAR2 inspection one-shot used live `batch_size=250` and did not finish inside 240 seconds; progress metrics showed most candidates completing in hundreds of milliseconds, with periodic slow candidates in the 27-36 second range
 
 Schema-change baseline:
 
@@ -126,6 +129,10 @@ Indexer backlog visibility:
 - dashboard refresh must protect itself with per-stat timeouts so one bad backlog query cannot hang the whole admin view
 - stage metrics should expose whether configured batches fill and what effective concurrency was used
 - yEnc recovery stage metrics should also separate candidate-selection time from fetch/process time so selector regressions are visible
+- PAR2 inspection needs progress and timing metrics because a filled batch can contain a small number of slow candidates that dominate wall time
+- PAR2 target coverage updates must use the normalized file identity expression that has index support
+- PAR2 target coverage should update target matches in batches; per-target updates turned some candidates into avoidable database stalls
+- inspection stages can race release cleanup or re-formation, so stale release ids must not make binary-scoped inspection artifacts violate release foreign keys or fail otherwise completed binary inspections
 
 Release grouping:
 
@@ -213,6 +220,18 @@ Guardrails:
 
    Status: done on 2026-05-20. `recover_yenc` metrics now include `candidate_selection_ms` and `processing_ms` alongside `batch_full`, `effective_concurrency`, `attempted`, and `recovered`.
 
+10. PAR2 inspection throughput hardening
+
+   Keep PAR2 inspection observable and prevent target coverage updates from becoming the bottleneck for obfuscated archive sets.
+
+   Status: done on 2026-05-20. `inspect_par2` now reports candidate-selection, processing, and per-candidate progress timing. PAR2 target coverage updates use the normalized file identity expression that matches the existing index and batch target updates per candidate. Live one-shot testing still showed that `batch_size=250` is too large for the current data shape when periodic slow candidates appear; the default remains lower, and operator tuning should prefer smaller batches until per-candidate budgets exist.
+
+11. Stale release-link inspection hardening
+
+   Keep binary-scoped inspection outputs durable when a release row is deleted or replaced while an inspection stage is running.
+
+   Status: done on 2026-05-20. Inspection artifact/archive/media replacement now keeps valid release ids but stores stale release ids as `NULL`, preserving foreign keys without dropping the binary-scoped evidence. Archive, media, PAR2, NFO, and password stages now treat missing release rollups as stale-link skips after completing the binary inspection, instead of failing the entire stage run.
+
 ## Action Item Sign-Off
 
 Done:
@@ -231,12 +250,17 @@ Done:
 - [x] Bound yEnc dashboard backlog refresh after exact count hang
 - [x] Add per-stat dashboard refresh timeout guardrail
 - [x] Add yEnc recovery candidate-selection and processing timing metrics
+- [x] Refresh live dashboard stats enough to verify stale `1000` rows no longer display as exact values
+- [x] Audit yEnc recovery selection after live stats refresh with a direct one-shot run
+- [x] Add PAR2 inspection candidate-selection and per-candidate progress timing metrics
+- [x] Align PAR2 target coverage updates with normalized file identity index support
+- [x] Batch PAR2 target coverage updates per candidate
+- [x] Harden inspection artifact and release-rollup writes against stale release links
 
 Needs completion:
 
-- [ ] Refresh dashboard stat rows after migrations `023`, `024`, and `025` apply and verify yEnc shows capped truthfully while PAR2 no longer shows stale `1000`
-- [ ] Audit yEnc recovery selection after live stats refresh to confirm it is keeping pace with assemble under current settings
 - [ ] Design a fast full-cardinality yEnc recovery backlog rollup if operators need exact yEnc backlog size instead of a capped claimable snapshot
+- [ ] Tune live PAR2 inspection settings or add per-candidate budgets so a filled batch cannot monopolize the stage loop for several minutes
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
 - [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples
