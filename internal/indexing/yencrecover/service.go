@@ -74,16 +74,19 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	metrics := map[string]any{
-		"batch_size":       s.opts.BatchSize,
-		"max_header_bytes": s.opts.MaxHeaderBytes,
-		"candidates":       0,
-		"attempted":        0,
-		"recovered":        0,
-		"merged":           0,
-		"noops":            0,
-		"fetch_failures":   0,
-		"not_found":        0,
-		"parse_failures":   0,
+		"batch_size":            s.opts.BatchSize,
+		"max_header_bytes":      s.opts.MaxHeaderBytes,
+		"concurrency":           s.opts.Concurrency,
+		"effective_concurrency": 0,
+		"batch_full":            false,
+		"candidates":            0,
+		"attempted":             0,
+		"recovered":             0,
+		"merged":                0,
+		"noops":                 0,
+		"fetch_failures":        0,
+		"not_found":             0,
+		"parse_failures":        0,
 	}
 	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
 		return metrics, fmt.Errorf("yenc recovery service is not configured")
@@ -105,6 +108,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if workerCount > len(candidates) {
 		workerCount = len(candidates)
 	}
+	metrics["effective_concurrency"] = workerCount
+	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
 	var (
 		mu       sync.Mutex

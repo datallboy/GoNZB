@@ -81,7 +81,7 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 		JOIN article_headers ah ON ah.id = bp.article_header_id
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		WHERE COALESCE(p.subject_file_name, '') = ''
+		WHERE p.subject_file_name = ''
 		  AND (p.yenc_recovery_retry_after IS NULL OR p.yenc_recovery_retry_after <= NOW())
 		ORDER BY
 			CASE

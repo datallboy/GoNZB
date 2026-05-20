@@ -35,6 +35,9 @@ func TestRunOnceRecoversCandidateFromYEncHeaderPrefix(t *testing.T) {
 	if metrics["recovered"] != 1 {
 		t.Fatalf("expected one recovered candidate, got metrics=%v", metrics)
 	}
+	if metrics["effective_concurrency"] != 1 || metrics["batch_full"] != false {
+		t.Fatalf("unexpected recovery saturation metrics: %v", metrics)
+	}
 	if repo.applied.FileName != "Example.Release.vol001+002.par2" {
 		t.Fatalf("expected recovered yEnc filename, got %q", repo.applied.FileName)
 	}
