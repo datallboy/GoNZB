@@ -2317,10 +2317,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 			    updated_at = NOW()
 			WHERE provider_id = $1
 			  AND newsgroup_id = $2
-			  AND (
-			  	LOWER(BTRIM(file_name)) = $3::text
-			  	OR LOWER(BTRIM(binary_name)) = $3::text
-			  )
+			  AND LOWER(BTRIM(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, '')))) = $3::text
 			RETURNING id, release_family_key, base_stem, expected_file_count, expected_archive_file_count`,
 			seed.providerID,
 			seed.newsgroupID,
