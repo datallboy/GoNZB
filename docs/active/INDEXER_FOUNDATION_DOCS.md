@@ -19,7 +19,8 @@ We currently have several planning and reference documents. This file defines wh
 - the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
 - the grouping-model re-evaluation sprint is complete and ready to archive
 - the database growth trim sprint is complete from a code and schema standpoint
-- the only remaining follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
+- the obfuscated-payload hardening sprint is active for downloader import/extraction hardening, yEnc/PAR2 backlog visibility, and recovered-identity grouping follow-up
+- remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
 
@@ -37,6 +38,8 @@ Use for:
 
 - current findings from obfuscated header patterns and legacy NZB import encoding
 - downloader parser hardening follow-up for legacy XML charset declarations
+- downloader post-process hardening for extensionless archive payloads
+- baseline, audit findings, and sign-off tracking for the current obfuscated-payload sprint
 - evaluating cross-newsgroup release grouping only when recovered identity evidence is strong
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
@@ -78,13 +81,19 @@ Use for:
 
 The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
-Primary workstream:
+Primary active workstream:
+
+- harden downloader handling for legacy-encoded and extensionless obfuscated payloads
+- make yEnc recovery and PAR2 backlog visibility exact enough for capacity tuning
+- audit release grouping boundaries before adding bounded cross-group recovered-identity promotion
+
+Completed database-growth workstream:
 
 - reduce ingest and audit-table growth
 - distinguish canonical rows from debug/audit retention
 - preserve the landed grouping/release gains while making long-running supervisor operation sustainable
 
-Current remaining follow-up:
+Current remaining database-growth follow-up:
 
 - free root-volume space so the documented `VACUUM FULL` reclaim pass can run
 - rerun sustained ingest measurements on `dv` after merge

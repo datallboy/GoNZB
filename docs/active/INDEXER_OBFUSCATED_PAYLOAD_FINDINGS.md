@@ -9,6 +9,49 @@ This doc records technical findings from an externally generated payload that ex
 
 This doc intentionally excludes source-identifying details. Do not add payload titles, release names, subject text, poster values, newsgroup names, message IDs, or content descriptions here.
 
+## Baseline Before Changes
+
+Captured during the 2026-05-19 to 2026-05-20 working session.
+
+Importer baseline:
+
+- external NZB hydration failed before model parsing when XML declared a legacy single-byte charset
+- the common parser accepted UTF-8/UTF-16 XML only because `xml.Decoder.CharsetReader` was unset
+- internal NZB export still appeared UTF-8-oriented; this was an import hardening gap, not a reason to emit legacy-encoded NZBs
+
+Header-shape baseline:
+
+- file entries: 66
+- article segments: 9,647
+- unique posters: 66
+- unique subjects: 66
+- unique date values: 1
+- unique group sets: 9
+- unique groups: 9
+- unique segment byte values: 3
+- unique segment numbers: 147
+- unique message IDs: 9,647
+
+Downloader post-process baseline:
+
+- download completed into separate extensionless output files
+- extensionless files included archive signatures, so the bytes were present but archive detection did not classify them
+- archive extraction was extension-driven and therefore skipped the extensionless archive family
+- no extracted final media artifact was moved into the completed output
+
+Dashboard and backlog-count baseline:
+
+- yEnc recovery and PAR2 dashboard rows both displayed exactly `1000`, which was suspicious because it matched the bounded sample cap rather than a real backlog measurement
+- cached dashboard rows were stale, so the UI could keep showing the old capped value even after query logic changed
+- direct PAR2 exact backlog measurement returned `18060` rows during the session
+- exact yEnc recovery measurement needed query support before it was safe to use as a routine dashboard stat
+
+Schema-change baseline:
+
+- query support belongs in migrations before runtime use
+- no live database schema changes should be used as the normal path for this sprint
+- one manual diagnostic index was created during investigation and then captured as migration `023` so the tracked schema remains authoritative
+
 ## Import Encoding Finding
 
 The downloader hydration failure was caused by XML declaring a legacy single-byte encoding while the shared NZB parser uses Go's `encoding/xml` decoder without a `CharsetReader`.
@@ -55,6 +98,34 @@ Interpretation:
 - newsgroup membership may be split across multiple groups, so a per-newsgroup-only grouping boundary can fragment an otherwise coherent file set
 
 The important stable signal is expected to appear after reading yEnc headers from article bodies. If recovered yEnc names align, they are stronger identity evidence than the surrounding NZB header metadata.
+
+## Audit Findings
+
+Downloader import:
+
+- legacy charset support belongs in the shared NZB parser so downloader and any other NZB consumers get identical behavior
+- parser regression coverage should stay synthetic and non-identifying
+
+Downloader extraction:
+
+- extension-only archive detection is too weak for obfuscated payloads
+- archive signature checks already existed inside individual extractors, so the safe improvement was to allow extensionless candidates into those checks
+- extensionless archive families need deduplication before extraction; otherwise every volume can look like a primary archive candidate
+- after extraction succeeds, extensionless archive artifacts must be excluded from the completed output just like `.rar`, `.7z`, `.zip`, `.par2`, and related artifacts
+
+Indexer backlog visibility:
+
+- yEnc recovery backlog should count claimable rows, not rows the stage will skip because of missing subject names or retry backoff
+- exact dashboard counts need supporting indexes before replacing capped estimates
+- UI values equal to the measurement cap must be visibly treated as capped or stale until refreshed
+- stage metrics should expose whether configured batches fill and what effective concurrency was used
+
+Release grouping:
+
+- `poster`, `subject`, and single-group boundaries are weak for this obfuscated shape
+- recovered yEnc identity is the first strong grouping evidence available without full payload download
+- cross-group promotion should stay bounded to recovered identity, compatible file counts, and close posting proximity
+- group provenance must remain attached for fetch routing even if release formation bridges groups
 
 ## Indexer Grouping Implications
 
@@ -106,6 +177,41 @@ Guardrails:
 5. NZB export normalization
 
    Keep internally generated NZBs UTF-8, deterministic, and provenance-complete. For multi-group releases, include the full release group set while retaining file/article membership accuracy.
+
+6. Downloader extensionless archive extraction
+
+   Detect archive payloads by signature when filenames are extensionless, extract one representative per extensionless archive family, and drop original archive artifacts after successful extraction.
+
+   Status: done on 2026-05-20. `internal/processor` now detects extensionless RAR, 7z, and ZIP signatures, dedupes extensionless archive-family extraction candidates per directory and signature kind, and excludes extensionless archive artifacts from completed output after extraction. Synthetic processor tests cover signature detection, family dedupe, artifact dropping, and extensionless 7z post-processing.
+
+## Action Item Sign-Off
+
+Done:
+
+- [x] Create an active, non-identifying findings doc for the obfuscated payload working session
+- [x] Add shared NZB parser legacy charset support
+- [x] Add a synthetic parser regression test for legacy charset declarations
+- [x] Add migration-backed query indexes for yEnc/PAR2 backlog visibility
+- [x] Replace suspicious capped yEnc/PAR2 dashboard counts with exact indexed counts where query support exists
+- [x] Add yEnc recovery metrics for effective concurrency and full-batch detection
+- [x] Fix downloader post-process handling for extensionless archive artifacts
+- [x] Record baseline and audit findings in this active doc
+
+Needs completion:
+
+- [ ] Refresh dashboard stat rows after migration `023` applies and verify yEnc/PAR2 UI values are no longer stale `1000` cap values
+- [ ] Audit yEnc recovery selection after live stats refresh to confirm it is keeping pace with assemble under current settings
+- [ ] Review release candidate grouping queries for remaining hard `newsgroup_id` partitions after strong recovered identity is available
+- [ ] Design and implement bounded cross-group recovered-identity promotion
+- [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
+- [ ] Audit whether downloader should adopt yEnc header filenames during segment assembly when the NZB subject is weaker than the payload header
+- [ ] Confirm internal NZB export remains UTF-8, deterministic, and complete for multi-group releases
+
+Deferred unless new evidence requires it:
+
+- [ ] Split indexer modules into separate products or processes
+- [ ] Use poster or subject similarity alone to bridge obfuscated releases across groups
+- [ ] Add committed fixtures derived from the observed external payload
 
 ## Validation Notes
 
