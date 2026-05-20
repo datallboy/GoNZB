@@ -112,12 +112,15 @@ Downloader extraction:
 - archive signature checks already existed inside individual extractors, so the safe improvement was to allow extensionless candidates into those checks
 - extensionless archive families need deduplication before extraction; otherwise every volume can look like a primary archive candidate
 - after extraction succeeds, extensionless archive artifacts must be excluded from the completed output just like `.rar`, `.7z`, `.zip`, `.par2`, and related artifacts
+- downloader yEnc header filenames are parsed during segment decoding, but live task file paths are already preallocated and written concurrently by that point
+- adopting yEnc names in downloader output needs a coordinated task/file-handle path transition; it should not be patched as an unsynchronized worker-side rename
 
 Indexer backlog visibility:
 
 - yEnc recovery backlog should count claimable rows, not rows the stage will skip because of missing subject names or retry backoff
 - exact dashboard counts need supporting indexes before replacing capped estimates
 - UI values equal to the measurement cap must be visibly treated as capped or stale until refreshed
+- old cached capped rows can become misleading when a stat definition changes from bounded to exact, so definition-changing migrations should invalidate affected cached dashboard rows
 - stage metrics should expose whether configured batches fill and what effective concurrency was used
 
 Release grouping:
@@ -126,6 +129,10 @@ Release grouping:
 - recovered yEnc identity is the first strong grouping evidence available without full payload download
 - cross-group promotion should stay bounded to recovered identity, compatible file counts, and close posting proximity
 - group provenance must remain attached for fetch routing even if release formation bridges groups
+- current release-family summaries are keyed by `provider_id + newsgroup_id + key_kind + family_key`
+- the main release candidate queue carries `newsgroup_id` forward, so recovered identity does not yet produce one cross-group dirty candidate by default
+- `ListBinariesForReleaseCandidate` can already omit the group boundary when called with `newsgroup_id = 0`, but the candidate queue and ack path do not yet model that as a normal candidate shape
+- cross-group promotion should therefore be added as an explicit recovered-identity candidate path instead of weakening all existing summary boundaries
 
 ## Indexer Grouping Implications
 
@@ -184,6 +191,12 @@ Guardrails:
 
    Status: done on 2026-05-20. `internal/processor` now detects extensionless RAR, 7z, and ZIP signatures, dedupes extensionless archive-family extraction candidates per directory and signature kind, and excludes extensionless archive artifacts from completed output after extraction. Synthetic processor tests cover signature detection, family dedupe, artifact dropping, and extensionless 7z post-processing.
 
+7. Dashboard exact-count cache invalidation
+
+   Invalidate cached yEnc/PAR2 dashboard rows when their definitions change from capped samples to exact indexed counts, so stale `1000` values are not presented as exact values.
+
+   Status: done on 2026-05-20. Migration `024` deletes the affected cached rows and bumps the expected pgindex schema version to `24`. After this migration applies, the UI should show those stats as uncached until the refresh endpoint recomputes them with the exact-count queries.
+
 ## Action Item Sign-Off
 
 Done:
@@ -196,15 +209,17 @@ Done:
 - [x] Add yEnc recovery metrics for effective concurrency and full-batch detection
 - [x] Fix downloader post-process handling for extensionless archive artifacts
 - [x] Record baseline and audit findings in this active doc
+- [x] Add migration-backed invalidation for stale yEnc/PAR2 cached dashboard stats
+- [x] Audit downloader yEnc filename adoption risk
+- [x] Audit release candidate grouping boundaries for recovered cross-group identity
 
 Needs completion:
 
-- [ ] Refresh dashboard stat rows after migration `023` applies and verify yEnc/PAR2 UI values are no longer stale `1000` cap values
+- [ ] Refresh dashboard stat rows after migrations `023` and `024` apply and verify yEnc/PAR2 UI values are no longer stale `1000` cap values
 - [ ] Audit yEnc recovery selection after live stats refresh to confirm it is keeping pace with assemble under current settings
-- [ ] Review release candidate grouping queries for remaining hard `newsgroup_id` partitions after strong recovered identity is available
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
-- [ ] Audit whether downloader should adopt yEnc header filenames during segment assembly when the NZB subject is weaker than the payload header
+- [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples
 - [ ] Confirm internal NZB export remains UTF-8, deterministic, and complete for multi-group releases
 
 Deferred unless new evidence requires it:
