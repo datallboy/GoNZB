@@ -529,7 +529,10 @@ var archiveArtifactRE = regexp.MustCompile(`(?i)(\.part\d+\.rar|\.rar|\.r\d{2,3}
 
 func isArchiveArtifact(path string) bool {
 	name := filepath.Base(path)
-	return archiveArtifactRE.MatchString(name)
+	if archiveArtifactRE.MatchString(name) {
+		return true
+	}
+	return isExtensionlessArchive(path)
 }
 
 func findPrimaryPar(tasks []*domain.DownloadFile) string {

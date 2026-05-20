@@ -1,10 +1,8 @@
 package processor
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -35,11 +33,14 @@ func (u *CLIUnrar) Name() string {
 func (u *CLIUnrar) CanExtract(filePath string) (bool, error) {
 	lower := strings.ToLower(filepath.Base(filePath))
 
-	if !strings.HasSuffix(lower, ".rar") {
+	switch {
+	case strings.HasSuffix(lower, ".rar"):
+	case filepath.Ext(lower) == "":
+	default:
 		return false, nil
 	}
 
-	if strings.Contains(lower, ".part") {
+	if strings.HasSuffix(lower, ".rar") && strings.Contains(lower, ".part") {
 		if !(strings.Contains(lower, ".part01.rar") ||
 			strings.Contains(lower, ".part001.rar") ||
 			strings.Contains(lower, ".part1.rar")) {
@@ -71,27 +72,9 @@ func (u *CLIUnrar) Extract(ctx context.Context, archivePath string, destDir stri
 }
 
 func hasRarSignature(filePath string) (bool, error) {
-	file, err := os.Open(filePath)
+	kind, err := detectArchiveSignature(filePath)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
-
-	header := make([]byte, 8)
-	n, err := file.Read(header)
-	if err != nil {
-		return false, err
-	}
-
-	if n < 7 {
-		return false, nil
-	}
-
-	for _, sig := range rarSignatures {
-		if bytes.Equal(header[:len(sig)], sig) {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return kind == archiveSignatureRAR, nil
 }
