@@ -207,38 +207,15 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 			if m.ctx != nil && m.ctx.Logger != nil {
 				m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
 			}
-			reader, err := m.tryFetch(ctx, mp, seg.MessageID, groups)
-			if err != nil {
-				// Release the slot if the fetch fails
-				m.release(mp)
-
-				if errors.Is(err, ErrArticleNotFound) {
-					if m.ctx != nil && m.ctx.Logger != nil {
-						m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
-					}
-					seg.MissingFrom[mp.ID()] = true
-
-					// Small sleep before trying next provider in failover
-					time.Sleep(100 * time.Millisecond)
-					continue
-				}
-
-				// If it's a network/auth error, keep looking but save error
-				if m.ctx != nil && m.ctx.Logger != nil {
-					m.ctx.Logger.Debug("Failover: %s error: %v", mp.Label(), err)
-				}
-				lastErr = err
+			reader, err := m.fetchFromAcquiredProvider(ctx, mp, seg, groups)
+			if err == nil {
+				return reader, nil
+			}
+			if errors.Is(err, ErrArticleNotFound) {
 				continue
 			}
-
-			// Return a reader that releases the semaphore ONLY when the
-			// worker is finished reading the body.
-			return &releaseReader{
-				Reader: reader,
-				onClose: func() {
-					m.release(mp)
-				},
-			}, nil
+			lastErr = err
+			continue
 		}
 	}
 
@@ -252,9 +229,55 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 		return nil, lastErr
 	}
 
+	if m.opts.CapacityPolicy == CapacityWaitQueue {
+		mp := m.firstFetchProvider(seg)
+		if mp == nil {
+			return nil, ErrArticleNotFound
+		}
+		if err := m.waitAcquire(ctx, mp); err != nil {
+			return nil, err
+		}
+		reader, err := m.fetchFromAcquiredProvider(ctx, mp, seg, groups)
+		if err != nil {
+			if errors.Is(err, ErrArticleNotFound) {
+				return m.fetch(ctx, seg, groups)
+			}
+			return nil, err
+		}
+		return reader, nil
+	}
+
 	// Some providers were busy, so we tell the worker to wait and try again
 	m.stats.busyReturns.Add(1)
 	return nil, ErrProviderBusy
+}
+
+func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, mp *managedProvider, seg *domain.Segment, groups []string) (io.Reader, error) {
+	reader, err := m.tryFetch(ctx, mp, seg.MessageID, groups)
+	if err != nil {
+		m.release(mp)
+
+		if errors.Is(err, ErrArticleNotFound) {
+			if m.ctx != nil && m.ctx.Logger != nil {
+				m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
+			}
+			seg.MissingFrom[mp.ID()] = true
+			time.Sleep(100 * time.Millisecond)
+			return nil, ErrArticleNotFound
+		}
+
+		if m.ctx != nil && m.ctx.Logger != nil {
+			m.ctx.Logger.Debug("Failover: %s error: %v", mp.Label(), err)
+		}
+		return nil, err
+	}
+
+	return &releaseReader{
+		Reader: reader,
+		onClose: func() {
+			m.release(mp)
+		},
+	}, nil
 }
 
 func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
@@ -283,6 +306,15 @@ func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []st
 
 	if lastErr != nil {
 		return nil, lastErr
+	}
+	if m.opts.CapacityPolicy == CapacityWaitQueue {
+		mp, err := m.waitForProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := mp.Provider.FetchBodyPrefix(ctx, msgID, groups, maxBytes)
+		m.release(mp)
+		return result, err
 	}
 	m.stats.busyReturns.Add(1)
 	return nil, ErrProviderBusy
@@ -315,6 +347,15 @@ func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, err
 	if lastErr != nil {
 		return GroupStats{}, lastErr
 	}
+	if m.opts.CapacityPolicy == CapacityWaitQueue {
+		mp, err := m.waitForProvider(ctx)
+		if err != nil {
+			return GroupStats{}, err
+		}
+		result, err := mp.Provider.GroupStats(ctx, group)
+		m.release(mp)
+		return result, err
+	}
 	m.stats.busyReturns.Add(1)
 	return GroupStats{}, ErrProviderBusy
 }
@@ -346,6 +387,15 @@ func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]Ov
 	if lastErr != nil {
 		return nil, lastErr
 	}
+	if m.opts.CapacityPolicy == CapacityWaitQueue {
+		mp, err := m.waitForProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := mp.Provider.XOver(ctx, group, from, to)
+		m.release(mp)
+		return result, err
+	}
 	m.stats.busyReturns.Add(1)
 	return nil, ErrProviderBusy
 }
@@ -363,17 +413,45 @@ func (m *Manager) acquire(ctx context.Context, mp *managedProvider) (bool, error
 		return false, nil
 	}
 
+	return false, nil
+}
+
+func (m *Manager) waitAcquire(ctx context.Context, mp *managedProvider) error {
+	if mp == nil {
+		return ErrProviderBusy
+	}
 	start := time.Now()
 	m.stats.waiting.Add(1)
 	defer m.stats.waiting.Add(-1)
 	select {
 	case mp.semaphore <- struct{}{}:
 		m.recordWait(time.Since(start))
-		return true, nil
+		return nil
 	case <-ctx.Done():
 		m.recordWait(time.Since(start))
-		return false, ctx.Err()
+		return ctx.Err()
 	}
+}
+
+func (m *Manager) waitForProvider(ctx context.Context) (*managedProvider, error) {
+	if len(m.providers) == 0 {
+		return nil, ErrProviderBusy
+	}
+	mp := m.providers[0]
+	if err := m.waitAcquire(ctx, mp); err != nil {
+		return nil, err
+	}
+	return mp, nil
+}
+
+func (m *Manager) firstFetchProvider(seg *domain.Segment) *managedProvider {
+	for _, mp := range m.providers {
+		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
+			continue
+		}
+		return mp
+	}
+	return nil
 }
 
 func (m *Manager) release(mp *managedProvider) {
