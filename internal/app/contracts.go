@@ -95,8 +95,22 @@ type NNTPRuntimeStats struct {
 	XOver           int64                      `json:"xover"`
 	ArticleNotFound int64                      `json:"article_not_found"`
 	OperationErrors int64                      `json:"operation_errors"`
+	Modules         NNTPModuleRuntimeStats     `json:"modules"`
 	Providers       []NNTPProviderRuntimeStats `json:"providers"`
 	Scopes          []NNTPScopeRuntimeStats    `json:"scopes"`
+}
+
+type NNTPModuleRuntimeStats struct {
+	ReservationsEnabled      bool  `json:"reservations_enabled"`
+	IdleBorrowEnabled        bool  `json:"idle_borrow_enabled"`
+	IndexerMaxPercent        int   `json:"indexer_max_percent"`
+	DownloaderReservePercent int   `json:"downloader_reserve_percent"`
+	DownloaderDemandWindowMS int64 `json:"downloader_demand_window_ms"`
+	IndexerActive            int64 `json:"indexer_active"`
+	DownloaderActive         int64 `json:"downloader_active"`
+	IndexerLimit             int   `json:"indexer_limit"`
+	DownloaderLimit          int   `json:"downloader_limit"`
+	DownloaderDemandActive   bool  `json:"downloader_demand_active"`
 }
 
 type NNTPScopeRuntimeStats struct {

@@ -165,12 +165,13 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 	issues = append(issues, validateServers("indexer_servers", runtime.IndexerServers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
 	issues = append(issues, validateDownload(runtime.Download)...)
+	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
 	issues = append(issues, validateIndexing(runtime.Indexing)...)
 
 	indexingEnabled := anyIndexerStageEnabled(runtime.Indexing)
 	if indexingEnabled {
 		if len(app.IndexerNNTPServers(runtime)) == 0 {
-			issues = append(issues, "indexing stages require at least one NNTP server in indexer_servers")
+			issues = append(issues, "indexing stages require at least one NNTP server in servers")
 		}
 		if runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
 			issues = append(issues, "indexing stages require at least one newsgroup in indexing.newsgroups")
@@ -180,6 +181,23 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		return fmt.Errorf("runtime settings validation failed: %s", strings.Join(issues, "; "))
 	}
 	return nil
+}
+
+func validateNNTPPool(pool *app.NNTPPoolRuntimeSettings) []string {
+	if pool == nil {
+		return nil
+	}
+	issues := make([]string, 0)
+	if pool.IndexerMaxPercent < 1 || pool.IndexerMaxPercent > 100 {
+		issues = append(issues, "nntp_pool.indexer_max_percent must be between 1 and 100")
+	}
+	if pool.DownloaderReservePercent < 1 || pool.DownloaderReservePercent > 100 {
+		issues = append(issues, "nntp_pool.downloader_reserve_percent must be between 1 and 100")
+	}
+	if pool.DemandWindowSeconds < 1 {
+		issues = append(issues, "nntp_pool.demand_window_seconds must be at least 1")
+	}
+	return issues
 }
 
 func preserveServerPasswords(current, next []app.ServerRuntimeSettings) {
@@ -371,12 +389,12 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 	if base != nil && base.Modules.Downloader.Enabled &&
 		len(app.DownloaderNNTPServers(next)) < len(app.DownloaderNNTPServers(current)) &&
 		downloaderConfigured(current) {
-		return fmt.Errorf("removing downloader NNTP servers while downloader runtime is configured requires a restart")
+		return fmt.Errorf("removing NNTP servers while downloader runtime is configured requires a restart")
 	}
 	if base != nil && base.Modules.UsenetIndexer.Enabled &&
 		len(app.IndexerNNTPServers(next)) < len(app.IndexerNNTPServers(current)) &&
 		anyIndexerStageEnabled(current.Indexing) {
-		return fmt.Errorf("removing indexer NNTP servers while indexer stages are enabled requires a restart")
+		return fmt.Errorf("removing NNTP servers while indexer stages are enabled requires a restart")
 	}
 	if base != nil && base.Modules.Aggregator.Enabled &&
 		len(next.Indexers) < len(current.Indexers) &&
@@ -477,7 +495,7 @@ func indexerConfigured(runtime *app.RuntimeSettings) bool {
 func indexerRequirements(runtime *app.RuntimeSettings) []string {
 	reqs := make([]string, 0, 2)
 	if runtime == nil || len(app.IndexerNNTPServers(runtime)) == 0 {
-		reqs = append(reqs, "configure at least one indexer NNTP server")
+		reqs = append(reqs, "configure at least one NNTP server")
 	}
 	if runtime == nil || runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
 		reqs = append(reqs, "configure at least one newsgroup")

@@ -19,6 +19,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			CompletedDir:      "./downloads/completed",
 			CleanupExtensions: []string{"nzb", "par2", "sfv", "nfo"},
 		},
+		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
 		Indexing: &IndexingRuntimeSettings{
 			Newsgroups:               []string{},
 			BackfillUntilDateByGroup: map[string]string{},
@@ -71,6 +72,7 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	if out.Download == nil {
 		out.Download = defaults.Download
 	}
+	out.NNTPPool = mergeNNTPPoolRuntimeSettings(defaults.NNTPPool, out.NNTPPool)
 	if out.Indexing == nil {
 		out.Indexing = defaults.Indexing
 	}
@@ -121,6 +123,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			CompletedDir:      cfg.Download.CompletedDir,
 			CleanupExtensions: append([]string(nil), cfg.Download.CleanupExtensions...),
 		},
+		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
 		Indexing: func() *IndexingRuntimeSettings {
 			indexing := IndexingRuntimeFromConfig(cfg.Indexing)
 			return &indexing
@@ -393,6 +396,7 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
 		Aggregator:        cloneAggregator(current.Aggregator),
 		Download:          cloneDownload(current.Download),
+		NNTPPool:          cloneNNTPPool(current.NNTPPool),
 		Indexing:          cloneIndexing(current.Indexing),
 		Revision:          current.Revision,
 	}
@@ -414,6 +418,9 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 	if patch.Download != nil {
 		next.Download = cloneDownload(patch.Download)
+	}
+	if patch.NNTPPool != nil {
+		next.NNTPPool = mergeNNTPPoolRuntimeSettings(DefaultNNTPPoolRuntimeSettings(), patch.NNTPPool)
 	}
 	if patch.Indexing != nil {
 		next.Indexing = cloneIndexing(patch.Indexing)
@@ -440,9 +447,11 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
 		Aggregator:        cloneAggregator(in.Aggregator),
 		Download:          cloneDownload(in.Download),
+		NNTPPool:          cloneNNTPPool(in.NNTPPool),
 		Indexing:          cloneIndexing(in.Indexing),
 		Revision:          in.Revision,
 	}
+	out.NNTPPool = mergeNNTPPoolRuntimeSettings(DefaultNNTPPoolRuntimeSettings(), out.NNTPPool)
 	dropUnsupportedIndexingConcurrency(out)
 	return out
 }
@@ -487,6 +496,15 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled) ||
 		downloadConfigured(in.Download) ||
 		indexingConfigured(in.Indexing)
+}
+
+func DefaultNNTPPoolRuntimeSettings() *NNTPPoolRuntimeSettings {
+	return &NNTPPoolRuntimeSettings{
+		IdleBorrowEnabled:        true,
+		IndexerMaxPercent:        80,
+		DownloaderReservePercent: 20,
+		DemandWindowSeconds:      30,
+	}
 }
 
 func DownloaderNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
@@ -631,6 +649,45 @@ func cloneDownload(in *DownloadRuntimeSettings) *DownloadRuntimeSettings {
 		CompletedDir:      in.CompletedDir,
 		CleanupExtensions: append([]string(nil), in.CleanupExtensions...),
 	}
+}
+
+func cloneNNTPPool(in *NNTPPoolRuntimeSettings) *NNTPPoolRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
+func mergeNNTPPoolRuntimeSettings(base, override *NNTPPoolRuntimeSettings) *NNTPPoolRuntimeSettings {
+	if base == nil {
+		base = DefaultNNTPPoolRuntimeSettings()
+	}
+	out := *base
+	if override == nil {
+		return &out
+	}
+	out.IdleBorrowEnabled = override.IdleBorrowEnabled
+	if override.IndexerMaxPercent > 0 {
+		out.IndexerMaxPercent = clampPercent(override.IndexerMaxPercent)
+	}
+	if override.DownloaderReservePercent > 0 {
+		out.DownloaderReservePercent = clampPercent(override.DownloaderReservePercent)
+	}
+	if override.DemandWindowSeconds > 0 {
+		out.DemandWindowSeconds = override.DemandWindowSeconds
+	}
+	return &out
+}
+
+func clampPercent(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 func cloneAggregator(in *AggregatorRuntimeSettings) *AggregatorRuntimeSettings {

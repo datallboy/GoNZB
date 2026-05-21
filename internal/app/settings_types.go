@@ -7,6 +7,7 @@ type RuntimeSettings struct {
 	Indexers          []IndexerRuntimeSettings        `json:"indexers,omitempty"`
 	Aggregator        *AggregatorRuntimeSettings      `json:"aggregator,omitempty"`
 	Download          *DownloadRuntimeSettings        `json:"download,omitempty"`
+	NNTPPool          *NNTPPoolRuntimeSettings        `json:"nntp_pool,omitempty"`
 	Indexing          *IndexingRuntimeSettings        `json:"indexing,omitempty"`
 	ArrIntegrations   []ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
 	Revision          int64                           `json:"revision,omitempty"`
@@ -19,6 +20,7 @@ type RuntimeSettingsPatch struct {
 	Indexers          *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
 	Aggregator        *AggregatorRuntimeSettings       `json:"aggregator,omitempty"`
 	Download          *DownloadRuntimeSettings         `json:"download,omitempty"`
+	NNTPPool          *NNTPPoolRuntimeSettings         `json:"nntp_pool,omitempty"`
 	Indexing          *IndexingRuntimeSettings         `json:"indexing,omitempty"`
 	ArrIntegrations   *[]ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
 }
@@ -64,6 +66,13 @@ type DownloadRuntimeSettings struct {
 	OutDir            string   `json:"out_dir"`
 	CompletedDir      string   `json:"completed_dir"`
 	CleanupExtensions []string `json:"cleanup_extensions"`
+}
+
+type NNTPPoolRuntimeSettings struct {
+	IdleBorrowEnabled        bool `json:"idle_borrow_enabled"`
+	IndexerMaxPercent        int  `json:"indexer_max_percent"`
+	DownloaderReservePercent int  `json:"downloader_reserve_percent"`
+	DemandWindowSeconds      int  `json:"demand_window_seconds"`
 }
 
 type IndexingStageRuntimeSettings struct {
