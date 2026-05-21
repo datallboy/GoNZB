@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -68,7 +69,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics := map[string]any{
 		"candidate_count":        len(candidates),
 		"processed_count":        0,
+		"submitted_count":        0,
 		"batch_size":             s.opts.CandidateBatchSize,
+		"effective_concurrency":  0,
 		"candidate_selection_ms": durationMillis(time.Since(selectionStarted)),
 		"processing_ms":          float64(0),
 		"run_budget_ms":          durationMillis(runBudget),
@@ -81,16 +84,25 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return metrics, nil
 	}
 
+	workerCount := par2WorkerCount(s.opts, len(candidates))
+	metrics["effective_concurrency"] = workerCount
+	jobs := make(chan pgindex.BinaryInspectionCandidate)
 	processed := 0
+	submitted := 0
+	budgetExhausted := false
 	processingStarted := time.Now()
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			metrics["processed_count"] = processed
-			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
-			return metrics, err
-		}
-		candidateStarted := time.Now()
-		if err := s.inspectCandidate(ctx, candidate); err != nil {
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+	)
+	recordResult := func(candidate pgindex.BinaryInspectionCandidate, candidateDuration time.Duration, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			metrics["processed_count"] = processed
 			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 			if s != nil && s.log != nil {
@@ -100,40 +112,100 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 					candidate.FileName,
 					processed,
 					len(candidates),
-					durationMillis(time.Since(candidateStarted)),
+					durationMillis(candidateDuration),
 					err,
 				)
 			}
-			return metrics, err
+			return
 		}
 		processed++
-		candidateDurationMS := durationMillis(time.Since(candidateStarted))
+		metrics["processed_count"] = processed
+		metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
+		candidateDurationMS := durationMillis(candidateDuration)
 		if s != nil && s.log != nil && (processed == len(candidates) || processed%10 == 0 || candidateDurationMS >= 5000) {
-			s.log.Info("inspect_par2: progress processed=%d/%d binary_id=%d file=%s duration_ms=%.2f",
+			s.log.Info("inspect_par2: progress processed=%d/%d binary_id=%d file=%s duration_ms=%.2f concurrency=%d",
 				processed,
 				len(candidates),
 				candidate.BinaryID,
 				candidate.FileName,
 				candidateDurationMS,
+				workerCount,
 			)
 		}
-		if runBudget > 0 && time.Since(processingStarted) >= runBudget && processed < len(candidates) {
+	}
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if ctx.Err() != nil {
+					recordResult(candidate, 0, ctx.Err())
+					continue
+				}
+				candidateStarted := time.Now()
+				err := s.inspectCandidate(ctx, candidate)
+				recordResult(candidate, time.Since(candidateStarted), err)
+			}
+		}()
+	}
+
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			close(jobs)
+			wg.Wait()
 			metrics["processed_count"] = processed
 			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
-			metrics["run_budget_exhausted"] = true
-			if s != nil && s.log != nil {
-				s.log.Info("inspect_par2: run budget exhausted processed=%d/%d budget_ms=%.2f",
-					processed,
-					len(candidates),
-					durationMillis(runBudget),
-				)
-			}
-			return metrics, nil
+			return metrics, err
 		}
+		if runBudget > 0 && time.Since(processingStarted) >= runBudget && submitted < len(candidates) {
+			budgetExhausted = true
+			break
+		}
+		mu.Lock()
+		err := firstErr
+		mu.Unlock()
+		if err != nil {
+			break
+		}
+		jobs <- candidate
+		submitted++
 	}
+	close(jobs)
+	wg.Wait()
 	metrics["processed_count"] = processed
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
+	metrics["submitted_count"] = submitted
+	metrics["run_budget_exhausted"] = budgetExhausted
+	if firstErr != nil {
+		return metrics, firstErr
+	}
+	if budgetExhausted && s != nil && s.log != nil {
+		s.log.Info("inspect_par2: run budget exhausted processed=%d/%d submitted=%d budget_ms=%.2f concurrency=%d",
+			processed,
+			len(candidates),
+			submitted,
+			durationMillis(runBudget),
+			workerCount,
+		)
+	}
 	return metrics, nil
+}
+
+func par2WorkerCount(opts inspectpkg.Options, candidateCount int) int {
+	if candidateCount <= 0 {
+		return 0
+	}
+	workers := opts.Concurrency
+	if workers <= 0 {
+		workers = 1
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > candidateCount {
+		workers = candidateCount
+	}
+	return workers
 }
 
 func par2RunBudget(opts inspectpkg.Options) time.Duration {

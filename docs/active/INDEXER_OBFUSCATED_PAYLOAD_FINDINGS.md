@@ -49,6 +49,10 @@ Dashboard and backlog-count baseline:
 - after cache invalidation, the live stats endpoint reported yEnc and PAR2 backlog rows as unavailable while refresh data was missing instead of continuing to show stale `1000` values
 - a direct yEnc recovery one-shot completed `100/100` attempted and recovered with no fetch or parse failures under live settings (`batch_size=100`, `concurrency=4`)
 - a direct PAR2 inspection one-shot used live `batch_size=250` and did not finish inside 240 seconds; progress metrics showed most candidates completing in hundreds of milliseconds, with periodic slow candidates in the 27-36 second range
+- PAR2 exact backlog count measured with `EXPLAIN ANALYZE` completed in about 33 ms on the live database after the indexed query work
+- yEnc selector-backed bounded measurement for 5000 candidate summaries took about 1.2 seconds, while the full exact yEnc count exceeded a 30 second statement timeout
+- yEnc exact count is blocked by schema shape: claimability is derived from weak/obfuscated binary state, readiness-summary state, first-part lookup, and article payload retry/name state instead of a maintained work-item row
+- migrations `024` and `025` were cache invalidations, not schema direction changes; they were reasonable cleanup for stale dashboard rows, but further dashboard-stat changes should avoid churn and move toward a durable rollup/work-queue model
 
 Schema-change baseline:
 
@@ -224,13 +228,19 @@ Guardrails:
 
    Keep PAR2 inspection observable and prevent target coverage updates from becoming the bottleneck for obfuscated archive sets.
 
-   Status: done on 2026-05-20. `inspect_par2` now reports candidate-selection, processing, and per-candidate progress timing. PAR2 target coverage updates use the normalized file identity expression that matches the existing index and batch target updates per candidate. Live one-shot testing still showed that `batch_size=250` is too large for the current data shape when periodic slow candidates appear, so the PAR2 one-shot loop now stops cleanly after a bounded run budget and leaves remaining candidates for the next scheduler tick.
+   Status: done on 2026-05-21. `inspect_par2` now reports candidate-selection, processing, and per-candidate progress timing. PAR2 target coverage updates use the normalized file identity expression that matches the existing index and batch target updates per candidate. The PAR2 one-shot loop stops cleanly after a bounded run budget and leaves remaining candidates for the next scheduler tick. PAR2 also now supports stage concurrency through runtime settings, API metadata, and the admin settings UI. A live `batch_size=1000`, `concurrency=1` run processed and committed 386 candidates in the 120 second budget before exiting successfully.
 
 11. Stale release-link inspection hardening
 
    Keep binary-scoped inspection outputs durable when a release row is deleted or replaced while an inspection stage is running.
 
    Status: done on 2026-05-20. Inspection artifact/archive/media replacement now keeps valid release ids but stores stale release ids as `NULL`, preserving foreign keys without dropping the binary-scoped evidence. Archive, media, PAR2, NFO, and password stages now treat missing release rollups as stale-link skips after completing the binary inspection, instead of failing the entire stage run.
+
+12. yEnc stale-candidate hardening
+
+   Keep yEnc recovery progressing when assemble/release maintenance removes or merges a binary after the recovery selector has already picked it.
+
+   Status: done on 2026-05-21. yEnc recovery now treats missing recovery binaries as stale candidates, counts them in `stale_candidates`, and continues the batch. A live one-shot that previously failed completed with `100/100` attempted, `16` recovered, and `83` stale candidates.
 
 ## Action Item Sign-Off
 
@@ -257,10 +267,13 @@ Done:
 - [x] Batch PAR2 target coverage updates per candidate
 - [x] Add a bounded PAR2 run budget so large configured batches cannot monopolize the scheduler loop
 - [x] Harden inspection artifact and release-rollup writes against stale release links
+- [x] Add PAR2 stage concurrency support in runtime settings, API metadata, and admin settings UI
+- [x] Make yEnc recovery skip stale selected binaries instead of failing the whole batch
+- [x] Measure live PAR2 exact-count and yEnc exact-count query behavior
 
 Needs completion:
 
-- [ ] Design a fast full-cardinality yEnc recovery backlog rollup if operators need exact yEnc backlog size instead of a capped claimable snapshot
+- [ ] Design a fast full-cardinality yEnc recovery backlog rollup/work queue for exact dashboard stats
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
 - [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples

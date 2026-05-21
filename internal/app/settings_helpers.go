@@ -32,7 +32,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			InspectDiscovery:         defaultStage(false, 10, 100, 0),
-			InspectPAR2:              defaultStage(false, 10, 100, 0),
+			InspectPAR2:              defaultStage(false, 10, 100, 4),
 			InspectNFO:               defaultStage(false, 10, 100, 0),
 			InspectArchive:           defaultStage(false, 10, 100, 1),
 			InspectPassword:          defaultStage(false, 10, 100, 0),
@@ -204,7 +204,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		PAR2Path:         firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
 	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
-	out.InspectPAR2 = indexStageRuntimeFromConfig(cfg.InspectPAR2, true, 10, 100)
+	out.InspectPAR2 = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectPAR2, true, 10, 100)
 	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
 	out.InspectArchive = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectArchive, true, 10, 100)
 	out.InspectPassword = indexStageRuntimeFromConfig(cfg.InspectPassword, true, 10, 100)
@@ -340,7 +340,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			PAR2Path:         indexing.Inspect.PAR2Path,
 		}
 		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
-		effective.Indexing.InspectPAR2 = toStageConfigNoConcurrency(indexing.InspectPAR2)
+		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
 		effective.Indexing.InspectNFO = toStageConfigNoConcurrency(indexing.InspectNFO)
 		effective.Indexing.InspectArchive = toStageConfig(indexing.InspectArchive)
 		effective.Indexing.InspectPassword = toStageConfigNoConcurrency(indexing.InspectPassword)
@@ -586,7 +586,6 @@ func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
 	in.Indexing.ScrapeLatest.Concurrency = 0
 	in.Indexing.ScrapeBackfill.Concurrency = 0
 	in.Indexing.InspectDiscovery.Concurrency = 0
-	in.Indexing.InspectPAR2.Concurrency = 0
 	in.Indexing.InspectNFO.Concurrency = 0
 	in.Indexing.InspectPassword.Concurrency = 0
 }
