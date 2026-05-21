@@ -19,8 +19,9 @@ We currently have several planning and reference documents. This file defines wh
 - the assemble lane split, release fragment selection, and storage retention planning docs have been archived as completed/reference work
 - the grouping-model re-evaluation sprint is complete and ready to archive
 - the database growth trim sprint is complete from a code and schema standpoint
-- the obfuscated-payload hardening sprint is active for downloader import/extraction hardening, yEnc/PAR2 backlog visibility, and recovered-identity grouping follow-up
+- the obfuscated-payload hardening sprint is complete and archived
 - NNTP and inspection capacity planning has been split into a separate active doc so throughput/backpressure work does not blur the obfuscated-payload hardening scope
+- recovered-identity grouping follow-up has been split into a separate active doc so cross-group promotion can proceed deliberately
 - remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
@@ -33,15 +34,14 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`
+### `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
 
 Use for:
 
-- current findings from obfuscated header patterns and legacy NZB import encoding
-- downloader parser hardening follow-up for legacy XML charset declarations
-- downloader post-process hardening for extensionless archive payloads
-- baseline, audit findings, and sign-off tracking for the current obfuscated-payload sprint
-- evaluating cross-newsgroup release grouping only when recovered identity evidence is strong
+- current recovered-identity release grouping follow-up
+- designing bounded cross-newsgroup promotion when yEnc, archive, or PAR2 identity evidence is strong
+- preserving per-group article provenance while allowing stronger recovered identity to drive release formation
+- NZB export and downloader filename follow-up that depends on cross-group recovered identity
 
 ### `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
 
@@ -61,6 +61,15 @@ Use for:
 - tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
 
 ## Recently Completed Sprint Docs
+
+### `docs/archive/completed/indexer/2026-05-21-obfuscated-payload-hardening/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`
+
+Use for:
+
+- completed non-identifying findings from the obfuscated-payload hardening sprint
+- importer legacy charset and extensionless archive extraction history
+- yEnc/PAR2 dashboard baseline and investigation history
+- the rationale for splitting operational capacity and recovered-identity grouping into separate active plans
 
 ### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 
@@ -91,12 +100,18 @@ Use for:
 
 The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
-Primary active workstream:
+Primary active workstreams:
 
-- harden downloader handling for legacy-encoded and extensionless obfuscated payloads
 - make yEnc recovery and PAR2 backlog visibility exact enough for capacity tuning
 - add NNTP and inspection capacity metrics before raising worker counts far enough to pressure the provider account
-- audit release grouping boundaries before adding bounded cross-group recovered-identity promotion
+- implement bounded cross-group recovered-identity promotion from the active grouping plan
+
+Completed obfuscated-payload hardening workstream:
+
+- hardened downloader handling for legacy-encoded and extensionless obfuscated payloads
+- recorded non-identifying header-shape findings and grouping implications
+- audited downloader yEnc filename adoption risk
+- audited release grouping boundaries before moving recovered-identity promotion into its own active plan
 
 Completed database-growth workstream:
 

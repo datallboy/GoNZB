@@ -9,7 +9,7 @@ This doc records technical findings from an externally generated payload that ex
 
 This doc intentionally excludes source-identifying details. Do not add payload titles, release names, subject text, poster values, newsgroup names, message IDs, or content descriptions here.
 
-Operational-capacity follow-up has been split into `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`. Keep PAR2 batch persistence, yEnc work-queue design, and NNTP pool/backpressure metrics there unless they directly affect the obfuscated grouping model.
+Operational-capacity follow-up has been split into `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`. Recovered-identity grouping follow-up has been split into `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`.
 
 ## Baseline Before Changes
 
@@ -273,14 +273,19 @@ Done:
 - [x] Make yEnc recovery skip stale selected binaries instead of failing the whole batch
 - [x] Measure live PAR2 exact-count and yEnc exact-count query behavior
 
-Needs completion:
+Transferred follow-up:
 
-- [ ] Design a fast full-cardinality yEnc recovery backlog rollup/work queue for exact dashboard stats
-- [ ] Complete PAR2/yEnc/NNTP throughput follow-up in `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
-- [ ] Design and implement bounded cross-group recovered-identity promotion
-- [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
-- [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples
-- [ ] Confirm internal NZB export remains UTF-8, deterministic, and complete for multi-group releases
+- [x] Design a fast full-cardinality yEnc recovery backlog rollup/work queue for exact dashboard stats: transferred to `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
+- [x] Complete PAR2/yEnc/NNTP throughput follow-up: transferred to `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
+- [x] Design and implement bounded cross-group recovered-identity promotion: transferred to `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
+- [x] Add a synthetic multi-group recovered-yEnc grouping fixture: transferred to `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
+- [x] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples: transferred to `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
+- [x] Confirm internal NZB export remains UTF-8, deterministic, and complete for multi-group releases: transferred to `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
+
+Sprint closeout:
+
+- [x] Direct obfuscated-payload hardening work is complete enough to merge
+- [x] Remaining operational-capacity and recovered-identity grouping work has active follow-up docs
 
 Deferred unless new evidence requires it:
 
