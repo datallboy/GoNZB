@@ -14,7 +14,14 @@ import (
 	"unicode/utf8"
 )
 
-var ErrReleaseNotFound = errors.New("release not found")
+var (
+	ErrBinaryNotFound  = errors.New("binary not found")
+	ErrReleaseNotFound = errors.New("release not found")
+)
+
+func IsBinaryNotFound(err error) bool {
+	return errors.Is(err, ErrBinaryNotFound)
+}
 
 func IsReleaseNotFound(err error) bool {
 	return errors.Is(err, ErrReleaseNotFound)
