@@ -109,6 +109,65 @@ func TestManagerWaitQueuePolicyHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestManagerWaitQueuePolicyTriesOtherProviderBeforeWaiting(t *testing.T) {
+	busyProvider := newBlockingProvider(1)
+	freeProvider := newBlockingProvider(1)
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		newManagedProvider(busyProvider),
+		newManagedProvider(freeProvider),
+	}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+
+	first, err := manager.FetchMessage(context.Background(), "first@example", nil)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	defer first.(io.Closer).Close()
+
+	second, err := manager.FetchMessage(context.Background(), "second@example", nil)
+	if err != nil {
+		t.Fatalf("second fetch should use free provider instead of waiting: %v", err)
+	}
+	defer second.(io.Closer).Close()
+
+	stats := manager.Stats()
+	if stats.WaitCount != 0 {
+		t.Fatalf("expected no wait when another provider had capacity, got %d", stats.WaitCount)
+	}
+	if freeProvider.maxObserved() != 1 {
+		t.Fatalf("expected second provider to be used, max observed %d", freeProvider.maxObserved())
+	}
+}
+
+func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
+	provider := newBlockingProvider(1)
+	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+	client := manager.Client()
+
+	prefix, err := client.FetchBodyPrefix(context.Background(), "prefix@example", nil, 128)
+	if err != nil {
+		t.Fatalf("fetch body prefix: %v", err)
+	}
+	if string(prefix) != "body" {
+		t.Fatalf("expected body prefix, got %q", string(prefix))
+	}
+
+	stats, err := client.GroupStats(context.Background(), "alt.binaries.test")
+	if err != nil {
+		t.Fatalf("group stats: %v", err)
+	}
+	if stats.Low != 1 || stats.High != 1 {
+		t.Fatalf("unexpected group stats: %#v", stats)
+	}
+
+	rows, err := client.XOver(context.Background(), "alt.binaries.test", 1, 1)
+	if err != nil {
+		t.Fatalf("xover: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ArticleNumber != 1 {
+		t.Fatalf("unexpected xover rows: %#v", rows)
+	}
+}
+
 type blockingProvider struct {
 	capacity int
 	mu       sync.Mutex
