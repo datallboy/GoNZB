@@ -222,8 +222,22 @@ export type IndexerNNTPStats = {
   xover: number
   article_not_found: number
   operation_errors: number
+  modules?: NNTPModuleRuntimeStats
   providers: IndexerNNTPProviderStats[]
   scopes: IndexerNNTPScopeStats[]
+}
+
+export type NNTPModuleRuntimeStats = {
+  reservations_enabled: boolean
+  idle_borrow_enabled: boolean
+  indexer_max_percent: number
+  downloader_reserve_percent: number
+  downloader_demand_window_ms: number
+  indexer_active: number
+  downloader_active: number
+  indexer_limit: number
+  downloader_limit: number
+  downloader_demand_active: boolean
 }
 
 export type AdminStage = {
@@ -814,6 +828,13 @@ export type DownloadRuntimeSettings = {
   cleanup_extensions: string[]
 }
 
+export type NNTPPoolRuntimeSettings = {
+  idle_borrow_enabled: boolean
+  indexer_max_percent: number
+  downloader_reserve_percent: number
+  demand_window_seconds: number
+}
+
 export type ArrIntegrationRuntimeSettings = {
   id: string
   kind: string
@@ -831,6 +852,7 @@ export type RuntimeSettings = {
   indexers?: IndexerRuntimeSettings[]
   aggregator?: AggregatorRuntimeSettings
   download?: DownloadRuntimeSettings
+  nntp_pool?: NNTPPoolRuntimeSettings
   indexing?: IndexingRuntimeSettings
   arr_integrations?: ArrIntegrationRuntimeSettings[]
   revision?: number

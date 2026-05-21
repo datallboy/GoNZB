@@ -29,7 +29,7 @@ type StageKey =
   | 'enrich_tmdb'
 
 type BackfillRow = { group: string; until: string }
-type SettingsTab = 'downloader' | 'aggregator' | 'indexer'
+type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'indexer'
 
 const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; description: string }> = [
   { key: 'scrape_latest', label: 'Scrape latest', concurrency: false, description: 'Fast forward scan for new article headers.' },
@@ -50,6 +50,7 @@ const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; des
 ]
 
 const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
+  { key: 'nntp', label: 'NNTP' },
   { key: 'downloader', label: 'Downloader' },
   { key: 'aggregator', label: 'Aggregator' },
   { key: 'indexer', label: 'Indexer' },
@@ -66,6 +67,12 @@ function defaultSettings(): RuntimeSettings {
       out_dir: './downloads',
       completed_dir: './downloads/completed',
       cleanup_extensions: ['nzb', 'par2', 'sfv', 'nfo'],
+    },
+    nntp_pool: {
+      idle_borrow_enabled: true,
+      indexer_max_percent: 80,
+      downloader_reserve_percent: 20,
+      demand_window_seconds: 30,
     },
     indexing: {
       newsgroups: [],
@@ -144,7 +151,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
   return {
     ...defaults,
     ...input,
-    servers: input?.servers ?? [],
+    servers: input?.servers ?? input?.downloader_servers ?? input?.indexer_servers ?? [],
     downloader_servers: input?.downloader_servers ?? input?.servers ?? [],
     indexer_servers: input?.indexer_servers ?? input?.servers ?? [],
     indexers: input?.indexers ?? [],
@@ -163,6 +170,10 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       ...defaults.download!,
       ...input?.download,
       cleanup_extensions: input?.download?.cleanup_extensions ?? defaults.download!.cleanup_extensions,
+    },
+    nntp_pool: {
+      ...defaults.nntp_pool!,
+      ...input?.nntp_pool,
     },
     indexing: {
       ...defaults.indexing!,
@@ -322,9 +333,13 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
 
 function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
   switch (tab) {
+    case 'nntp':
+      return {
+        servers: serversForSave(settings.servers ?? [], 'nntp'),
+        nntp_pool: settings.nntp_pool,
+      }
     case 'downloader':
       return {
-        downloader_servers: serversForSave(settings.downloader_servers ?? [], 'downloader'),
         download: settings.download,
         arr_integrations: settings.arr_integrations ?? [],
       }
@@ -335,7 +350,6 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
       }
     case 'indexer':
       return {
-        indexer_servers: serversForSave(settings.indexer_servers ?? [], 'indexer'),
         indexing: settings.indexing ? sanitizeIndexingForSave(settings.indexing) : settings.indexing,
       }
   }
@@ -344,7 +358,7 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
 export function AdminSettingsPage() {
   const [settings, setSettings] = useState<RuntimeSettings>(defaultSettings())
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
-  const [activeTab, setActiveTab] = useState<SettingsTab>('downloader')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('nntp')
   const [newsgroupDrafts, setNewsgroupDrafts] = useState<BackfillRow[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -391,12 +405,11 @@ export function AdminSettingsPage() {
   const indexing = normalized.indexing!
   const aggregator = normalized.aggregator!
   const download = normalized.download!
-  const downloaderServers = normalized.downloader_servers ?? []
-  const indexerServers = normalized.indexer_servers ?? []
+  const nntpPool = normalized.nntp_pool!
+  const servers = normalized.servers ?? []
   const indexers = normalized.indexers ?? []
   const arrIntegrations = normalized.arr_integrations ?? []
-  const lockDownloaderServers = Boolean(capabilities?.modules.downloader?.ready)
-  const lockIndexerServers = Boolean(capabilities?.modules.usenet_indexer?.ready)
+  const lockNNTPServers = Boolean(capabilities?.modules.downloader?.ready || capabilities?.modules.usenet_indexer?.ready)
   const lockIndexers = Boolean(capabilities?.modules.aggregator?.ready)
   const lockIndexerLists = Boolean(capabilities?.modules.usenet_indexer?.ready)
   const lockArr = Boolean(capabilities?.modules.downloader?.ready)
@@ -458,24 +471,6 @@ export function AdminSettingsPage() {
           </SettingsSection>
 
           <SettingsSection
-            title="NNTP servers"
-            locked={lockDownloaderServers}
-            lockedMessage="Downloader server removal is disabled while the downloader is ready."
-            onAdd={() => setSettings((current) => ({ ...current, downloader_servers: [...downloaderServers, serverDefaults(downloaderServers.length)] }))}
-          >
-            {downloaderServers.map((server, index) => (
-              <ServerFields
-                key={index}
-                title={serverTitle(server, index)}
-                server={server}
-                locked={lockDownloaderServers}
-                onRemove={() => setSettings((current) => ({ ...current, downloader_servers: downloaderServers.filter((_, i) => i !== index) }))}
-                onChange={(patch) => updateDownloaderServer(index, patch)}
-              />
-            ))}
-          </SettingsSection>
-
-          <SettingsSection
             title="ARR integrations"
             locked={lockArr}
             lockedMessage="ARR integration removal is disabled while downloader is ready."
@@ -498,6 +493,63 @@ export function AdminSettingsPage() {
                 </div>
               </div>
             ))}
+          </SettingsSection>
+          <SettingsActions onReload={() => void refresh()} />
+        </ModuleGroup>
+        ) : null}
+
+        {activeTab === 'nntp' ? (
+        <ModuleGroup title="NNTP settings">
+          <SettingsSection
+            title="Providers"
+            locked={lockNNTPServers}
+            lockedMessage="NNTP provider removal is disabled while downloader or indexer runtime is ready."
+            onAdd={() => setSettings((current) => ({ ...current, servers: [...servers, serverDefaults(servers.length)] }))}
+          >
+            {servers.map((server, index) => (
+              <ServerFields
+                key={index}
+                title={serverTitle(server, index)}
+                server={server}
+                locked={lockNNTPServers}
+                onRemove={() => setSettings((current) => ({ ...current, servers: servers.filter((_, i) => i !== index) }))}
+                onChange={(patch) => updateServer(index, patch)}
+              />
+            ))}
+          </SettingsSection>
+
+          <SettingsSection title="Pool sharing">
+            <div className="toolbar-grid">
+              <CheckboxField
+                label="Idle borrow"
+                checked={Boolean(nntpPool.idle_borrow_enabled)}
+                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, idle_borrow_enabled: value } }))}
+                helpText="Allows indexer work to use the full NNTP pool while downloader demand is quiet."
+              />
+              <NumberField
+                label="Indexer max %"
+                min={1}
+                max={100}
+                value={nntpPool.indexer_max_percent}
+                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, indexer_max_percent: value } }))}
+                helpText="Maximum indexer share while downloader demand is active, or always when idle borrow is off."
+              />
+              <NumberField
+                label="Downloader reserve %"
+                min={1}
+                max={100}
+                value={nntpPool.downloader_reserve_percent}
+                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, downloader_reserve_percent: value } }))}
+                helpText="Reserved downloader share used when deriving pool behavior."
+              />
+              <NumberField
+                label="Demand window seconds"
+                min={1}
+                value={nntpPool.demand_window_seconds}
+                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, demand_window_seconds: value } }))}
+                helpText="How long recent downloader demand keeps indexer borrowing capped."
+              />
+            </div>
           </SettingsSection>
           <SettingsActions onReload={() => void refresh()} />
         </ModuleGroup>
@@ -548,24 +600,6 @@ export function AdminSettingsPage() {
 
         {activeTab === 'indexer' ? (
         <ModuleGroup title="Indexer settings">
-          <SettingsSection
-            title="NNTP scrape servers"
-            locked={lockIndexerServers}
-            lockedMessage="Indexer server removal is disabled while the indexer is ready."
-            onAdd={() => setSettings((current) => ({ ...current, indexer_servers: [...indexerServers, serverDefaults(indexerServers.length)] }))}
-          >
-            {indexerServers.map((server, index) => (
-              <ServerFields
-                key={index}
-                title={serverTitle(server, index)}
-                server={server}
-                locked={lockIndexerServers}
-                onRemove={() => setSettings((current) => ({ ...current, indexer_servers: indexerServers.filter((_, i) => i !== index) }))}
-                onChange={(patch) => updateIndexerServer(index, patch)}
-              />
-            ))}
-          </SettingsSection>
-
           <SettingsSection title="Newsgroups">
             <div className="button-row">
               <strong>Groups</strong>
@@ -809,12 +843,8 @@ export function AdminSettingsPage() {
     </div>
   )
 
-  function updateDownloaderServer(index: number, patch: Partial<ServerRuntimeSettings>) {
-    setSettings((current) => ({ ...current, downloader_servers: downloaderServers.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
-  }
-
-  function updateIndexerServer(index: number, patch: Partial<ServerRuntimeSettings>) {
-    setSettings((current) => ({ ...current, indexer_servers: indexerServers.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
+  function updateServer(index: number, patch: Partial<ServerRuntimeSettings>) {
+    setSettings((current) => ({ ...current, servers: servers.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
   }
 
   function updateIndexer(index: number, patch: Partial<IndexerRuntimeSettings>) {
