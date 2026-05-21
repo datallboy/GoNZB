@@ -35,6 +35,7 @@ Sprint validation:
 - `go run cmd/gonzb/main.go indexer scrape --help` passed.
 - `go run cmd/gonzb/main.go indexer recover-yenc --help` passed.
 - `go run cmd/gonzb/main.go indexer inspect par2 --help` passed.
+- `npm --prefix ui run build` passed.
 - Live one-shot scrape/recovery/inspection commands were not run during this pass to avoid consuming NNTP provider quota while validating transport wiring; the manager capacity behavior is covered by unit tests.
 
 ## Current PAR2 Inspect Pipeline
@@ -177,13 +178,14 @@ This model fits the DDD boundary better: NNTP transport owns provider mechanics,
 - [ ] Move downloader toward manager-owned wait-queue behavior after metrics prove the new policy is stable.
 - [ ] Add shared-pool module reservations with idle borrowing, so indexer can use the full pool when alone and yield a configured share when downloader work is active.
 - [x] Add basic NNTP manager stats: configured capacity, active/in-use slots, waiting requests, busy returns, operation counts, wait count, total wait duration, and max wait duration.
-- [ ] Add provider-level stats access for idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
+- [x] Add provider-level stats access for idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
 - [x] Add basic queue/backpressure stats: waiting requests, busy returns, wait count, total wait time, and max wait time.
-- [ ] Add retry count and average wait time to surfaced manager stats.
-- [ ] Add per-module NNTP demand stats: downloader queued segments and active workers, scrape active XOVER requests, yEnc active workers, PAR2 active workers, archive/media/NFO/password active workers.
-- [ ] Surface NNTP capacity stats in the admin dashboard so backlog growth can be tied to provider pressure instead of guessed from stage throughput.
+- [x] Surface retry counters and wait timing in the admin API and dashboard. Average wait can be derived from total wait time and wait count, but is not yet precomputed as a separate field.
+- [ ] Add per-stage NNTP demand stats: scrape active XOVER requests, yEnc active workers, PAR2 active workers, archive/media/NFO/password active workers.
+- [x] Surface indexer NNTP capacity stats in the admin dashboard so backlog growth can be tied to provider pressure instead of guessed from stage throughput.
 - [x] Add a blocking acquire path for indexer NNTP calls so indexer work waits behind a measured queue instead of silently opening more connections.
 - [ ] Add rate-limit/provider-pressure counters for common NNTP failure classes, including busy, timeout, connection reset, and article missing.
+- [ ] Defer downloader queue/wait policy and downloader-specific active worker stats to a separate downloader-focused session.
 
 ## Sign-Off Checklist
 
@@ -194,6 +196,7 @@ Done:
 - [x] Record the current NNTP ownership split between downloader manager and indexer provider.
 - [x] Record the preferred shared NNTP manager direction with configurable busy/wait policies and dynamic module reservations.
 - [x] Add manager wait-queue capacity policy and route indexer NNTP operations through it.
+- [x] Add live indexer NNTP capacity stats to the admin API and WebUI dashboard.
 
 Needs completion:
 
@@ -201,5 +204,5 @@ Needs completion:
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
 - [ ] Shared NNTP capacity can be reserved, borrowed, and reported by module.
-- [ ] Provider-level NNTP stats and dashboard surfacing are visible enough to tune total concurrency against the provider account limit.
-- [ ] The dashboard shows both stage backlog and NNTP capacity pressure.
+- [ ] Per-stage indexer NNTP demand is visible alongside manager-level pressure.
+- [ ] Downloader-specific NNTP wait policy, reservations, and active worker stats are handled in a separate session.
