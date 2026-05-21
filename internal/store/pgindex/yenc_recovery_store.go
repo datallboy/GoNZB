@@ -261,7 +261,7 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 		binaryID,
 	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem)
 	if err == sql.ErrNoRows {
-		return seed, fmt.Errorf("binary %d not found for yenc recovery", binaryID)
+		return seed, fmt.Errorf("%w: %d for yenc recovery", ErrBinaryNotFound, binaryID)
 	}
 	if err != nil {
 		return seed, fmt.Errorf("load yenc recovery binary %d: %w", binaryID, err)
