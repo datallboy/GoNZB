@@ -6,11 +6,17 @@ import (
 	"github.com/datallboy/gonzb/internal/nntp"
 )
 
-type NNTPAdapter struct {
-	p nntp.Provider
+type nntpClient interface {
+	ID() string
+	GroupStats(ctx context.Context, group string) (nntp.GroupStats, error)
+	XOver(ctx context.Context, group string, from, to int64) ([]nntp.OverviewHeader, error)
 }
 
-func NewNNTPAdapter(p nntp.Provider) *NNTPAdapter {
+type NNTPAdapter struct {
+	p nntpClient
+}
+
+func NewNNTPAdapter(p nntpClient) *NNTPAdapter {
 	return &NNTPAdapter{p: p}
 }
 
