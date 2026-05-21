@@ -444,7 +444,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			passwordedUnknown := true
 			passwordState := "passworded_unknown"
 			tags := []string{"archive", "unresolved_password"}
-			return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+			if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 				ReleaseID:         candidate.ReleaseID,
 				Encrypted:         &encrypted,
 				Passworded:        &passworded,
@@ -453,7 +453,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				ArchiveCount:      &archiveCount,
 				MediaTags:         tags,
 				MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-			})
+			}); err != nil {
+				if pgindex.IsReleaseNotFound(err) {
+					if s != nil && s.log != nil {
+						s.log.Warn("inspect_archive: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+					}
+					return nil
+				}
+				return err
+			}
+			return nil
 		}
 		return nil
 	}
@@ -468,7 +477,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		tags = append(tags, "unresolved_password")
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		Encrypted:         &encrypted,
 		Passworded:        &passworded,
@@ -477,7 +486,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		ArchiveCount:      &archiveCount,
 		MediaTags:         tags,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_archive: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func isRecoverableArchiveInspectionError(err error) bool {

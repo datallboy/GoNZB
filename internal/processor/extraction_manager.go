@@ -2,6 +2,7 @@ package processor
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/datallboy/gonzb/internal/domain"
 )
@@ -53,6 +54,7 @@ func (m *Manager) HasExtractors() bool {
 // Returns a map of task -> extractor for each archive found
 func (m *Manager) DetectArchives(tasks []*domain.DownloadFile) (map[*domain.DownloadFile]Extractor, error) {
 	archives := make(map[*domain.DownloadFile]Extractor)
+	seenExtensionless := make(map[string]struct{})
 
 	for _, task := range tasks {
 		// Try each extractor to see if it can handle this file
@@ -64,6 +66,12 @@ func (m *Manager) DetectArchives(tasks []*domain.DownloadFile) (map[*domain.Down
 			}
 
 			if canExtract {
+				if key, ok := extensionlessArchiveKey(task.FinalPath); ok {
+					if _, exists := seenExtensionless[key]; exists {
+						break
+					}
+					seenExtensionless[key] = struct{}{}
+				}
 				archives[task] = extractor
 				break // Found a matching extractor, move to next task
 			}
@@ -71,4 +79,15 @@ func (m *Manager) DetectArchives(tasks []*domain.DownloadFile) (map[*domain.Down
 	}
 
 	return archives, nil
+}
+
+func extensionlessArchiveKey(path string) (string, bool) {
+	if filepath.Ext(filepath.Base(path)) != "" {
+		return "", false
+	}
+	kind, err := detectArchiveSignature(path)
+	if err != nil || kind == archiveSignatureUnknown {
+		return "", false
+	}
+	return filepath.Dir(path) + string(filepath.Separator) + string(kind), true
 }

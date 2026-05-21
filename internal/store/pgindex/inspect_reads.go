@@ -38,6 +38,7 @@ type IndexerDashboardStat struct {
 	Value              int64      `json:"value"`
 	Available          bool       `json:"available"`
 	Exact              bool       `json:"exact"`
+	Capped             bool       `json:"capped"`
 	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	RefreshAttemptedAt *time.Time `json:"refresh_attempted_at,omitempty"`
 	LastError          string     `json:"last_error,omitempty"`
@@ -444,7 +445,11 @@ type indexerDashboardStatDefinition struct {
 	Label       string
 	Description string
 	Exact       bool
+	Limit       int64
 }
+
+const dashboardBacklogEstimateLimit = 1000
+const dashboardStatRefreshTimeout = 20 * time.Second
 
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
@@ -462,44 +467,50 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_yenc_recovery_binaries",
 		Label:       "yEnc Recovery Backlog",
-		Description: "Bounded count of binaries that recover_yenc can inspect now.",
+		Description: "Bounded count of binaries that recover_yenc can inspect now. Values at the cap mean there may be more recoverable work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_discovery_binaries",
 		Label:       "Discovery Backlog",
-		Description: "Bounded count of binaries inspect_discovery can claim now.",
+		Description: "Bounded count of binaries inspect_discovery can claim now. Values at the cap mean there may be more work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_par2_binaries",
 		Label:       "PAR2 Inspection Backlog",
-		Description: "Bounded count of PAR2 sets inspect_par2 can claim now.",
-		Exact:       false,
+		Description: "Exact count of PAR2 sets inspect_par2 can claim now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_nfo_binaries",
 		Label:       "NFO Inspection Backlog",
-		Description: "Bounded count of binaries inspect_nfo can claim now.",
+		Description: "Bounded count of binaries inspect_nfo can claim now. Values at the cap mean there may be more work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_archive_binaries",
 		Label:       "Archive Inspection Backlog",
-		Description: "Bounded count of archive families inspect_archive can claim now.",
+		Description: "Bounded count of archive families inspect_archive can claim now. Values at the cap mean there may be more work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_password_binaries",
 		Label:       "Password Inspection Backlog",
-		Description: "Bounded count of encrypted archive binaries inspect_password can claim now.",
+		Description: "Bounded count of encrypted archive binaries inspect_password can claim now. Values at the cap mean there may be more work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 	{
 		Key:         "pending_inspect_media_binaries",
 		Label:       "Media Inspection Backlog",
-		Description: "Bounded count of media binaries inspect_media can claim now.",
+		Description: "Bounded count of media binaries inspect_media can claim now. Values at the cap mean there may be more work behind the current snapshot.",
 		Exact:       false,
+		Limit:       dashboardBacklogEstimateLimit,
 	},
 }
 
@@ -546,6 +557,9 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 		}
 		if ok {
 			item.Value = row.value
+			if def.Limit > 0 && row.value >= def.Limit {
+				item.Capped = true
+			}
 			if row.updatedAt.Valid {
 				ts := row.updatedAt.Time.UTC()
 				item.UpdatedAt = &ts
@@ -874,7 +888,9 @@ func maxInt(value, fallback int) int {
 func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
 	for _, def := range indexerDashboardStatDefinitions {
 		now := time.Now().UTC()
-		value, err := s.computeIndexerDashboardStat(ctx, def.Key)
+		statCtx, cancel := context.WithTimeout(ctx, dashboardStatRefreshTimeout)
+		value, err := s.computeIndexerDashboardStat(statCtx, def.Key)
+		cancel()
 		if err != nil {
 			if persistErr := s.persistIndexerDashboardStatFailure(ctx, def.Key, now, err); persistErr != nil {
 				return nil, persistErr
@@ -1015,29 +1031,12 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	return count, nil
 }
 
-const dashboardBacklogEstimateLimit = 1000
-
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM (
-			SELECT b.id
-			FROM binaries b
-			JOIN release_family_readiness_summaries s
-			  ON s.provider_id = b.provider_id
-			 AND s.newsgroup_id = b.newsgroup_id
-			 AND s.key_kind = 'release_family'
-			 AND s.family_key = b.release_family_key
-			WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
-			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-			  AND b.is_main_payload = TRUE
-			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
-			LIMIT $1
-		) pending`, dashboardBacklogEstimateLimit).Scan(&count); err != nil {
+	candidates, err := s.ListYEncRecoveryCandidates(ctx, dashboardBacklogEstimateLimit)
+	if err != nil {
 		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
-	return count, nil
+	return int64(len(candidates)), nil
 }
 
 func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
@@ -1055,39 +1054,35 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM (
-			SELECT b.id
-			FROM binaries b
-			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = 'inspect_par2'
-				AND bi.binary_id = b.id
-			WHERE b.observed_parts > 0
-			  AND (
-				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
-				COALESCE(b.recovered_kind, '') = 'par2' OR
-				COALESCE(b.recovered_extension, '') = '.par2'
-			  )
-			  AND (
-				bi.id IS NULL OR
-				bi.status = 'failed' OR
-				(
-					bi.status = 'running' AND
-					bi.inspection_claimed_until IS NOT NULL AND
-					bi.inspection_claimed_until < NOW()
-				) OR
-				b.updated_at > bi.updated_at OR
-				NOT EXISTS (
-					SELECT 1
-					FROM binary_par2_targets bpt
-					WHERE bpt.binary_id = b.id
-				)
-			  )
-			  AND (
-				bi.inspection_claimed_until IS NULL OR
+		FROM binaries b
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = 'inspect_par2'
+			AND bi.binary_id = b.id
+		WHERE b.observed_parts > 0
+		  AND (
+			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
+			COALESCE(b.recovered_kind, '') = 'par2' OR
+			COALESCE(b.recovered_extension, '') = '.par2'
+		  )
+		  AND (
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				bi.inspection_claimed_until IS NOT NULL AND
 				bi.inspection_claimed_until < NOW()
-			  )
-			LIMIT $1
-		) pending`, dashboardBacklogEstimateLimit).Scan(&count); err != nil {
+			) OR
+			b.updated_at > bi.updated_at OR
+			NOT EXISTS (
+				SELECT 1
+				FROM binary_par2_targets bpt
+				WHERE bpt.binary_id = b.id
+			)
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
+		  )`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending inspect_par2 backlog: %w", err)
 	}
 	return count, nil

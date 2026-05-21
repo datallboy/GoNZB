@@ -2,6 +2,7 @@ package yencrecover
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,6 +35,9 @@ func TestRunOnceRecoversCandidateFromYEncHeaderPrefix(t *testing.T) {
 	}
 	if metrics["recovered"] != 1 {
 		t.Fatalf("expected one recovered candidate, got metrics=%v", metrics)
+	}
+	if metrics["effective_concurrency"] != 1 || metrics["batch_full"] != false {
+		t.Fatalf("unexpected recovery saturation metrics: %v", metrics)
 	}
 	if repo.applied.FileName != "Example.Release.vol001+002.par2" {
 		t.Fatalf("expected recovered yEnc filename, got %q", repo.applied.FileName)
@@ -72,10 +76,33 @@ func TestRunOnceBacksOffNotFoundArticle(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsStaleBinaryRecoveryCandidate(t *testing.T) {
+	repo := &fakeRepo{
+		candidates: []pgindex.YEncRecoveryCandidate{{
+			BinaryID:        10,
+			ArticleHeaderID: 20,
+			NewsgroupName:   "alt.binaries.test",
+			MessageID:       "abc@test",
+		}},
+		applyErr: fmt.Errorf("%w: 10", pgindex.ErrBinaryNotFound),
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.vol001+002.par2\r\n=ypart begin=1 end=1024\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 10, MaxHeaderBytes: 256})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["stale_candidates"] != 1 || metrics["attempted"] != 1 {
+		t.Fatalf("expected stale candidate to be counted without failing, got metrics=%v", metrics)
+	}
+}
+
 type fakeRepo struct {
 	candidates        []pgindex.YEncRecoveryCandidate
 	applied           pgindex.YEncHeaderRecoveryRecord
 	notFoundArticleID int64
+	applyErr          error
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
@@ -84,6 +111,9 @@ func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.Y
 
 func (f *fakeRepo) ApplyYEncHeaderRecovery(_ context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error) {
 	f.applied = in
+	if f.applyErr != nil {
+		return nil, f.applyErr
+	}
 	return &pgindex.YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: in.BinaryID}, nil
 }
 

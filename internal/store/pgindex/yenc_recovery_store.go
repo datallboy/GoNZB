@@ -81,7 +81,7 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 		JOIN article_headers ah ON ah.id = bp.article_header_id
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		WHERE COALESCE(p.subject_file_name, '') = ''
+		WHERE p.subject_file_name = ''
 		  AND (p.yenc_recovery_retry_after IS NULL OR p.yenc_recovery_retry_after <= NOW())
 		ORDER BY
 			CASE
@@ -261,7 +261,7 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 		binaryID,
 	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem)
 	if err == sql.ErrNoRows {
-		return seed, fmt.Errorf("binary %d not found for yenc recovery", binaryID)
+		return seed, fmt.Errorf("%w: %d for yenc recovery", ErrBinaryNotFound, binaryID)
 	}
 	if err != nil {
 		return seed, fmt.Errorf("load yenc recovery binary %d: %w", binaryID, err)

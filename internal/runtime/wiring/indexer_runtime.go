@@ -212,7 +212,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
 	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
-	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPAR2.BatchSize))
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectPAR2, stageOwner))
 	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
 	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectArchive, stageOwner))
 	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
@@ -315,7 +315,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Interval:    runtimeCfg.InspectPAR2.Interval,
 			Enabled:     runtimeCfg.InspectPAR2.Enabled,
 			BatchSize:   runtimeCfg.InspectPAR2.BatchSize,
-			Concurrency: 1,
+			Concurrency: runtimeCfg.InspectPAR2.Concurrency,
 			Backoff:     runtimeCfg.InspectPAR2.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(inspectPAR2Svc.RunOnceWithMetrics(ctx))

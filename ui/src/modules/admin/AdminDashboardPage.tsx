@@ -55,19 +55,20 @@ function formatStatValue(stat: IndexerDashboardStat) {
   if (!stat.available) {
     return 'Not Cached'
   }
+  const suffix = stat.capped ? '+' : ''
   if (stat.key.endsWith('_bytes')) {
     const value = stat.value
     if (value >= 1024 ** 3) {
-      return `${(value / 1024 ** 3).toFixed(1)} GB`
+      return `${(value / 1024 ** 3).toFixed(1)} GB${suffix}`
     }
     if (value >= 1024 ** 2) {
-      return `${(value / 1024 ** 2).toFixed(1)} MB`
+      return `${(value / 1024 ** 2).toFixed(1)} MB${suffix}`
     }
     if (value >= 1024) {
-      return `${(value / 1024).toFixed(1)} KB`
+      return `${(value / 1024).toFixed(1)} KB${suffix}`
     }
   }
-  return stat.value.toLocaleString()
+  return `${stat.value.toLocaleString()}${suffix}`
 }
 
 function isInspectBacklogStat(stat: IndexerDashboardStat) {
@@ -104,7 +105,7 @@ function backlogCard(stat: IndexerDashboardStat) {
     <div className="stat-card backlog-stat-card" key={stat.key}>
       <div className="backlog-stat-card__header">
         <span>{stat.label}</span>
-        <small>{stat.exact ? 'exact' : 'estimate'}</small>
+        <small>{stat.exact ? 'exact' : stat.capped ? 'capped estimate' : 'estimate'}</small>
       </div>
       <strong>{formatStatValue(stat)}</strong>
       <code>{backlogCommand(stat)}</code>

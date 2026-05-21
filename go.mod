@@ -7,6 +7,7 @@ require (
 	github.com/labstack/echo/v5 v5.0.3
 	github.com/segmentio/ksuid v1.0.4
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/net v0.52.0
 	modernc.org/sqlite v1.44.3
 )
 

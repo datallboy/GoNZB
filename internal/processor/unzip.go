@@ -1,10 +1,8 @@
 package processor
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -38,8 +36,7 @@ func (u *CLIUnzip) Name() string {
 func (u *CLIUnzip) CanExtract(filePath string) (bool, error) {
 	lower := strings.ToLower(filepath.Base(filePath))
 
-	// Extension check
-	if !strings.HasSuffix(lower, ".zip") {
+	if !strings.HasSuffix(lower, ".zip") && filepath.Ext(lower) != "" {
 		return false, nil
 	}
 
@@ -74,28 +71,9 @@ func (u *CLIUnzip) Extract(ctx context.Context, archivePath string, destDir stri
 
 // hasZipSignature checks if the file has a valid ZIP magic byte signature
 func hasZipSignature(filePath string) (bool, error) {
-	file, err := os.Open(filePath)
+	kind, err := detectArchiveSignature(filePath)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
-
-	header := make([]byte, 4)
-	n, err := file.Read(header)
-	if err != nil {
-		return false, err
-	}
-
-	if n < 4 {
-		return false, nil
-	}
-
-	// Check against known ZIP signatures
-	for _, sig := range zipSignatures {
-		if bytes.Equal(header, sig) {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return kind == archiveSignatureZIP, nil
 }

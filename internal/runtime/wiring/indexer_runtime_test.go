@@ -69,6 +69,11 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		BatchSize:   &batch,
 		Concurrency: &concurrency,
 	}
+	cfg.Indexing.InspectPAR2 = config.IndexingStageConfig{
+		Enabled:     &enabled,
+		BatchSize:   &batch,
+		Concurrency: &concurrency,
+	}
 	cfg.Indexing.EnrichPreDB = config.IndexingPreDBConfig{
 		Enabled:            &enabled,
 		IntervalMinutes:    &interval,
@@ -123,6 +128,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.InspectMedia.Concurrency != concurrency {
 		t.Fatalf("expected inspect_media concurrency %d, got %+v", concurrency, got.InspectMedia)
+	}
+	if got.InspectPAR2.BatchSize != batch || got.InspectPAR2.Concurrency != concurrency {
+		t.Fatalf("expected inspect_par2 batch/concurrency from config, got %+v", got.InspectPAR2)
 	}
 	if got.Inspect.WorkspaceBackend != "memory" || got.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect-test" {
 		t.Fatalf("expected inspect workspace backend settings, got %+v", got.Inspect)

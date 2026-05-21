@@ -496,7 +496,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		tags = append(tags, audioCodec)
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		VideoCount:        &videoCount,
 		AudioCount:        &audioCount,
@@ -509,7 +509,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		MediaQualityScore: &mediaQuality,
 		MediaQualityTier:  mediaTier(mediaQuality),
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_media: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func normalizeMatch(v string) string {
