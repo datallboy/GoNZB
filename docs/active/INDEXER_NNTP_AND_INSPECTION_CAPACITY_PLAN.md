@@ -63,7 +63,9 @@ Known behavior:
 
 - live `batch_size=1000`, `concurrency=1` processed 386 candidates in the bounded 120 second run budget
 - live `batch_size=1000`, `concurrency=4` has been observed around the 640 range before the run timeout
+- live `batch_size=1000`, `concurrency=8` has completed 1000 candidates in roughly 93-115 seconds of processing time, with 3-9 seconds of candidate selection time before step timing metrics landed
 - PAR2 exact backlog count is already fast enough for dashboard use, measured around 33 ms with the indexed count path
+- code previously capped effective PAR2 workers at 8 even if runtime settings were raised higher; the cap is now 32 so a configured concurrency of 20 can actually run
 
 Likely bottlenecks to prove with metrics:
 
@@ -77,8 +79,8 @@ Redis is not the first fix for this lane. The hot path needs step timing and bat
 
 ## PAR2 Action Items
 
-- [ ] Add per-step `inspect_par2` timing metrics: candidate selection, catalog metadata load, NNTP prefix fetch, PAR2 parse, full-manifest fallback, artifact/set/target writes, coverage writes, and completion writes.
-- [ ] Track full-manifest fallback count and fallback bytes so slow candidates can be separated from normal prefix-only candidates.
+- [x] Add per-step `inspect_par2` timing metrics: candidate selection, NNTP/catalog prefix sampling, PAR2 parse, full-manifest fallback, artifact/set/target writes, coverage writes, completion writes, release rollup writes, and skipped-candidate writes.
+- [x] Track full-manifest fallback count and fallback bytes so slow candidates can be separated from normal prefix-only candidates.
 - [ ] Add batch persistence for PAR2 inspection results. Workers should inspect/fetch/parse candidates and hand result objects to a flush loop that commits rows in chunks instead of forcing every candidate through separate small write transactions.
 - [ ] Combine per-candidate PAR2 artifact/set/target/coverage/inspection writes into fewer transactional repository calls where chunked flushing is not practical.
 - [ ] Add metrics for candidate result flush size, flush duration, rows written, and write failures.
@@ -93,6 +95,7 @@ Current state:
 - selector-backed bounded measurement for 5000 candidates took about 1.2 seconds
 - full exact yEnc count exceeded a 30 second statement timeout
 - the blocker is schema shape: claimability is derived from weak/obfuscated binary state, readiness-summary state, first-part lookup, and article payload retry/name state
+- live `batch_size=999`, `concurrency=8` has been completing full batches in roughly 75-85 seconds of processing time, with candidate selection varying from about 2-25 seconds before finer timing metrics landed
 
 The right direction is a durable Postgres work queue or rollup, not a dashboard-only cache.
 
@@ -118,7 +121,7 @@ Expected benefits:
 - [ ] Define which existing events create, update, retire, or stale a yEnc work item.
 - [ ] Replace exact dashboard counting with indexed work-item totals.
 - [ ] Move recovery candidate selection to the work-item table once the backfill/maintenance path is reliable.
-- [ ] Add yEnc recovery metrics for selection duration, fetch duration, parse duration, write duration, stale candidates, retry candidates, and active worker count.
+- [x] Add yEnc recovery metrics for selection duration, fetch duration, parse duration, match duration, write duration, not-found backoff write duration, stale candidates, retry candidates, and active worker count.
 - [ ] Backfill work items with a bounded migration or maintenance command, not ad hoc live schema or data edits.
 
 ## Current NNTP Transport Shape
@@ -202,10 +205,11 @@ Done:
 - [x] Add scoped indexer NNTP demand stats alongside manager-level pressure.
 - [x] Share the NNTP manager between downloader and indexer in all-in-one runtime builds while preserving downloader `ErrProviderBusy` behavior.
 - [x] Add runtime-configurable NNTP pool idle borrow and usage percentages.
+- [x] Add PAR2/yEnc step timing metrics and lift the PAR2 worker cap high enough for a configured concurrency of 20 to take effect.
 
 Needs completion:
 
-- [ ] PAR2 step timing metrics prove whether the next bottleneck is NNTP, parse, fallback materialization, or database writes.
+- [ ] New PAR2/yEnc step timing metrics are observed in live runs and used to decide whether the next bottleneck is NNTP, parse, fallback materialization, selection, or database writes.
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
 - [ ] Downloader-specific manager-owned wait policy and richer active worker stats are handled in a separate downloader-focused session.

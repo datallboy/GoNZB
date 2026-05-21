@@ -67,15 +67,29 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	runBudget := par2RunBudget(s.opts)
 	metrics := map[string]any{
-		"candidate_count":        len(candidates),
-		"processed_count":        0,
-		"submitted_count":        0,
-		"batch_size":             s.opts.CandidateBatchSize,
-		"effective_concurrency":  0,
-		"candidate_selection_ms": durationMillis(time.Since(selectionStarted)),
-		"processing_ms":          float64(0),
-		"run_budget_ms":          durationMillis(runBudget),
-		"run_budget_exhausted":   false,
+		"candidate_count":         len(candidates),
+		"processed_count":         0,
+		"submitted_count":         0,
+		"batch_size":              s.opts.CandidateBatchSize,
+		"effective_concurrency":   0,
+		"candidate_selection_ms":  durationMillis(time.Since(selectionStarted)),
+		"processing_ms":           float64(0),
+		"run_budget_ms":           durationMillis(runBudget),
+		"run_budget_exhausted":    false,
+		"claim_ms":                float64(0),
+		"workspace_ms":            float64(0),
+		"prefix_fetch_ms":         float64(0),
+		"parse_ms":                float64(0),
+		"full_manifest_count":     0,
+		"full_manifest_ms":        float64(0),
+		"full_manifest_bytes":     int64(0),
+		"artifact_write_ms":       float64(0),
+		"set_write_ms":            float64(0),
+		"target_write_ms":         float64(0),
+		"coverage_write_ms":       float64(0),
+		"completion_write_ms":     float64(0),
+		"release_rollup_write_ms": float64(0),
+		"skipped_write_ms":        float64(0),
 	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
@@ -96,9 +110,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		wg       sync.WaitGroup
 		firstErr error
 	)
-	recordResult := func(candidate pgindex.BinaryInspectionCandidate, candidateDuration time.Duration, err error) {
+	recordResult := func(candidate pgindex.BinaryInspectionCandidate, candidateDuration time.Duration, candidateMetrics par2CandidateMetrics, err error) {
 		mu.Lock()
 		defer mu.Unlock()
+		mergePAR2Metrics(metrics, candidateMetrics)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -139,12 +154,12 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			defer wg.Done()
 			for candidate := range jobs {
 				if ctx.Err() != nil {
-					recordResult(candidate, 0, ctx.Err())
+					recordResult(candidate, 0, par2CandidateMetrics{}, ctx.Err())
 					continue
 				}
 				candidateStarted := time.Now()
-				err := s.inspectCandidate(ctx, candidate)
-				recordResult(candidate, time.Since(candidateStarted), err)
+				candidateMetrics, err := s.inspectCandidate(ctx, candidate)
+				recordResult(candidate, time.Since(candidateStarted), candidateMetrics, err)
 			}
 		}()
 	}
@@ -199,8 +214,8 @@ func par2WorkerCount(opts inspectpkg.Options, candidateCount int) int {
 	if workers <= 0 {
 		workers = 1
 	}
-	if workers > 8 {
-		workers = 8
+	if workers > 32 {
+		workers = 32
 	}
 	if workers > candidateCount {
 		workers = candidateCount
@@ -222,13 +237,76 @@ func par2RunBudget(opts inspectpkg.Options) time.Duration {
 	return budget
 }
 
-func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
-	stageName := string(supervisor.StageInspectPAR2)
-	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
-		return err
-	}
+type par2CandidateMetrics struct {
+	Claim              time.Duration
+	Workspace          time.Duration
+	PrefixFetch        time.Duration
+	Parse              time.Duration
+	FullManifest       time.Duration
+	FullManifestCount  int
+	FullManifestBytes  int64
+	ArtifactWrite      time.Duration
+	SetWrite           time.Duration
+	TargetWrite        time.Duration
+	CoverageWrite      time.Duration
+	CompletionWrite    time.Duration
+	ReleaseRollupWrite time.Duration
+	SkippedWrite       time.Duration
+}
 
+func mergePAR2Metrics(metrics map[string]any, in par2CandidateMetrics) {
+	addFloatMetric(metrics, "claim_ms", durationMillis(in.Claim))
+	addFloatMetric(metrics, "workspace_ms", durationMillis(in.Workspace))
+	addFloatMetric(metrics, "prefix_fetch_ms", durationMillis(in.PrefixFetch))
+	addFloatMetric(metrics, "parse_ms", durationMillis(in.Parse))
+	addFloatMetric(metrics, "full_manifest_ms", durationMillis(in.FullManifest))
+	addIntMetric(metrics, "full_manifest_count", in.FullManifestCount)
+	addInt64Metric(metrics, "full_manifest_bytes", in.FullManifestBytes)
+	addFloatMetric(metrics, "artifact_write_ms", durationMillis(in.ArtifactWrite))
+	addFloatMetric(metrics, "set_write_ms", durationMillis(in.SetWrite))
+	addFloatMetric(metrics, "target_write_ms", durationMillis(in.TargetWrite))
+	addFloatMetric(metrics, "coverage_write_ms", durationMillis(in.CoverageWrite))
+	addFloatMetric(metrics, "completion_write_ms", durationMillis(in.CompletionWrite))
+	addFloatMetric(metrics, "release_rollup_write_ms", durationMillis(in.ReleaseRollupWrite))
+	addFloatMetric(metrics, "skipped_write_ms", durationMillis(in.SkippedWrite))
+}
+
+func addFloatMetric(metrics map[string]any, key string, delta float64) {
+	if delta <= 0 {
+		return
+	}
+	current, _ := metrics[key].(float64)
+	metrics[key] = current + delta
+}
+
+func addIntMetric(metrics map[string]any, key string, delta int) {
+	if delta == 0 {
+		return
+	}
+	current, _ := metrics[key].(int)
+	metrics[key] = current + delta
+}
+
+func addInt64Metric(metrics map[string]any, key string, delta int64) {
+	if delta == 0 {
+		return
+	}
+	current, _ := metrics[key].(int64)
+	metrics[key] = current + delta
+}
+
+func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) (par2CandidateMetrics, error) {
+	stageName := string(supervisor.StageInspectPAR2)
+	var metrics par2CandidateMetrics
+	started := time.Now()
+	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
+		return metrics, err
+	}
+	metrics.Claim = time.Since(started)
+
+	started = time.Now()
 	workspace, err := s.workspace.PrepareBinaryWorkspace(ctx, stageName, candidate)
+	metrics.Workspace = time.Since(started)
 	if err != nil {
 		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 			StageName:       stageName,
@@ -237,11 +315,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       err.Error(),
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return fmt.Errorf("prepare par2 workspace: %w", err)
+		return metrics, fmt.Errorf("prepare par2 workspace: %w", err)
 	}
 	defer workspace.Cleanup()
 
+	started = time.Now()
 	sample, err := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, candidate, minInt64PAR2(s.opts.MaxBytes, 256*1024))
+	metrics.PrefixFetch = time.Since(started)
 	if err != nil {
 		if isRecoverablePAR2InspectionError(err) {
 			_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -254,15 +334,18 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
 			}
-			return nil
+			return metrics, nil
 		}
+		started = time.Now()
 		if err := s.completeSkippedInspection(ctx, candidate, workspace.ManifestPath, err); err != nil {
-			return err
+			metrics.SkippedWrite = time.Since(started)
+			return metrics, err
 		}
+		metrics.SkippedWrite = time.Since(started)
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_par2: skipped binary_id=%d release_id=%s reason=%s", candidate.BinaryID, candidate.ReleaseID, par2ProbeSkipReason(err))
 		}
-		return nil
+		return metrics, nil
 	}
 
 	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(candidate.FileName)), ".par2")
@@ -277,10 +360,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		recoveryBlocks = parseInt(match[2])
 	}
 	signatureOK := sample.Signature == "par2"
+	started = time.Now()
 	targets := parseTargetFiles(sample.Prefix)
+	metrics.Parse = time.Since(started)
 	usedFullMaterialization := false
 	if shouldMaterializePAR2Manifest(candidate.FileName, isVolume, sample, targets) {
+		metrics.FullManifestCount = 1
+		started = time.Now()
 		full, fullErr := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, workspaceBinaryPath(workspace, candidate), s.opts.MaxBytes)
+		metrics.FullManifest = time.Since(started)
 		if fullErr != nil {
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: manifest materialization fallback failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, fullErr)
@@ -293,7 +381,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				}
 			} else {
 				workspace.MaterializedBytes += full.BytesWritten
+				metrics.FullManifestBytes += full.BytesWritten
+				started = time.Now()
 				targets = parseTargetFiles(data)
+				metrics.Parse += time.Since(started)
 				usedFullMaterialization = len(targets) > 0
 			}
 		}
@@ -316,6 +407,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		})
 	}
 
+	started = time.Now()
 	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
 		BinaryID:     candidate.BinaryID,
 		ReleaseID:    candidate.ReleaseID,
@@ -332,8 +424,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			"full_manifest_fallback": usedFullMaterialization,
 		},
 	}}); err != nil {
-		return err
+		metrics.ArtifactWrite = time.Since(started)
+		return metrics, err
 	}
+	metrics.ArtifactWrite = time.Since(started)
+	started = time.Now()
 	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, []pgindex.BinaryPAR2SetRecord{{
 		BinaryID:       candidate.BinaryID,
 		ReleaseID:      candidate.ReleaseID,
@@ -348,15 +443,23 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			"targets":   targetMetadata,
 		},
 	}}); err != nil {
-		return err
+		metrics.SetWrite = time.Since(started)
+		return metrics, err
 	}
+	metrics.SetWrite = time.Since(started)
+	started = time.Now()
 	if err := s.repo.ReplaceBinaryPAR2Targets(ctx, candidate.BinaryID, targetRows); err != nil {
-		return err
+		metrics.TargetWrite = time.Since(started)
+		return metrics, err
 	}
+	metrics.TargetWrite = time.Since(started)
+	started = time.Now()
 	coverage, err := s.repo.ApplyBinaryPAR2TargetCoverage(ctx, candidate.BinaryID, targetRows)
 	if err != nil {
-		return err
+		metrics.CoverageWrite = time.Since(started)
+		return metrics, err
 	}
+	metrics.CoverageWrite = time.Since(started)
 
 	summary := map[string]any{
 		"has_par2":               true,
@@ -374,6 +477,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["target_coverage_updates"] = coverage.UpdatedBinaryCount
 	}
 
+	started = time.Now()
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
 		BinaryID:          candidate.BinaryID,
@@ -384,27 +488,33 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
 	}); err != nil {
-		return err
+		metrics.CompletionWrite = time.Since(started)
+		return metrics, err
 	}
+	metrics.CompletionWrite = time.Since(started)
 
 	hasPAR2 := true
 	if strings.TrimSpace(candidate.ReleaseID) == "" {
-		return nil
+		return metrics, nil
 	}
+	started = time.Now()
 	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasPAR2:           &hasPAR2,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
 	}); err != nil {
 		if pgindex.IsReleaseNotFound(err) {
+			metrics.ReleaseRollupWrite = time.Since(started)
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
 			}
-			return nil
+			return metrics, nil
 		}
-		return err
+		metrics.ReleaseRollupWrite = time.Since(started)
+		return metrics, err
 	}
-	return nil
+	metrics.ReleaseRollupWrite = time.Since(started)
+	return metrics, nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

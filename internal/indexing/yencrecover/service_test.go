@@ -39,6 +39,18 @@ func TestRunOnceRecoversCandidateFromYEncHeaderPrefix(t *testing.T) {
 	if metrics["effective_concurrency"] != 1 || metrics["batch_full"] != false {
 		t.Fatalf("unexpected recovery saturation metrics: %v", metrics)
 	}
+	if _, ok := metrics["fetch_ms"].(float64); !ok {
+		t.Fatalf("expected yEnc fetch timing metric, got %v", metrics)
+	}
+	if _, ok := metrics["parse_ms"].(float64); !ok {
+		t.Fatalf("expected yEnc parse timing metric, got %v", metrics)
+	}
+	if _, ok := metrics["match_ms"].(float64); !ok {
+		t.Fatalf("expected yEnc match timing metric, got %v", metrics)
+	}
+	if _, ok := metrics["write_ms"].(float64); !ok {
+		t.Fatalf("expected yEnc step timing metrics, got %v", metrics)
+	}
 	if repo.applied.FileName != "Example.Release.vol001+002.par2" {
 		t.Fatalf("expected recovered yEnc filename, got %q", repo.applied.FileName)
 	}

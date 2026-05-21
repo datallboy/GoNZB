@@ -242,6 +242,15 @@ func TestPAR2RunBudgetIsBounded(t *testing.T) {
 	}
 }
 
+func TestPAR2WorkerCountAllowsTwentyWorkers(t *testing.T) {
+	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 20}, 1000); got != 20 {
+		t.Fatalf("expected 20 workers, got %d", got)
+	}
+	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 40}, 1000); got != 32 {
+		t.Fatalf("expected safety cap of 32 workers, got %d", got)
+	}
+}
+
 func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
 	sample := append(buildPAR2Sample("valid.part01.rar", 1234), buildPAR2Sample("\x7f\x12\x15\x1e", 1234)...)
 	sample = append(sample, buildPAR2Sample("absurd.part02.rar", 1<<60)...)

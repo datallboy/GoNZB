@@ -83,6 +83,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"attempted":              0,
 		"candidate_selection_ms": float64(0),
 		"processing_ms":          float64(0),
+		"fetch_ms":               float64(0),
+		"parse_ms":               float64(0),
+		"match_ms":               float64(0),
+		"write_ms":               float64(0),
+		"not_found_write_ms":     float64(0),
 		"recovered":              0,
 		"merged":                 0,
 		"noops":                  0,
@@ -121,9 +126,14 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		wg       sync.WaitGroup
 		firstErr error
 	)
-	recordResult := func(result *pgindex.YEncHeaderRecoveryResult, kind string, err error) {
+	recordResult := func(result *pgindex.YEncHeaderRecoveryResult, kind string, timings yencCandidateTimings, err error) {
 		mu.Lock()
 		defer mu.Unlock()
+		addYEncDurationMetric(metrics, "fetch_ms", timings.Fetch)
+		addYEncDurationMetric(metrics, "parse_ms", timings.Parse)
+		addYEncDurationMetric(metrics, "match_ms", timings.Match)
+		addYEncDurationMetric(metrics, "write_ms", timings.Write)
+		addYEncDurationMetric(metrics, "not_found_write_ms", timings.NotFoundWrite)
 		metrics["attempted"] = metrics["attempted"].(int) + 1
 		switch kind {
 		case "not_found":
@@ -170,11 +180,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			defer wg.Done()
 			for candidate := range jobs {
 				if ctx.Err() != nil {
-					recordResult(nil, "noop", ctx.Err())
+					recordResult(nil, "noop", yencCandidateTimings{}, ctx.Err())
 					continue
 				}
-				result, kind, err := s.recoverCandidate(ctx, candidate)
-				recordResult(result, kind, err)
+				result, kind, timings, err := s.recoverCandidate(ctx, candidate)
+				recordResult(result, kind, timings, err)
 			}
 		}()
 	}
@@ -216,38 +226,63 @@ func durationMillis(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000.0
 }
 
-func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate) (*pgindex.YEncHeaderRecoveryResult, string, error) {
+func addYEncDurationMetric(metrics map[string]any, key string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	current, _ := metrics[key].(float64)
+	metrics[key] = current + durationMillis(d)
+}
+
+type yencCandidateTimings struct {
+	Fetch         time.Duration
+	Parse         time.Duration
+	Match         time.Duration
+	Write         time.Duration
+	NotFoundWrite time.Duration
+}
+
+func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate) (*pgindex.YEncHeaderRecoveryResult, string, yencCandidateTimings, error) {
+	var timings yencCandidateTimings
 	groups := candidate.FetchGroups()
 	if candidate.MessageID == "" || len(groups) == 0 {
-		return nil, "noop", nil
+		return nil, "noop", timings, nil
 	}
 
 	fetchCtx, cancel := context.WithTimeout(ctx, s.opts.FetchTimeout)
 	defer cancel()
 
+	started := time.Now()
 	prefix, err := s.fetcher.FetchBodyPrefix(fetchCtx, candidate.MessageID, groups, s.opts.MaxHeaderBytes)
+	timings.Fetch = time.Since(started)
 	if err != nil {
 		if errors.Is(err, nntp.ErrArticleNotFound) {
+			started = time.Now()
 			if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 				s.log.Warn("recover_yenc: failed to persist not_found backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
 			}
-			return nil, "not_found", nil
+			timings.NotFoundWrite = time.Since(started)
+			return nil, "not_found", timings, nil
 		}
 		if s.log != nil {
 			s.log.Warn("recover_yenc: fetch prefix failed article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
 		}
-		return nil, "fetch_failure", nil
+		return nil, "fetch_failure", timings, nil
 	}
 
+	started = time.Now()
 	header, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
+	timings.Parse = time.Since(started)
 	if err != nil {
+		started = time.Now()
 		if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 			s.log.Warn("recover_yenc: failed to persist parse backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
 		}
-		return nil, "parse_failure", nil
+		timings.NotFoundWrite = time.Since(started)
+		return nil, "parse_failure", timings, nil
 	}
 	if strings.TrimSpace(header.FileName) == "" {
-		return nil, "noop", nil
+		return nil, "noop", timings, nil
 	}
 
 	raw := candidate.CloneRawOverview()
@@ -262,6 +297,7 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		raw["size"] = header.FileSize
 	}
 
+	started = time.Now()
 	matched := s.matcher.Match(match.Candidate{
 		ArticleNumber: candidate.ArticleNumber,
 		MessageID:     candidate.MessageID,
@@ -273,10 +309,12 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		Xref:          candidate.Xref,
 		RawOverview:   raw,
 	})
+	timings.Match = time.Since(started)
 	if strings.TrimSpace(matched.FileName) == "" || strings.HasSuffix(strings.ToLower(matched.FileName), ".bin") {
-		return nil, "noop", nil
+		return nil, "noop", timings, nil
 	}
 
+	started = time.Now()
 	result, err := s.repo.ApplyYEncHeaderRecovery(ctx, pgindex.YEncHeaderRecoveryRecord{
 		BinaryID:          candidate.BinaryID,
 		ArticleHeaderID:   candidate.ArticleHeaderID,
@@ -304,16 +342,17 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		MatchStatus:       matched.MatchStatus,
 		GroupingEvidence:  matched.GroupingEvidence,
 	})
+	timings.Write = time.Since(started)
 	if err != nil {
 		if pgindex.IsBinaryNotFound(err) {
 			if s.log != nil {
 				s.log.Debug("recover_yenc: skipped stale binary article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
 			}
-			return nil, "stale", nil
+			return nil, "stale", timings, nil
 		}
-		return nil, "", fmt.Errorf("apply yenc recovery binary=%d article=%d: %w", candidate.BinaryID, candidate.ArticleHeaderID, err)
+		return nil, "", timings, fmt.Errorf("apply yenc recovery binary=%d article=%d: %w", candidate.BinaryID, candidate.ArticleHeaderID, err)
 	}
-	return result, "recovered", nil
+	return result, "recovered", timings, nil
 }
 
 func DefaultStage() Options {
