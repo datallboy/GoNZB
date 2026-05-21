@@ -124,6 +124,43 @@ Expected benefits:
 - [x] Add yEnc recovery metrics for selection duration, fetch duration, parse duration, match duration, write duration, not-found backoff write duration, stale candidates, retry candidates, and active worker count.
 - [ ] Backfill work items with a bounded migration or maintenance command, not ad hoc live schema or data edits.
 
+## Assemble Backlog Concerns
+
+Assemble keeps returning as an operational bottleneck. Current live backlog on 2026-05-21 was about 44.5 million unassembled article headers, with about 60k currently claimed. This is not an NNTP bottleneck: assemble is mostly database selection/write/refresh work.
+
+Live stage-run findings from 2026-05-21:
+
+- `assemble_lane_b` processed 60k headers in about 329 seconds, around 182 headers/sec.
+- That lane B run refreshed about 42,977 binaries from 60k headers, so the batch had very low part locality.
+- Lane B cumulative worker timing was dominated by `binary_upsert_duration_ms` at about 935 seconds and `binary_refresh_duration_ms` at about 516 seconds, followed by `binary_part_upsert_duration_ms` at about 101 seconds.
+- `assemble_lane_a` selection is a clear problem: observed runs spent about 43 seconds selecting 0 headers, about 65 seconds selecting 465 headers, and about 195 seconds selecting only 46 headers.
+- A later lane A run selected 1,989 headers but still spent about 65 seconds in candidate selection.
+
+Current batching audit:
+
+- `UpsertBinaryParts` is batched in chunks up to 8,000 records and marks article headers assembled with a set-based update. This part is already using the database batching pattern.
+- `RefreshBinaryStatsBatch` is only batched at the API boundary. Internally it loops each binary id, runs `refreshBinaryStatsInTx` one binary at a time, then refreshes release-family summaries one key at a time.
+- `UpsertBinary` is not batched. Assemble calls it once per unique binary key. Each call starts a transaction, takes a binary identity advisory lock, looks up the existing binary, upserts one row, writes/deletes grouping evidence, and may refresh release-family summaries when identity changes.
+- Lane B batches with many unique binaries amplify this one-at-a-time binary upsert path. The recent 60k-header run produced 42,977 unique binary upserts, which explains why DB write time dominates.
+- Lane A priority candidate selection is set-based, but the current query scans a recent pending-header window, joins structured subject names to incomplete binaries by normalized file identity, ranks matches, then hydrates selected headers. When few priority matches exist, it still pays the window/rank cost before returning a tiny or empty batch.
+
+Likely SQL bottlenecks to prove or fix:
+
+- Lane A priority selector: `listPriorityAssemblyHeaderIDs` against `article_headers`, `article_header_ingest_payloads`, and `binaries`, especially when the configured batch is large and the capped recent window is 100k headers.
+- Lane B binary writes: per-unique-binary `UpsertBinary` transactions and advisory locks.
+- Binary stats refresh: `RefreshBinaryStatsBatch` doing per-binary aggregate updates rather than one set-based aggregate over the full batch.
+- Release-family summary refresh: summary keys are deduped but still refreshed one at a time.
+
+Assemble action items:
+
+- [ ] Capture `EXPLAIN (ANALYZE, BUFFERS)` for lane A priority selection during a representative backlog state and document whether the expensive node is recent pending scan, payload join, binary normalized-name lookup, ranking/sort, or hydration.
+- [ ] Add explicit assemble metrics for claim selector substeps: priority selection, recent selection, hydration, and claim update.
+- [ ] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible.
+- [ ] Convert `RefreshBinaryStatsBatch` to a true set-based aggregate/update over all refreshed binary ids instead of looping one binary at a time.
+- [ ] Batch release-family summary refreshes by key set where practical.
+- [ ] Consider reducing or disabling lane A polling when repeated empty/tiny lane A selections are observed, so lane A does not spend tens of seconds proving no priority work while lane B has a massive backlog.
+- [ ] Re-check lane B after binary upsert and refresh batching; if header matching becomes dominant only then revisit matcher-level optimization.
+
 ## Current NNTP Transport Shape
 
 Downloader path:
@@ -212,4 +249,5 @@ Needs completion:
 - [ ] New PAR2/yEnc step timing metrics are observed in live runs and used to decide whether the next bottleneck is NNTP, parse, fallback materialization, selection, or database writes.
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
+- [ ] Assemble lane A selection and lane B DB write/refresh bottlenecks are measured with SQL plans and resolved with true batch repository operations where needed.
 - [ ] Downloader-specific manager-owned wait policy and richer active worker stats are handled in a separate downloader-focused session.
