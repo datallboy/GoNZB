@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +47,20 @@ type ManagerStats struct {
 	GroupStats      int64
 	XOver           int64
 	Providers       []ManagerProviderStats
+	Scopes          []ManagerScopeStats
+}
+
+type ManagerScopeStats struct {
+	Scope           string
+	Active          int64
+	Waiting         int64
+	WaitCount       int64
+	WaitDurationMS  int64
+	WaitMaxMS       int64
+	Fetches         int64
+	FetchBodyPrefix int64
+	GroupStats      int64
+	XOver           int64
 }
 
 type ManagerProviderStats struct {
@@ -75,8 +91,22 @@ type Manager struct {
 }
 
 type managerStats struct {
+	mu              sync.Mutex
+	scopes          map[string]*managerScopeStats
 	waiting         atomic.Int64
 	busyReturns     atomic.Int64
+	waitCount       atomic.Int64
+	waitDurationNS  atomic.Int64
+	waitMaxNS       atomic.Int64
+	fetches         atomic.Int64
+	fetchBodyPrefix atomic.Int64
+	groupStats      atomic.Int64
+	xover           atomic.Int64
+}
+
+type managerScopeStats struct {
+	active          atomic.Int64
+	waiting         atomic.Int64
 	waitCount       atomic.Int64
 	waitDurationNS  atomic.Int64
 	waitMaxNS       atomic.Int64
@@ -135,11 +165,16 @@ func newManagedProvider(p Provider) *managedProvider {
 }
 
 func (m *Manager) Client() *ManagerClient {
-	return &ManagerClient{manager: m}
+	return m.ClientForScope("unscoped")
+}
+
+func (m *Manager) ClientForScope(scope string) *ManagerClient {
+	return &ManagerClient{manager: m, scope: normalizeScope(scope)}
 }
 
 type ManagerClient struct {
 	manager *Manager
+	scope   string
 }
 
 func (c *ManagerClient) ID() string {
@@ -153,28 +188,28 @@ func (c *ManagerClient) Fetch(ctx context.Context, msgID string, groups []string
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.FetchMessage(ctx, msgID, groups)
+	return c.manager.FetchMessageForScope(ctx, c.scope, msgID, groups)
 }
 
 func (c *ManagerClient) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.FetchBodyPrefix(ctx, msgID, groups, maxBytes)
+	return c.manager.FetchBodyPrefixForScope(ctx, c.scope, msgID, groups, maxBytes)
 }
 
 func (c *ManagerClient) GroupStats(ctx context.Context, group string) (GroupStats, error) {
 	if c == nil || c.manager == nil {
 		return GroupStats{}, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.GroupStats(ctx, group)
+	return c.manager.GroupStatsForScope(ctx, c.scope, group)
 }
 
 func (c *ManagerClient) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.XOver(ctx, group, from, to)
+	return c.manager.XOverForScope(ctx, c.scope, group, from, to)
 }
 
 func (m *Manager) ID() string {
@@ -189,15 +224,23 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 		return nil, fmt.Errorf("segment is required")
 	}
 	m.stats.fetches.Add(1)
-	return m.fetch(ctx, seg, groups)
+	scopeStats := m.scopeStats("downloader")
+	scopeStats.fetches.Add(1)
+	return m.fetch(ctx, "downloader", seg, groups)
 }
 
 func (m *Manager) FetchMessage(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
-	m.stats.fetches.Add(1)
-	return m.fetch(ctx, &domain.Segment{MessageID: msgID}, groups)
+	return m.FetchMessageForScope(ctx, "unscoped", msgID, groups)
 }
 
-func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []string) (io.Reader, error) {
+func (m *Manager) FetchMessageForScope(ctx context.Context, scope, msgID string, groups []string) (io.Reader, error) {
+	m.stats.fetches.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.fetches.Add(1)
+	return m.fetch(ctx, scope, &domain.Segment{MessageID: msgID}, groups)
+}
+
+func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, groups []string) (io.Reader, error) {
 	// Fast fail if user already cancelled
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -221,7 +264,7 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 				seg.MessageID, len(seg.MissingFrom), mp.Label(), mp.Priority())
 		}
 
-		acquired, err := m.acquire(ctx, mp)
+		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
 		}
@@ -229,7 +272,7 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 			if m.ctx != nil && m.ctx.Logger != nil {
 				m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
 			}
-			reader, err := m.fetchFromAcquiredProvider(ctx, mp, seg, groups)
+			reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
 			if err == nil {
 				return reader, nil
 			}
@@ -256,13 +299,13 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 		if mp == nil {
 			return nil, ErrArticleNotFound
 		}
-		if err := m.waitAcquire(ctx, mp); err != nil {
+		if err := m.waitAcquire(ctx, scope, mp); err != nil {
 			return nil, err
 		}
-		reader, err := m.fetchFromAcquiredProvider(ctx, mp, seg, groups)
+		reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
 		if err != nil {
 			if errors.Is(err, ErrArticleNotFound) {
-				return m.fetch(ctx, seg, groups)
+				return m.fetch(ctx, scope, seg, groups)
 			}
 			return nil, err
 		}
@@ -274,10 +317,10 @@ func (m *Manager) fetch(ctx context.Context, seg *domain.Segment, groups []strin
 	return nil, ErrProviderBusy
 }
 
-func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, mp *managedProvider, seg *domain.Segment, groups []string) (io.Reader, error) {
+func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, mp *managedProvider, seg *domain.Segment, groups []string) (io.Reader, error) {
 	reader, err := m.tryFetch(ctx, mp, seg.MessageID, groups)
 	if err != nil {
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 
 		if errors.Is(err, ErrArticleNotFound) {
 			if m.ctx != nil && m.ctx.Logger != nil {
@@ -297,20 +340,26 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, mp *managedProv
 	return &releaseReader{
 		Reader: reader,
 		onClose: func() {
-			m.release(mp)
+			m.releaseForScope(scope, mp)
 		},
 	}, nil
 }
 
 func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
+	return m.FetchBodyPrefixForScope(ctx, "unscoped", msgID, groups, maxBytes)
+}
+
+func (m *Manager) FetchBodyPrefixForScope(ctx context.Context, scope, msgID string, groups []string, maxBytes int64) ([]byte, error) {
 	m.stats.fetchBodyPrefix.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.fetchBodyPrefix.Add(1)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
-		acquired, err := m.acquire(ctx, mp)
+		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
 		}
@@ -319,7 +368,7 @@ func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []st
 		}
 
 		result, err := mp.Provider.FetchBodyPrefix(ctx, msgID, groups, maxBytes)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		if err == nil {
 			return result, nil
 		}
@@ -330,12 +379,12 @@ func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []st
 		return nil, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
-		mp, err := m.waitForProvider(ctx)
+		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
 		result, err := mp.Provider.FetchBodyPrefix(ctx, msgID, groups, maxBytes)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
@@ -343,14 +392,20 @@ func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []st
 }
 
 func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, error) {
+	return m.GroupStatsForScope(ctx, "unscoped", group)
+}
+
+func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (GroupStats, error) {
 	m.stats.groupStats.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.groupStats.Add(1)
 	if err := ctx.Err(); err != nil {
 		return GroupStats{}, err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
-		acquired, err := m.acquire(ctx, mp)
+		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return GroupStats{}, err
 		}
@@ -359,7 +414,7 @@ func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, err
 		}
 
 		result, err := mp.Provider.GroupStats(ctx, group)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		if err == nil {
 			return result, nil
 		}
@@ -370,12 +425,12 @@ func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, err
 		return GroupStats{}, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
-		mp, err := m.waitForProvider(ctx)
+		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return GroupStats{}, err
 		}
 		result, err := mp.Provider.GroupStats(ctx, group)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
@@ -383,14 +438,20 @@ func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, err
 }
 
 func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+	return m.XOverForScope(ctx, "unscoped", group, from, to)
+}
+
+func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, to int64) ([]OverviewHeader, error) {
 	m.stats.xover.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.xover.Add(1)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
-		acquired, err := m.acquire(ctx, mp)
+		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
 		}
@@ -399,7 +460,7 @@ func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]Ov
 		}
 
 		result, err := mp.Provider.XOver(ctx, group, from, to)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		if err == nil {
 			return result, nil
 		}
@@ -410,24 +471,25 @@ func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]Ov
 		return nil, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
-		mp, err := m.waitForProvider(ctx)
+		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
 		result, err := mp.Provider.XOver(ctx, group, from, to)
-		m.release(mp)
+		m.releaseForScope(scope, mp)
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
 	return nil, ErrProviderBusy
 }
 
-func (m *Manager) acquire(ctx context.Context, mp *managedProvider) (bool, error) {
+func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider) (bool, error) {
 	if mp == nil {
 		return false, nil
 	}
 	select {
 	case mp.semaphore <- struct{}{}:
+		m.scopeStats(scope).active.Add(1)
 		return true, nil
 	default:
 	}
@@ -438,29 +500,33 @@ func (m *Manager) acquire(ctx context.Context, mp *managedProvider) (bool, error
 	return false, nil
 }
 
-func (m *Manager) waitAcquire(ctx context.Context, mp *managedProvider) error {
+func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProvider) error {
 	if mp == nil {
 		return ErrProviderBusy
 	}
 	start := time.Now()
+	scopeStats := m.scopeStats(scope)
 	m.stats.waiting.Add(1)
+	scopeStats.waiting.Add(1)
 	defer m.stats.waiting.Add(-1)
+	defer scopeStats.waiting.Add(-1)
 	select {
 	case mp.semaphore <- struct{}{}:
-		m.recordWait(time.Since(start))
+		scopeStats.active.Add(1)
+		m.recordWait(scopeStats, time.Since(start))
 		return nil
 	case <-ctx.Done():
-		m.recordWait(time.Since(start))
+		m.recordWait(scopeStats, time.Since(start))
 		return ctx.Err()
 	}
 }
 
-func (m *Manager) waitForProvider(ctx context.Context) (*managedProvider, error) {
+func (m *Manager) waitForProvider(ctx context.Context, scope string) (*managedProvider, error) {
 	if len(m.providers) == 0 {
 		return nil, ErrProviderBusy
 	}
 	mp := m.providers[0]
-	if err := m.waitAcquire(ctx, mp); err != nil {
+	if err := m.waitAcquire(ctx, scope, mp); err != nil {
 		return nil, err
 	}
 	return mp, nil
@@ -477,25 +543,63 @@ func (m *Manager) firstFetchProvider(seg *domain.Segment) *managedProvider {
 }
 
 func (m *Manager) release(mp *managedProvider) {
+	m.releaseForScope("unscoped", mp)
+}
+
+func (m *Manager) releaseForScope(scope string, mp *managedProvider) {
 	if mp == nil {
 		return
 	}
 	<-mp.semaphore
+	m.scopeStats(scope).active.Add(-1)
 }
 
-func (m *Manager) recordWait(d time.Duration) {
+func (m *Manager) recordWait(scopeStats *managerScopeStats, d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	ns := d.Nanoseconds()
 	m.stats.waitCount.Add(1)
 	m.stats.waitDurationNS.Add(ns)
+	if scopeStats != nil {
+		scopeStats.waitCount.Add(1)
+		scopeStats.waitDurationNS.Add(ns)
+		for {
+			current := scopeStats.waitMaxNS.Load()
+			if ns <= current || scopeStats.waitMaxNS.CompareAndSwap(current, ns) {
+				break
+			}
+		}
+	}
 	for {
 		current := m.stats.waitMaxNS.Load()
 		if ns <= current || m.stats.waitMaxNS.CompareAndSwap(current, ns) {
 			return
 		}
 	}
+}
+
+func (m *Manager) scopeStats(scope string) *managerScopeStats {
+	scope = normalizeScope(scope)
+	m.stats.mu.Lock()
+	defer m.stats.mu.Unlock()
+	if m.stats.scopes == nil {
+		m.stats.scopes = make(map[string]*managerScopeStats)
+	}
+	stats, ok := m.stats.scopes[scope]
+	if !ok {
+		stats = &managerScopeStats{}
+		m.stats.scopes[scope] = stats
+	}
+	return stats
+}
+
+func normalizeScope(scope string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return "unscoped"
+	}
+	return scope
 }
 
 // try fetch will attempt to fetch an article from a provider
@@ -595,7 +699,32 @@ func (m *Manager) Stats() ManagerStats {
 		GroupStats:      m.stats.groupStats.Load(),
 		XOver:           m.stats.xover.Load(),
 		Providers:       providers,
+		Scopes:          m.scopeStatsSnapshot(),
 	}
+}
+
+func (m *Manager) scopeStatsSnapshot() []ManagerScopeStats {
+	m.stats.mu.Lock()
+	defer m.stats.mu.Unlock()
+	out := make([]ManagerScopeStats, 0, len(m.stats.scopes))
+	for scope, stats := range m.stats.scopes {
+		out = append(out, ManagerScopeStats{
+			Scope:           scope,
+			Active:          stats.active.Load(),
+			Waiting:         stats.waiting.Load(),
+			WaitCount:       stats.waitCount.Load(),
+			WaitDurationMS:  stats.waitDurationNS.Load() / int64(time.Millisecond),
+			WaitMaxMS:       stats.waitMaxNS.Load() / int64(time.Millisecond),
+			Fetches:         stats.fetches.Load(),
+			FetchBodyPrefix: stats.fetchBodyPrefix.Load(),
+			GroupStats:      stats.groupStats.Load(),
+			XOver:           stats.xover.Load(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Scope < out[j].Scope
+	})
+	return out
 }
 
 func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
@@ -616,6 +745,7 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		GroupStats:      stats.GroupStats,
 		XOver:           stats.XOver,
 		Providers:       make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
+		Scopes:          make([]app.NNTPScopeRuntimeStats, 0, len(stats.Scopes)),
 	}
 	for _, provider := range stats.Providers {
 		out.Providers = append(out.Providers, app.NNTPProviderRuntimeStats{
@@ -636,6 +766,20 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 			GroupStatsRetries: provider.GroupStatsRetries,
 			XOverRetries:      provider.XOverRetries,
 			RecoverableErrors: provider.RecoverableErrors,
+		})
+	}
+	for _, scope := range stats.Scopes {
+		out.Scopes = append(out.Scopes, app.NNTPScopeRuntimeStats{
+			Scope:           scope.Scope,
+			Active:          scope.Active,
+			Waiting:         scope.Waiting,
+			WaitCount:       scope.WaitCount,
+			WaitDurationMS:  scope.WaitDurationMS,
+			WaitMaxMS:       scope.WaitMaxMS,
+			Fetches:         scope.Fetches,
+			FetchBodyPrefix: scope.FetchBodyPrefix,
+			GroupStats:      scope.GroupStats,
+			XOver:           scope.XOver,
 		})
 	}
 	return out

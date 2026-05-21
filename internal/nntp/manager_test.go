@@ -141,7 +141,7 @@ func TestManagerWaitQueuePolicyTriesOtherProviderBeforeWaiting(t *testing.T) {
 func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	provider := newBlockingProvider(1)
 	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
-	client := manager.Client()
+	client := manager.ClientForScope("inspect_par2")
 
 	prefix, err := client.FetchBodyPrefix(context.Background(), "prefix@example", nil, 128)
 	if err != nil {
@@ -151,12 +151,12 @@ func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 		t.Fatalf("expected body prefix, got %q", string(prefix))
 	}
 
-	stats, err := client.GroupStats(context.Background(), "alt.binaries.test")
+	groupStats, err := client.GroupStats(context.Background(), "alt.binaries.test")
 	if err != nil {
 		t.Fatalf("group stats: %v", err)
 	}
-	if stats.Low != 1 || stats.High != 1 {
-		t.Fatalf("unexpected group stats: %#v", stats)
+	if groupStats.Low != 1 || groupStats.High != 1 {
+		t.Fatalf("unexpected group stats: %#v", groupStats)
 	}
 
 	rows, err := client.XOver(context.Background(), "alt.binaries.test", 1, 1)
@@ -165,6 +165,15 @@ func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ArticleNumber != 1 {
 		t.Fatalf("unexpected xover rows: %#v", rows)
+	}
+
+	stats := manager.Stats()
+	if len(stats.Scopes) != 1 {
+		t.Fatalf("expected one scope stat, got %#v", stats.Scopes)
+	}
+	scope := stats.Scopes[0]
+	if scope.Scope != "inspect_par2" || scope.FetchBodyPrefix != 1 || scope.GroupStats != 1 || scope.XOver != 1 {
+		t.Fatalf("unexpected scope stats: %#v", scope)
 	}
 }
 

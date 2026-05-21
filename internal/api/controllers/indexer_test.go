@@ -364,6 +364,12 @@ func TestIndexerAdminControllerGetNNTPStats(t *testing.T) {
 					Active:   4,
 					Dials:    8,
 				}},
+				Scopes: []app.NNTPScopeRuntimeStats{{
+					Scope:   "inspect_par2",
+					Active:  1,
+					Waiting: 1,
+					XOver:   0,
+				}},
 			},
 		},
 	}
@@ -378,7 +384,7 @@ func TestIndexerAdminControllerGetNNTPStats(t *testing.T) {
 		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{`"scope":"indexer"`, `"policy":"wait_queue"`, `"capacity":40`, `"waiting":2`, `"label":"news.example"`} {
+	for _, needle := range []string{`"scope":"indexer"`, `"policy":"wait_queue"`, `"capacity":40`, `"waiting":2`, `"label":"news.example"`, `"scope":"inspect_par2"`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}

@@ -359,6 +359,44 @@ export function AdminDashboardPage() {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>Stage Demand</th>
+                    <th>Active</th>
+                    <th>Waiting</th>
+                    <th>Requests</th>
+                    <th>Max Wait</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(nntpStats?.scopes ?? []).map((scope) => (
+                    <tr key={scope.scope}>
+                      <td>
+                        <strong>{scope.scope}</strong>
+                      </td>
+                      <td>{scope.active.toLocaleString()}</td>
+                      <td>{scope.waiting.toLocaleString()}</td>
+                      <td>
+                        <strong>{(scope.fetches + scope.fetch_body_prefix + scope.group_stats + scope.xover).toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          fetch {scope.fetches.toLocaleString()} · prefix {scope.fetch_body_prefix.toLocaleString()} · xover {scope.xover.toLocaleString()}
+                        </div>
+                      </td>
+                      <td>{formatDuration(scope.wait_max_ms)}</td>
+                    </tr>
+                  ))}
+                  {!nntpLoading && !nntpError && (nntpStats?.scopes.length ?? 0) === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="muted-copy">
+                        No stage-level NNTP demand has been recorded yet.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
                     <th>Provider</th>
                     <th>Connections</th>
                     <th>Pool</th>

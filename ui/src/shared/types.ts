@@ -190,6 +190,19 @@ export type IndexerNNTPProviderStats = {
   recoverable_errors: number
 }
 
+export type IndexerNNTPScopeStats = {
+  scope: string
+  active: number
+  waiting: number
+  wait_count: number
+  wait_duration_ms: number
+  wait_max_ms: number
+  fetches: number
+  fetch_body_prefix: number
+  group_stats: number
+  xover: number
+}
+
 export type IndexerNNTPStats = {
   scope: string
   policy: string
@@ -206,6 +219,7 @@ export type IndexerNNTPStats = {
   group_stats: number
   xover: number
   providers: IndexerNNTPProviderStats[]
+  scopes: IndexerNNTPScopeStats[]
 }
 
 export type AdminStage = {

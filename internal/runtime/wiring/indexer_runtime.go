@@ -98,12 +98,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	}
 
 	var (
-		scrapeLatestSvc   *scrape.Service
-		scrapeBackfillSvc *scrape.Service
-		scrapeProvider    io.Closer
-		nntpStats         func() app.NNTPRuntimeStats
-		inspectFetcher    inspectpkg.ArticleFetcher
-		recoverFetcher    interface {
+		scrapeLatestSvc         *scrape.Service
+		scrapeBackfillSvc       *scrape.Service
+		scrapeProvider          io.Closer
+		nntpStats               func() app.NNTPRuntimeStats
+		assembleFetcher         inspectpkg.ArticleFetcher
+		assembleAFetcher        inspectpkg.ArticleFetcher
+		assembleBFetcher        inspectpkg.ArticleFetcher
+		inspectDiscoveryFetcher inspectpkg.ArticleFetcher
+		inspectPAR2Fetcher      inspectpkg.ArticleFetcher
+		inspectNFOFetcher       inspectpkg.ArticleFetcher
+		inspectArchiveFetcher   inspectpkg.ArticleFetcher
+		inspectPasswordFetcher  inspectpkg.ArticleFetcher
+		inspectMediaFetcher     inspectpkg.ArticleFetcher
+		recoverFetcher          interface {
 			FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 		}
 	)
@@ -123,9 +131,13 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		if err != nil {
 			return nil, fmt.Errorf("scrape manager initialization failed: %w", err)
 		}
-		managerClient := manager.Client()
+		scrapeClient := manager.ClientForScope("scrape")
+		assembleClient := manager.ClientForScope("assemble")
+		assembleLaneAClient := manager.ClientForScope("assemble_lane_a")
+		assembleLaneBClient := manager.ClientForScope("assemble_lane_b")
+		recoverYEncClient := manager.ClientForScope("recover_yenc")
 
-		scrapeAdapter := scrape.NewNNTPAdapter(managerClient)
+		scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
 		scrapeLatestSvc = scrape.NewService(
 			appCtx.PGIndexStore,
 			scrapeAdapter,
@@ -150,15 +162,23 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		nntpStats = func() app.NNTPRuntimeStats {
 			return manager.RuntimeStats("indexer")
 		}
-		inspectFetcher = managerClient
-		recoverFetcher = managerClient
+		assembleFetcher = assembleClient
+		assembleAFetcher = assembleLaneAClient
+		assembleBFetcher = assembleLaneBClient
+		inspectDiscoveryFetcher = manager.ClientForScope("inspect_discovery")
+		inspectPAR2Fetcher = manager.ClientForScope("inspect_par2")
+		inspectNFOFetcher = manager.ClientForScope("inspect_nfo")
+		inspectArchiveFetcher = manager.ClientForScope("inspect_archive")
+		inspectPasswordFetcher = manager.ClientForScope("inspect_password")
+		inspectMediaFetcher = manager.ClientForScope("inspect_media")
+		recoverFetcher = recoverYEncClient
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
 	assembleSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
-		inspectFetcher,
+		assembleFetcher,
 		appCtx.Logger,
 		assemble.Options{
 			BatchSize:   runtimeCfg.Assemble.BatchSize,
@@ -170,7 +190,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	assembleLaneASvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
-		inspectFetcher,
+		assembleAFetcher,
 		appCtx.Logger,
 		assemble.Options{
 			BatchSize:   runtimeCfg.AssembleLaneA.BatchSize,
@@ -183,7 +203,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	assembleLaneBSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
-		inspectFetcher,
+		assembleBFetcher,
 		appCtx.Logger,
 		assemble.Options{
 			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
@@ -220,12 +240,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
-	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
-	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectPAR2, stageOwner))
-	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
-	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectArchive, stageOwner))
-	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
+	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectDiscoveryFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
+	inspectPAR2Svc := par2.NewService(appCtx.PGIndexStore, workspaceManager, inspectPAR2Fetcher, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectPAR2, stageOwner))
+	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectNFOFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
+	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectArchiveFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectArchive, stageOwner))
+	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectPasswordFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectMediaFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger)
