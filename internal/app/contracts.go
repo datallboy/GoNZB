@@ -94,6 +94,20 @@ type NNTPRuntimeStats struct {
 	GroupStats      int64                      `json:"group_stats"`
 	XOver           int64                      `json:"xover"`
 	Providers       []NNTPProviderRuntimeStats `json:"providers"`
+	Scopes          []NNTPScopeRuntimeStats    `json:"scopes"`
+}
+
+type NNTPScopeRuntimeStats struct {
+	Scope           string `json:"scope"`
+	Active          int64  `json:"active"`
+	Waiting         int64  `json:"waiting"`
+	WaitCount       int64  `json:"wait_count"`
+	WaitDurationMS  int64  `json:"wait_duration_ms"`
+	WaitMaxMS       int64  `json:"wait_max_ms"`
+	Fetches         int64  `json:"fetches"`
+	FetchBodyPrefix int64  `json:"fetch_body_prefix"`
+	GroupStats      int64  `json:"group_stats"`
+	XOver           int64  `json:"xover"`
 }
 
 type NNTPProviderRuntimeStats struct {
