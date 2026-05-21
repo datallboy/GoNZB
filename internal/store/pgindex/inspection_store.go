@@ -68,6 +68,81 @@ func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix st
 	return nil
 }
 
+type inspectionReleaseIDQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspectionReleaseIDQueryer, releaseIDs []string) (map[string]bool, error) {
+	uniqueIDs := make([]string, 0, len(releaseIDs))
+	seen := make(map[string]bool, len(releaseIDs))
+	for _, releaseID := range releaseIDs {
+		releaseID = strings.TrimSpace(releaseID)
+		if releaseID == "" || seen[releaseID] {
+			continue
+		}
+		seen[releaseID] = true
+		uniqueIDs = append(uniqueIDs, releaseID)
+	}
+	if len(uniqueIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	placeholders := make([]string, 0, len(uniqueIDs))
+	args := make([]any, 0, len(uniqueIDs))
+	for i, releaseID := range uniqueIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, releaseID)
+	}
+
+	rows, err := q.QueryContext(ctx, `
+		SELECT release_id
+		FROM releases
+		WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool, len(uniqueIDs))
+	for rows.Next() {
+		var releaseID string
+		if err := rows.Scan(&releaseID); err != nil {
+			return nil, err
+		}
+		existing[strings.TrimSpace(releaseID)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
+func archiveEntryReleaseIDs(rows []BinaryArchiveEntryRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
+func mediaStreamReleaseIDs(rows []BinaryMediaStreamRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
 func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]ReleaseTitleCandidate, error) {
 	if len(binaryIDs) == 0 {
 		return nil, nil
@@ -1766,7 +1841,7 @@ func (s *Store) deriveAdjustedAvailability(ctx context.Context, in ReleaseInspec
 		in.ReleaseID,
 	).Scan(&completionPct, &availabilityScore, &passwordedKnown, &passwordedUnknown); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, "", fmt.Errorf("release %s not found", in.ReleaseID)
+			return nil, "", fmt.Errorf("%w: %s", ErrReleaseNotFound, in.ReleaseID)
 		}
 		return nil, "", fmt.Errorf("load current availability for %s: %w", in.ReleaseID, err)
 	}
@@ -1816,6 +1891,11 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load artifact release ids %s/%d: %w", stageName, binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1823,8 +1903,8 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -1882,6 +1962,11 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, archiveEntryReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load archive entry release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1889,8 +1974,8 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 			return fmt.Errorf("marshal archive entry metadata %d: %w", binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -1948,6 +2033,11 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, mediaStreamReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load media stream release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -1955,8 +2045,8 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 			return fmt.Errorf("marshal media stream metadata %d: %w", binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -2300,38 +2390,46 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 	}
 
 	updatedIDs := map[int64]struct{}{}
-	for _, target := range targets {
+	for start := 0; start < len(targets); start += inspectionReplaceInsertBatchSize {
+		end := start + inspectionReplaceInsertBatchSize
+		if end > len(targets) {
+			end = len(targets)
+		}
+
+		args := []any{seed.providerID, seed.newsgroupID, len(targets), binaryID}
+		values := make([]string, 0, end-start)
+		for _, target := range targets[start:end] {
+			base := len(args)
+			args = append(args, target.normalizedName, target.fileIndex, target.fileName)
+			values = append(values, fmt.Sprintf("($%d::text,$%d::integer,$%d::text)", base+1, base+2, base+3))
+		}
+
 		rows, err := tx.QueryContext(ctx, `
-			UPDATE binaries
-			SET expected_archive_file_count = GREATEST(expected_archive_file_count, $4::integer),
+			WITH target_values(normalized_name, file_index, file_name) AS (
+				VALUES `+strings.Join(values, ",")+`
+			)
+			UPDATE binaries b
+			SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $3::integer),
 			    file_index = CASE
-			    	WHEN file_index <= 0 AND $5::integer > 0 THEN $5::integer
-			    	ELSE file_index
+			    	WHEN b.file_index <= 0 AND tv.file_index > 0 THEN tv.file_index
+			    	ELSE b.file_index
 			    END,
-			    grouping_evidence_json = grouping_evidence_json || jsonb_build_object(
-			    	'par2_archive_file_count', $4::integer,
-			    	'par2_target_file_name', $6::text,
-			    	'par2_source_binary_id', $7::bigint,
+			    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
+			    	'par2_archive_file_count', $3::integer,
+			    	'par2_target_file_name', tv.file_name,
+			    	'par2_source_binary_id', $4::bigint,
 			    	'par2_target_coverage_source', 'inspect_par2'
 			    ),
 			    updated_at = NOW()
-			WHERE provider_id = $1
-			  AND newsgroup_id = $2
-			  AND (
-			  	LOWER(BTRIM(file_name)) = $3::text
-			  	OR LOWER(BTRIM(binary_name)) = $3::text
-			  )
-			RETURNING id, release_family_key, base_stem, expected_file_count, expected_archive_file_count`,
-			seed.providerID,
-			seed.newsgroupID,
-			target.normalizedName,
-			len(targets),
-			target.fileIndex,
-			target.fileName,
-			binaryID,
+			FROM target_values tv
+			WHERE b.provider_id = $1
+			  AND b.newsgroup_id = $2
+			  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = tv.normalized_name
+			RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
+			args...,
 		)
 		if err != nil {
-			return result, fmt.Errorf("apply par2 target coverage %q: %w", target.fileName, err)
+			return result, fmt.Errorf("apply par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 		for rows.Next() {
 			var updatedID int64
@@ -2340,7 +2438,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 			var expectedArchiveFileCount int
 			if err := rows.Scan(&updatedID, &releaseFamilyKey, &baseStem, &expectedFileCount, &expectedArchiveFileCount); err != nil {
 				rows.Close()
-				return result, fmt.Errorf("scan par2 target coverage %q: %w", target.fileName, err)
+				return result, fmt.Errorf("scan par2 target coverage batch %d-%d: %w", start, end, err)
 			}
 			if _, ok := updatedIDs[updatedID]; !ok {
 				updatedIDs[updatedID] = struct{}{}
@@ -2355,7 +2453,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 			}
 		}
 		if err := rows.Close(); err != nil {
-			return result, fmt.Errorf("iterate par2 target coverage %q: %w", target.fileName, err)
+			return result, fmt.Errorf("iterate par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 	}
 

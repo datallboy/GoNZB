@@ -121,6 +121,9 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.Inspect.WorkspaceBackend != "auto" || runtime.Indexing.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect" {
 		t.Fatalf("expected auto inspect workspace defaults, got %+v", runtime.Indexing.Inspect)
 	}
+	if runtime.Indexing.InspectPAR2.Concurrency != 4 {
+		t.Fatalf("expected inspect_par2 concurrency default, got %+v", runtime.Indexing.InspectPAR2)
+	}
 }
 
 func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {

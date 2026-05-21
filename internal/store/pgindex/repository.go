@@ -7,11 +7,25 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+var (
+	ErrBinaryNotFound  = errors.New("binary not found")
+	ErrReleaseNotFound = errors.New("release not found")
+)
+
+func IsBinaryNotFound(err error) bool {
+	return errors.Is(err, ErrBinaryNotFound)
+}
+
+func IsReleaseNotFound(err error) bool {
+	return errors.Is(err, ErrReleaseNotFound)
+}
 
 type ArticleHeader struct {
 	ArticleNumber int64

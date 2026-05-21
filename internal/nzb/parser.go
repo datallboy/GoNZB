@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/net/html/charset"
 )
 
 type Parser struct{}
@@ -27,6 +29,7 @@ func (p *Parser) ParseFile(nzbPath string) (*Model, error) {
 func (p *Parser) Parse(r io.Reader) (*Model, error) {
 	var nzb Model
 	decoder := xml.NewDecoder(r)
+	decoder.CharsetReader = charset.NewReaderLabel
 	if err := decoder.Decode(&nzb); err != nil {
 		return nil, err
 	}

@@ -284,6 +284,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_par2.enabled", false)
 	v.SetDefault("indexing.inspect_par2.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_par2.batch_size", 100)
+	v.SetDefault("indexing.inspect_par2.concurrency", 4)
 	v.SetDefault("indexing.inspect_par2.backoff_seconds", 0)
 	v.SetDefault("indexing.inspect_nfo.enabled", false)
 	v.SetDefault("indexing.inspect_nfo.interval_minutes", 10.0)

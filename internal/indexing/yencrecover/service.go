@@ -74,22 +74,30 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	metrics := map[string]any{
-		"batch_size":       s.opts.BatchSize,
-		"max_header_bytes": s.opts.MaxHeaderBytes,
-		"candidates":       0,
-		"attempted":        0,
-		"recovered":        0,
-		"merged":           0,
-		"noops":            0,
-		"fetch_failures":   0,
-		"not_found":        0,
-		"parse_failures":   0,
+		"batch_size":             s.opts.BatchSize,
+		"max_header_bytes":       s.opts.MaxHeaderBytes,
+		"concurrency":            s.opts.Concurrency,
+		"effective_concurrency":  0,
+		"batch_full":             false,
+		"candidates":             0,
+		"attempted":              0,
+		"candidate_selection_ms": float64(0),
+		"processing_ms":          float64(0),
+		"recovered":              0,
+		"merged":                 0,
+		"noops":                  0,
+		"fetch_failures":         0,
+		"not_found":              0,
+		"parse_failures":         0,
+		"stale_candidates":       0,
 	}
 	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
 		return metrics, fmt.Errorf("yenc recovery service is not configured")
 	}
 
+	selectionStarted := time.Now()
 	candidates, err := s.repo.ListYEncRecoveryCandidates(ctx, s.opts.BatchSize)
+	metrics["candidate_selection_ms"] = durationMillis(time.Since(selectionStarted))
 	if err != nil {
 		return metrics, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
@@ -105,6 +113,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if workerCount > len(candidates) {
 		workerCount = len(candidates)
 	}
+	metrics["effective_concurrency"] = workerCount
+	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
 	var (
 		mu       sync.Mutex
@@ -122,6 +132,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["fetch_failures"] = metrics["fetch_failures"].(int) + 1
 		case "parse_failure":
 			metrics["parse_failures"] = metrics["parse_failures"].(int) + 1
+		case "stale":
+			metrics["stale_candidates"] = metrics["stale_candidates"].(int) + 1
 		case "noop":
 			metrics["noops"] = metrics["noops"].(int) + 1
 		case "recovered":
@@ -133,7 +145,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		attempted := metrics["attempted"].(int)
 		if s.log != nil && (attempted == len(candidates) || attempted%100 == 0) {
 			s.log.Info(
-				"recover_yenc: progress attempted=%d/%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d concurrency=%d",
+				"recover_yenc: progress attempted=%d/%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d stale_candidates=%d concurrency=%d",
 				attempted,
 				len(candidates),
 				metrics["recovered"],
@@ -142,6 +154,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 				metrics["not_found"],
 				metrics["fetch_failures"],
 				metrics["parse_failures"],
+				metrics["stale_candidates"],
 				workerCount,
 			)
 		}
@@ -150,6 +163,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		}
 	}
 
+	processingStarted := time.Now()
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -174,13 +188,14 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	close(jobs)
 	wg.Wait()
+	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	if firstErr != nil {
 		return metrics, firstErr
 	}
 
 	if s.log != nil {
 		s.log.Info(
-			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d max_header_bytes=%d concurrency=%d",
+			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d stale_candidates=%d max_header_bytes=%d concurrency=%d",
 			metrics["candidates"],
 			metrics["attempted"],
 			metrics["recovered"],
@@ -189,11 +204,16 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["not_found"],
 			metrics["fetch_failures"],
 			metrics["parse_failures"],
+			metrics["stale_candidates"],
 			s.opts.MaxHeaderBytes,
 			workerCount,
 		)
 	}
 	return metrics, nil
+}
+
+func durationMillis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000.0
 }
 
 func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate) (*pgindex.YEncHeaderRecoveryResult, string, error) {
@@ -285,6 +305,12 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		GroupingEvidence:  matched.GroupingEvidence,
 	})
 	if err != nil {
+		if pgindex.IsBinaryNotFound(err) {
+			if s.log != nil {
+				s.log.Debug("recover_yenc: skipped stale binary article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
+			}
+			return nil, "stale", nil
+		}
 		return nil, "", fmt.Errorf("apply yenc recovery binary=%d article=%d: %w", candidate.BinaryID, candidate.ArticleHeaderID, err)
 	}
 	return result, "recovered", nil

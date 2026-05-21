@@ -683,7 +683,7 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 
 func stageSupportsConcurrency(stageName string) bool {
 	switch stageName {
-	case string(supervisor.StageAssemble), string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
+	case string(supervisor.StageAssemble), string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectPAR2), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
 		return true
 	default:
 		return false

@@ -40,7 +40,7 @@ const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; des
   { key: 'recover_yenc', label: 'Recover yEnc', concurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
   { key: 'release', label: 'Release', concurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false, description: 'Opaque-binary inspection discovery pass.' },
-  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: false, description: 'PAR2 inspection and recovery metadata extraction.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false, description: 'NFO text extraction and evidence capture.' },
   { key: 'inspect_archive', label: 'Inspect archive', concurrency: true, description: 'Archive listing and encrypted/password detection.' },
   { key: 'inspect_password', label: 'Inspect password', concurrency: false, description: 'Password verification workflow.' },
