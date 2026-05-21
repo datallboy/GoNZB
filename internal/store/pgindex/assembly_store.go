@@ -20,6 +20,7 @@ const (
 	assemblePriorityHeaderWindowMultiplier = 40
 	assemblePriorityHeaderMinScan          = 5000
 	assemblePriorityHeaderMaxScan          = 100000
+	refreshBinaryStatsBatchSize            = 8000
 )
 
 // unassembled header row used by Milestone 6 assembly service.
@@ -343,38 +344,43 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id
 			WHERE BTRIM(p.subject_file_name) <> ''
 		),
-		ranked_matches AS (
+		matched AS (
 			SELECT
 				ps.id,
-				b.id AS binary_id,
+				b.binary_id,
 				b.is_main_payload,
 				b.observed_parts,
-				CASE
-					WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
-					ELSE 0
-				END AS completion_ratio,
-				ROW_NUMBER() OVER (
-					PARTITION BY ps.id
-					ORDER BY
-						CASE
-							WHEN b.is_main_payload THEN 0
-							ELSE 1
-						END ASC,
-						CASE
-							WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
-							ELSE 0
-						END DESC,
-						b.observed_parts DESC,
-						b.id DESC
-				) AS header_rank
+				b.completion_ratio
 			FROM pending_structured ps
-			JOIN binaries b
-			  ON b.provider_id = ps.provider_id
-			 AND b.newsgroup_id = ps.newsgroup_id
-			 AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = ps.normalized_file_name
-			 AND b.total_parts > 0
-			 AND b.observed_parts < b.total_parts
-			 AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+			JOIN LATERAL (
+				SELECT
+					b.id AS binary_id,
+					b.is_main_payload,
+					b.observed_parts,
+					CASE
+						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+						ELSE 0
+					END AS completion_ratio
+				FROM binaries b
+				WHERE b.provider_id = ps.provider_id
+				  AND b.newsgroup_id = ps.newsgroup_id
+				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = ps.normalized_file_name
+				  AND b.total_parts > 0
+				  AND b.observed_parts < b.total_parts
+				  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+				ORDER BY
+					CASE
+						WHEN b.is_main_payload THEN 0
+						ELSE 1
+					END ASC,
+					CASE
+						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+						ELSE 0
+					END DESC,
+					b.observed_parts DESC,
+					b.id DESC
+				LIMIT 1
+			) b ON true
 		),
 		selected AS (
 			SELECT
@@ -383,8 +389,7 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 				is_main_payload,
 				observed_parts,
 				completion_ratio
-			FROM ranked_matches
-			WHERE header_rank = 1
+			FROM matched
 			ORDER BY
 				CASE
 					WHEN is_main_payload THEN 0
@@ -1614,8 +1619,12 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 
 	summaryKeys := make([]releaseFamilySummaryKey, 0, len(uniqueBinaryIDs)*2)
 	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, len(uniqueBinaryIDs)*2)
-	for _, binaryID := range uniqueBinaryIDs {
-		keys, err := refreshBinaryStatsInTx(ctx, tx, binaryID)
+	for start := 0; start < len(uniqueBinaryIDs); start += refreshBinaryStatsBatchSize {
+		end := start + refreshBinaryStatsBatchSize
+		if end > len(uniqueBinaryIDs) {
+			end = len(uniqueBinaryIDs)
+		}
+		keys, err := refreshBinaryStatsIDsInTx(ctx, tx, uniqueBinaryIDs[start:end])
 		if err != nil {
 			return err
 		}
@@ -1656,16 +1665,32 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 }
 
 func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]releaseFamilySummaryKey, error) {
-	var (
-		providerID               int64
-		newsgroupID              int64
-		releaseFamilyKey         string
-		baseStem                 string
-		expectedFileCount        int
-		expectedArchiveFileCount int
-	)
-	err := tx.QueryRowContext(ctx, `
-		WITH agg AS (
+	return refreshBinaryStatsIDsInTx(ctx, tx, []int64{binaryID})
+}
+
+func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) ([]releaseFamilySummaryKey, error) {
+	if len(binaryIDs) == 0 {
+		return nil, nil
+	}
+
+	var values strings.Builder
+	args := make([]any, 0, len(binaryIDs))
+	for i, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			return nil, fmt.Errorf("binary id is required")
+		}
+		if i > 0 {
+			values.WriteByte(',')
+		}
+		values.WriteString(fmt.Sprintf("($%d::bigint)", i+1))
+		args = append(args, binaryID)
+	}
+
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id) AS (
+			VALUES %s
+		),
+		agg AS (
 			SELECT
 				bp.binary_id,
 				COUNT(*)::INTEGER AS observed_parts,
@@ -1673,48 +1698,77 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 				COALESCE(MIN(ah.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(ah.article_number), 0)::BIGINT AS last_article_number,
 				MIN(ah.date_utc) AS posted_at
-			FROM binary_parts bp
+			FROM requested r
+			JOIN binary_parts bp ON bp.binary_id = r.binary_id
 			JOIN article_headers ah ON ah.id = bp.article_header_id
-			WHERE bp.binary_id = $1
 			GROUP BY bp.binary_id
+		),
+		updated AS (
+			UPDATE binaries b
+			SET observed_parts = agg.observed_parts,
+			    total_bytes = agg.total_bytes,
+			    first_article_number = agg.first_article_number,
+			    last_article_number = agg.last_article_number,
+			    posted_at = COALESCE(agg.posted_at, b.posted_at),
+			    updated_at = NOW()
+			FROM agg
+			WHERE b.id = agg.binary_id
+			RETURNING
+				b.provider_id,
+				b.newsgroup_id,
+				b.release_family_key,
+				b.base_stem,
+				b.expected_file_count,
+				b.expected_archive_file_count
 		)
-		UPDATE binaries b
-		SET observed_parts = agg.observed_parts,
-		    total_bytes = agg.total_bytes,
-		    first_article_number = agg.first_article_number,
-		    last_article_number = agg.last_article_number,
-		    posted_at = COALESCE(agg.posted_at, b.posted_at),
-		    updated_at = NOW()
-		FROM agg
-		WHERE b.id = agg.binary_id
-		RETURNING
-			b.provider_id,
-			b.newsgroup_id,
-			b.release_family_key,
-			b.base_stem,
-			b.expected_file_count,
-			b.expected_archive_file_count`,
-		binaryID,
-	).Scan(
-		&providerID,
-		&newsgroupID,
-		&releaseFamilyKey,
-		&baseStem,
-		&expectedFileCount,
-		&expectedArchiveFileCount,
-	)
+		SELECT
+			provider_id,
+			newsgroup_id,
+			release_family_key,
+			base_stem,
+			expected_file_count,
+			expected_archive_file_count
+		FROM updated`, values.String()), args...)
 	if err != nil {
-		return nil, fmt.Errorf("refresh binary stats %d: %w", binaryID, err)
+		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
+	}
+	defer rows.Close()
+
+	summaryKeys := make([]releaseFamilySummaryKey, 0, len(binaryIDs)*2)
+	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, len(binaryIDs)*2)
+	for rows.Next() {
+		var (
+			providerID               int64
+			newsgroupID              int64
+			releaseFamilyKey         string
+			baseStem                 string
+			expectedFileCount        int
+			expectedArchiveFileCount int
+		)
+		if err := rows.Scan(
+			&providerID,
+			&newsgroupID,
+			&releaseFamilyKey,
+			&baseStem,
+			&expectedFileCount,
+			&expectedArchiveFileCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan refreshed binary stats: %w", err)
+		}
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
+		if expectedFileCount > 1 {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+		}
+		if expectedArchiveFileCount > 1 {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate refreshed binary stats: %w", err)
 	}
 
-	summaryKeys := make([]releaseFamilySummaryKey, 0, 2)
-	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, 2)
-	summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
-	if expectedFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
-	}
-	if expectedArchiveFileCount > 1 {
-		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
+	if len(summaryKeys) == 0 {
+		return nil, fmt.Errorf("refresh binary stats batch: no binary stats were updated")
 	}
 
 	return summaryKeys, nil
