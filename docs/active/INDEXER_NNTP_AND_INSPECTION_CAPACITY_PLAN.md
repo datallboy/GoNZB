@@ -125,7 +125,7 @@ Expected benefits:
 
 Downloader path:
 
-- downloader builds `nntp.Manager`
+- downloader builds the process shared `nntp.Manager` when the downloader module is enabled
 - the manager creates providers and wraps each provider with a semaphore sized to `MaxConnection`
 - downloader worker count is derived from manager `TotalCapacity()`
 - when every provider semaphore is full, `Fetch` returns `ErrProviderBusy`
@@ -133,17 +133,18 @@ Downloader path:
 
 Indexer path:
 
-- indexer runtime now creates an `nntp.Manager` with `wait_queue` capacity policy for the selected scrape server config
+- indexer runtime reuses the process shared `nntp.Manager` when downloader has already initialized it
+- indexer-only deployments still create an `nntp.Manager` with `wait_queue` capacity policy for the selected scrape server config
 - scrape latest/backfill, assemble fetches, yEnc recovery, and inspection stages share the manager client
 - the manager provides a hard semaphore around provider calls, including fetch body, fetch prefix, group stats, and XOVER
 - indexer calls wait for capacity until their request context expires instead of creating unbounded extra provider connections
 
 Implication:
 
-- in all-in-one deployments, downloader and indexer can be configured against the same NNTP account but use separate transport objects
+- in all-in-one deployments, downloader and indexer now share one process-wide NNTP manager and provider semaphore pool
 - downloader still uses caller-managed `ErrProviderBusy` behavior
-- indexer now has a module-local semaphore-backed wait queue, but downloader and indexer do not yet share one process-wide reservation pool
-- if both scopes use `max_connections=40`, the process can still reserve up to 40 downloader slots plus 40 indexer slots unless settings are scoped lower or shared-pool ownership is added
+- indexer uses scoped manager clients and waits behind the manager when no slot is available
+- shared provider settings live in runtime `servers`; legacy downloader/indexer server fields remain compatibility fallbacks
 
 ## Proposed NNTP Manager Direction
 
@@ -160,14 +161,14 @@ Longer-term preference:
 - keep domain stages responsible for their own business-level retries and failure decisions, not provider-slot scheduling
 - expose queue wait as metrics so a module visibly slows down when NNTP is saturated instead of silently creating more connections
 
-Shared-pool fairness model:
+Shared-pool fairness model implemented in this sprint:
 
-- combine downloader and indexer NNTP usage into one process-wide pool when they target the same provider account
-- give each module dynamic reservations instead of fixed hard splits
-- allow idle capacity borrowing, so indexer can use up to 100 percent of the pool when no downloader work is active
-- when downloader work appears, reserve a configurable minimum share for downloader and cap indexer at the remaining share until download pressure clears
-- make shares configurable per module, for example downloader minimum 20 percent and indexer maximum 80 percent while downloads are active
-- expose active, reserved, borrowed, waiting, and denied counts per module
+- downloader and indexer NNTP usage are combined into one process-wide pool for all-in-one runtime builds
+- module reservations are dynamic instead of fixed hard splits
+- idle borrowing lets indexer use up to 100 percent of the pool when downloader demand is quiet
+- recent downloader demand caps new indexer borrows at the configured indexer share until the demand window clears
+- runtime `nntp_pool` settings expose idle borrow, indexer max percent, downloader reserve percent, and downloader demand window
+- manager stats now report reservation settings, downloader/indexer active counts, active limits, and whether downloader demand is currently active
 
 This model fits the DDD boundary better: NNTP transport owns provider mechanics, while downloader and indexer ask for NNTP operations and react to returned domain-relevant results.
 
@@ -176,7 +177,8 @@ This model fits the DDD boundary better: NNTP transport owns provider mechanics,
 - [x] Refactor indexer NNTP fetches onto the semaphore-backed `nntp.Manager` path instead of a standalone provider.
 - [x] Add manager capacity policy options: caller-managed `ErrProviderBusy` and manager-owned wait queue.
 - [ ] Move downloader toward manager-owned wait-queue behavior after metrics prove the new policy is stable.
-- [ ] Add shared-pool module reservations with idle borrowing, so indexer can use the full pool when alone and yield a configured share when downloader work is active.
+- [x] Add shared-pool module reservations with idle borrowing, so indexer can use the full pool when alone and yield a configured share when downloader work is active.
+- [x] Combine downloader/indexer provider settings into shared runtime `servers` settings and expose `nntp_pool` reservation knobs in the WebUI.
 - [x] Add basic NNTP manager stats: configured capacity, active/in-use slots, waiting requests, busy returns, operation counts, wait count, total wait duration, and max wait duration.
 - [x] Add provider-level stats access for idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
 - [x] Add basic queue/backpressure stats: waiting requests, busy returns, wait count, total wait time, and max wait time.
@@ -198,11 +200,12 @@ Done:
 - [x] Add manager wait-queue capacity policy and route indexer NNTP operations through it.
 - [x] Add live indexer NNTP capacity stats to the admin API and WebUI dashboard.
 - [x] Add scoped indexer NNTP demand stats alongside manager-level pressure.
+- [x] Share the NNTP manager between downloader and indexer in all-in-one runtime builds while preserving downloader `ErrProviderBusy` behavior.
+- [x] Add runtime-configurable NNTP pool idle borrow and usage percentages.
 
 Needs completion:
 
 - [ ] PAR2 step timing metrics prove whether the next bottleneck is NNTP, parse, fallback materialization, or database writes.
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
-- [ ] Shared NNTP capacity can be reserved, borrowed, and reported by module.
-- [ ] Downloader-specific NNTP wait policy, reservations, and active worker stats are handled in a separate session.
+- [ ] Downloader-specific manager-owned wait policy and richer active worker stats are handled in a separate downloader-focused session.
