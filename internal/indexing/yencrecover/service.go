@@ -307,7 +307,7 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	if err != nil {
 		if pgindex.IsBinaryNotFound(err) {
 			if s.log != nil {
-				s.log.Warn("recover_yenc: skipped stale binary article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
+				s.log.Debug("recover_yenc: skipped stale binary article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
 			}
 			return nil, "stale", nil
 		}
