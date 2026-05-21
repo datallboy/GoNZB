@@ -78,6 +78,44 @@ type NNTPManager interface {
 	Close() error // allows idle runtime swaps on settings reload
 }
 
+type NNTPRuntimeStats struct {
+	Scope           string                     `json:"scope"`
+	Policy          string                     `json:"policy"`
+	Capacity        int                        `json:"capacity"`
+	Active          int                        `json:"active"`
+	Idle            int                        `json:"idle"`
+	Waiting         int64                      `json:"waiting"`
+	BusyReturns     int64                      `json:"busy_returns"`
+	WaitCount       int64                      `json:"wait_count"`
+	WaitDurationMS  int64                      `json:"wait_duration_ms"`
+	WaitMaxMS       int64                      `json:"wait_max_ms"`
+	Fetches         int64                      `json:"fetches"`
+	FetchBodyPrefix int64                      `json:"fetch_body_prefix"`
+	GroupStats      int64                      `json:"group_stats"`
+	XOver           int64                      `json:"xover"`
+	Providers       []NNTPProviderRuntimeStats `json:"providers"`
+}
+
+type NNTPProviderRuntimeStats struct {
+	ID                string `json:"id"`
+	Label             string `json:"label"`
+	Priority          int    `json:"priority"`
+	Capacity          int    `json:"capacity"`
+	Active            int    `json:"active"`
+	Idle              int    `json:"idle"`
+	Dials             int64  `json:"dials"`
+	DialFailures      int64  `json:"dial_failures"`
+	PoolReuses        int64  `json:"pool_reuses"`
+	PoolReturns       int64  `json:"pool_returns"`
+	PoolDiscardIdle   int64  `json:"pool_discard_idle"`
+	PoolDiscardAge    int64  `json:"pool_discard_age"`
+	PoolDiscardError  int64  `json:"pool_discard_error"`
+	FetchRetries      int64  `json:"fetch_retries"`
+	GroupStatsRetries int64  `json:"group_stats_retries"`
+	XOverRetries      int64  `json:"xover_retries"`
+	RecoverableErrors int64  `json:"recoverable_errors"`
+}
+
 // Manager defines the contract for our NZB search and download engine.
 type IndexerAggregator interface {
 	SearchAll(ctx context.Context, query string) ([]*domain.Release, error)
@@ -234,6 +272,7 @@ type UsenetIndexerService interface {
 	RunStageOnce(ctx context.Context, stageName string) error
 	RunPipelineOnce(ctx context.Context) error
 	Start(ctx context.Context, interval time.Duration) error
+	NNTPStats(ctx context.Context) (*NNTPRuntimeStats, error)
 }
 
 type Processor interface {

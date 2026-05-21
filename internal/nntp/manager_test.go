@@ -179,12 +179,16 @@ func newBlockingProvider(capacity int) *blockingProvider {
 	return &blockingProvider{capacity: capacity}
 }
 
-func (p *blockingProvider) ID() string            { return "test-provider" }
-func (p *blockingProvider) Label() string         { return "test-provider" }
-func (p *blockingProvider) Priority() int         { return 0 }
-func (p *blockingProvider) MaxConnection() int    { return p.capacity }
-func (p *blockingProvider) TestConnection() error { return nil }
-func (p *blockingProvider) Close() error          { return nil }
+func (p *blockingProvider) ID() string               { return "test-provider" }
+func (p *blockingProvider) Label() string            { return "test-provider" }
+func (p *blockingProvider) Priority() int            { return 0 }
+func (p *blockingProvider) MaxConnection() int       { return p.capacity }
+func (p *blockingProvider) IdleConnectionCount() int { return 0 }
+func (p *blockingProvider) TestConnection() error    { return nil }
+func (p *blockingProvider) Close() error             { return nil }
+func (p *blockingProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return ProviderStatsSnapshot{}
+}
 
 func (p *blockingProvider) Fetch(context.Context, string, []string) (io.Reader, error) {
 	p.enter()

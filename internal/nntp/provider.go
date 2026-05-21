@@ -90,6 +90,8 @@ type providerStatsSnapshot struct {
 	RecoverableErrors int64
 }
 
+type ProviderStatsSnapshot = providerStatsSnapshot
+
 // Close ensures both layers are shut down.
 func (c *nntpConn) Close() error {
 	if c.tp != nil {
@@ -134,10 +136,12 @@ type Provider interface {
 	Label() string
 	Priority() int
 	MaxConnection() int
+	IdleConnectionCount() int
 	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 	GroupStats(ctx context.Context, group string) (GroupStats, error)
 	XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error)
+	StatsSnapshot() ProviderStatsSnapshot
 	TestConnection() error
 	Close() error
 }
@@ -158,6 +162,8 @@ func (p *nntpProvider) Priority() int { return p.conf.Priority }
 
 // Interface implimentation: MaxConnection
 func (p *nntpProvider) MaxConnection() int { return p.conf.MaxConnection }
+
+func (p *nntpProvider) IdleConnectionCount() int { return len(p.pool) }
 
 func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
 	formattedID := strings.TrimSpace(msgID)
@@ -834,6 +840,10 @@ func (p *nntpProvider) statsSnapshot() providerStatsSnapshot {
 		XOverRetries:      p.stats.xoverRetries.Load(),
 		RecoverableErrors: p.stats.recoverableErrors.Load(),
 	}
+}
+
+func (p *nntpProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return p.statsSnapshot()
 }
 
 func (p *nntpProvider) authenticate(conn *textproto.Conn) error {

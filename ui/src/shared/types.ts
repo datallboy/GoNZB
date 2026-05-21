@@ -170,6 +170,44 @@ export type IndexerStageThroughput = {
   count: number
 }
 
+export type IndexerNNTPProviderStats = {
+  id: string
+  label: string
+  priority: number
+  capacity: number
+  active: number
+  idle: number
+  dials: number
+  dial_failures: number
+  pool_reuses: number
+  pool_returns: number
+  pool_discard_idle: number
+  pool_discard_age: number
+  pool_discard_error: number
+  fetch_retries: number
+  group_stats_retries: number
+  xover_retries: number
+  recoverable_errors: number
+}
+
+export type IndexerNNTPStats = {
+  scope: string
+  policy: string
+  capacity: number
+  active: number
+  idle: number
+  waiting: number
+  busy_returns: number
+  wait_count: number
+  wait_duration_ms: number
+  wait_max_ms: number
+  fetches: number
+  fetch_body_prefix: number
+  group_stats: number
+  xover: number
+  providers: IndexerNNTPProviderStats[]
+}
+
 export type AdminStage = {
   stage_name: string
   enabled: boolean

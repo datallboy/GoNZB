@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -129,13 +129,16 @@ export function AdminDashboardPage() {
   const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
   const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
+  const [nntpStats, setNNTPStats] = useState<IndexerNNTPStats | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
   const [backfillLoading, setBackfillLoading] = useState(false)
   const [throughputLoading, setThroughputLoading] = useState(false)
+  const [nntpLoading, setNNTPLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [throughputError, setThroughputError] = useState<string | null>(null)
+  const [nntpError, setNNTPError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -196,6 +199,24 @@ export function AdminDashboardPage() {
         .finally(() => {
           if (!cancelled) {
             setThroughputLoading(false)
+          }
+        })
+
+      setNNTPLoading(true)
+      void getAdminNNTPStats()
+        .then((value) => {
+          if (!cancelled) {
+            setNNTPStats(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setNNTPError(err instanceof Error ? err.message : 'Failed to load NNTP stats')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setNNTPLoading(false)
           }
         })
 
@@ -297,6 +318,94 @@ export function AdminDashboardPage() {
             <div>
               <h3 className="section-title">Inspection Backlog</h3>
               <div className="hero-stat-grid">{inspectBacklogStats.map(backlogCard)}</div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">NNTP Capacity</h2>
+          <p className="muted-copy">
+            Live indexer transport pressure. Waiting requests mean indexer work is queued behind the configured NNTP connection limit.
+          </p>
+        </div>
+        {nntpError ? <div className="banner error">{nntpError}</div> : null}
+        {nntpLoading && !nntpStats ? (
+          <LoadingBlock label="Loading NNTP capacity..." />
+        ) : (
+          <>
+            <div className="hero-stat-grid">
+              <div className="stat-card">
+                <span>Policy</span>
+                <strong>{nntpStats?.policy ?? 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Active Connections</span>
+                <strong>
+                  {nntpStats ? `${nntpStats.active.toLocaleString()} / ${nntpStats.capacity.toLocaleString()}` : 'Unavailable'}
+                </strong>
+              </div>
+              <div className="stat-card">
+                <span>Waiting Requests</span>
+                <strong>{nntpStats ? nntpStats.waiting.toLocaleString() : 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Max Wait</span>
+                <strong>{nntpStats ? formatDuration(nntpStats.wait_max_ms) : 'Unavailable'}</strong>
+              </div>
+            </div>
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Connections</th>
+                    <th>Pool</th>
+                    <th>Retries</th>
+                    <th>Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(nntpStats?.providers ?? []).map((provider) => (
+                    <tr key={provider.id}>
+                      <td>
+                        <strong>{provider.label || provider.id}</strong>
+                        <div className="muted-copy">Priority {provider.priority}</div>
+                      </td>
+                      <td>
+                        <strong>{provider.active.toLocaleString()} / {provider.capacity.toLocaleString()}</strong>
+                        <div className="muted-copy">active / capacity</div>
+                      </td>
+                      <td>
+                        <strong>{provider.idle.toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          {provider.dials.toLocaleString()} dials · {provider.pool_reuses.toLocaleString()} reuses
+                        </div>
+                      </td>
+                      <td>
+                        <strong>{(provider.fetch_retries + provider.group_stats_retries + provider.xover_retries).toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          fetch {provider.fetch_retries.toLocaleString()} · xover {provider.xover_retries.toLocaleString()}
+                        </div>
+                      </td>
+                      <td>
+                        <strong>{provider.recoverable_errors.toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          {provider.dial_failures.toLocaleString()} dial failures · {provider.pool_discard_error.toLocaleString()} discarded
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!nntpLoading && !nntpError && (nntpStats?.providers.length ?? 0) === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="muted-copy">
+                        No indexer NNTP manager is currently configured.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </>
         )}

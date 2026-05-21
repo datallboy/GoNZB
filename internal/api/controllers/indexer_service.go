@@ -22,6 +22,7 @@ type indexerService interface {
 	RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
 	BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
+	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
 	GetStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error)
@@ -148,6 +149,13 @@ func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.I
 		return nil, errIndexerUnavailable
 	}
 	return s.store.GetIndexerStageThroughput(ctx)
+}
+
+func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	if s == nil || s.indexer == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.indexer.NNTPStats(ctx)
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

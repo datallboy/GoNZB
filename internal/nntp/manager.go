@@ -34,6 +34,7 @@ type ManagerOptions struct {
 type ManagerStats struct {
 	Capacity        int
 	Active          int
+	Idle            int
 	Waiting         int64
 	BusyReturns     int64
 	WaitCount       int64
@@ -43,6 +44,27 @@ type ManagerStats struct {
 	FetchBodyPrefix int64
 	GroupStats      int64
 	XOver           int64
+	Providers       []ManagerProviderStats
+}
+
+type ManagerProviderStats struct {
+	ID                string
+	Label             string
+	Priority          int
+	Capacity          int
+	Active            int
+	Idle              int
+	Dials             int64
+	DialFailures      int64
+	PoolReuses        int64
+	PoolReturns       int64
+	PoolDiscardIdle   int64
+	PoolDiscardAge    int64
+	PoolDiscardError  int64
+	FetchRetries      int64
+	GroupStatsRetries int64
+	XOverRetries      int64
+	RecoverableErrors int64
 }
 
 type Manager struct {
@@ -531,12 +553,38 @@ func (m *Manager) Stats() ManagerStats {
 		return ManagerStats{}
 	}
 	active := 0
+	idle := 0
+	providers := make([]ManagerProviderStats, 0, len(m.providers))
 	for _, mp := range m.providers {
-		active += len(mp.semaphore)
+		providerActive := len(mp.semaphore)
+		providerIdle := mp.IdleConnectionCount()
+		active += providerActive
+		idle += providerIdle
+		providerStats := mp.Provider.StatsSnapshot()
+		providers = append(providers, ManagerProviderStats{
+			ID:                mp.ID(),
+			Label:             mp.Label(),
+			Priority:          mp.Priority(),
+			Capacity:          cap(mp.semaphore),
+			Active:            providerActive,
+			Idle:              providerIdle,
+			Dials:             providerStats.Dials,
+			DialFailures:      providerStats.DialFailures,
+			PoolReuses:        providerStats.PoolReuses,
+			PoolReturns:       providerStats.PoolReturns,
+			PoolDiscardIdle:   providerStats.PoolDiscardIdle,
+			PoolDiscardAge:    providerStats.PoolDiscardAge,
+			PoolDiscardError:  providerStats.PoolDiscardError,
+			FetchRetries:      providerStats.FetchRetries,
+			GroupStatsRetries: providerStats.GroupStatsRetries,
+			XOverRetries:      providerStats.XOverRetries,
+			RecoverableErrors: providerStats.RecoverableErrors,
+		})
 	}
 	return ManagerStats{
 		Capacity:        m.TotalCapacity(),
 		Active:          active,
+		Idle:            idle,
 		Waiting:         m.stats.waiting.Load(),
 		BusyReturns:     m.stats.busyReturns.Load(),
 		WaitCount:       m.stats.waitCount.Load(),
@@ -546,7 +594,51 @@ func (m *Manager) Stats() ManagerStats {
 		FetchBodyPrefix: m.stats.fetchBodyPrefix.Load(),
 		GroupStats:      m.stats.groupStats.Load(),
 		XOver:           m.stats.xover.Load(),
+		Providers:       providers,
 	}
+}
+
+func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
+	stats := m.Stats()
+	out := app.NNTPRuntimeStats{
+		Scope:           scope,
+		Policy:          string(m.opts.CapacityPolicy),
+		Capacity:        stats.Capacity,
+		Active:          stats.Active,
+		Idle:            stats.Idle,
+		Waiting:         stats.Waiting,
+		BusyReturns:     stats.BusyReturns,
+		WaitCount:       stats.WaitCount,
+		WaitDurationMS:  stats.WaitDurationMS,
+		WaitMaxMS:       stats.WaitMaxMS,
+		Fetches:         stats.Fetches,
+		FetchBodyPrefix: stats.FetchBodyPrefix,
+		GroupStats:      stats.GroupStats,
+		XOver:           stats.XOver,
+		Providers:       make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
+	}
+	for _, provider := range stats.Providers {
+		out.Providers = append(out.Providers, app.NNTPProviderRuntimeStats{
+			ID:                provider.ID,
+			Label:             provider.Label,
+			Priority:          provider.Priority,
+			Capacity:          provider.Capacity,
+			Active:            provider.Active,
+			Idle:              provider.Idle,
+			Dials:             provider.Dials,
+			DialFailures:      provider.DialFailures,
+			PoolReuses:        provider.PoolReuses,
+			PoolReturns:       provider.PoolReturns,
+			PoolDiscardIdle:   provider.PoolDiscardIdle,
+			PoolDiscardAge:    provider.PoolDiscardAge,
+			PoolDiscardError:  provider.PoolDiscardError,
+			FetchRetries:      provider.FetchRetries,
+			GroupStatsRetries: provider.GroupStatsRetries,
+			XOverRetries:      provider.XOverRetries,
+			RecoverableErrors: provider.RecoverableErrors,
+		})
+	}
+	return out
 }
 
 // allows safe teardown when reloading downloader runtime while idle

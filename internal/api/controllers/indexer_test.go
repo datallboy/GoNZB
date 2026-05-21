@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
@@ -17,6 +18,7 @@ type stubIndexerService struct {
 	dashboard    *pgindex.IndexerDashboardStats
 	backfill     *pgindex.IndexerBackfillProgress
 	throughput   *pgindex.IndexerStageThroughput
+	nntpStats    *app.NNTPRuntimeStats
 	stages       []indexerStageView
 	runs         []pgindex.IndexerStageRun
 	run          *pgindex.IndexerStageRun
@@ -49,6 +51,10 @@ func (s *stubIndexerService) BackfillProgress(ctx context.Context) (*pgindex.Ind
 
 func (s *stubIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
 	return s.throughput, nil
+}
+
+func (s *stubIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	return s.nntpStats, nil
 }
 
 func (s *stubIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
@@ -330,6 +336,49 @@ func TestIndexerAdminControllerGetBackfillProgress(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, needle := range []string{`"count":1`, `"group_name":"alt.binaries.wood"`, `"cutoff_reached":true`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerAdminControllerGetNNTPStats(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/nntp", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{
+		Service: &stubIndexerService{
+			nntpStats: &app.NNTPRuntimeStats{
+				Scope:          "indexer",
+				Policy:         "wait_queue",
+				Capacity:       40,
+				Active:         4,
+				Waiting:        2,
+				WaitDurationMS: 123,
+				Providers: []app.NNTPProviderRuntimeStats{{
+					ID:       "primary",
+					Label:    "news.example",
+					Capacity: 40,
+					Active:   4,
+					Dials:    8,
+				}},
+			},
+		},
+	}
+
+	if err := ctrl.GetNNTPStats(c); err != nil {
+		t.Fatalf("GetNNTPStats returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{`"scope":"indexer"`, `"policy":"wait_queue"`, `"capacity":40`, `"waiting":2`, `"label":"news.example"`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
