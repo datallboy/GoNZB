@@ -181,7 +181,7 @@ This model fits the DDD boundary better: NNTP transport owns provider mechanics,
 - [x] Add provider-level stats access for idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
 - [x] Add basic queue/backpressure stats: waiting requests, busy returns, wait count, total wait time, and max wait time.
 - [x] Surface retry counters and wait timing in the admin API and dashboard. Average wait can be derived from total wait time and wait count, but is not yet precomputed as a separate field.
-- [ ] Add per-stage NNTP demand stats: scrape active XOVER requests, yEnc active workers, PAR2 active workers, archive/media/NFO/password active workers.
+- [x] Add per-stage indexer NNTP demand stats: scrape, assemble lanes, yEnc recovery, and individual inspect stages each use scoped manager clients with active, waiting, request, and wait timing counters.
 - [x] Surface indexer NNTP capacity stats in the admin dashboard so backlog growth can be tied to provider pressure instead of guessed from stage throughput.
 - [x] Add a blocking acquire path for indexer NNTP calls so indexer work waits behind a measured queue instead of silently opening more connections.
 - [ ] Add rate-limit/provider-pressure counters for common NNTP failure classes, including busy, timeout, connection reset, and article missing.
@@ -197,6 +197,7 @@ Done:
 - [x] Record the preferred shared NNTP manager direction with configurable busy/wait policies and dynamic module reservations.
 - [x] Add manager wait-queue capacity policy and route indexer NNTP operations through it.
 - [x] Add live indexer NNTP capacity stats to the admin API and WebUI dashboard.
+- [x] Add scoped indexer NNTP demand stats alongside manager-level pressure.
 
 Needs completion:
 
@@ -204,5 +205,4 @@ Needs completion:
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
 - [ ] Shared NNTP capacity can be reserved, borrowed, and reported by module.
-- [ ] Per-stage indexer NNTP demand is visible alongside manager-level pressure.
 - [ ] Downloader-specific NNTP wait policy, reservations, and active worker stats are handled in a separate session.
