@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/engine"
@@ -43,7 +44,8 @@ func BuildDownloader(appCtx *app.Context) error {
 		downloadCtx = &copied
 	}
 
-	manager, err := nntp.NewManager(downloadCtx)
+	runtime := downloaderRuntimeSettings(appCtx)
+	manager, err := nntp.NewManagerWithOptions(downloadCtx, managerOptionsFromRuntime(runtime, nntp.CapacityReturnBusy))
 	if err != nil {
 		return fmt.Errorf("provider initialization failed: %w", err)
 	}
@@ -57,6 +59,14 @@ func BuildDownloader(appCtx *app.Context) error {
 }
 
 func scopedDownloaderServers(appCtx *app.Context) []config.ServerConfig {
+	runtime := downloaderRuntimeSettings(appCtx)
+	if runtime == nil {
+		return nil
+	}
+	return app.ToConfigServers(app.RuntimeServersForCompatibility(runtime))
+}
+
+func downloaderRuntimeSettings(appCtx *app.Context) *app.RuntimeSettings {
 	if appCtx == nil || appCtx.SettingsStore == nil {
 		return nil
 	}
@@ -65,7 +75,22 @@ func scopedDownloaderServers(appCtx *app.Context) []config.ServerConfig {
 		appCtx.Logger.Warn("Failed to load downloader NNTP runtime settings: %v", err)
 		return nil
 	}
-	return app.ToConfigServers(app.DownloaderNNTPServers(runtime))
+	return runtime
+}
+
+func managerOptionsFromRuntime(runtime *app.RuntimeSettings, policy nntp.CapacityPolicy) nntp.ManagerOptions {
+	pool := app.DefaultNNTPPoolRuntimeSettings()
+	if runtime != nil && runtime.NNTPPool != nil {
+		pool = runtime.NNTPPool
+	}
+	return nntp.ManagerOptions{
+		CapacityPolicy:            policy,
+		ModuleReservationsEnabled: true,
+		IdleBorrowEnabled:         pool.IdleBorrowEnabled,
+		IndexerMaxPercent:         pool.IndexerMaxPercent,
+		DownloaderReservePercent:  pool.DownloaderReservePercent,
+		DownloaderDemandWindow:    time.Duration(pool.DemandWindowSeconds) * time.Second,
+	}
 }
 
 // Safely reload downloader runtime when queue is idle.

@@ -30,7 +30,12 @@ const (
 )
 
 type ManagerOptions struct {
-	CapacityPolicy CapacityPolicy
+	CapacityPolicy            CapacityPolicy
+	ModuleReservationsEnabled bool
+	IdleBorrowEnabled         bool
+	IndexerMaxPercent         int
+	DownloaderReservePercent  int
+	DownloaderDemandWindow    time.Duration
 }
 
 type ManagerStats struct {
@@ -48,8 +53,22 @@ type ManagerStats struct {
 	XOver           int64
 	ArticleNotFound int64
 	OperationErrors int64
+	Modules         ManagerModuleStats
 	Providers       []ManagerProviderStats
 	Scopes          []ManagerScopeStats
+}
+
+type ManagerModuleStats struct {
+	ReservationsEnabled      bool
+	IdleBorrowEnabled        bool
+	IndexerMaxPercent        int
+	DownloaderReservePercent int
+	DownloaderDemandWindowMS int64
+	IndexerActive            int64
+	DownloaderActive         int64
+	IndexerLimit             int
+	DownloaderLimit          int
+	DownloaderDemandActive   bool
 }
 
 type ManagerScopeStats struct {
@@ -95,19 +114,22 @@ type Manager struct {
 }
 
 type managerStats struct {
-	mu              sync.Mutex
-	scopes          map[string]*managerScopeStats
-	waiting         atomic.Int64
-	busyReturns     atomic.Int64
-	waitCount       atomic.Int64
-	waitDurationNS  atomic.Int64
-	waitMaxNS       atomic.Int64
-	fetches         atomic.Int64
-	fetchBodyPrefix atomic.Int64
-	groupStats      atomic.Int64
-	xover           atomic.Int64
-	articleNotFound atomic.Int64
-	operationErrors atomic.Int64
+	mu               sync.Mutex
+	scopes           map[string]*managerScopeStats
+	waiting          atomic.Int64
+	busyReturns      atomic.Int64
+	waitCount        atomic.Int64
+	waitDurationNS   atomic.Int64
+	waitMaxNS        atomic.Int64
+	fetches          atomic.Int64
+	fetchBodyPrefix  atomic.Int64
+	groupStats       atomic.Int64
+	xover            atomic.Int64
+	articleNotFound  atomic.Int64
+	operationErrors  atomic.Int64
+	indexerActive    atomic.Int64
+	downloaderActive atomic.Int64
+	downloaderDemand atomic.Int64
 }
 
 type managerScopeStats struct {
@@ -157,6 +179,21 @@ func NewManagerWithOptions(ctx *app.Context, opts ManagerOptions) (*Manager, err
 func newManagerWithProviders(ctx *app.Context, providers []*managedProvider, opts ManagerOptions) *Manager {
 	if opts.CapacityPolicy == "" {
 		opts.CapacityPolicy = CapacityReturnBusy
+	}
+	if opts.IndexerMaxPercent <= 0 {
+		opts.IndexerMaxPercent = 80
+	}
+	if opts.IndexerMaxPercent > 100 {
+		opts.IndexerMaxPercent = 100
+	}
+	if opts.DownloaderReservePercent <= 0 {
+		opts.DownloaderReservePercent = 20
+	}
+	if opts.DownloaderReservePercent > 100 {
+		opts.DownloaderReservePercent = 100
+	}
+	if opts.DownloaderDemandWindow <= 0 {
+		opts.DownloaderDemandWindow = 30 * time.Second
 	}
 	return &Manager{ctx: ctx, providers: providers, opts: opts}
 }
@@ -510,9 +547,16 @@ func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider
 	if mp == nil {
 		return false, nil
 	}
+	module := moduleForScope(scope)
+	if module == "downloader" {
+		m.recordDownloaderDemand()
+	}
+	if !m.moduleCanAcquire(module) {
+		return false, nil
+	}
 	select {
 	case mp.semaphore <- struct{}{}:
-		m.scopeStats(scope).active.Add(1)
+		m.recordActive(scope, module, 1)
 		return true, nil
 	default:
 	}
@@ -529,18 +573,32 @@ func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProv
 	}
 	start := time.Now()
 	scopeStats := m.scopeStats(scope)
+	module := moduleForScope(scope)
 	m.stats.waiting.Add(1)
 	scopeStats.waiting.Add(1)
 	defer m.stats.waiting.Add(-1)
 	defer scopeStats.waiting.Add(-1)
-	select {
-	case mp.semaphore <- struct{}{}:
-		scopeStats.active.Add(1)
-		m.recordWait(scopeStats, time.Since(start))
-		return nil
-	case <-ctx.Done():
-		m.recordWait(scopeStats, time.Since(start))
-		return ctx.Err()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if module == "downloader" {
+			m.recordDownloaderDemand()
+		}
+		if m.moduleCanAcquire(module) {
+			select {
+			case mp.semaphore <- struct{}{}:
+				m.recordActive(scope, module, 1)
+				m.recordWait(scopeStats, time.Since(start))
+				return nil
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			m.recordWait(scopeStats, time.Since(start))
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -574,7 +632,7 @@ func (m *Manager) releaseForScope(scope string, mp *managedProvider) {
 		return
 	}
 	<-mp.semaphore
-	m.scopeStats(scope).active.Add(-1)
+	m.recordActive(scope, moduleForScope(scope), -1)
 }
 
 func (m *Manager) recordWait(scopeStats *managerScopeStats, d time.Duration) {
@@ -640,6 +698,104 @@ func normalizeScope(scope string) string {
 		return "unscoped"
 	}
 	return scope
+}
+
+func moduleForScope(scope string) string {
+	if normalizeScope(scope) == "downloader" {
+		return "downloader"
+	}
+	return "indexer"
+}
+
+func (m *Manager) recordDownloaderDemand() {
+	if m == nil {
+		return
+	}
+	m.stats.downloaderDemand.Store(time.Now().UnixNano())
+}
+
+func (m *Manager) downloaderDemandActive(now time.Time) bool {
+	if m == nil {
+		return false
+	}
+	last := m.stats.downloaderDemand.Load()
+	if last == 0 {
+		return m.stats.downloaderActive.Load() > 0
+	}
+	return m.stats.downloaderActive.Load() > 0 || now.Sub(time.Unix(0, last)) <= m.opts.DownloaderDemandWindow
+}
+
+func (m *Manager) moduleCanAcquire(module string) bool {
+	if m == nil {
+		return false
+	}
+	if !m.opts.ModuleReservationsEnabled {
+		return true
+	}
+	limits := m.moduleLimits(time.Now())
+	switch module {
+	case "downloader":
+		return m.stats.downloaderActive.Load() < int64(limits.downloader)
+	default:
+		return m.stats.indexerActive.Load() < int64(limits.indexer)
+	}
+}
+
+type moduleLimits struct {
+	indexer              int
+	downloader           int
+	downloaderDemandLive bool
+}
+
+func (m *Manager) moduleLimits(now time.Time) moduleLimits {
+	capacity := m.TotalCapacity()
+	if capacity <= 0 {
+		return moduleLimits{}
+	}
+
+	indexerLimit := capacity
+	downloaderLimit := capacity
+	downloaderDemand := m.downloaderDemandActive(now)
+	if !m.opts.IdleBorrowEnabled || downloaderDemand {
+		indexerLimit = percentOfCapacity(capacity, m.opts.IndexerMaxPercent)
+	}
+	if !m.opts.IdleBorrowEnabled {
+		downloaderLimit = percentOfCapacity(capacity, 100-m.opts.IndexerMaxPercent)
+		if downloaderLimit <= 0 {
+			downloaderLimit = percentOfCapacity(capacity, m.opts.DownloaderReservePercent)
+		}
+	}
+	if downloaderLimit <= 0 {
+		downloaderLimit = 1
+	}
+	return moduleLimits{indexer: indexerLimit, downloader: downloaderLimit, downloaderDemandLive: downloaderDemand}
+}
+
+func percentOfCapacity(capacity, percent int) int {
+	if capacity <= 0 {
+		return 0
+	}
+	if percent <= 0 {
+		return 1
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	limit := capacity * percent / 100
+	if limit <= 0 {
+		return 1
+	}
+	return limit
+}
+
+func (m *Manager) recordActive(scope, module string, delta int64) {
+	m.scopeStats(scope).active.Add(delta)
+	switch module {
+	case "downloader":
+		m.stats.downloaderActive.Add(delta)
+	default:
+		m.stats.indexerActive.Add(delta)
+	}
 }
 
 // try fetch will attempt to fetch an article from a provider
@@ -740,8 +896,28 @@ func (m *Manager) Stats() ManagerStats {
 		XOver:           m.stats.xover.Load(),
 		ArticleNotFound: m.stats.articleNotFound.Load(),
 		OperationErrors: m.stats.operationErrors.Load(),
+		Modules:         m.moduleStats(),
 		Providers:       providers,
 		Scopes:          m.scopeStatsSnapshot(),
+	}
+}
+
+func (m *Manager) moduleStats() ManagerModuleStats {
+	if m == nil {
+		return ManagerModuleStats{}
+	}
+	limits := m.moduleLimits(time.Now())
+	return ManagerModuleStats{
+		ReservationsEnabled:      m.opts.ModuleReservationsEnabled,
+		IdleBorrowEnabled:        m.opts.IdleBorrowEnabled,
+		IndexerMaxPercent:        m.opts.IndexerMaxPercent,
+		DownloaderReservePercent: m.opts.DownloaderReservePercent,
+		DownloaderDemandWindowMS: m.opts.DownloaderDemandWindow.Milliseconds(),
+		IndexerActive:            m.stats.indexerActive.Load(),
+		DownloaderActive:         m.stats.downloaderActive.Load(),
+		IndexerLimit:             limits.indexer,
+		DownloaderLimit:          limits.downloader,
+		DownloaderDemandActive:   limits.downloaderDemandLive,
 	}
 }
 
@@ -790,8 +966,20 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		XOver:           stats.XOver,
 		ArticleNotFound: stats.ArticleNotFound,
 		OperationErrors: stats.OperationErrors,
-		Providers:       make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
-		Scopes:          make([]app.NNTPScopeRuntimeStats, 0, len(stats.Scopes)),
+		Modules: app.NNTPModuleRuntimeStats{
+			ReservationsEnabled:      stats.Modules.ReservationsEnabled,
+			IdleBorrowEnabled:        stats.Modules.IdleBorrowEnabled,
+			IndexerMaxPercent:        stats.Modules.IndexerMaxPercent,
+			DownloaderReservePercent: stats.Modules.DownloaderReservePercent,
+			DownloaderDemandWindowMS: stats.Modules.DownloaderDemandWindowMS,
+			IndexerActive:            stats.Modules.IndexerActive,
+			DownloaderActive:         stats.Modules.DownloaderActive,
+			IndexerLimit:             stats.Modules.IndexerLimit,
+			DownloaderLimit:          stats.Modules.DownloaderLimit,
+			DownloaderDemandActive:   stats.Modules.DownloaderDemandActive,
+		},
+		Providers: make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
+		Scopes:    make([]app.NNTPScopeRuntimeStats, 0, len(stats.Scopes)),
 	}
 	for _, provider := range stats.Providers {
 		out.Providers = append(out.Providers, app.NNTPProviderRuntimeStats{

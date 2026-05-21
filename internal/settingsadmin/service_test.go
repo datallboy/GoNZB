@@ -14,7 +14,7 @@ func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutServer(t *testi
 	runtime.Indexing.ScrapeLatest.Enabled = true
 
 	err := ValidateRuntimeSettings(&config.Config{}, runtime)
-	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one NNTP server in indexer_servers") {
+	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one NNTP server in servers") {
 		t.Fatalf("expected NNTP validation error, got %v", err)
 	}
 }

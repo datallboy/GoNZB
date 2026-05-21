@@ -121,15 +121,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			return nil, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
 		}
 
-		managerConfig := *appCtx.Config
-		managerConfig.Servers = []config.ServerConfig{*runtimeCfg.ScrapeServer}
-		managerCtx := *appCtx
-		managerCtx.Config = &managerConfig
-		manager, err := nntp.NewManagerWithOptions(&managerCtx, nntp.ManagerOptions{
-			CapacityPolicy: nntp.CapacityWaitQueue,
-		})
+		manager, ownedManager, err := indexerNNTPManager(appCtx, runtimeCfg)
 		if err != nil {
-			return nil, fmt.Errorf("scrape manager initialization failed: %w", err)
+			return nil, err
 		}
 		scrapeClient := manager.ClientForScope("scrape")
 		assembleClient := manager.ClientForScope("assemble")
@@ -158,7 +152,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			},
 		)
-		scrapeProvider = manager
+		if ownedManager {
+			scrapeProvider = manager
+		}
 		nntpStats = func() app.NNTPRuntimeStats {
 			return manager.RuntimeStats("indexer")
 		}
@@ -460,7 +456,40 @@ func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
 		appCtx.Logger.Warn("Failed to load indexer NNTP runtime settings: %v", err)
 		return nil
 	}
-	return app.ToConfigServers(app.IndexerNNTPServers(runtime))
+	return app.ToConfigServers(app.RuntimeServersForCompatibility(runtime))
+}
+
+func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*nntp.Manager, bool, error) {
+	if appCtx != nil && appCtx.NNTP != nil {
+		if manager, ok := appCtx.NNTP.(*nntp.Manager); ok {
+			return manager, false, nil
+		}
+	}
+
+	if runtimeCfg.ScrapeServer == nil {
+		return nil, false, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
+	}
+	managerConfig := *appCtx.Config
+	managerConfig.Servers = []config.ServerConfig{*runtimeCfg.ScrapeServer}
+	managerCtx := *appCtx
+	managerCtx.Config = &managerConfig
+	manager, err := nntp.NewManagerWithOptions(&managerCtx, managerOptionsFromRuntime(indexerRuntimeSettings(appCtx), nntp.CapacityWaitQueue))
+	if err != nil {
+		return nil, false, fmt.Errorf("scrape manager initialization failed: %w", err)
+	}
+	return manager, true, nil
+}
+
+func indexerRuntimeSettings(appCtx *app.Context) *app.RuntimeSettings {
+	if appCtx == nil || appCtx.SettingsStore == nil {
+		return nil
+	}
+	runtime, err := appCtx.SettingsStore.GetRuntimeSettings(context.Background(), appCtx.BootstrapConfig)
+	if err != nil {
+		appCtx.Logger.Warn("Failed to load indexer NNTP runtime settings: %v", err)
+		return nil
+	}
+	return runtime
 }
 
 func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, error) {
