@@ -4,6 +4,31 @@ Snapshot date: 2026-05-21
 
 This doc tracks operational-capacity work that surfaced during the obfuscated-payload hardening sprint. Keep payload-specific findings in `docs/active/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`; use this doc for PAR2/yEnc throughput, exact backlog accounting, and NNTP pool/backpressure work.
 
+## Current Sprint Scope
+
+Branch: `sprint/nntp-manager-capacity-2026-05-21`
+
+This sprint focuses on NNTP transport ownership and capacity enforcement. PAR2 batch persistence and the yEnc work-item table remain in this doc, but they should wait until the shared manager/backpressure baseline is in place.
+
+Sprint tasks:
+
+- [ ] Add a manager-owned wait-queue capacity policy alongside the existing `ErrProviderBusy` policy.
+- [ ] Extend the manager-facing API so indexer callers can use the same transport for `Fetch`, `FetchBodyPrefix`, `GroupStats`, and `XOver`.
+- [ ] Route indexer scrape, assemble, yEnc recovery, and inspect fetches through `nntp.Manager` instead of a standalone provider.
+- [ ] Preserve downloader behavior first, then decide whether downloader can switch from caller-managed busy retry to manager-owned wait queue.
+- [ ] Add tests proving manager capacity is enforced for indexer-style calls.
+- [ ] Add basic manager stats for capacity, active/in-use slots, waiting requests, busy returns, and wait duration.
+- [ ] Document any deferred shared-pool reservation work if module share enforcement is too large for the first pass.
+
+Exit criteria:
+
+- [ ] Indexer no longer creates an unbounded standalone NNTP provider path for normal scrape/recovery/inspection work.
+- [ ] Manager capacity cannot exceed configured provider `max_connections` under concurrent indexer calls.
+- [ ] Existing downloader tests and behavior still pass.
+- [ ] `go test ./...` passes after UI assets are built.
+- [ ] `go run cmd/gonzb/main.go` command checks relevant to indexer NNTP callers are run or explicitly documented as skipped with reason.
+- [ ] The active doc records which NNTP items were completed and which items remain for later capacity-dashboard or module-reservation work.
+
 ## Current PAR2 Inspect Pipeline
 
 `inspect_par2` currently does the following per selected binary:
