@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-05-21
 
-This doc tracks operational-capacity work that surfaced during the obfuscated-payload hardening sprint. Keep payload-specific findings in `docs/active/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`; use this doc for PAR2/yEnc throughput, exact backlog accounting, and NNTP pool/backpressure work.
+This doc tracks operational-capacity work that surfaced during the obfuscated-payload hardening sprint. Keep payload-specific findings in `docs/archive/completed/indexer/2026-05-21-obfuscated-payload-hardening/INDEXER_OBFUSCATED_PAYLOAD_FINDINGS.md`; use this doc for PAR2/yEnc throughput, exact backlog accounting, and NNTP pool/backpressure work.
 
 ## Current Sprint Scope
 
@@ -12,22 +12,30 @@ This sprint focuses on NNTP transport ownership and capacity enforcement. PAR2 b
 
 Sprint tasks:
 
-- [ ] Add a manager-owned wait-queue capacity policy alongside the existing `ErrProviderBusy` policy.
-- [ ] Extend the manager-facing API so indexer callers can use the same transport for `Fetch`, `FetchBodyPrefix`, `GroupStats`, and `XOver`.
-- [ ] Route indexer scrape, assemble, yEnc recovery, and inspect fetches through `nntp.Manager` instead of a standalone provider.
-- [ ] Preserve downloader behavior first, then decide whether downloader can switch from caller-managed busy retry to manager-owned wait queue.
-- [ ] Add tests proving manager capacity is enforced for indexer-style calls.
-- [ ] Add basic manager stats for capacity, active/in-use slots, waiting requests, busy returns, and wait duration.
-- [ ] Document any deferred shared-pool reservation work if module share enforcement is too large for the first pass.
+- [x] Add a manager-owned wait-queue capacity policy alongside the existing `ErrProviderBusy` policy.
+- [x] Extend the manager-facing API so indexer callers can use the same transport for `Fetch`, `FetchBodyPrefix`, `GroupStats`, and `XOver`.
+- [x] Route indexer scrape, assemble, yEnc recovery, and inspect fetches through `nntp.Manager` instead of a standalone provider.
+- [x] Preserve downloader behavior first, then decide whether downloader can switch from caller-managed busy retry to manager-owned wait queue.
+- [x] Add tests proving manager capacity is enforced for indexer-style calls.
+- [x] Add basic manager stats for capacity, active/in-use slots, waiting requests, busy returns, and wait duration.
+- [x] Document any deferred shared-pool reservation work if module share enforcement is too large for the first pass.
 
 Exit criteria:
 
-- [ ] Indexer no longer creates an unbounded standalone NNTP provider path for normal scrape/recovery/inspection work.
-- [ ] Manager capacity cannot exceed configured provider `max_connections` under concurrent indexer calls.
-- [ ] Existing downloader tests and behavior still pass.
-- [ ] `go test ./...` passes after UI assets are built.
-- [ ] `go run cmd/gonzb/main.go` command checks relevant to indexer NNTP callers are run or explicitly documented as skipped with reason.
-- [ ] The active doc records which NNTP items were completed and which items remain for later capacity-dashboard or module-reservation work.
+- [x] Indexer no longer creates an unbounded standalone NNTP provider path for normal scrape/recovery/inspection work.
+- [x] Manager capacity cannot exceed configured provider `max_connections` under concurrent indexer calls.
+- [x] Existing downloader tests and behavior still pass.
+- [x] `go test ./...` passes after UI assets are built.
+- [x] `go run cmd/gonzb/main.go` command checks relevant to indexer NNTP callers are run or explicitly documented as skipped with reason.
+- [x] The active doc records which NNTP items were completed and which items remain for later capacity-dashboard or module-reservation work.
+
+Sprint validation:
+
+- `go test ./...` passed on 2026-05-21.
+- `go run cmd/gonzb/main.go indexer scrape --help` passed.
+- `go run cmd/gonzb/main.go indexer recover-yenc --help` passed.
+- `go run cmd/gonzb/main.go indexer inspect par2 --help` passed.
+- Live one-shot scrape/recovery/inspection commands were not run during this pass to avoid consuming NNTP provider quota while validating transport wiring; the manager capacity behavior is covered by unit tests.
 
 ## Current PAR2 Inspect Pipeline
 
@@ -124,17 +132,17 @@ Downloader path:
 
 Indexer path:
 
-- indexer runtime creates a standalone `nntp.Provider` from the scrape server config
-- scrape latest/backfill, assemble fetches, yEnc recovery, and inspection stages share that one indexer provider instance
-- this indexer provider is not the downloader `nntp.Manager`
-- the provider has an idle connection pool, but `getConn` dials immediately when no idle connection is available
-- the provider pool does not currently act as a hard concurrency semaphore
+- indexer runtime now creates an `nntp.Manager` with `wait_queue` capacity policy for the selected scrape server config
+- scrape latest/backfill, assemble fetches, yEnc recovery, and inspection stages share the manager client
+- the manager provides a hard semaphore around provider calls, including fetch body, fetch prefix, group stats, and XOVER
+- indexer calls wait for capacity until their request context expires instead of creating unbounded extra provider connections
 
 Implication:
 
 - in all-in-one deployments, downloader and indexer can be configured against the same NNTP account but use separate transport objects
-- if both scopes use `max_connections=40`, the process can attempt more than 40 total account connections unless settings are scoped lower or transport ownership is unified
-- the indexer stages are throttled mostly by each stage's own concurrency/batch settings, not by a shared NNTP wait queue
+- downloader still uses caller-managed `ErrProviderBusy` behavior
+- indexer now has a module-local semaphore-backed wait queue, but downloader and indexer do not yet share one process-wide reservation pool
+- if both scopes use `max_connections=40`, the process can still reserve up to 40 downloader slots plus 40 indexer slots unless settings are scoped lower or shared-pool ownership is added
 
 ## Proposed NNTP Manager Direction
 
@@ -164,15 +172,17 @@ This model fits the DDD boundary better: NNTP transport owns provider mechanics,
 
 ## NNTP Action Items
 
-- [ ] Refactor indexer NNTP fetches onto the semaphore-backed `nntp.Manager` path instead of a standalone provider.
-- [ ] Add manager capacity policy options: caller-managed `ErrProviderBusy` and manager-owned wait queue.
+- [x] Refactor indexer NNTP fetches onto the semaphore-backed `nntp.Manager` path instead of a standalone provider.
+- [x] Add manager capacity policy options: caller-managed `ErrProviderBusy` and manager-owned wait queue.
 - [ ] Move downloader toward manager-owned wait-queue behavior after metrics prove the new policy is stable.
 - [ ] Add shared-pool module reservations with idle borrowing, so indexer can use the full pool when alone and yield a configured share when downloader work is active.
-- [ ] Add NNTP provider/manager stats: configured capacity, active/in-use connections, idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
-- [ ] Add queue/backpressure stats: waiting fetches, busy returns, retry count, average wait time, and max wait time.
+- [x] Add basic NNTP manager stats: configured capacity, active/in-use slots, waiting requests, busy returns, operation counts, wait count, total wait duration, and max wait duration.
+- [ ] Add provider-level stats access for idle pooled connections, dials, dial failures, reused connections, discarded connections, fetch retries, XOVER retries, and recoverable errors.
+- [x] Add basic queue/backpressure stats: waiting requests, busy returns, wait count, total wait time, and max wait time.
+- [ ] Add retry count and average wait time to surfaced manager stats.
 - [ ] Add per-module NNTP demand stats: downloader queued segments and active workers, scrape active XOVER requests, yEnc active workers, PAR2 active workers, archive/media/NFO/password active workers.
 - [ ] Surface NNTP capacity stats in the admin dashboard so backlog growth can be tied to provider pressure instead of guessed from stage throughput.
-- [ ] Consider a blocking acquire/lease API for indexer NNTP fetches so indexer work waits behind a measured queue instead of silently opening more connections.
+- [x] Add a blocking acquire path for indexer NNTP calls so indexer work waits behind a measured queue instead of silently opening more connections.
 - [ ] Add rate-limit/provider-pressure counters for common NNTP failure classes, including busy, timeout, connection reset, and article missing.
 
 ## Sign-Off Checklist
@@ -183,13 +193,13 @@ Done:
 - [x] Record the current PAR2 persistence boundary: writes happen per candidate, not every 10 progress records.
 - [x] Record the current NNTP ownership split between downloader manager and indexer provider.
 - [x] Record the preferred shared NNTP manager direction with configurable busy/wait policies and dynamic module reservations.
+- [x] Add manager wait-queue capacity policy and route indexer NNTP operations through it.
 
 Needs completion:
 
 - [ ] PAR2 step timing metrics prove whether the next bottleneck is NNTP, parse, fallback materialization, or database writes.
 - [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
 - [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
-- [ ] Indexer fetches use a semaphore-backed NNTP manager rather than an unbounded standalone provider path.
 - [ ] Shared NNTP capacity can be reserved, borrowed, and reported by module.
-- [ ] NNTP pool/backpressure stats are visible enough to tune total concurrency against the provider account limit.
+- [ ] Provider-level NNTP stats and dashboard surfacing are visible enough to tune total concurrency against the provider account limit.
 - [ ] The dashboard shows both stage backlog and NNTP capacity pressure.
