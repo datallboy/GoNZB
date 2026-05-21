@@ -125,11 +125,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		if err != nil {
 			return nil, err
 		}
-		scrapeClient := manager.ClientForScope("scrape")
-		assembleClient := manager.ClientForScope("assemble")
-		assembleLaneAClient := manager.ClientForScope("assemble_lane_a")
-		assembleLaneBClient := manager.ClientForScope("assemble_lane_b")
-		recoverYEncClient := manager.ClientForScope("recover_yenc")
+		scrapeClient := indexerNNTPClient(manager, "scrape")
+		assembleClient := indexerNNTPClient(manager, "assemble")
+		assembleLaneAClient := indexerNNTPClient(manager, "assemble_lane_a")
+		assembleLaneBClient := indexerNNTPClient(manager, "assemble_lane_b")
+		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
 		scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
 		scrapeLatestSvc = scrape.NewService(
@@ -161,12 +161,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleFetcher = assembleClient
 		assembleAFetcher = assembleLaneAClient
 		assembleBFetcher = assembleLaneBClient
-		inspectDiscoveryFetcher = manager.ClientForScope("inspect_discovery")
-		inspectPAR2Fetcher = manager.ClientForScope("inspect_par2")
-		inspectNFOFetcher = manager.ClientForScope("inspect_nfo")
-		inspectArchiveFetcher = manager.ClientForScope("inspect_archive")
-		inspectPasswordFetcher = manager.ClientForScope("inspect_password")
-		inspectMediaFetcher = manager.ClientForScope("inspect_media")
+		inspectDiscoveryFetcher = indexerNNTPClient(manager, "inspect_discovery")
+		inspectPAR2Fetcher = indexerNNTPClient(manager, "inspect_par2")
+		inspectNFOFetcher = indexerNNTPClient(manager, "inspect_nfo")
+		inspectArchiveFetcher = indexerNNTPClient(manager, "inspect_archive")
+		inspectPasswordFetcher = indexerNNTPClient(manager, "inspect_password")
+		inspectMediaFetcher = indexerNNTPClient(manager, "inspect_media")
 		recoverFetcher = recoverYEncClient
 	}
 
@@ -478,6 +478,10 @@ func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*n
 		return nil, false, fmt.Errorf("scrape manager initialization failed: %w", err)
 	}
 	return manager, true, nil
+}
+
+func indexerNNTPClient(manager *nntp.Manager, scope string) *nntp.ManagerClient {
+	return manager.ClientForScopeWithPolicy(scope, nntp.CapacityWaitQueue)
 }
 
 func indexerRuntimeSettings(appCtx *app.Context) *app.RuntimeSettings {

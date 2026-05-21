@@ -214,12 +214,20 @@ func (m *Manager) Client() *ManagerClient {
 }
 
 func (m *Manager) ClientForScope(scope string) *ManagerClient {
-	return &ManagerClient{manager: m, scope: normalizeScope(scope)}
+	return m.ClientForScopeWithPolicy(scope, m.opts.CapacityPolicy)
+}
+
+func (m *Manager) ClientForScopeWithPolicy(scope string, policy CapacityPolicy) *ManagerClient {
+	if policy == "" {
+		policy = m.opts.CapacityPolicy
+	}
+	return &ManagerClient{manager: m, scope: normalizeScope(scope), policy: policy}
 }
 
 type ManagerClient struct {
 	manager *Manager
 	scope   string
+	policy  CapacityPolicy
 }
 
 func (c *ManagerClient) ID() string {
@@ -233,28 +241,28 @@ func (c *ManagerClient) Fetch(ctx context.Context, msgID string, groups []string
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.FetchMessageForScope(ctx, c.scope, msgID, groups)
+	return c.manager.fetchMessageForScope(ctx, c.scope, c.policy, msgID, groups)
 }
 
 func (c *ManagerClient) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.FetchBodyPrefixForScope(ctx, c.scope, msgID, groups, maxBytes)
+	return c.manager.fetchBodyPrefixForScope(ctx, c.scope, c.policy, msgID, groups, maxBytes)
 }
 
 func (c *ManagerClient) GroupStats(ctx context.Context, group string) (GroupStats, error) {
 	if c == nil || c.manager == nil {
 		return GroupStats{}, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.GroupStatsForScope(ctx, c.scope, group)
+	return c.manager.groupStatsForScope(ctx, c.scope, c.policy, group)
 }
 
 func (c *ManagerClient) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
-	return c.manager.XOverForScope(ctx, c.scope, group, from, to)
+	return c.manager.xoverForScope(ctx, c.scope, c.policy, group, from, to)
 }
 
 func (m *Manager) ID() string {
@@ -271,7 +279,7 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 	m.stats.fetches.Add(1)
 	scopeStats := m.scopeStats("downloader")
 	scopeStats.fetches.Add(1)
-	return m.fetch(ctx, "downloader", seg, groups)
+	return m.fetch(ctx, "downloader", CapacityReturnBusy, seg, groups)
 }
 
 func (m *Manager) FetchMessage(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
@@ -279,13 +287,17 @@ func (m *Manager) FetchMessage(ctx context.Context, msgID string, groups []strin
 }
 
 func (m *Manager) FetchMessageForScope(ctx context.Context, scope, msgID string, groups []string) (io.Reader, error) {
+	return m.fetchMessageForScope(ctx, scope, m.opts.CapacityPolicy, msgID, groups)
+}
+
+func (m *Manager) fetchMessageForScope(ctx context.Context, scope string, policy CapacityPolicy, msgID string, groups []string) (io.Reader, error) {
 	m.stats.fetches.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.fetches.Add(1)
-	return m.fetch(ctx, scope, &domain.Segment{MessageID: msgID}, groups)
+	return m.fetch(ctx, scope, policy, &domain.Segment{MessageID: msgID}, groups)
 }
 
-func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, groups []string) (io.Reader, error) {
+func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy, seg *domain.Segment, groups []string) (io.Reader, error) {
 	// Fast fail if user already cancelled
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -340,7 +352,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, 
 		return nil, lastErr
 	}
 
-	if m.opts.CapacityPolicy == CapacityWaitQueue {
+	if policy == CapacityWaitQueue {
 		mp := m.firstFetchProvider(seg)
 		if mp == nil {
 			return nil, ErrArticleNotFound
@@ -351,7 +363,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, 
 		reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
 		if err != nil {
 			if errors.Is(err, ErrArticleNotFound) {
-				return m.fetch(ctx, scope, seg, groups)
+				return m.fetch(ctx, scope, policy, seg, groups)
 			}
 			m.recordOperationError(scope, err)
 			return nil, err
@@ -398,6 +410,10 @@ func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []st
 }
 
 func (m *Manager) FetchBodyPrefixForScope(ctx context.Context, scope, msgID string, groups []string, maxBytes int64) ([]byte, error) {
+	return m.fetchBodyPrefixForScope(ctx, scope, m.opts.CapacityPolicy, msgID, groups, maxBytes)
+}
+
+func (m *Manager) fetchBodyPrefixForScope(ctx context.Context, scope string, policy CapacityPolicy, msgID string, groups []string, maxBytes int64) ([]byte, error) {
 	m.stats.fetchBodyPrefix.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.fetchBodyPrefix.Add(1)
@@ -427,7 +443,7 @@ func (m *Manager) FetchBodyPrefixForScope(ctx context.Context, scope, msgID stri
 		m.recordOperationError(scope, lastErr)
 		return nil, lastErr
 	}
-	if m.opts.CapacityPolicy == CapacityWaitQueue {
+	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return nil, err
@@ -448,6 +464,10 @@ func (m *Manager) GroupStats(ctx context.Context, group string) (GroupStats, err
 }
 
 func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (GroupStats, error) {
+	return m.groupStatsForScope(ctx, scope, m.opts.CapacityPolicy, group)
+}
+
+func (m *Manager) groupStatsForScope(ctx context.Context, scope string, policy CapacityPolicy, group string) (GroupStats, error) {
 	m.stats.groupStats.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.groupStats.Add(1)
@@ -477,7 +497,7 @@ func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (
 		m.recordOperationError(scope, lastErr)
 		return GroupStats{}, lastErr
 	}
-	if m.opts.CapacityPolicy == CapacityWaitQueue {
+	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return GroupStats{}, err
@@ -498,6 +518,10 @@ func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]Ov
 }
 
 func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, to int64) ([]OverviewHeader, error) {
+	return m.xoverForScope(ctx, scope, m.opts.CapacityPolicy, group, from, to)
+}
+
+func (m *Manager) xoverForScope(ctx context.Context, scope string, policy CapacityPolicy, group string, from, to int64) ([]OverviewHeader, error) {
 	m.stats.xover.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.xover.Add(1)
@@ -527,7 +551,7 @@ func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, 
 		m.recordOperationError(scope, lastErr)
 		return nil, lastErr
 	}
-	if m.opts.CapacityPolicy == CapacityWaitQueue {
+	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
 			return nil, err
@@ -951,7 +975,7 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 	stats := m.Stats()
 	out := app.NNTPRuntimeStats{
 		Scope:           scope,
-		Policy:          string(m.opts.CapacityPolicy),
+		Policy:          string(m.policyForRuntimeScope(scope)),
 		Capacity:        stats.Capacity,
 		Active:          stats.Active,
 		Idle:            stats.Idle,
@@ -1019,6 +1043,13 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		})
 	}
 	return out
+}
+
+func (m *Manager) policyForRuntimeScope(scope string) CapacityPolicy {
+	if normalizeScope(scope) == "indexer" {
+		return CapacityWaitQueue
+	}
+	return m.opts.CapacityPolicy
 }
 
 // allows safe teardown when reloading downloader runtime while idle

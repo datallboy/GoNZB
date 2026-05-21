@@ -109,6 +109,58 @@ func TestManagerWaitQueuePolicyHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestManagerClientPolicyCanWaitOnReturnBusyManager(t *testing.T) {
+	provider := newBlockingProvider(1)
+	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{CapacityPolicy: CapacityReturnBusy})
+	client := manager.ClientForScopeWithPolicy("inspect_par2", CapacityWaitQueue)
+
+	first, err := manager.FetchMessage(context.Background(), "first@example", nil)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+
+	gotSecond := make(chan error, 1)
+	go func() {
+		reader, err := client.Fetch(context.Background(), "second@example", nil)
+		if err == nil {
+			_ = reader.(io.Closer).Close()
+		}
+		gotSecond <- err
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		if manager.Stats().Waiting == 1 {
+			break
+		}
+		select {
+		case err := <-gotSecond:
+			t.Fatalf("client fetch returned before capacity was released: %v", err)
+		case <-deadline:
+			t.Fatal("client fetch did not enter wait queue")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	if err := first.(io.Closer).Close(); err != nil {
+		t.Fatalf("close first reader: %v", err)
+	}
+
+	select {
+	case err := <-gotSecond:
+		if err != nil {
+			t.Fatalf("client fetch after capacity release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client fetch did not resume after capacity release")
+	}
+
+	if got := manager.RuntimeStats("indexer").Policy; got != string(CapacityWaitQueue) {
+		t.Fatalf("expected indexer runtime policy wait_queue, got %q", got)
+	}
+}
+
 func TestManagerWaitQueuePolicyTriesOtherProviderBeforeWaiting(t *testing.T) {
 	busyProvider := newBlockingProvider(1)
 	freeProvider := newBlockingProvider(1)
