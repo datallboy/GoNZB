@@ -354,6 +354,14 @@ export function AdminDashboardPage() {
                 <span>Max Wait</span>
                 <strong>{nntpStats ? formatDuration(nntpStats.wait_max_ms) : 'Unavailable'}</strong>
               </div>
+              <div className="stat-card">
+                <span>Missing Articles</span>
+                <strong>{nntpStats ? nntpStats.article_not_found.toLocaleString() : 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>NNTP Errors</span>
+                <strong>{nntpStats ? nntpStats.operation_errors.toLocaleString() : 'Unavailable'}</strong>
+              </div>
             </div>
             <div className="table-shell">
               <table className="data-table">

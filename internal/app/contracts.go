@@ -93,6 +93,8 @@ type NNTPRuntimeStats struct {
 	FetchBodyPrefix int64                      `json:"fetch_body_prefix"`
 	GroupStats      int64                      `json:"group_stats"`
 	XOver           int64                      `json:"xover"`
+	ArticleNotFound int64                      `json:"article_not_found"`
+	OperationErrors int64                      `json:"operation_errors"`
 	Providers       []NNTPProviderRuntimeStats `json:"providers"`
 	Scopes          []NNTPScopeRuntimeStats    `json:"scopes"`
 }
@@ -108,6 +110,8 @@ type NNTPScopeRuntimeStats struct {
 	FetchBodyPrefix int64  `json:"fetch_body_prefix"`
 	GroupStats      int64  `json:"group_stats"`
 	XOver           int64  `json:"xover"`
+	ArticleNotFound int64  `json:"article_not_found"`
+	OperationErrors int64  `json:"operation_errors"`
 }
 
 type NNTPProviderRuntimeStats struct {

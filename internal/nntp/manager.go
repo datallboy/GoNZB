@@ -46,6 +46,8 @@ type ManagerStats struct {
 	FetchBodyPrefix int64
 	GroupStats      int64
 	XOver           int64
+	ArticleNotFound int64
+	OperationErrors int64
 	Providers       []ManagerProviderStats
 	Scopes          []ManagerScopeStats
 }
@@ -61,6 +63,8 @@ type ManagerScopeStats struct {
 	FetchBodyPrefix int64
 	GroupStats      int64
 	XOver           int64
+	ArticleNotFound int64
+	OperationErrors int64
 }
 
 type ManagerProviderStats struct {
@@ -102,6 +106,8 @@ type managerStats struct {
 	fetchBodyPrefix atomic.Int64
 	groupStats      atomic.Int64
 	xover           atomic.Int64
+	articleNotFound atomic.Int64
+	operationErrors atomic.Int64
 }
 
 type managerScopeStats struct {
@@ -114,6 +120,8 @@ type managerScopeStats struct {
 	fetchBodyPrefix atomic.Int64
 	groupStats      atomic.Int64
 	xover           atomic.Int64
+	articleNotFound atomic.Int64
+	operationErrors atomic.Int64
 }
 
 func NewManager(ctx *app.Context) (*Manager, error) {
@@ -291,6 +299,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, 
 
 	// If we have a real error (not 430), return it to trigger a retry with backoff
 	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
 		return nil, lastErr
 	}
 
@@ -307,6 +316,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, seg *domain.Segment, 
 			if errors.Is(err, ErrArticleNotFound) {
 				return m.fetch(ctx, scope, seg, groups)
 			}
+			m.recordOperationError(scope, err)
 			return nil, err
 		}
 		return reader, nil
@@ -323,6 +333,7 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, m
 		m.releaseForScope(scope, mp)
 
 		if errors.Is(err, ErrArticleNotFound) {
+			m.recordArticleNotFound(scope)
 			if m.ctx != nil && m.ctx.Logger != nil {
 				m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
 			}
@@ -376,6 +387,7 @@ func (m *Manager) FetchBodyPrefixForScope(ctx context.Context, scope, msgID stri
 	}
 
 	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
 		return nil, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
@@ -385,6 +397,9 @@ func (m *Manager) FetchBodyPrefixForScope(ctx context.Context, scope, msgID stri
 		}
 		result, err := mp.Provider.FetchBodyPrefix(ctx, msgID, groups, maxBytes)
 		m.releaseForScope(scope, mp)
+		if err != nil {
+			m.recordOperationError(scope, err)
+		}
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
@@ -422,6 +437,7 @@ func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (
 	}
 
 	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
 		return GroupStats{}, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
@@ -431,6 +447,9 @@ func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (
 		}
 		result, err := mp.Provider.GroupStats(ctx, group)
 		m.releaseForScope(scope, mp)
+		if err != nil {
+			m.recordOperationError(scope, err)
+		}
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
@@ -468,6 +487,7 @@ func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, 
 	}
 
 	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
 		return nil, lastErr
 	}
 	if m.opts.CapacityPolicy == CapacityWaitQueue {
@@ -477,6 +497,9 @@ func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, 
 		}
 		result, err := mp.Provider.XOver(ctx, group, from, to)
 		m.releaseForScope(scope, mp)
+		if err != nil {
+			m.recordOperationError(scope, err)
+		}
 		return result, err
 	}
 	m.stats.busyReturns.Add(1)
@@ -577,6 +600,23 @@ func (m *Manager) recordWait(scopeStats *managerScopeStats, d time.Duration) {
 			return
 		}
 	}
+}
+
+func (m *Manager) recordArticleNotFound(scope string) {
+	m.stats.articleNotFound.Add(1)
+	m.scopeStats(scope).articleNotFound.Add(1)
+}
+
+func (m *Manager) recordOperationError(scope string, err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrArticleNotFound) {
+		m.recordArticleNotFound(scope)
+		return
+	}
+	m.stats.operationErrors.Add(1)
+	m.scopeStats(scope).operationErrors.Add(1)
 }
 
 func (m *Manager) scopeStats(scope string) *managerScopeStats {
@@ -698,6 +738,8 @@ func (m *Manager) Stats() ManagerStats {
 		FetchBodyPrefix: m.stats.fetchBodyPrefix.Load(),
 		GroupStats:      m.stats.groupStats.Load(),
 		XOver:           m.stats.xover.Load(),
+		ArticleNotFound: m.stats.articleNotFound.Load(),
+		OperationErrors: m.stats.operationErrors.Load(),
 		Providers:       providers,
 		Scopes:          m.scopeStatsSnapshot(),
 	}
@@ -719,6 +761,8 @@ func (m *Manager) scopeStatsSnapshot() []ManagerScopeStats {
 			FetchBodyPrefix: stats.fetchBodyPrefix.Load(),
 			GroupStats:      stats.groupStats.Load(),
 			XOver:           stats.xover.Load(),
+			ArticleNotFound: stats.articleNotFound.Load(),
+			OperationErrors: stats.operationErrors.Load(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -744,6 +788,8 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		FetchBodyPrefix: stats.FetchBodyPrefix,
 		GroupStats:      stats.GroupStats,
 		XOver:           stats.XOver,
+		ArticleNotFound: stats.ArticleNotFound,
+		OperationErrors: stats.OperationErrors,
 		Providers:       make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
 		Scopes:          make([]app.NNTPScopeRuntimeStats, 0, len(stats.Scopes)),
 	}
@@ -780,6 +826,8 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 			FetchBodyPrefix: scope.FetchBodyPrefix,
 			GroupStats:      scope.GroupStats,
 			XOver:           scope.XOver,
+			ArticleNotFound: scope.ArticleNotFound,
+			OperationErrors: scope.OperationErrors,
 		})
 	}
 	return out

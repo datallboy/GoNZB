@@ -201,6 +201,8 @@ export type IndexerNNTPScopeStats = {
   fetch_body_prefix: number
   group_stats: number
   xover: number
+  article_not_found: number
+  operation_errors: number
 }
 
 export type IndexerNNTPStats = {
@@ -218,6 +220,8 @@ export type IndexerNNTPStats = {
   fetch_body_prefix: number
   group_stats: number
   xover: number
+  article_not_found: number
+  operation_errors: number
   providers: IndexerNNTPProviderStats[]
   scopes: IndexerNNTPScopeStats[]
 }
