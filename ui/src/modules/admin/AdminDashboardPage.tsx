@@ -142,108 +142,145 @@ export function AdminDashboardPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    let cancelled = false
+  let cancelled = false
 
-    void getAdminOverview()
+  function loadNNTPStats(showLoading = false) {
+    if (showLoading) {
+      setNNTPLoading(true)
+    }
+
+    void getAdminNNTPStats()
       .then((value) => {
         if (!cancelled) {
-          setOverview(value)
+          setNNTPStats(value)
+          setNNTPError(null)
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load overview')
+          setNNTPError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to load NNTP stats'
+          )
+        }
+      })
+      .finally(() => {
+        if (showLoading && !cancelled) {
+          setNNTPLoading(false)
+        }
+      })
+  }
+
+  void getAdminOverview()
+    .then((value) => {
+      if (!cancelled) {
+        setOverview(value)
+      }
+    })
+    .catch((err) => {
+      if (!cancelled) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to load overview'
+        )
+      }
+    })
+    .finally(() => {
+      if (!cancelled) {
+        setOverviewLoading(false)
+      }
+    })
+
+  const timer = window.setTimeout(() => {
+    if (cancelled) {
+      return
+    }
+
+    setStatsLoading(true)
+    void getAdminDashboardStats()
+      .then((value) => {
+        if (!cancelled) {
+          setStats(value)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setStatsError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to load dashboard stats'
+          )
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setOverviewLoading(false)
+          setStatsLoading(false)
         }
       })
 
-    const timer = window.setTimeout(() => {
-      if (cancelled) {
-        return
-      }
+    setThroughputLoading(true)
+    void getAdminStageThroughput()
+      .then((value) => {
+        if (!cancelled) {
+          setThroughput(value)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setThroughputError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to load stage throughput'
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setThroughputLoading(false)
+        }
+      })
 
-      setStatsLoading(true)
-      void getAdminDashboardStats()
-        .then((value) => {
-          if (!cancelled) {
-            setStats(value)
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) {
-            setStatsError(err instanceof Error ? err.message : 'Failed to load dashboard stats')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setStatsLoading(false)
-          }
-        })
+    // Initial NNTP load with spinner
+    loadNNTPStats(true)
 
-      setThroughputLoading(true)
-      void getAdminStageThroughput()
-        .then((value) => {
-          if (!cancelled) {
-            setThroughput(value)
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) {
-            setThroughputError(err instanceof Error ? err.message : 'Failed to load stage throughput')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setThroughputLoading(false)
-          }
-        })
+    setBackfillLoading(true)
+    void getAdminBackfillProgress()
+      .then((value) => {
+        if (!cancelled) {
+          setBackfill(value)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBackfillError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to load backfill progress'
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBackfillLoading(false)
+        }
+      })
+  }, 0)
 
-      setNNTPLoading(true)
-      void getAdminNNTPStats()
-        .then((value) => {
-          if (!cancelled) {
-            setNNTPStats(value)
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) {
-            setNNTPError(err instanceof Error ? err.message : 'Failed to load NNTP stats')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setNNTPLoading(false)
-          }
-        })
-
-      setBackfillLoading(true)
-      void getAdminBackfillProgress()
-        .then((value) => {
-          if (!cancelled) {
-            setBackfill(value)
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) {
-            setBackfillError(err instanceof Error ? err.message : 'Failed to load backfill progress')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setBackfillLoading(false)
-          }
-        })
-    }, 0)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
+  // Silent NNTP auto-refresh every second
+  const nntpInterval = window.setInterval(() => {
+    if (!cancelled) {
+      loadNNTPStats(false)
     }
-  }, [])
+  }, 1000)
+
+  return () => {
+    cancelled = true
+    window.clearTimeout(timer)
+    window.clearInterval(nntpInterval)
+  }
+}, [])
 
   function refreshStats() {
     setStatsLoading(true)
