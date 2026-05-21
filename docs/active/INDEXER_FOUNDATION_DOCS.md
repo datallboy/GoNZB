@@ -20,6 +20,7 @@ We currently have several planning and reference documents. This file defines wh
 - the grouping-model re-evaluation sprint is complete and ready to archive
 - the database growth trim sprint is complete from a code and schema standpoint
 - the obfuscated-payload hardening sprint is active for downloader import/extraction hardening, yEnc/PAR2 backlog visibility, and recovered-identity grouping follow-up
+- NNTP and inspection capacity planning has been split into a separate active doc so throughput/backpressure work does not blur the obfuscated-payload hardening scope
 - remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
@@ -41,6 +42,15 @@ Use for:
 - downloader post-process hardening for extensionless archive payloads
 - baseline, audit findings, and sign-off tracking for the current obfuscated-payload sprint
 - evaluating cross-newsgroup release grouping only when recovered identity evidence is strong
+
+### `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
+
+Use for:
+
+- current PAR2 inspection throughput and batch-persistence work
+- yEnc exact backlog/work-queue planning for fast dashboard stats and candidate selection
+- NNTP pool ownership, queueing, active-connection, and provider-pressure metrics
+- keeping operational capacity work separate from the obfuscated-payload evidence log
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
@@ -85,6 +95,7 @@ Primary active workstream:
 
 - harden downloader handling for legacy-encoded and extensionless obfuscated payloads
 - make yEnc recovery and PAR2 backlog visibility exact enough for capacity tuning
+- add NNTP and inspection capacity metrics before raising worker counts far enough to pressure the provider account
 - audit release grouping boundaries before adding bounded cross-group recovered-identity promotion
 
 Completed database-growth workstream:

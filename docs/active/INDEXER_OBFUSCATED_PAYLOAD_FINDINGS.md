@@ -9,6 +9,8 @@ This doc records technical findings from an externally generated payload that ex
 
 This doc intentionally excludes source-identifying details. Do not add payload titles, release names, subject text, poster values, newsgroup names, message IDs, or content descriptions here.
 
+Operational-capacity follow-up has been split into `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`. Keep PAR2 batch persistence, yEnc work-queue design, and NNTP pool/backpressure metrics there unless they directly affect the obfuscated grouping model.
+
 ## Baseline Before Changes
 
 Captured during the 2026-05-19 to 2026-05-20 working session.
@@ -274,6 +276,7 @@ Done:
 Needs completion:
 
 - [ ] Design a fast full-cardinality yEnc recovery backlog rollup/work queue for exact dashboard stats
+- [ ] Complete PAR2/yEnc/NNTP throughput follow-up in `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
 - [ ] Design and implement bounded cross-group recovered-identity promotion
 - [ ] Add a synthetic multi-group recovered-yEnc grouping fixture
 - [ ] Design downloader yEnc filename adoption as a coordinated task/path transition if post-extraction signature handling is not sufficient for future samples
