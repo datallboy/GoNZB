@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 )
 
@@ -18,6 +19,7 @@ type Service struct {
 	enrichPredbMetadataOnly func(ctx context.Context) error
 	enrichPredbSyncFeed     func(ctx context.Context) error
 	enrichPredbSyncBackfill func(ctx context.Context) error
+	nntpStats               func() app.NNTPRuntimeStats
 }
 
 type Options struct {
@@ -29,6 +31,7 @@ type Options struct {
 	EnrichPredbMetadataOnly func(ctx context.Context) error
 	EnrichPredbSyncFeed     func(ctx context.Context) error
 	EnrichPredbSyncBackfill func(ctx context.Context) error
+	NNTPStats               func() app.NNTPRuntimeStats
 }
 
 func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service {
@@ -46,7 +49,19 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 		enrichPredbMetadataOnly: cfg.EnrichPredbMetadataOnly,
 		enrichPredbSyncFeed:     cfg.EnrichPredbSyncFeed,
 		enrichPredbSyncBackfill: cfg.EnrichPredbSyncBackfill,
+		nntpStats:               cfg.NNTPStats,
 	}
+}
+
+func (s *Service) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.nntpStats == nil {
+		return nil, fmt.Errorf("indexer nntp manager is not configured")
+	}
+	stats := s.nntpStats()
+	return &stats, nil
 }
 
 // backward-compatible alias to latest mode.

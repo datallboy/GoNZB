@@ -101,6 +101,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeLatestSvc   *scrape.Service
 		scrapeBackfillSvc *scrape.Service
 		scrapeProvider    io.Closer
+		nntpStats         func() app.NNTPRuntimeStats
 		inspectFetcher    inspectpkg.ArticleFetcher
 		recoverFetcher    interface {
 			FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
@@ -146,6 +147,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			},
 		)
 		scrapeProvider = manager
+		nntpStats = func() app.NNTPRuntimeStats {
+			return manager.RuntimeStats("indexer")
+		}
 		inspectFetcher = managerClient
 		recoverFetcher = managerClient
 	}
@@ -417,6 +421,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		EnrichPredbMetadataOnly: enrichPreDBSvc.RunMetadataFallbackOnce,
 		EnrichPredbSyncFeed:     enrichPreDBSvc.RunSyncFeedOnce,
 		EnrichPredbSyncBackfill: enrichPreDBSvc.RunSyncBackfillOnce,
+		NNTPStats:               nntpStats,
 	})
 
 	return &usenetIndexerRuntime{
