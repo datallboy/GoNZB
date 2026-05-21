@@ -184,7 +184,7 @@ This model fits the DDD boundary better: NNTP transport owns provider mechanics,
 - [x] Add per-stage indexer NNTP demand stats: scrape, assemble lanes, yEnc recovery, and individual inspect stages each use scoped manager clients with active, waiting, request, and wait timing counters.
 - [x] Surface indexer NNTP capacity stats in the admin dashboard so backlog growth can be tied to provider pressure instead of guessed from stage throughput.
 - [x] Add a blocking acquire path for indexer NNTP calls so indexer work waits behind a measured queue instead of silently opening more connections.
-- [ ] Add rate-limit/provider-pressure counters for common NNTP failure classes, including busy, timeout, connection reset, and article missing.
+- [x] Add provider-pressure counters for common NNTP failure classes visible to the indexer manager: busy returns, provider recoverable errors, operation errors, and article missing. More specific provider rate-limit classification remains future work if live provider responses expose a stable signal.
 - [ ] Defer downloader queue/wait policy and downloader-specific active worker stats to a separate downloader-focused session.
 
 ## Sign-Off Checklist
