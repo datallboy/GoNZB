@@ -112,14 +112,19 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			return nil, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
 		}
 
-		// Current default: the first configured NNTP server is used as the
-		// scrape transport until per-module transport selection is introduced.
-		provider := nntp.NewNNTPProviderWithLogger(*runtimeCfg.ScrapeServer, appCtx.Logger)
-		if err := provider.TestConnection(); err != nil {
-			return nil, fmt.Errorf("scrape provider initialization failed: %w", err)
+		managerConfig := *appCtx.Config
+		managerConfig.Servers = []config.ServerConfig{*runtimeCfg.ScrapeServer}
+		managerCtx := *appCtx
+		managerCtx.Config = &managerConfig
+		manager, err := nntp.NewManagerWithOptions(&managerCtx, nntp.ManagerOptions{
+			CapacityPolicy: nntp.CapacityWaitQueue,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("scrape manager initialization failed: %w", err)
 		}
+		managerClient := manager.Client()
 
-		scrapeAdapter := scrape.NewNNTPAdapter(provider)
+		scrapeAdapter := scrape.NewNNTPAdapter(managerClient)
 		scrapeLatestSvc = scrape.NewService(
 			appCtx.PGIndexStore,
 			scrapeAdapter,
@@ -140,9 +145,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			},
 		)
-		scrapeProvider = provider
-		inspectFetcher = provider
-		recoverFetcher = provider
+		scrapeProvider = manager
+		inspectFetcher = managerClient
+		recoverFetcher = managerClient
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
