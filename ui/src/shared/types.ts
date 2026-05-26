@@ -270,6 +270,7 @@ export type AdminStageConfigPatch = {
   batch_size?: number
   concurrency?: number
   backoff_seconds?: number
+  binary_upsert_db_chunk_size?: number
 }
 
 export type AdminRun = {

@@ -177,7 +177,7 @@ Assemble action items:
 - [x] Rewrite lane A priority selection so pending headers drive indexed binary lookups instead of letting Postgres scan and sort the large `binaries` table.
 - [ ] Add explicit assemble metrics for claim selector substeps: priority selection, recent selection, hydration, and claim update.
 - [x] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible. The store now batches unique binary rows per worker and processes them in smaller internal transactions.
-- [ ] Expose internal binary-upsert chunk size as an advanced runtime setting with a conservative default. Recommended shape: integer record count, default `250`, not percentage-derived.
+- [x] Expose internal binary-upsert chunk size as an advanced runtime setting with a conservative default. Implemented as `binary_upsert_db_chunk_size` on assemble-stage runtime settings, surfaced in the admin UI behind the advanced-settings toggle, with default `250`.
 - [ ] Add chunk-level retry/telemetry around `UpsertBinaries` so deadlock retries and chunk counts are visible in metrics instead of only in command logs.
 - [x] Convert `RefreshBinaryStatsBatch` to a true set-based aggregate/update over all refreshed binary ids instead of looping one binary at a time.
 - [ ] Batch release-family summary refreshes by key set where practical.
