@@ -260,6 +260,47 @@ Interpretation:
   - WorkStream 2: binary-driven completion-first assemble selection
   - WorkStream 3: release family readiness summary state
 
+## 2026-05-26 Assemble Batch Persistence Follow-Up
+
+Live `assemble lane-b --once` reruns on 2026-05-26 validated the post-selector assemble write path again after true binary-upsert batching was introduced.
+
+Observed behavior:
+
+- large logical worker batches of `15000` headers completed cleanly with `4` workers once binary upserts were internally chunked to `250` records per DB transaction
+- the first larger chunk attempt failed with `OUT OF SHARED MEMORY` because too many advisory locks were held in one transaction
+- larger `INSERT ... ON CONFLICT` batches also exposed deadlocks until request ordering was made deterministic
+- after reducing internal chunk size and committing per chunk, DB activity shifted to short-lived sub-second to roughly one-second upsert queries rather than one large lock-heavy statement
+
+Observed worker metrics from the clean rerun:
+
+| Worker batch | Unique binary upserts | Headers/sec | Binary upsert ms | Binary refresh ms | Binary part upsert ms |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| `15000` | `8190` | `254.06` | `37399.02` | `14045.93` | `4323.02` |
+| `15000` | `8443` | `197.98` | `39092.44` | `29243.82` | `3891.23` |
+| `15000` | `12496` | `180.99` | `54960.88` | `20845.27` | `4345.62` |
+| `15000` | `12846` | `148.11` | `57683.84` | `36487.58` | `4121.23` |
+
+Recommendation:
+
+- keep total assemble selection batch size and internal DB upsert chunk size as separate concepts
+- do not derive DB upsert chunk size as a percentage of total batch size
+- expose DB upsert chunk size, if exposed at all, as an advanced integer setting with a conservative default such as `250`
+- reasoning:
+  - total selected headers do not predict unique-binary density reliably
+  - advisory lock pressure and row-lock conflict risk scale with unique binary count per worker, not raw header count
+  - a percentage-derived chunk size becomes unsafe as soon as a batch is highly fragmented and approaches one unique binary per header
+
+Practical tuning posture:
+
+- user-facing stage setting:
+  - `assemble batch size`
+- advanced persistence setting:
+  - `binary upsert DB chunk size`
+- recommended starting default:
+  - `250`
+- recommended trial range:
+  - `100` to `500`
+
 ## Tiered Recommendations
 
 ### Dev Laptop

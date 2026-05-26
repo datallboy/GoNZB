@@ -144,6 +144,12 @@ Live stage-run findings from 2026-05-21:
 - On 2026-05-26, the first true `UpsertBinaries` batch implementation exposed two database limits under real Lane B load: holding too many advisory locks in one chunk transaction caused `OUT OF SHARED MEMORY`, and larger `INSERT ... ON CONFLICT` batches deadlocked when concurrent workers locked conflicting rows in different orders.
 - The follow-up fix was to keep the logical assemble batch large but process binary upserts in smaller internal chunks, commit each chunk independently so advisory locks are released promptly, and force a deterministic `provider_id/newsgroup_id/binary_key` ordering inside the batch upsert.
 - With worker count reduced to 4 and internal upsert chunk size reduced to 250, `go run cmd/gonzb/main.go indexer assemble lane-b --once` completed cleanly with 15k worker batches. Observed worker metrics were about 122-244 headers/sec, about 38.8s-71.7s of `binary_upsert_ms`, about 15.0s-48.7s of `binary_refresh_ms`, and only about 4.4s-6.1s of `binary_part_upsert_ms`.
+- A clean rerun on 2026-05-26 after clearing logs reproduced the same general result with 4 workers and 15k worker batches. Observed worker metrics were:
+  - `8190` unique binary upserts, `254.06` headers/sec, `37399.02 ms` binary upsert, `14045.93 ms` binary refresh
+  - `8443` unique binary upserts, `197.98` headers/sec, `39092.44 ms` binary upsert, `29243.82 ms` binary refresh
+  - `12496` unique binary upserts, `180.99` headers/sec, `54960.88 ms` binary upsert, `20845.27 ms` binary refresh
+  - `12846` unique binary upserts, `148.11` headers/sec, `57683.84 ms` binary upsert, `36487.58 ms` binary refresh
+- That rerun confirms the batching change materially helped. Pre-batching 7.5k worker slices commonly spent about `64s-72s` in `binary_upsert_ms`; the post-change rerun handled 15k worker slices with `37s-58s` of `binary_upsert_ms` in the observed worker logs while remaining stable.
 - The 2026-05-26 `lane-a --once` rerun also stayed healthy at larger logical worker slices: about 2,135-2,136 headers per worker batch, about 799-960 headers/sec, `candidate_selection_ms=0.00`, and only 13-50 unique binary upserts per worker batch.
 - Direct `lane-a --once` and `lane-b --once` command logs remain the most reliable measurement source for these tests. The `indexer_stage_runs` table did not consistently persist the newer ad hoc command runs, which is a separate runtime-observability gap.
 
@@ -154,6 +160,7 @@ Current batching audit:
 - `RefreshBinaryStatsBatch` now performs binary stat recomputation as a set-based aggregate/update over chunks of up to 8,000 binary ids, then dedupes and refreshes the affected release-family summary keys. This should remove the 11-12 ms per-binary aggregate/update cost from Lane B.
 - `UpsertBinary` used to be fully one-at-a-time. Assemble now batches unique binary rows in memory per worker and sends them through `UpsertBinaries`, but the hot SQL is still expensive because each chunk must perform many `INSERT ... ON CONFLICT` checks and updates against existing binary identities.
 - Large logical Lane B batches now depend on small internal binary-upsert chunks. Bigger chunk transactions created too many advisory locks and row-lock conflicts; smaller chunk transactions traded some extra round trips for materially better stability.
+- The internal binary-upsert chunk should be modeled as its own advanced tuning value, not as a percentage of assemble batch size. The stability limit is driven by unique-binary density per worker and advisory-lock footprint, which can vary sharply even when total selected headers stay constant.
 - Lane A priority candidate selection is set-based, but the old query shape encouraged a full incomplete-binary scan before joining to pending headers. The lateral rewrite makes pending structured headers drive indexed binary lookups and keeps repeated file names cheap through Postgres memoization.
 - Application RAM use around 1 GB in serve mode is not itself the assemble limiter right now. The slow paths are database I/O, per-row transactions, and query shape. We should use RAM deliberately in assemble by grouping batch work in memory and sending larger set-based operations to Postgres, not by adding generic caches before the hot SQL is fixed.
 
@@ -170,6 +177,7 @@ Assemble action items:
 - [x] Rewrite lane A priority selection so pending headers drive indexed binary lookups instead of letting Postgres scan and sort the large `binaries` table.
 - [ ] Add explicit assemble metrics for claim selector substeps: priority selection, recent selection, hydration, and claim update.
 - [x] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible. The store now batches unique binary rows per worker and processes them in smaller internal transactions.
+- [ ] Expose internal binary-upsert chunk size as an advanced runtime setting with a conservative default. Recommended shape: integer record count, default `250`, not percentage-derived.
 - [ ] Add chunk-level retry/telemetry around `UpsertBinaries` so deadlock retries and chunk counts are visible in metrics instead of only in command logs.
 - [x] Convert `RefreshBinaryStatsBatch` to a true set-based aggregate/update over all refreshed binary ids instead of looping one binary at a time.
 - [ ] Batch release-family summary refreshes by key set where practical.
