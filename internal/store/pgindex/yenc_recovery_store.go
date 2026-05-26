@@ -13,37 +13,20 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 	if limit <= 0 {
 		limit = 100
 	}
-	summaryLimit := limit * 20
-	if summaryLimit < limit {
-		summaryLimit = limit
+	seedLimit := limit * 20
+	if seedLimit < limit {
+		seedLimit = limit
 	}
-	if summaryLimit > 5000 {
-		summaryLimit = 5000
+	if seedLimit > yencRecoveryWorkItemSeedLimit {
+		seedLimit = yencRecoveryWorkItemSeedLimit
+	}
+	if err := s.ensureYEncRecoveryWorkItemsSeed(ctx, seedLimit); err != nil {
+		return nil, err
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH candidate_binaries AS (
-			SELECT
-				b.id AS binary_id,
-				b.binary_key,
-				b.release_family_key,
-				b.base_stem,
-				COALESCE(s.readiness_bucket, '') AS readiness_bucket
-			FROM binaries b
-			JOIN release_family_readiness_summaries s
-			  ON s.provider_id = b.provider_id
-			 AND s.newsgroup_id = b.newsgroup_id
-			 AND s.key_kind = 'release_family'
-			 AND s.family_key = b.release_family_key
-			WHERE s.readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
-			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-			  AND b.is_main_payload = true
-			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
-			ORDER BY b.updated_at DESC, b.id
-			LIMIT $2
-		)
 		SELECT
-			b.id,
+			wi.binary_id,
 			ah.id,
 			ah.provider_id,
 			ah.newsgroup_id,
@@ -64,36 +47,23 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 			COALESCE(p.yenc_file_size, 0),
 			COALESCE(p.yenc_recovery_missing_count, 0),
 			p.yenc_recovery_retry_after,
-			b.binary_key,
-			b.release_family_key,
-			b.base_stem,
-			COALESCE(cb.readiness_bucket, ''),
-			COALESCE((b.grouping_evidence_json -> 'summary' ->> 'fallback_used')::boolean, false)
-		FROM candidate_binaries cb
-		JOIN binaries b ON b.id = cb.binary_id
-		JOIN LATERAL (
-			SELECT bp.*
-			FROM binary_parts bp
-			WHERE bp.binary_id = b.id
-			ORDER BY bp.part_number, bp.id
-			LIMIT 1
-		) bp ON true
-		JOIN article_headers ah ON ah.id = bp.article_header_id
+			wi.current_binary_key,
+			wi.current_release_family_key,
+			wi.current_base_stem,
+			wi.current_readiness_bucket,
+			wi.structured_identity_binary_matched
+		FROM yenc_recovery_work_items wi
+		JOIN article_headers ah ON ah.id = wi.article_header_id
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		WHERE p.subject_file_name = ''
-		  AND (p.yenc_recovery_retry_after IS NULL OR p.yenc_recovery_retry_after <= NOW())
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
 		ORDER BY
-			CASE
-				WHEN COALESCE(p.yenc_total_parts, 0) > 1 THEN 0
-				WHEN ah.message_id ~* 'part[0-9]{1,6}of[0-9]{1,6}' THEN 1
-				ELSE 2
-			END,
-			b.updated_at DESC,
-			b.id
+			wi.priority_rank,
+			wi.updated_at DESC,
+			wi.binary_id
 		LIMIT $1`,
 		limit,
-		summaryLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
@@ -216,6 +186,17 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		in.ArticleHeaderID,
 	); err != nil {
 		return nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items
+		SET status = 'done',
+		    ready_at = NOW(),
+		    updated_at = NOW()
+		WHERE binary_id IN ($1, $2)`,
+		in.BinaryID,
+		targetID,
+	); err != nil {
+		return nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
 	}
 
 	keys, err := refreshBinaryStatsInTx(ctx, tx, targetID)

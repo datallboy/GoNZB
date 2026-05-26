@@ -1032,11 +1032,18 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 }
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	candidates, err := s.ListYEncRecoveryCandidates(ctx, dashboardBacklogEstimateLimit)
-	if err != nil {
+	if err := s.ensureYEncRecoveryWorkItemsSeed(ctx, yencRecoveryWorkItemSeedLimit); err != nil {
+		return 0, fmt.Errorf("seed yenc recovery work items: %w", err)
+	}
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE status = 'ready'
+		  AND ready_at <= NOW()`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
-	return int64(len(candidates)), nil
+	return count, nil
 }
 
 func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
