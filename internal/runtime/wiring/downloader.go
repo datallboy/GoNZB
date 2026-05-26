@@ -63,7 +63,7 @@ func scopedDownloaderServers(appCtx *app.Context) []config.ServerConfig {
 	if runtime == nil {
 		return nil
 	}
-	return app.ToConfigServers(app.RuntimeServersForCompatibility(runtime))
+	return app.ToConfigServers(app.DownloaderNNTPServers(runtime))
 }
 
 func downloaderRuntimeSettings(appCtx *app.Context) *app.RuntimeSettings {

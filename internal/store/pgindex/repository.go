@@ -333,6 +333,7 @@ type BinaryPAR2TargetCoverageResult struct {
 	TargetCount        int
 	MainTargetCount    int
 	UpdatedBinaryCount int
+	SummaryKeys        []releaseFamilySummaryKey
 }
 
 type CatalogReader interface {
