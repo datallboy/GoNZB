@@ -2561,44 +2561,97 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 			end = len(targets)
 		}
 
-		args := []any{seed.providerID, seed.newsgroupID, len(targets), binaryID}
-		values := make([]string, 0, end-start)
-		for _, target := range targets[start:end] {
-			base := len(args)
-			args = append(args, target.normalizedName, target.fileIndex, target.fileName)
-			values = append(values, fmt.Sprintf("($%d::text,$%d::integer,$%d::text)", base+1, base+2, base+3))
+		batchTargets := targets[start:end]
+		args := []any{seed.providerID, seed.newsgroupID}
+		selects := make([]string, 0, len(batchTargets))
+		targetByName := make(map[string]par2CoverageTarget, len(batchTargets))
+		for _, target := range batchTargets {
+			arg := len(args) + 1
+			args = append(args, target.normalizedName)
+			selects = append(selects, fmt.Sprintf(`
+				SELECT
+					id,
+					$%d::text AS normalized_name,
+					file_index,
+					expected_archive_file_count,
+					grouping_evidence_json
+				FROM binaries
+				WHERE provider_id = $1
+				  AND newsgroup_id = $2
+				  AND BTRIM(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, ''))) <> ''
+				  AND LOWER(BTRIM(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, '')))) = $%d::text`, arg, arg))
+			targetByName[target.normalizedName] = target
+		}
+
+		selectRows, err := tx.QueryContext(ctx, strings.Join(selects, "\nUNION ALL\n"), args...)
+		if err != nil {
+			return result, fmt.Errorf("lookup par2 target coverage batch %d-%d: %w", start, end, err)
+		}
+
+		updateArgs := []any{len(targets), binaryID}
+		updateValues := make([]string, 0, len(batchTargets))
+		for selectRows.Next() {
+			var (
+				id                      int64
+				normalizedName          string
+				currentFileIndex        int
+				currentArchiveFileCount int
+				groupingEvidence        []byte
+			)
+			if err := selectRows.Scan(&id, &normalizedName, &currentFileIndex, &currentArchiveFileCount, &groupingEvidence); err != nil {
+				selectRows.Close()
+				return result, fmt.Errorf("scan par2 target coverage lookup batch %d-%d: %w", start, end, err)
+			}
+			target, ok := targetByName[normalizedName]
+			if !ok {
+				continue
+			}
+			evidence := map[string]any{}
+			if len(groupingEvidence) > 0 {
+				if err := json.Unmarshal(groupingEvidence, &evidence); err != nil {
+					selectRows.Close()
+					return result, fmt.Errorf("decode par2 target coverage evidence batch %d-%d: %w", start, end, err)
+				}
+			}
+			if currentArchiveFileCount >= len(targets) &&
+				!(currentFileIndex <= 0 && target.fileIndex > 0) &&
+				stringMapValue(evidence, "par2_target_file_name") == target.fileName &&
+				stringMapValue(evidence, "par2_source_binary_id") == fmt.Sprintf("%d", binaryID) &&
+				stringMapValue(evidence, "par2_target_coverage_source") == "inspect_par2" {
+				continue
+			}
+			base := len(updateArgs)
+			updateArgs = append(updateArgs, id, target.fileIndex, target.fileName)
+			updateValues = append(updateValues, fmt.Sprintf("($%d::bigint,$%d::integer,$%d::text)", base+1, base+2, base+3))
+		}
+		if err := selectRows.Close(); err != nil {
+			return result, fmt.Errorf("iterate par2 target coverage lookup batch %d-%d: %w", start, end, err)
+		}
+		if len(updateValues) == 0 {
+			continue
 		}
 
 		rows, err := tx.QueryContext(ctx, `
-			WITH target_values(normalized_name, file_index, file_name) AS (
-				VALUES `+strings.Join(values, ",")+`
+			WITH update_values(id, file_index, file_name) AS (
+				VALUES `+strings.Join(updateValues, ",")+`
 			)
 			UPDATE binaries b
-			SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $3::integer),
+			SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $1::integer),
 			    file_index = CASE
-			    	WHEN b.file_index <= 0 AND tv.file_index > 0 THEN tv.file_index
+			    	WHEN b.file_index <= 0 AND uv.file_index > 0 THEN uv.file_index
 			    	ELSE b.file_index
 			    END,
 			    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
-			    	'par2_archive_file_count', $3::integer,
-			    	'par2_target_file_name', tv.file_name,
-			    	'par2_source_binary_id', $4::bigint,
+			    	'par2_archive_file_count', $1::integer,
+			    	'par2_target_file_name', uv.file_name,
+			    	'par2_source_binary_id', $2::bigint,
 			    	'par2_target_coverage_source', 'inspect_par2'
 			    ),
 			    updated_at = NOW()
-			FROM target_values tv
-			WHERE b.provider_id = $1
-			  AND b.newsgroup_id = $2
-			  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = tv.normalized_name
-			  AND (
-				b.expected_archive_file_count < $3::integer OR
-				(b.file_index <= 0 AND tv.file_index > 0) OR
-				COALESCE(b.grouping_evidence_json->>'par2_target_file_name', '') <> tv.file_name OR
-				COALESCE(b.grouping_evidence_json->>'par2_source_binary_id', '') <> ($4::bigint)::text OR
-				COALESCE(b.grouping_evidence_json->>'par2_target_coverage_source', '') <> 'inspect_par2'
-			  )
+			FROM update_values uv
+			WHERE b.id = uv.id
 			RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
-			args...,
+			updateArgs...,
 		)
 		if err != nil {
 			return result, fmt.Errorf("apply par2 target coverage batch %d-%d: %w", start, end, err)
