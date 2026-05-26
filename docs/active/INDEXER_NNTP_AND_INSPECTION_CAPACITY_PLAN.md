@@ -38,6 +38,27 @@ Sprint validation:
 - `npm --prefix ui run build` passed.
 - Live one-shot scrape/recovery/inspection commands were not run during this pass to avoid consuming NNTP provider quota while validating transport wiring; the manager capacity behavior is covered by unit tests.
 
+## Next Session Focus
+
+The NNTP manager merge is functionally in place. The next clean work session should focus on the remaining backlog items in this order:
+
+1. PAR2 inspect write-path batching
+   - add a flush loop / chunked persistence path
+   - reduce per-candidate repository round trips
+   - capture flush-size / flush-duration / rows-written metrics
+2. yEnc exact backlog and candidate-selection rework
+   - design the durable work-item table
+   - define create/update/retire events
+   - move exact dashboard counts and candidate selection onto indexed work items
+3. Assemble follow-up measurement and remaining write hot spots
+   - add chunk-level retry / chunk-count telemetry around `UpsertBinaries`
+   - batch release-family summary refreshes where practical
+   - investigate why some direct `--once` runs do not persist into `indexer_stage_runs`
+
+Operational note:
+
+- Fresh `serve` startup on 2026-05-26 did not reproduce NNTP pool stats logging when `enable_pool_logging=0` was persisted for both downloader and indexer server rows. If pool logs still appear after toggling the setting at runtime, treat that as a manager-reload issue first rather than a settings-persistence bug.
+
 ## Current PAR2 Inspect Pipeline
 
 `inspect_par2` currently does the following per selected binary:
