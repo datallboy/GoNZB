@@ -109,11 +109,12 @@ type IndexingConfig struct {
 }
 
 type IndexingStageConfig struct {
-	Enabled         *bool    `mapstructure:"enabled" yaml:"enabled"`
-	IntervalMinutes *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
-	BatchSize       *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	Concurrency     *int     `mapstructure:"concurrency" yaml:"concurrency"`
-	BackoffSeconds  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	Enabled                 *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes         *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize               *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	Concurrency             *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	BackoffSeconds          *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
 }
 
 type IndexingMatchConfig struct {
@@ -253,6 +254,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.assemble.batch_size", 5000)
 	v.SetDefault("indexing.assemble.concurrency", 1)
 	v.SetDefault("indexing.assemble.backoff_seconds", 0)
+	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble_lane_a.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble_lane_b.binary_upsert_db_chunk_size", 250)
 	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
@@ -596,6 +600,9 @@ func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
 	}
 	if cfg.BackoffSeconds != nil && *cfg.BackoffSeconds < 0 {
 		return fmt.Errorf("%s.backoff_seconds must be greater than or equal to 0", name)
+	}
+	if cfg.BinaryUpsertDBChunkSize != nil && *cfg.BinaryUpsertDBChunkSize <= 0 {
+		return fmt.Errorf("%s.binary_upsert_db_chunk_size must be greater than 0", name)
 	}
 	return nil
 }

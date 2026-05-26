@@ -68,11 +68,12 @@ type usenetIndexerConfig struct {
 }
 
 type indexerStageConfig struct {
-	Enabled     bool
-	Interval    time.Duration
-	BatchSize   int
-	Concurrency int
-	Backoff     time.Duration
+	Enabled                 bool
+	Interval                time.Duration
+	BatchSize               int
+	Concurrency             int
+	Backoff                 time.Duration
+	BinaryUpsertDBChunkSize int
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -177,10 +178,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize:   runtimeCfg.Assemble.BatchSize,
-			ClaimOwner:  "assemble",
-			ClaimLease:  5 * time.Minute,
-			Concurrency: runtimeCfg.Assemble.Concurrency,
+			BatchSize:               runtimeCfg.Assemble.BatchSize,
+			ClaimOwner:              "assemble",
+			ClaimLease:              5 * time.Minute,
+			Concurrency:             runtimeCfg.Assemble.Concurrency,
+			BinaryUpsertDBChunkSize: runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
 		},
 	)
 	assembleLaneASvc := assemble.NewService(
@@ -189,11 +191,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleAFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize:   runtimeCfg.AssembleLaneA.BatchSize,
-			ClaimOwner:  "assemble-lane-a",
-			ClaimLease:  5 * time.Minute,
-			Concurrency: runtimeCfg.AssembleLaneA.Concurrency,
-			Lane:        pgindex.AssemblyClaimLaneA,
+			BatchSize:               runtimeCfg.AssembleLaneA.BatchSize,
+			ClaimOwner:              "assemble-lane-a",
+			ClaimLease:              5 * time.Minute,
+			Concurrency:             runtimeCfg.AssembleLaneA.Concurrency,
+			BinaryUpsertDBChunkSize: runtimeCfg.AssembleLaneA.BinaryUpsertDBChunkSize,
+			Lane:                    pgindex.AssemblyClaimLaneA,
 		},
 	)
 	assembleLaneBSvc := assemble.NewService(
@@ -202,11 +205,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleBFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
-			ClaimOwner:  "assemble-lane-b",
-			ClaimLease:  5 * time.Minute,
-			Concurrency: runtimeCfg.AssembleLaneB.Concurrency,
-			Lane:        pgindex.AssemblyClaimLaneB,
+			BatchSize:               runtimeCfg.AssembleLaneB.BatchSize,
+			ClaimOwner:              "assemble-lane-b",
+			ClaimLease:              5 * time.Minute,
+			Concurrency:             runtimeCfg.AssembleLaneB.Concurrency,
+			BinaryUpsertDBChunkSize: runtimeCfg.AssembleLaneB.BinaryUpsertDBChunkSize,
+			Lane:                    pgindex.AssemblyClaimLaneB,
 		},
 	)
 	recoverYEncSvc := yencrecover.NewService(
@@ -616,11 +620,12 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 
 func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConfig {
 	return indexerStageConfig{
-		Enabled:     in.Enabled,
-		Interval:    time.Duration(in.IntervalMinutes * float64(time.Minute)),
-		BatchSize:   in.BatchSize,
-		Concurrency: in.Concurrency,
-		Backoff:     time.Duration(in.BackoffSeconds) * time.Second,
+		Enabled:                 in.Enabled,
+		Interval:                time.Duration(in.IntervalMinutes * float64(time.Minute)),
+		BatchSize:               in.BatchSize,
+		Concurrency:             in.Concurrency,
+		Backoff:                 time.Duration(in.BackoffSeconds) * time.Second,
+		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
 	}
 }
 
