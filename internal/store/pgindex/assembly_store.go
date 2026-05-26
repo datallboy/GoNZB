@@ -926,6 +926,23 @@ func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID 
 	if err != nil {
 		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
 	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items
+		SET status = 'ready',
+		    ready_at = COALESCE((
+		    	SELECT p.yenc_recovery_retry_after
+		    	FROM article_header_ingest_payloads p
+		    	WHERE p.article_header_id = $1
+		    ), NOW()),
+		    missing_count = COALESCE((
+		    	SELECT p.yenc_recovery_missing_count
+		    	FROM article_header_ingest_payloads p
+		    	WHERE p.article_header_id = $1
+		    ), missing_count),
+		    updated_at = NOW()
+		WHERE article_header_id = $1`, articleHeaderID); err != nil {
+		return fmt.Errorf("update yenc recovery work item retry state for article header %d: %w", articleHeaderID, err)
+	}
 	return nil
 }
 
@@ -1935,6 +1952,9 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
 			return err
 		}
+	}
+	if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, uniqueBinaryIDs); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
