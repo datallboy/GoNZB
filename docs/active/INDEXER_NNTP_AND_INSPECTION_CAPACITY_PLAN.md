@@ -102,11 +102,18 @@ Redis is not the first fix for this lane. The hot path needs step timing and bat
 
 - [x] Add per-step `inspect_par2` timing metrics: candidate selection, NNTP/catalog prefix sampling, PAR2 parse, full-manifest fallback, artifact/set/target writes, coverage writes, completion writes, release rollup writes, and skipped-candidate writes.
 - [x] Track full-manifest fallback count and fallback bytes so slow candidates can be separated from normal prefix-only candidates.
-- [ ] Add batch persistence for PAR2 inspection results. Workers should inspect/fetch/parse candidates and hand result objects to a flush loop that commits rows in chunks instead of forcing every candidate through separate small write transactions.
-- [ ] Combine per-candidate PAR2 artifact/set/target/coverage/inspection writes into fewer transactional repository calls where chunked flushing is not practical.
-- [ ] Add metrics for candidate result flush size, flush duration, rows written, and write failures.
-- [ ] Keep run-budget exit non-fatal: partial committed progress is acceptable, remaining candidates should stay eligible for the next scheduler tick.
-- [ ] Re-run `go run cmd/gonzb/main.go indexer inspect-par2 --once` with live `batch_size=1000` and `concurrency=4` after metrics land, then document the slowest step distribution before changing more code.
+- [x] Add batch persistence for PAR2 inspection results. Workers now inspect/fetch/parse candidates and hand completed result objects to a flush loop that commits rows in chunks instead of forcing every candidate through separate small write transactions.
+- [x] Combine per-candidate PAR2 artifact/set/target/coverage/inspection writes into fewer transactional repository calls where chunked flushing is not practical.
+- [x] Add metrics for candidate result flush size, flush duration, rows written, and write failures.
+- [x] Keep run-budget exit non-fatal: partial committed progress is acceptable, remaining candidates stay eligible for the next scheduler tick.
+- [x] Re-run `go run cmd/gonzb/main.go indexer inspect par2 --once` with live `batch_size=1000` and `concurrency=4` after metrics land, then document the slowest step distribution before changing more code.
+
+Live PAR2 measurements on 2026-05-26:
+
+- Baseline before batching: `go run cmd/gonzb/main.go indexer inspect par2 --once` completed `1000/1000` in about `118.8s` wall time with `candidate_selection_ms=971.687`, `prefix_fetch_ms=433153.357`, `coverage_write_ms=33983.581`, `artifact_write_ms=2260.366`, `set_write_ms=1654.004`, `target_write_ms=405.950`, and `completion_write_ms=1299.761`.
+- First flush-loop attempt used `result_flush_max_size=32` and exposed an unacceptable regression: one flush stretched to about `61059.8 ms`, total `result_flush_ms=61514.894`, and the run budget stopped at `408/1000`.
+- Follow-up tuning reduced the flush cap to `8` candidates per transaction. The next live run completed `957/1000` within the same `120s` budget with `candidate_selection_ms=334.58`, `prefix_fetch_ms=477281.512`, `result_flush_ms=1750.328`, `result_flush_count=120`, `result_flush_rows=2871`, `result_flush_max_ms=55.481`, and `result_flush_failures=0`.
+- The batching change materially removed the write-path hotspot. The prior live sample spent about `38.3s` in explicit write buckets (`coverage/artifact/set/target/completion`), while the tuned flush path spent about `1.75s` total in chunk commits. End-to-end throughput is now primarily NNTP/prefix-fetch limited, not database-write limited.
 
 ## yEnc Exact Backlog And Recovery Plan
 
@@ -138,12 +145,26 @@ Expected benefits:
 
 ## yEnc Action Items
 
-- [ ] Design a migration-backed yEnc recovery work-item table or rollup table.
-- [ ] Define which existing events create, update, retire, or stale a yEnc work item.
-- [ ] Replace exact dashboard counting with indexed work-item totals.
-- [ ] Move recovery candidate selection to the work-item table once the backfill/maintenance path is reliable.
+- [x] Design a migration-backed yEnc recovery work-item table or rollup table.
+- [x] Define which existing events create, update, retire, or stale a yEnc work item.
+- [x] Replace exact dashboard counting with indexed work-item totals.
+- [x] Move recovery candidate selection to the work-item table once the backfill/maintenance path is reliable.
 - [x] Add yEnc recovery metrics for selection duration, fetch duration, parse duration, match duration, write duration, not-found backoff write duration, stale candidates, retry candidates, and active worker count.
-- [ ] Backfill work items with a bounded migration or maintenance command, not ad hoc live schema or data edits.
+- [x] Backfill work items with a bounded migration or maintenance command, not ad hoc live schema or data edits.
+
+Implemented yEnc work-item lifecycle:
+
+- `RefreshBinaryStatsBatch` now incrementally creates or refreshes yEnc work items for touched binaries after assemble writes finish.
+- `RecordYEncRecoveryNotFound` now updates the work item `ready_at` and `missing_count` alongside the payload retry state.
+- `ApplyYEncHeaderRecovery` now retires recovered source/target work items as `done`.
+- `indexer maintenance` now performs bounded work-item backfill batches for older eligible binaries so the queue can be filled without manual SQL edits.
+
+Live yEnc measurements on 2026-05-26:
+
+- Baseline before the work-item table: dashboard backlog was bounded at `1000`, and the last available stage-run metrics for the old derived selector showed `candidate_selection_ms=3277.882` on a failed `concurrency=8` run. A direct baseline `go run cmd/gonzb/main.go indexer recover-yenc --once` at live `batch_size=999` and `concurrency=4` completed `999/999` in about `3:03.37` wall time, but that legacy command path did not persist stage metrics.
+- After adding migration `026_yenc_recovery_work_items.up.sql` and running maintenance backfill, the durable queue held `10000` ready items before the first post-change recovery pass. After two tracked post-change runs it still held `8002` ready items and `8038` total items, proving the queue is materially larger than the old bounded dashboard estimate.
+- The tracked post-change `go run cmd/gonzb/main.go indexer recover-yenc --once` run on `2026-05-26 13:24-13:28 America/New_York` completed `999/999` with `candidate_selection_ms=57.473`, `processing_ms=251107.442`, `fetch_ms=988531.288`, `write_ms=13964.070`, `merged=989`, `fetch_failures=0`, and `parse_failures=0`.
+- The main meaningful yEnc improvement is selector/count correctness and speed: recovery candidate selection moved off the expensive derived join and the dashboard now counts indexed queue rows instead of a bounded `LIMIT` snapshot.
 
 ## Assemble Backlog Concerns
 
