@@ -173,6 +173,14 @@ Live stage-run findings from 2026-05-21:
 - That rerun confirms the batching change materially helped. Pre-batching 7.5k worker slices commonly spent about `64s-72s` in `binary_upsert_ms`; the post-change rerun handled 15k worker slices with `37s-58s` of `binary_upsert_ms` in the observed worker logs while remaining stable.
 - The 2026-05-26 `lane-a --once` rerun also stayed healthy at larger logical worker slices: about 2,135-2,136 headers per worker batch, about 799-960 headers/sec, `candidate_selection_ms=0.00`, and only 13-50 unique binary upserts per worker batch.
 - Direct `lane-a --once` and `lane-b --once` command logs remain the most reliable measurement source for these tests. The `indexer_stage_runs` table did not consistently persist the newer ad hoc command runs, which is a separate runtime-observability gap.
+- A later serve-mode observation on 2026-05-26 showed materially worse live Lane B throughput while other DB-heavy stages were active. Recent supervisor-era worker logs were about `80-106 headers/sec`, about `82s-99s` of `binary_upsert_ms`, and about `42s-70s` of `binary_refresh_ms`.
+- Those slow serve-mode Lane B passes overlapped with active `recover_yenc`, `inspect_par2`, `release`, and occasional `inspect_archive` work. The log shows `assemble_recovery_attempts=0` for the slow Lane B workers, so the slowdown was not NNTP work inside assemble itself.
+- A fresh direct `go run cmd/gonzb/main.go indexer assemble lane-b --once` rerun on 2026-05-26, using the same 15k worker slices and the current runtime settings, completed with much better worker metrics:
+  - `8004` unique binary upserts, `280.12 headers/sec`, `31206.82 ms` binary upsert, `14902.93 ms` binary refresh
+  - `8597` unique binary upserts, `225.24 headers/sec`, `34036.56 ms` binary upsert, `25833.24 ms` binary refresh
+  - `11868` unique binary upserts, `207.68 headers/sec`, `47593.98 ms` binary upsert, `18166.51 ms` binary refresh
+  - `12085` unique binary upserts, `184.31 headers/sec`, `46997.37 ms` binary upsert, `27702.69 ms` binary refresh
+- That serve-vs-once comparison strongly suggests the supervisor orchestration itself is not the Lane B bottleneck. The meaningful difference is concurrent stage pressure, especially from other write-heavy indexer stages and PAR2 activity that can deadlock or hold competing row/advisory locks.
 
 Current batching audit:
 
@@ -204,6 +212,7 @@ Assemble action items:
 - [ ] Batch release-family summary refreshes by key set where practical.
 - [ ] Consider reducing or disabling lane A polling when repeated empty/tiny lane A selections are observed, so lane A does not spend tens of seconds proving no priority work while lane B has a massive backlog.
 - [ ] Re-check lane B after binary upsert and refresh batching; if header matching becomes dominant only then revisit matcher-level optimization.
+- [ ] Decide whether serve mode needs temporary stage staggering or lower live concurrency for `recover_yenc` / `inspect_par2` while the assemble backlog is still dominant. Current evidence points to cross-stage contention, not supervisor overhead.
 - [x] Re-check live Lane A selection timing after deployment. Expected selection time for the tested backlog shape is sub-second instead of tens of seconds.
 - [x] Re-check live Lane B refresh timing after deployment. Refresh dropped, but `binary_upsert_duration_ms` remains dominant.
 - [ ] Investigate why `indexer_stage_runs` did not consistently persist direct `indexer assemble lane-a --once` and `lane-b --once` test runs. This is obscuring exact before/after comparisons in the dashboard.
