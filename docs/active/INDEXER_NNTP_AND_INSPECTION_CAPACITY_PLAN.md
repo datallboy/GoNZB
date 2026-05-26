@@ -224,6 +224,19 @@ Live stage-run findings from 2026-05-21:
   - `1542` unique upserts, `678.64 headers/sec`, `8444.71 ms` upsert, `3989.50 ms` refresh
   - `7969-8101` unique upserts, about `235.65-235.71 headers/sec`, about `38820.98-38870.31 ms` upsert, about `16576.17-16926.72 ms` refresh
 - This does not prove the 4/4 setting is globally optimal, but it does show the live supervisor path recovered from the much worse `80-106 headers/sec` / `82s-99s` upsert period observed with heavier overlap.
+- Final serve smoke on `2026-05-26 16:37-16:41 America/New_York` was used as a closeout sanity check for `assemble`, `recover_yenc`, and `inspect_par2`. The supervisor started cleanly, kept all expected stages enabled, and no glaring PAR2 or yEnc regressions appeared during the window.
+- Persisted serve-mode rows from that smoke were:
+  - `recover_yenc` scheduled `stage_run=61503`: completed one full batch with `candidates=999`, `attempted=999`, `recovered=999`, `merged=986`, `candidate_selection_ms=2214.417`, `processing_ms=169240.523`, `fetch_ms=632888.233`, `write_ms=42013.467`, `fetch_failures=0`, and `parse_failures=0`.
+  - `inspect_par2` scheduled `stage_run=61512`: completed `394/394` with `candidate_selection_ms=1117.061`, `processing_ms=63107.897`, `prefix_fetch_ms=207611.356`, `parse_ms=15510.634`, `full_manifest_ms=24381.266`, `result_flush_ms=1796.570`, `result_flush_max_ms=151.095`, and `result_flush_failures=0`.
+  - `inspect_par2` scheduled `stage_run=61521`: completed `393/393` with `candidate_selection_ms=3634.494`, `processing_ms=65345.095`, `prefix_fetch_ms=219224.878`, `parse_ms=15161.860`, `full_manifest_ms=19764.382`, `result_flush_ms=3051.827`, `result_flush_max_ms=319.947`, and `result_flush_failures=0`.
+  - `assemble_lane_a` scheduled `stage_run=61508`: completed `521` selected headers at `85.69 headers/sec` with `candidate_selection_ms=5572.793`, `binary_upsert_ms=93.357`, and `binary_refresh_ms=933.860`.
+  - `assemble_lane_a` scheduled `stage_run=61516`: completed `786` selected headers at `96.21 headers/sec` with `candidate_selection_ms=7403.509`, `binary_upsert_ms=132.987`, and `binary_refresh_ms=1485.541`.
+  - `assemble_lane_b` scheduled `stage_run=61510`: processed `60000` headers and refreshed `45414` binaries, but still failed on shutdown at the timeout boundary after `candidate_selection_ms=25626.623`, `binary_upsert_ms=365471.659`, `binary_refresh_ms=304367.373`, and `headers_per_second=274.74`.
+  - `assemble_lane_a` scheduled `stage_run=61522`: overlapped the same timeout period and failed on shutdown with `selected_headers=444`, `candidate_selection_ms=9128.014`, `binary_upsert_ms=99645.928`, and `binary_refresh_ms=133134.792`.
+- Interpretation of that smoke:
+  - `recover_yenc` looks healthy in serve mode and completed its full scheduled batch without fetch/parse errors.
+  - `inspect_par2` looks healthy in serve mode across two consecutive scheduled runs; write-path regression is gone and the remaining cost is still NNTP prefix fetch plus parse/full-manifest work.
+  - `assemble` is still the only glaring operational concern. Lane A no longer shows the historic multi-minute selector failure mode, but it still spends several seconds selecting tiny priority batches. Lane B remains highly sensitive to overlap from other write-heavy stages and still dominates DB time under serve-mode concurrency.
 
 Current batching audit:
 
@@ -345,8 +358,8 @@ Done:
 
 Needs completion:
 
-- [ ] New PAR2/yEnc step timing metrics are observed in live runs and used to decide whether the next bottleneck is NNTP, parse, fallback materialization, selection, or database writes.
-- [ ] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
-- [ ] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
+- [x] New PAR2/yEnc step timing metrics are observed in live runs and used to decide whether the next bottleneck is NNTP, parse, fallback materialization, selection, or database writes.
+- [x] PAR2 result persistence is batched or consolidated enough that database round trips are not the dominant cost.
+- [x] yEnc work-item/rollup design provides fast exact dashboard counts and faster recovery candidate selection.
 - [ ] Assemble lane A selection and lane B DB write/refresh bottlenecks are measured with SQL plans and resolved with true batch repository operations where needed.
 - [ ] Downloader-specific manager-owned wait policy and richer active worker stats are handled in a separate downloader-focused session.
