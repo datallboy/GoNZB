@@ -837,7 +837,23 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 						WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
 						THEN 1
 						ELSE 0
-					END AS volume_rank
+					END AS volume_rank,
+					CASE
+						WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+						THEN COALESCE(NULLIF(substring(
+							LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''))
+							FROM '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+						), ''), '0')::integer
+						ELSE 0
+					END AS volume_number,
+					EXISTS (
+						SELECT 1
+						FROM binary_par2_targets bpt
+						WHERE bpt.binary_id = b.id
+					) AS has_targets,
+					(
+						` + rerunPredicate + `
+					) AS needs_rerun
 				FROM binaries b
 				LEFT JOIN posters p ON p.id = b.poster_id
 				LEFT JOIN binary_inspections bi
@@ -850,16 +866,35 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				)
 				  AND b.observed_parts > 0
 				  AND (
-					` + rerunPredicate + ` OR
-					NOT EXISTS (
-						SELECT 1
-						FROM binary_par2_targets bpt
-						WHERE bpt.binary_id = b.id
-					)
-				  )
-				  AND (
 					bi.inspection_claimed_until IS NULL OR
 					bi.inspection_claimed_until < NOW()
+				  )
+			),
+			set_state AS (
+				SELECT
+					par2_set_name,
+					BOOL_OR(volume_rank = 0) AS has_manifest,
+					BOOL_OR(has_targets) AS has_any_targets,
+					BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun
+				FROM candidate_rows
+				GROUP BY par2_set_name
+			),
+			eligible_rows AS (
+				SELECT
+					cr.*
+				FROM candidate_rows cr
+				JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
+				WHERE (
+					cr.needs_rerun OR
+					NOT ss.has_any_targets
+				)
+				  AND (
+					NOT ss.has_manifest OR
+					cr.volume_rank = 0 OR
+					(
+						NOT ss.manifest_needs_rerun AND
+						NOT ss.has_any_targets
+					)
 				  )
 			)
 			SELECT
@@ -886,8 +921,8 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			FROM (
 				SELECT DISTINCT ON (par2_set_name)
 					*
-				FROM candidate_rows
-				ORDER BY par2_set_name, volume_rank, source_updated_at DESC, id DESC
+				FROM eligible_rows
+				ORDER BY par2_set_name, volume_rank, volume_number, source_updated_at DESC, id DESC
 			) chosen
 			ORDER BY source_updated_at DESC, id DESC
 			LIMIT $2`
