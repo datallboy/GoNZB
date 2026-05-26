@@ -312,6 +312,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if stage.config.BatchSize <= 0 {
 			issues = append(issues, "indexing."+stage.name+".batch_size must be greater than 0 when enabled")
 		}
+		if stage.config.BinaryUpsertDBChunkSize < 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than or equal to 0")
+		}
+		if strings.HasPrefix(stage.name, "assemble") && stage.config.BinaryUpsertDBChunkSize == 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
+		}
 	}
 	if indexing.Inspect.MinBinaryBytes < 0 {
 		issues = append(issues, "indexing.inspect.min_binary_bytes must be greater than or equal to 0")

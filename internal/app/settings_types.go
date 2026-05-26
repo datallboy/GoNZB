@@ -76,11 +76,12 @@ type NNTPPoolRuntimeSettings struct {
 }
 
 type IndexingStageRuntimeSettings struct {
-	Enabled         bool    `json:"enabled,omitempty"`
-	IntervalMinutes float64 `json:"interval_minutes,omitempty"`
-	BatchSize       int     `json:"batch_size,omitempty"`
-	Concurrency     int     `json:"concurrency,omitempty"`
-	BackoffSeconds  int     `json:"backoff_seconds,omitempty"`
+	Enabled                 bool    `json:"enabled,omitempty"`
+	IntervalMinutes         float64 `json:"interval_minutes,omitempty"`
+	BatchSize               int     `json:"batch_size,omitempty"`
+	Concurrency             int     `json:"concurrency,omitempty"`
+	BackoffSeconds          int     `json:"backoff_seconds,omitempty"`
+	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
 }
 
 type IndexingReleaseRuntimeSettings struct {

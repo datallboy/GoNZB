@@ -142,6 +142,12 @@ func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
 	if runtime.Indexing.AssembleLaneB.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneB.BatchSize <= 0 {
 		t.Fatalf("expected lane B defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneB)
 	}
+	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 250 {
+		t.Fatalf("expected assemble chunk-size default to be backfilled, got %+v", runtime.Indexing.Assemble)
+	}
+	if runtime.Indexing.AssembleLaneA.BinaryUpsertDBChunkSize != 250 || runtime.Indexing.AssembleLaneB.BinaryUpsertDBChunkSize != 250 {
+		t.Fatalf("expected lane chunk-size defaults to be backfilled, got laneA=%+v laneB=%+v", runtime.Indexing.AssembleLaneA, runtime.Indexing.AssembleLaneB)
+	}
 }
 
 func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {

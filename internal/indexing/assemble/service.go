@@ -50,6 +50,7 @@ type Options struct {
 	ClaimLease              time.Duration
 	Concurrency             int
 	MaxYEncRecoveryAttempts int
+	BinaryUpsertDBChunkSize int
 	Lane                    string
 }
 
@@ -95,6 +96,9 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	}
 	if opts.MaxYEncRecoveryAttempts <= 0 {
 		opts.MaxYEncRecoveryAttempts = 128
+	}
+	if opts.BinaryUpsertDBChunkSize <= 0 {
+		opts.BinaryUpsertDBChunkSize = 250
 	}
 	switch strings.TrimSpace(strings.ToLower(opts.Lane)) {
 	case pgindex.AssemblyClaimLaneCombined:
@@ -437,7 +441,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		for _, key := range orderedBinaryKeys {
 			batchRecords = append(batchRecords, binaryRecordsByKey[key])
 		}
-		binaryIDs, err := s.repo.UpsertBinaries(ctx, batchRecords)
+		upsertCtx := pgindex.WithBinaryUpsertChunkSize(ctx, s.opts.BinaryUpsertDBChunkSize)
+		binaryIDs, err := s.repo.UpsertBinaries(upsertCtx, batchRecords)
 		binaryUpsertDuration += time.Since(binaryUpsertStarted)
 		if err != nil {
 			metrics["processed_headers"] = assembledCount

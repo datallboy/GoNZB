@@ -25,9 +25,9 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			BackfillUntilDateByGroup: map[string]string{},
 			ScrapeLatest:             defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:           defaultStage(false, 10, 5000, 0),
-			Assemble:                 defaultStage(false, 10, 5000, 1),
-			AssembleLaneA:            defaultStage(false, 2, 5000, 1),
-			AssembleLaneB:            defaultStage(false, 10, 2500, 1),
+			Assemble:                 defaultAssembleStage(false, 10, 5000, 1),
+			AssembleLaneA:            defaultAssembleStage(false, 2, 5000, 1),
+			AssembleLaneB:            defaultAssembleStage(false, 10, 2500, 1),
 			RecoverYEnc:              defaultStage(false, 10, 25, 1),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
@@ -81,6 +81,12 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 
 func defaultStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	return IndexingStageRuntimeSettings{Enabled: enabled, IntervalMinutes: interval, BatchSize: batch, Concurrency: concurrency}
+}
+
+func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
+	stage := defaultStage(enabled, interval, batch, concurrency)
+	stage.BinaryUpsertDBChunkSize = 250
+	return stage
 }
 
 func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
@@ -707,9 +713,9 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		BackfillUntilDateByGroup: cloneStringMap(in.BackfillUntilDateByGroup),
 		ScrapeLatest:             in.ScrapeLatest,
 		ScrapeBackfill:           in.ScrapeBackfill,
-		Assemble:                 in.Assemble,
-		AssembleLaneA:            mergeStageRuntimeSettings(defaultStage(false, 2, 5000, 1), in.AssembleLaneA),
-		AssembleLaneB:            mergeStageRuntimeSettings(defaultStage(false, 10, 2500, 1), in.AssembleLaneB),
+		Assemble:                 mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 5000, 1), in.Assemble),
+		AssembleLaneA:            mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
+		AssembleLaneB:            mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
 		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
 		Release:                  in.Release,
 		Match:                    in.Match,
@@ -748,6 +754,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.BackoffSeconds > 0 {
 		base.BackoffSeconds = override.BackoffSeconds
 	}
+	if override.BinaryUpsertDBChunkSize > 0 {
+		base.BinaryUpsertDBChunkSize = override.BinaryUpsertDBChunkSize
+	}
 	return base
 }
 
@@ -764,10 +773,11 @@ func cloneStringMap(in map[string]string) map[string]string {
 
 func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled bool, defaultInterval float64, defaultBatch int) IndexingStageRuntimeSettings {
 	return IndexingStageRuntimeSettings{
-		Enabled:         boolValue(cfg.Enabled, defaultEnabled),
-		IntervalMinutes: float64Value(cfg.IntervalMinutes, defaultInterval),
-		BatchSize:       intValue(cfg.BatchSize, defaultBatch),
-		BackoffSeconds:  intValue(cfg.BackoffSeconds, 0),
+		Enabled:                 boolValue(cfg.Enabled, defaultEnabled),
+		IntervalMinutes:         float64Value(cfg.IntervalMinutes, defaultInterval),
+		BatchSize:               intValue(cfg.BatchSize, defaultBatch),
+		BackoffSeconds:          intValue(cfg.BackoffSeconds, 0),
+		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
 	}
 }
 
@@ -779,10 +789,11 @@ func indexStageRuntimeFromConfigWithConcurrency(cfg config.IndexingStageConfig, 
 
 func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	out := config.IndexingStageConfig{
-		Enabled:         boolPtr(in.Enabled),
-		IntervalMinutes: float64Ptr(in.IntervalMinutes),
-		BatchSize:       intPtr(in.BatchSize),
-		BackoffSeconds:  intPtr(in.BackoffSeconds),
+		Enabled:                 boolPtr(in.Enabled),
+		IntervalMinutes:         float64Ptr(in.IntervalMinutes),
+		BatchSize:               intPtr(in.BatchSize),
+		BackoffSeconds:          intPtr(in.BackoffSeconds),
+		BinaryUpsertDBChunkSize: intPtr(in.BinaryUpsertDBChunkSize),
 	}
 	if in.Concurrency > 0 {
 		out.Concurrency = intPtr(in.Concurrency)

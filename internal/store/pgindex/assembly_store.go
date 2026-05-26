@@ -20,7 +20,6 @@ const (
 	assemblePriorityHeaderWindowMultiplier = 40
 	assemblePriorityHeaderMinScan          = 5000
 	assemblePriorityHeaderMaxScan          = 100000
-	maxBinaryUpsertBatchRecords            = 250
 	maxBinaryUpsertBatchRetries            = 3
 	refreshBinaryStatsBatchSize            = 8000
 )
@@ -1007,9 +1006,10 @@ func (s *Store) UpsertBinaries(ctx context.Context, records []BinaryRecord) ([]i
 	}
 
 	ids := make([]int64, len(prepared))
+	chunkSize := binaryUpsertChunkSizeFromContext(ctx)
 
-	for start := 0; start < len(prepared); start += maxBinaryUpsertBatchRecords {
-		end := start + maxBinaryUpsertBatchRecords
+	for start := 0; start < len(prepared); start += chunkSize {
+		end := start + chunkSize
 		if end > len(prepared) {
 			end = len(prepared)
 		}
