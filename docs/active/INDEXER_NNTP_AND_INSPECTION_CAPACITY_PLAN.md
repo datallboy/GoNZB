@@ -141,21 +141,26 @@ Live stage-run findings from 2026-05-21:
 - A post-change `go run cmd/gonzb/main.go indexer assemble lane-a --once` pass completed eight tiny priority batches at about 507-867 headers/sec. Logged candidate selection rounded to 0.00 ms for those batches, replacing the prior 32-195 second selector stalls.
 - A post-change `go run cmd/gonzb/main.go indexer assemble lane-b --once` pass still took about 126 seconds wall time for eight 7,500-header worker batches. Refresh timing improved from the prior 11-12 ms per refreshed binary to about 3.2-5.8 ms per refreshed binary, but `binary_upsert_duration_ms` remained about 64-72 seconds per worker batch and is now clearly the dominant Lane B cost.
 - That same Lane B command shows the remaining refresh bucket is not pure binary stat recomputation anymore. It includes one-at-a-time release-family summary refreshes after the set-based binary stat update, so summary refresh batching is the next refresh-side target.
+- On 2026-05-26, the first true `UpsertBinaries` batch implementation exposed two database limits under real Lane B load: holding too many advisory locks in one chunk transaction caused `OUT OF SHARED MEMORY`, and larger `INSERT ... ON CONFLICT` batches deadlocked when concurrent workers locked conflicting rows in different orders.
+- The follow-up fix was to keep the logical assemble batch large but process binary upserts in smaller internal chunks, commit each chunk independently so advisory locks are released promptly, and force a deterministic `provider_id/newsgroup_id/binary_key` ordering inside the batch upsert.
+- With worker count reduced to 4 and internal upsert chunk size reduced to 250, `go run cmd/gonzb/main.go indexer assemble lane-b --once` completed cleanly with 15k worker batches. Observed worker metrics were about 122-244 headers/sec, about 38.8s-71.7s of `binary_upsert_ms`, about 15.0s-48.7s of `binary_refresh_ms`, and only about 4.4s-6.1s of `binary_part_upsert_ms`.
+- The 2026-05-26 `lane-a --once` rerun also stayed healthy at larger logical worker slices: about 2,135-2,136 headers per worker batch, about 799-960 headers/sec, `candidate_selection_ms=0.00`, and only 13-50 unique binary upserts per worker batch.
+- Direct `lane-a --once` and `lane-b --once` command logs remain the most reliable measurement source for these tests. The `indexer_stage_runs` table did not consistently persist the newer ad hoc command runs, which is a separate runtime-observability gap.
 
 Current batching audit:
 
 - `UpsertBinaryParts` is batched in chunks up to 8,000 records and marks article headers assembled with a set-based update. This part is already using the database batching pattern.
 - `RefreshBinaryStatsBatch` used to be only batched at the API boundary. Internally it looped each binary id, ran `refreshBinaryStatsInTx` one binary at a time, then refreshed release-family summaries one key at a time.
 - `RefreshBinaryStatsBatch` now performs binary stat recomputation as a set-based aggregate/update over chunks of up to 8,000 binary ids, then dedupes and refreshes the affected release-family summary keys. This should remove the 11-12 ms per-binary aggregate/update cost from Lane B.
-- `UpsertBinary` is not batched. Assemble calls it once per unique binary key. Each call starts a transaction, takes a binary identity advisory lock, looks up the existing binary, upserts one row, writes/deletes grouping evidence, and may refresh release-family summaries when identity changes.
-- Lane B batches with many unique binaries amplify this one-at-a-time binary upsert path. The recent 60k-header run produced 42,977 unique binary upserts, which explains why DB write time dominates.
+- `UpsertBinary` used to be fully one-at-a-time. Assemble now batches unique binary rows in memory per worker and sends them through `UpsertBinaries`, but the hot SQL is still expensive because each chunk must perform many `INSERT ... ON CONFLICT` checks and updates against existing binary identities.
+- Large logical Lane B batches now depend on small internal binary-upsert chunks. Bigger chunk transactions created too many advisory locks and row-lock conflicts; smaller chunk transactions traded some extra round trips for materially better stability.
 - Lane A priority candidate selection is set-based, but the old query shape encouraged a full incomplete-binary scan before joining to pending headers. The lateral rewrite makes pending structured headers drive indexed binary lookups and keeps repeated file names cheap through Postgres memoization.
 - Application RAM use around 1 GB in serve mode is not itself the assemble limiter right now. The slow paths are database I/O, per-row transactions, and query shape. We should use RAM deliberately in assemble by grouping batch work in memory and sending larger set-based operations to Postgres, not by adding generic caches before the hot SQL is fixed.
 
 Likely SQL bottlenecks to prove or fix:
 
 - Lane A priority selector: `listPriorityAssemblyHeaderIDs` against `article_headers`, `article_header_ingest_payloads`, and `binaries`, especially when the configured batch is large and the capped recent window is 100k headers.
-- Lane B binary writes: per-unique-binary `UpsertBinary` transactions and advisory locks.
+- Lane B binary writes: the dominant cost is now the set-based `UpsertBinaries` SQL itself plus release-family refresh work, not the old one-transaction-per-binary path. Stability still depends on keeping advisory-lock scope and row-lock ordering disciplined.
 - Binary stats refresh: fixed for binary stat rows with a set-based aggregate/update; still needs live post-change verification and summary-key batching review.
 - Release-family summary refresh: summary keys are deduped but still refreshed one at a time. Each key runs an aggregate query, a dominant-binary query, and an upsert into `release_family_readiness_summaries`.
 
@@ -164,13 +169,15 @@ Assemble action items:
 - [x] Capture `EXPLAIN (ANALYZE, BUFFERS)` for lane A priority selection during a representative backlog state and document whether the expensive node is recent pending scan, payload join, binary normalized-name lookup, ranking/sort, or hydration.
 - [x] Rewrite lane A priority selection so pending headers drive indexed binary lookups instead of letting Postgres scan and sort the large `binaries` table.
 - [ ] Add explicit assemble metrics for claim selector substeps: priority selection, recent selection, hydration, and claim update.
-- [ ] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible. This is now the primary Lane B bottleneck.
+- [x] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible. The store now batches unique binary rows per worker and processes them in smaller internal transactions.
+- [ ] Add chunk-level retry/telemetry around `UpsertBinaries` so deadlock retries and chunk counts are visible in metrics instead of only in command logs.
 - [x] Convert `RefreshBinaryStatsBatch` to a true set-based aggregate/update over all refreshed binary ids instead of looping one binary at a time.
 - [ ] Batch release-family summary refreshes by key set where practical.
 - [ ] Consider reducing or disabling lane A polling when repeated empty/tiny lane A selections are observed, so lane A does not spend tens of seconds proving no priority work while lane B has a massive backlog.
 - [ ] Re-check lane B after binary upsert and refresh batching; if header matching becomes dominant only then revisit matcher-level optimization.
 - [x] Re-check live Lane A selection timing after deployment. Expected selection time for the tested backlog shape is sub-second instead of tens of seconds.
-- [x] Re-check live Lane B refresh timing after deployment. Refresh dropped, but `binary_upsert_duration_ms` remained dominant and true `UpsertBinaryBatch` is still needed.
+- [x] Re-check live Lane B refresh timing after deployment. Refresh dropped, but `binary_upsert_duration_ms` remains dominant.
+- [ ] Investigate why `indexer_stage_runs` did not consistently persist direct `indexer assemble lane-a --once` and `lane-b --once` test runs. This is obscuring exact before/after comparisons in the dashboard.
 
 ## Current NNTP Transport Shape
 
