@@ -31,6 +31,7 @@ type repository interface {
 	ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) error
 	ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int64, rows []pgindex.BinaryPAR2TargetRecord) (*pgindex.BinaryPAR2TargetCoverageResult, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	ApplyPAR2InspectionBatch(ctx context.Context, rows []pgindex.PAR2InspectionBatchRecord) (*pgindex.PAR2InspectionBatchResult, error)
 	inspectpkg.CatalogReader
 }
 
@@ -90,6 +91,12 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"completion_write_ms":     float64(0),
 		"release_rollup_write_ms": float64(0),
 		"skipped_write_ms":        float64(0),
+		"result_flush_count":      0,
+		"result_flush_rows":       int64(0),
+		"result_flush_ms":         float64(0),
+		"result_flush_failures":   0,
+		"result_flush_max_size":   0,
+		"result_flush_max_ms":     float64(0),
 	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
@@ -101,6 +108,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	workerCount := par2WorkerCount(s.opts, len(candidates))
 	metrics["effective_concurrency"] = workerCount
 	jobs := make(chan pgindex.BinaryInspectionCandidate)
+	results := make(chan par2CandidateResult, workerCount*2)
 	processed := 0
 	submitted := 0
 	budgetExhausted := false
@@ -108,6 +116,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
+		flushWG  sync.WaitGroup
 		firstErr error
 	)
 	recordResult := func(candidate pgindex.BinaryInspectionCandidate, candidateDuration time.Duration, candidateMetrics par2CandidateMetrics, err error) {
@@ -148,6 +157,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			)
 		}
 	}
+	flushWG.Add(1)
+	go func() {
+		defer flushWG.Done()
+		s.flushCandidateResults(ctx, results, metrics, processingStarted, &mu, &processed, &firstErr)
+	}()
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -158,8 +172,17 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 					continue
 				}
 				candidateStarted := time.Now()
-				candidateMetrics, err := s.inspectCandidate(ctx, candidate)
-				recordResult(candidate, time.Since(candidateStarted), candidateMetrics, err)
+				result, err := s.inspectCandidate(ctx, candidate)
+				result.candidateDuration = time.Since(candidateStarted)
+				if err != nil {
+					recordResult(candidate, result.candidateDuration, result.metrics, err)
+					continue
+				}
+				select {
+				case results <- result:
+				case <-ctx.Done():
+					recordResult(candidate, result.candidateDuration, result.metrics, ctx.Err())
+				}
 			}
 		}()
 	}
@@ -187,6 +210,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	close(jobs)
 	wg.Wait()
+	close(results)
+	flushWG.Wait()
 	metrics["processed_count"] = processed
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	metrics["submitted_count"] = submitted
@@ -204,6 +229,94 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		)
 	}
 	return metrics, nil
+}
+
+func (s *Service) flushCandidateResults(ctx context.Context, results <-chan par2CandidateResult, metrics map[string]any, processingStarted time.Time, mu *sync.Mutex, processed *int, firstErr *error) {
+	flushSize := par2FlushSize(s.opts, metrics["effective_concurrency"].(int))
+	batch := make([]par2CandidateResult, 0, flushSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		started := time.Now()
+		rowCount := estimatePAR2FlushRows(batch)
+		persistRows := make([]pgindex.PAR2InspectionBatchRecord, 0, len(batch))
+		releaseUpdates := make([]pgindex.ReleaseInspectionUpdate, 0, len(batch))
+		for _, item := range batch {
+			persistRows = append(persistRows, item.persist)
+			if item.releaseUpdate != nil {
+				releaseUpdates = append(releaseUpdates, *item.releaseUpdate)
+			}
+		}
+		out, err := s.repo.ApplyPAR2InspectionBatch(ctx, persistRows)
+		flushDuration := time.Since(started)
+
+		mu.Lock()
+		defer mu.Unlock()
+		addFloatMetric(metrics, "result_flush_ms", durationMillis(flushDuration))
+		addIntMetric(metrics, "result_flush_count", 1)
+		addInt64Metric(metrics, "result_flush_rows", rowCount)
+		if size := len(batch); size > metrics["result_flush_max_size"].(int) {
+			metrics["result_flush_max_size"] = size
+		}
+		if durationMillis(flushDuration) > metrics["result_flush_max_ms"].(float64) {
+			metrics["result_flush_max_ms"] = durationMillis(flushDuration)
+		}
+		if err != nil {
+			addIntMetric(metrics, "result_flush_failures", 1)
+			if *firstErr == nil {
+				*firstErr = err
+			}
+			return
+		}
+		if out != nil && out.RowsWritten > rowCount {
+			metrics["result_flush_rows"] = metrics["result_flush_rows"].(int64) + (out.RowsWritten - rowCount)
+		}
+		for _, update := range releaseUpdates {
+			releaseStarted := time.Now()
+			err := s.repo.ApplyReleaseInspectionUpdate(ctx, update)
+			addFloatMetric(metrics, "release_rollup_write_ms", durationMillis(time.Since(releaseStarted)))
+			if err != nil {
+				if pgindex.IsReleaseNotFound(err) {
+					if s != nil && s.log != nil {
+						s.log.Warn("inspect_par2: skipped stale release rollup release_id=%s", update.ReleaseID)
+					}
+					continue
+				}
+				addIntMetric(metrics, "result_flush_failures", 1)
+				if *firstErr == nil {
+					*firstErr = err
+				}
+				return
+			}
+		}
+		for _, item := range batch {
+			mergePAR2Metrics(metrics, item.metrics)
+			*processed++
+			metrics["processed_count"] = *processed
+			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
+			candidateDurationMS := durationMillis(item.candidateDuration)
+			if s != nil && s.log != nil && (*processed == metrics["candidate_count"].(int) || *processed%10 == 0 || candidateDurationMS >= 5000) {
+				s.log.Info("inspect_par2: progress processed=%d/%d binary_id=%d file=%s duration_ms=%.2f concurrency=%d",
+					*processed,
+					metrics["candidate_count"],
+					item.candidate.BinaryID,
+					item.candidate.FileName,
+					candidateDurationMS,
+					metrics["effective_concurrency"],
+				)
+			}
+		}
+		batch = batch[:0]
+	}
+
+	for item := range results {
+		batch = append(batch, item)
+		if len(batch) >= flushSize {
+			flush()
+		}
+	}
+	flush()
 }
 
 func par2WorkerCount(opts inspectpkg.Options, candidateCount int) int {
@@ -254,6 +367,14 @@ type par2CandidateMetrics struct {
 	SkippedWrite       time.Duration
 }
 
+type par2CandidateResult struct {
+	candidate         pgindex.BinaryInspectionCandidate
+	metrics           par2CandidateMetrics
+	persist           pgindex.PAR2InspectionBatchRecord
+	releaseUpdate     *pgindex.ReleaseInspectionUpdate
+	candidateDuration time.Duration
+}
+
 func mergePAR2Metrics(metrics map[string]any, in par2CandidateMetrics) {
 	addFloatMetric(metrics, "claim_ms", durationMillis(in.Claim))
 	addFloatMetric(metrics, "workspace_ms", durationMillis(in.Workspace))
@@ -295,18 +416,18 @@ func addInt64Metric(metrics map[string]any, key string, delta int64) {
 	metrics[key] = current + delta
 }
 
-func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) (par2CandidateMetrics, error) {
+func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) (par2CandidateResult, error) {
 	stageName := string(supervisor.StageInspectPAR2)
-	var metrics par2CandidateMetrics
+	result := par2CandidateResult{candidate: candidate}
 	started := time.Now()
 	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
-		return metrics, err
+		return result, err
 	}
-	metrics.Claim = time.Since(started)
+	result.metrics.Claim = time.Since(started)
 
 	started = time.Now()
 	workspace, err := s.workspace.PrepareBinaryWorkspace(ctx, stageName, candidate)
-	metrics.Workspace = time.Since(started)
+	result.metrics.Workspace = time.Since(started)
 	if err != nil {
 		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 			StageName:       stageName,
@@ -315,13 +436,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       err.Error(),
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return metrics, fmt.Errorf("prepare par2 workspace: %w", err)
+		return result, fmt.Errorf("prepare par2 workspace: %w", err)
 	}
 	defer workspace.Cleanup()
 
 	started = time.Now()
 	sample, err := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, candidate, minInt64PAR2(s.opts.MaxBytes, 256*1024))
-	metrics.PrefixFetch = time.Since(started)
+	result.metrics.PrefixFetch = time.Since(started)
 	if err != nil {
 		if isRecoverablePAR2InspectionError(err) {
 			_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -334,18 +455,19 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
 			}
-			return metrics, nil
+			return result, nil
 		}
 		started = time.Now()
-		if err := s.completeSkippedInspection(ctx, candidate, workspace.ManifestPath, err); err != nil {
-			metrics.SkippedWrite = time.Since(started)
-			return metrics, err
+		persist, persistErr := s.skippedInspectionRecord(candidate, err)
+		result.metrics.SkippedWrite = time.Since(started)
+		if persistErr != nil {
+			return result, persistErr
 		}
-		metrics.SkippedWrite = time.Since(started)
+		result.persist = persist
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_par2: skipped binary_id=%d release_id=%s reason=%s", candidate.BinaryID, candidate.ReleaseID, par2ProbeSkipReason(err))
 		}
-		return metrics, nil
+		return result, nil
 	}
 
 	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(candidate.FileName)), ".par2")
@@ -362,13 +484,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	signatureOK := sample.Signature == "par2"
 	started = time.Now()
 	targets := parseTargetFiles(sample.Prefix)
-	metrics.Parse = time.Since(started)
+	result.metrics.Parse = time.Since(started)
 	usedFullMaterialization := false
 	if shouldMaterializePAR2Manifest(candidate.FileName, isVolume, sample, targets) {
-		metrics.FullManifestCount = 1
+		result.metrics.FullManifestCount = 1
 		started = time.Now()
 		full, fullErr := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, workspaceBinaryPath(workspace, candidate), s.opts.MaxBytes)
-		metrics.FullManifest = time.Since(started)
+		result.metrics.FullManifest = time.Since(started)
 		if fullErr != nil {
 			if s != nil && s.log != nil {
 				s.log.Warn("inspect_par2: manifest materialization fallback failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, fullErr)
@@ -381,10 +503,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				}
 			} else {
 				workspace.MaterializedBytes += full.BytesWritten
-				metrics.FullManifestBytes += full.BytesWritten
+				result.metrics.FullManifestBytes += full.BytesWritten
 				started = time.Now()
 				targets = parseTargetFiles(data)
-				metrics.Parse += time.Since(started)
+				result.metrics.Parse += time.Since(started)
 				usedFullMaterialization = len(targets) > 0
 			}
 		}
@@ -407,59 +529,45 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		})
 	}
 
-	started = time.Now()
-	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, []pgindex.BinaryInspectionArtifactRecord{{
-		BinaryID:     candidate.BinaryID,
-		ReleaseID:    candidate.ReleaseID,
-		StageName:    stageName,
-		ArtifactRole: "prefix_sample",
-		ArtifactName: sample.OutputName,
-		BytesTotal:   sample.BytesRead,
-		MIMEType:     sample.MIMEType,
-		Signature:    sample.Signature,
-		SourceKind:   "inspect_par2",
-		Metadata: map[string]any{
-			"bytes_sampled":          sample.BytesRead,
-			"exact_size":             sample.ExactSize,
-			"full_manifest_fallback": usedFullMaterialization,
-		},
-	}}); err != nil {
-		metrics.ArtifactWrite = time.Since(started)
-		return metrics, err
+	result.persist = pgindex.PAR2InspectionBatchRecord{
+		StageName:       stageName,
+		BinaryID:        candidate.BinaryID,
+		ReleaseID:       candidate.ReleaseID,
+		SourceUpdatedAt: candidate.SourceUpdatedAt,
+		ArtifactRows: []pgindex.BinaryInspectionArtifactRecord{{
+			BinaryID:     candidate.BinaryID,
+			ReleaseID:    candidate.ReleaseID,
+			StageName:    stageName,
+			ArtifactRole: "prefix_sample",
+			ArtifactName: sample.OutputName,
+			BytesTotal:   sample.BytesRead,
+			MIMEType:     sample.MIMEType,
+			Signature:    sample.Signature,
+			SourceKind:   "inspect_par2",
+			Metadata: map[string]any{
+				"bytes_sampled":          sample.BytesRead,
+				"exact_size":             sample.ExactSize,
+				"full_manifest_fallback": usedFullMaterialization,
+			},
+		}},
+		PAR2SetRows: []pgindex.BinaryPAR2SetRecord{{
+			BinaryID:       candidate.BinaryID,
+			ReleaseID:      candidate.ReleaseID,
+			SetName:        setName,
+			BaseName:       base,
+			IsVolume:       isVolume,
+			VolumeNumber:   volumeNumber,
+			RecoveryBlocks: recoveryBlocks,
+			SignatureOK:    signatureOK,
+			Metadata: map[string]any{
+				"file_name": candidate.FileName,
+				"targets":   targetMetadata,
+			},
+		}},
+		PAR2TargetRows:    targetRows,
+		MaterializedBytes: workspace.MaterializedBytes + sample.BytesRead,
+		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
 	}
-	metrics.ArtifactWrite = time.Since(started)
-	started = time.Now()
-	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, []pgindex.BinaryPAR2SetRecord{{
-		BinaryID:       candidate.BinaryID,
-		ReleaseID:      candidate.ReleaseID,
-		SetName:        setName,
-		BaseName:       base,
-		IsVolume:       isVolume,
-		VolumeNumber:   volumeNumber,
-		RecoveryBlocks: recoveryBlocks,
-		SignatureOK:    signatureOK,
-		Metadata: map[string]any{
-			"file_name": candidate.FileName,
-			"targets":   targetMetadata,
-		},
-	}}); err != nil {
-		metrics.SetWrite = time.Since(started)
-		return metrics, err
-	}
-	metrics.SetWrite = time.Since(started)
-	started = time.Now()
-	if err := s.repo.ReplaceBinaryPAR2Targets(ctx, candidate.BinaryID, targetRows); err != nil {
-		metrics.TargetWrite = time.Since(started)
-		return metrics, err
-	}
-	metrics.TargetWrite = time.Since(started)
-	started = time.Now()
-	coverage, err := s.repo.ApplyBinaryPAR2TargetCoverage(ctx, candidate.BinaryID, targetRows)
-	if err != nil {
-		metrics.CoverageWrite = time.Since(started)
-		return metrics, err
-	}
-	metrics.CoverageWrite = time.Since(started)
 
 	summary := map[string]any{
 		"has_par2":               true,
@@ -472,49 +580,18 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"targets":                targetMetadata,
 		"full_manifest_fallback": usedFullMaterialization,
 	}
-	if coverage != nil {
-		summary["main_target_count"] = coverage.MainTargetCount
-		summary["target_coverage_updates"] = coverage.UpdatedBinaryCount
-	}
-
-	started = time.Now()
-	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
-		StageName:         stageName,
-		BinaryID:          candidate.BinaryID,
-		ReleaseID:         candidate.ReleaseID,
-		Status:            "completed",
-		MaterializedBytes: workspace.MaterializedBytes + sample.BytesRead,
-		ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
-		Summary:           summary,
-		SourceUpdatedAt:   candidate.SourceUpdatedAt,
-	}); err != nil {
-		metrics.CompletionWrite = time.Since(started)
-		return metrics, err
-	}
-	metrics.CompletionWrite = time.Since(started)
+	result.persist.Summary = summary
 
 	hasPAR2 := true
 	if strings.TrimSpace(candidate.ReleaseID) == "" {
-		return metrics, nil
+		return result, nil
 	}
-	started = time.Now()
-	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	result.releaseUpdate = &pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasPAR2:           &hasPAR2,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	}); err != nil {
-		if pgindex.IsReleaseNotFound(err) {
-			metrics.ReleaseRollupWrite = time.Since(started)
-			if s != nil && s.log != nil {
-				s.log.Warn("inspect_par2: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
-			}
-			return metrics, nil
-		}
-		metrics.ReleaseRollupWrite = time.Since(started)
-		return metrics, err
 	}
-	metrics.ReleaseRollupWrite = time.Since(started)
-	return metrics, nil
+	return result, nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
@@ -569,7 +646,7 @@ func workspaceBinaryPath(workspace *inspectpkg.Workspace, candidate pgindex.Bina
 	return workspace.Dir + string(os.PathSeparator) + name
 }
 
-func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, _ string, cause error) error {
+func (s *Service) skippedInspectionRecord(candidate pgindex.BinaryInspectionCandidate, cause error) (pgindex.PAR2InspectionBatchRecord, error) {
 	stageName := string(supervisor.StageInspectPAR2)
 	summary := map[string]any{
 		"has_par2":           true,
@@ -577,24 +654,45 @@ func (s *Service) completeSkippedInspection(ctx context.Context, candidate pgind
 		"probe_skip_reason":  par2ProbeSkipReason(cause),
 		"probe_error_detail": strings.TrimSpace(cause.Error()),
 	}
-	if err := s.repo.ReplaceBinaryInspectionArtifacts(ctx, stageName, candidate.BinaryID, nil); err != nil {
-		return err
-	}
-	if err := s.repo.ReplaceBinaryPAR2Sets(ctx, candidate.BinaryID, nil); err != nil {
-		return err
-	}
-	if err := s.repo.ReplaceBinaryPAR2Targets(ctx, candidate.BinaryID, nil); err != nil {
-		return err
-	}
-	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+	return pgindex.PAR2InspectionBatchRecord{
 		StageName:       stageName,
 		BinaryID:        candidate.BinaryID,
 		ReleaseID:       candidate.ReleaseID,
-		Status:          "completed",
+		SourceUpdatedAt: candidate.SourceUpdatedAt,
 		ToolProvenance:  inspectpkg.ToolProvenance(s.opts, stageName),
 		Summary:         summary,
-		SourceUpdatedAt: candidate.SourceUpdatedAt,
-	})
+	}, nil
+}
+
+func par2FlushSize(opts inspectpkg.Options, concurrency int) int {
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	size := concurrency * 8
+	if size < 16 {
+		size = 16
+	}
+	if size > 128 {
+		size = 128
+	}
+	if opts.CandidateBatchSize > 0 && size > opts.CandidateBatchSize {
+		size = opts.CandidateBatchSize
+	}
+	return size
+}
+
+func estimatePAR2FlushRows(batch []par2CandidateResult) int64 {
+	var rows int64
+	for _, item := range batch {
+		rows += int64(len(item.persist.ArtifactRows))
+		rows += int64(len(item.persist.PAR2SetRows))
+		rows += int64(len(item.persist.PAR2TargetRows))
+		rows++
+		if item.releaseUpdate != nil {
+			rows++
+		}
+	}
+	return rows
 }
 
 func par2ProbeSkipReason(err error) string {

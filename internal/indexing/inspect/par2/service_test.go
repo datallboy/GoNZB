@@ -321,6 +321,37 @@ func (f *fakePAR2Repository) ApplyReleaseInspectionUpdate(_ context.Context, in 
 	return nil
 }
 
+func (f *fakePAR2Repository) ApplyPAR2InspectionBatch(_ context.Context, rows []pgindex.PAR2InspectionBatchRecord) (*pgindex.PAR2InspectionBatchResult, error) {
+	out := &pgindex.PAR2InspectionBatchResult{}
+	for _, row := range rows {
+		f.artifacts = append(f.artifacts, row.ArtifactRows...)
+		f.par2Sets = append(f.par2Sets, row.PAR2SetRows...)
+		f.par2Targets = append(f.par2Targets, row.PAR2TargetRows...)
+		f.coverageRows = append(f.coverageRows, row.PAR2TargetRows...)
+		summary := map[string]any{}
+		for k, v := range row.Summary {
+			summary[k] = v
+		}
+		if len(row.PAR2TargetRows) > 0 {
+			summary["main_target_count"] = len(row.PAR2TargetRows)
+			summary["target_coverage_updates"] = 3
+		}
+		f.completed = append(f.completed, pgindex.BinaryInspectionRecord{
+			StageName:         row.StageName,
+			BinaryID:          row.BinaryID,
+			ReleaseID:         row.ReleaseID,
+			Status:            "completed",
+			MaterializedBytes: row.MaterializedBytes,
+			ToolProvenance:    row.ToolProvenance,
+			Summary:           summary,
+			SourceUpdatedAt:   row.SourceUpdatedAt,
+		})
+		out.FlushedCandidates++
+		out.RowsWritten += int64(len(row.ArtifactRows) + len(row.PAR2SetRows) + len(row.PAR2TargetRows) + 1)
+	}
+	return out, nil
+}
+
 func (f *fakePAR2Repository) ListCatalogReleaseFiles(context.Context, string) ([]pgindex.CatalogReleaseFile, error) {
 	return f.files, nil
 }
