@@ -248,6 +248,24 @@ type BinaryInspectionArtifactRecord struct {
 	Metadata     map[string]any
 }
 
+type PAR2InspectionBatchRecord struct {
+	StageName         string
+	BinaryID          int64
+	ReleaseID         string
+	SourceUpdatedAt   *time.Time
+	ArtifactRows      []BinaryInspectionArtifactRecord
+	PAR2SetRows       []BinaryPAR2SetRecord
+	PAR2TargetRows    []BinaryPAR2TargetRecord
+	MaterializedBytes int64
+	ToolProvenance    map[string]any
+	Summary           map[string]any
+}
+
+type PAR2InspectionBatchResult struct {
+	FlushedCandidates int
+	RowsWritten       int64
+}
+
 type BinaryArchiveEntryRecord struct {
 	BinaryID          int64
 	ReleaseID         string

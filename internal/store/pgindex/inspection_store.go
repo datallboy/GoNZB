@@ -1882,63 +1882,8 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM binary_inspection_artifacts
-		WHERE binary_id = $1 AND stage_name = $2`,
-		binaryID,
-		stageName,
-	); err != nil {
-		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
-	}
-
-	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
-	if err != nil {
-		return fmt.Errorf("load artifact release ids %s/%d: %w", stageName, binaryID, err)
-	}
-
-	insertRows := make([][]any, 0, len(rows))
-	for _, row := range rows {
-		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
-		if err != nil {
-			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
-		}
-		var releaseID any
-		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
-			releaseID = trimmedReleaseID
-		}
-		insertRows = append(insertRows, []any{
-			binaryID,
-			releaseID,
-			stageName,
-			strings.TrimSpace(row.ArtifactRole),
-			strings.TrimSpace(row.ArtifactName),
-			strings.TrimSpace(row.ArtifactPath),
-			row.BytesTotal,
-			strings.TrimSpace(row.MIMEType),
-			strings.TrimSpace(row.Signature),
-			strings.TrimSpace(row.SourceKind),
-			string(metadataJSON),
-			time.Now().UTC(),
-		})
-	}
-
-	if err := execInspectionReplaceBatch(ctx, tx, `
-			INSERT INTO binary_inspection_artifacts (
-				binary_id,
-				release_id,
-				stage_name,
-				artifact_role,
-				artifact_name,
-				artifact_path,
-				bytes_total,
-				mime_type,
-				signature,
-				source_kind,
-				metadata_json,
-				updated_at
-			)
-			VALUES `, insertRows); err != nil {
-		return fmt.Errorf("insert inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	if err := s.replaceBinaryInspectionArtifactsInTx(ctx, tx, stageName, binaryID, rows); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2181,6 +2126,194 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 	}
 	defer rollbackTx(tx)
 
+	if err := s.replaceBinaryPAR2SetsInTx(ctx, tx, binaryID, rows); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit par2 set replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
+	if binaryID <= 0 {
+		return fmt.Errorf("binary id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin par2 target replace tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if err := s.replaceBinaryPAR2TargetsInTx(ctx, tx, binaryID, rows); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit par2 target replace tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) (*BinaryPAR2TargetCoverageResult, error) {
+	result := &BinaryPAR2TargetCoverageResult{TargetCount: len(rows)}
+	if binaryID <= 0 {
+		return result, fmt.Errorf("binary id is required")
+	}
+
+	targets := normalizePAR2CoverageTargets(rows)
+	result.MainTargetCount = len(targets)
+	if len(targets) == 0 {
+		return result, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("begin par2 target coverage tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	result, err = s.applyBinaryPAR2TargetCoverageInTx(ctx, tx, binaryID, rows)
+	if err != nil {
+		return result, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("commit par2 target coverage tx: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2InspectionBatchRecord) (*PAR2InspectionBatchResult, error) {
+	if len(rows) == 0 {
+		return &PAR2InspectionBatchResult{}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin par2 inspection batch tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	out := &PAR2InspectionBatchResult{}
+	for _, row := range rows {
+		if row.BinaryID <= 0 {
+			return out, fmt.Errorf("par2 inspection batch binary id is required")
+		}
+		stageName := strings.TrimSpace(row.StageName)
+		if stageName == "" {
+			stageName = "inspect_par2"
+		}
+		if err := s.replaceBinaryInspectionArtifactsInTx(ctx, tx, stageName, row.BinaryID, row.ArtifactRows); err != nil {
+			return out, err
+		}
+		out.RowsWritten += int64(len(row.ArtifactRows))
+		if err := s.replaceBinaryPAR2SetsInTx(ctx, tx, row.BinaryID, row.PAR2SetRows); err != nil {
+			return out, err
+		}
+		out.RowsWritten += int64(len(row.PAR2SetRows))
+		if err := s.replaceBinaryPAR2TargetsInTx(ctx, tx, row.BinaryID, row.PAR2TargetRows); err != nil {
+			return out, err
+		}
+		out.RowsWritten += int64(len(row.PAR2TargetRows))
+		summary := sanitizeStringMap(row.Summary)
+		if len(row.PAR2TargetRows) > 0 {
+			coverage, err := s.applyBinaryPAR2TargetCoverageInTx(ctx, tx, row.BinaryID, row.PAR2TargetRows)
+			if err != nil {
+				return out, err
+			}
+			if coverage != nil {
+				summary["main_target_count"] = coverage.MainTargetCount
+				summary["target_coverage_updates"] = coverage.UpdatedBinaryCount
+				out.RowsWritten += int64(coverage.UpdatedBinaryCount)
+			}
+		}
+		if err := s.finishBinaryInspectionWithDB(ctx, tx, BinaryInspectionRecord{
+			StageName:         stageName,
+			BinaryID:          row.BinaryID,
+			ReleaseID:         row.ReleaseID,
+			Status:            "completed",
+			MaterializedBytes: row.MaterializedBytes,
+			ToolProvenance:    row.ToolProvenance,
+			Summary:           summary,
+			SourceUpdatedAt:   row.SourceUpdatedAt,
+		}, "completed"); err != nil {
+			return out, err
+		}
+		out.RowsWritten++
+		out.FlushedCandidates++
+	}
+	if err := tx.Commit(); err != nil {
+		return out, fmt.Errorf("commit par2 inspection batch tx: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sql.Tx, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND stage_name = $2`,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	}
+
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load artifact release ids %s/%d: %w", stageName, binaryID, err)
+	}
+
+	insertRows := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
+		if err != nil {
+			return fmt.Errorf("marshal inspection artifact metadata %s/%d: %w", stageName, binaryID, err)
+		}
+		var releaseID any
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
+		}
+		insertRows = append(insertRows, []any{
+			binaryID,
+			releaseID,
+			stageName,
+			strings.TrimSpace(row.ArtifactRole),
+			strings.TrimSpace(row.ArtifactName),
+			strings.TrimSpace(row.ArtifactPath),
+			row.BytesTotal,
+			strings.TrimSpace(row.MIMEType),
+			strings.TrimSpace(row.Signature),
+			strings.TrimSpace(row.SourceKind),
+			string(metadataJSON),
+			time.Now().UTC(),
+		})
+	}
+
+	if err := execInspectionReplaceBatch(ctx, tx, `
+			INSERT INTO binary_inspection_artifacts (
+				binary_id,
+				release_id,
+				stage_name,
+				artifact_role,
+				artifact_name,
+				artifact_path,
+				bytes_total,
+				mime_type,
+				signature,
+				source_kind,
+				metadata_json,
+				updated_at
+			)
+			VALUES `, insertRows); err != nil {
+		return fmt.Errorf("insert inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	}
+	return nil
+}
+
+func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2SetRecord) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE binary_id = $1`, binaryID); err != nil {
 		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
 	}
@@ -2208,7 +2341,6 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 			time.Now().UTC(),
 		})
 	}
-
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_sets (
 				binary_id,
@@ -2225,24 +2357,10 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 			VALUES `, insertRows); err != nil {
 		return fmt.Errorf("insert par2 sets %d: %w", binaryID, err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit par2 set replace tx: %w", err)
-	}
 	return nil
 }
 
-func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
-	if binaryID <= 0 {
-		return fmt.Errorf("binary id is required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin par2 target replace tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
+func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2TargetRecord) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE binary_id = $1`, binaryID); err != nil {
 		return fmt.Errorf("delete par2 targets %d: %w", binaryID, err)
 	}
@@ -2266,7 +2384,6 @@ func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, ro
 			time.Now().UTC(),
 		})
 	}
-
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_targets (
 				binary_id,
@@ -2279,14 +2396,10 @@ func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, ro
 			VALUES `, insertRows); err != nil {
 		return fmt.Errorf("insert par2 targets %d: %w", binaryID, err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit par2 target replace tx: %w", err)
-	}
 	return nil
 }
 
-func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) (*BinaryPAR2TargetCoverageResult, error) {
+func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2TargetRecord) (*BinaryPAR2TargetCoverageResult, error) {
 	result := &BinaryPAR2TargetCoverageResult{TargetCount: len(rows)}
 	if binaryID <= 0 {
 		return result, fmt.Errorf("binary id is required")
@@ -2297,12 +2410,6 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 	if len(targets) == 0 {
 		return result, nil
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return result, fmt.Errorf("begin par2 target coverage tx: %w", err)
-	}
-	defer rollbackTx(tx)
 
 	var seed struct {
 		providerID               int64
@@ -2464,9 +2571,6 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit par2 target coverage tx: %w", err)
-	}
 	return result, nil
 }
 
@@ -2587,6 +2691,14 @@ func parseInt64PGIndex(value string) int64 {
 }
 
 func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	return s.finishBinaryInspectionWithDB(ctx, s.db, in, fallbackStatus)
+}
+
+type inspectionExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspectionExecer, in BinaryInspectionRecord, fallbackStatus string) error {
 	in.StageName = strings.TrimSpace(in.StageName)
 	if in.StageName == "" {
 		return fmt.Errorf("stage name is required")
@@ -2622,7 +2734,7 @@ func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionR
 		return fmt.Errorf("marshal inspection summary for %s/%d: %w", in.StageName, in.BinaryID, err)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = execer.ExecContext(ctx, `
 		INSERT INTO binary_inspections (
 			stage_name,
 			binary_id,
