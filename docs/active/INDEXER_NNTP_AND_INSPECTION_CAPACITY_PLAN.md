@@ -263,12 +263,12 @@ Assemble action items:
 - [ ] Add explicit assemble metrics for claim selector substeps: priority selection, recent selection, hydration, and claim update.
 - [x] Batch binary upserts by unique binary key, returning ids for all records in one repository call where possible. The store now batches unique binary rows per worker and processes them in smaller internal transactions.
 - [x] Expose internal binary-upsert chunk size as an advanced runtime setting with a conservative default. Implemented as `binary_upsert_db_chunk_size` on assemble-stage runtime settings, surfaced in the admin UI behind the advanced-settings toggle, with default `250`.
-- [ ] Add chunk-level retry/telemetry around `UpsertBinaries` so deadlock retries and chunk counts are visible in metrics instead of only in command logs.
+- moved to `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`: add chunk-level retry/telemetry around `UpsertBinaries` so deadlock retries and chunk counts are visible in metrics instead of only in command logs. The remaining question is lock/retry pressure under cross-stage overlap, not NNTP or inspect throughput.
 - [x] Convert `RefreshBinaryStatsBatch` to a true set-based aggregate/update over all refreshed binary ids instead of looping one binary at a time.
-- [ ] Batch release-family summary refreshes by key set where practical.
+- moved to `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`: batch release-family summary refreshes by key set where practical. The hot cost is now derived-summary churn under overlapping write paths.
 - [ ] Consider reducing or disabling lane A polling when repeated empty/tiny lane A selections are observed, so lane A does not spend tens of seconds proving no priority work while lane B has a massive backlog.
-- [ ] Re-check lane B after binary upsert and refresh batching; if header matching becomes dominant only then revisit matcher-level optimization.
-- [ ] Decide whether serve mode needs temporary stage staggering or lower live concurrency for `recover_yenc` / `inspect_par2` while the assemble backlog is still dominant. Current evidence points to cross-stage contention, not supervisor overhead.
+- moved to `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`: re-check lane B after binary upsert and refresh batching; if header matching becomes dominant only then revisit matcher-level optimization. The remaining regression is serve-mode write overlap, not local matcher shape.
+- moved to `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`: decide whether serve mode needs temporary stage staggering or lower live concurrency for `recover_yenc` / `inspect_par2` while the assemble backlog is still dominant. This is now an overlap-mitigation decision, not a pure capacity-tuning task.
 - [x] Re-check live Lane A selection timing after deployment. Expected selection time for the tested backlog shape is sub-second instead of tens of seconds.
 - [x] Re-check live Lane B refresh timing after deployment. Refresh dropped, but `binary_upsert_duration_ms` remains dominant.
 - [ ] Investigate why `indexer_stage_runs` did not consistently persist direct `indexer assemble lane-a --once` and `lane-b --once` test runs. This is obscuring exact before/after comparisons in the dashboard.

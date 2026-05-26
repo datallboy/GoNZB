@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-05-26
 
-Status: on hold until the current PAR2 batching, yEnc work-item, and remaining assemble follow-up items are complete.
+Status: active follow-up for the remaining assemble/release write-overlap work now that the PAR2 batching and yEnc work-item items are complete enough to stop blocking it.
 
 This doc captures the longer-run database plan that surfaced from the serve-vs-once assemble analysis. It is intentionally separate from the current sprint docs so the active execution backlog stays focused.
 
@@ -16,15 +16,13 @@ Current evidence shows that the main live slowdown is shared Postgres write pres
 
 This is the planning track for reducing row-lock overlap and derived-summary churn before considering Redis, an external queue, or a separate worker topology.
 
-## On-Hold Scope
+## Current Scope
 
-This plan is deferred behind:
+This plan now owns the remaining cross-stage write-contention work that was left over after the PAR2 and yEnc execution items landed:
 
-1. PAR2 inspect batch persistence and write telemetry
-2. yEnc exact backlog and candidate-selection work-item design
-3. remaining assemble follow-up telemetry and release-summary review
-
-This doc should not drive day-to-day sprint execution until those items are farther along.
+1. `assemble_lane_b` still regresses materially under serve-mode overlap even after batched binary upserts and set-based binary-stat refreshes.
+2. The remaining hot surfaces are derived-summary refreshes and overlapping write paths, not NNTP transport.
+3. The active question is no longer whether assemble needs batching. It does, and that landed. The active question is how much of the remaining slowdown is still inline rollup churn and lock overlap with `recover_yenc`, `inspect_par2`, and `release`.
 
 ## Shared Hot Surfaces
 
@@ -120,3 +118,12 @@ Open this as an active execution sprint only after:
 - PAR2, yEnc, assemble, and release do not routinely update the same derived summary rows inside separate hot-path transactions
 - deadlock retries and lock-related failures are rare, measured, and attributable when they do happen
 - dashboard/runtime counts remain exact without requiring the heaviest cross-table derived queries on every refresh
+
+## Active Execution Backlog
+
+- [ ] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
+- [ ] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Current code still refreshes summary keys inside each chunk commit.
+- [ ] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Current code still dedupes keys but refreshes each summary one at a time in the same transaction as the stats update.
+- [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
+- [ ] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
+- [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
