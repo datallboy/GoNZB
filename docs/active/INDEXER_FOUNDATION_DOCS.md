@@ -52,6 +52,14 @@ Use for:
 - NNTP pool ownership, queueing, active-connection, and provider-pressure metrics
 - keeping operational capacity work separate from the obfuscated-payload evidence log
 
+### `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`
+
+Use for:
+
+- the deferred schema and repository plan for reducing serve-mode write contention
+- separating canonical fact writes from derived summary refreshes
+- future lock-ordering, transaction-scope, and rollup-isolation work once the current PAR2/yEnc/assemble tasks are complete
+
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
@@ -105,6 +113,10 @@ Primary active workstreams:
 - make yEnc recovery and PAR2 backlog visibility exact enough for capacity tuning
 - add NNTP and inspection capacity metrics before raising worker counts far enough to pressure the provider account
 - implement bounded cross-group recovered-identity promotion from the active grouping plan
+
+Deferred on-hold planning workstream:
+
+- database write-contention isolation after the current PAR2, yEnc, and assemble measurement tasks are complete
 
 Completed obfuscated-payload hardening workstream:
 
