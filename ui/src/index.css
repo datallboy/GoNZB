@@ -488,6 +488,29 @@ textarea {
   background: rgba(7, 18, 26, 0.34);
 }
 
+.settings-stage-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.settings-stage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.settings-stage-card {
+  gap: 0.9rem;
+}
+
+.settings-stage-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
 .settings-tabs {
   display: flex;
   flex-wrap: wrap;

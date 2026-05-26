@@ -31,22 +31,38 @@ type StageKey =
 type BackfillRow = { group: string; until: string }
 type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'indexer'
 
-const stageRows: Array<{ key: StageKey; label: string; concurrency: boolean; description: string }> = [
-  { key: 'scrape_latest', label: 'Scrape latest', concurrency: false, description: 'Fast forward scan for new article headers.' },
-  { key: 'scrape_backfill', label: 'Scrape backfill', concurrency: false, description: 'Older article scan toward each group cutoff date.' },
-  { key: 'assemble', label: 'Assemble', concurrency: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
-  { key: 'assemble_lane_a', label: 'Assemble lane A', concurrency: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
-  { key: 'assemble_lane_b', label: 'Assemble lane B', concurrency: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
-  { key: 'recover_yenc', label: 'Recover yEnc', concurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
-  { key: 'release', label: 'Release', concurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
-  { key: 'inspect_discovery', label: 'Inspect discovery', concurrency: false, description: 'Opaque-binary inspection discovery pass.' },
-  { key: 'inspect_par2', label: 'Inspect PAR2', concurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
-  { key: 'inspect_nfo', label: 'Inspect NFO', concurrency: false, description: 'NFO text extraction and evidence capture.' },
-  { key: 'inspect_archive', label: 'Inspect archive', concurrency: true, description: 'Archive listing and encrypted/password detection.' },
-  { key: 'inspect_password', label: 'Inspect password', concurrency: false, description: 'Password verification workflow.' },
-  { key: 'inspect_media', label: 'Inspect media', concurrency: true, description: 'Media probe and stream metadata extraction.' },
-  { key: 'enrich_predb', label: 'Enrich PreDB', concurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
-  { key: 'enrich_tmdb', label: 'Enrich TMDB', concurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
+type StageDefinition = {
+  key: StageKey
+  label: string
+  description: string
+  supportsConcurrency: boolean
+  showBinaryUpsertChunk?: boolean
+}
+
+const stageDefinitions: StageDefinition[] = [
+  { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: false, description: 'Fast forward scan for new article headers.' },
+  { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: false, description: 'Older article scan toward each group cutoff date.' },
+  { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
+  { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
+  { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
+  { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
+  { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
+  { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.' },
+  { key: 'inspect_archive', label: 'Inspect archive', supportsConcurrency: true, description: 'Archive listing and encrypted/password detection.' },
+  { key: 'inspect_password', label: 'Inspect password', supportsConcurrency: false, description: 'Password verification workflow.' },
+  { key: 'inspect_media', label: 'Inspect media', supportsConcurrency: true, description: 'Media probe and stream metadata extraction.' },
+  { key: 'enrich_predb', label: 'Enrich PreDB', supportsConcurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
+  { key: 'enrich_tmdb', label: 'Enrich TMDB', supportsConcurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
+]
+
+const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
+  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
+  { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
+  { title: 'Release command', keys: ['release'] },
+  { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
+  { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
 
 const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
@@ -79,9 +95,9 @@ function defaultSettings(): RuntimeSettings {
       backfill_until_date_by_group: {},
       scrape_latest: stageDefaults(5000),
       scrape_backfill: stageDefaults(5000),
-      assemble: stageDefaults(5000, 1),
-      assemble_lane_a: stageDefaults(5000, 1),
-      assemble_lane_b: stageDefaults(2500, 1),
+      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
+      assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
+      assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
       recover_yenc: stageDefaults(25, 1),
       release: {
         ...stageDefaults(1000),
@@ -141,8 +157,8 @@ function defaultSettings(): RuntimeSettings {
   }
 }
 
-function stageDefaults(batchSize: number, concurrency = 0): AdminStageConfigPatch {
-  return { enabled: false, interval_minutes: 10, batch_size: batchSize, concurrency, backoff_seconds: 0 }
+function stageDefaults(batchSize: number, concurrency = 0, extras: Partial<AdminStageConfigPatch> = {}): AdminStageConfigPatch {
+  return { enabled: false, interval_minutes: 10, batch_size: batchSize, concurrency, backoff_seconds: 0, ...extras }
 }
 
 function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
@@ -359,6 +375,7 @@ export function AdminSettingsPage() {
   const [settings, setSettings] = useState<RuntimeSettings>(defaultSettings())
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
   const [activeTab, setActiveTab] = useState<SettingsTab>('nntp')
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [newsgroupDrafts, setNewsgroupDrafts] = useState<BackfillRow[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -421,6 +438,10 @@ export function AdminSettingsPage() {
 
   function updateStage(key: StageKey, patch: AdminStageConfigPatch) {
     setIndexing({ ...indexing, [key]: { ...indexing[key], ...patch } })
+  }
+
+  function stageDefinition(key: StageKey) {
+    return stageDefinitions.find((item) => item.key === key)!
   }
 
   return (
@@ -641,41 +662,60 @@ export function AdminSettingsPage() {
             ))}
           </SettingsSection>
 
-        <SettingsSection title="Indexer stages">
+        <SettingsSection title="Runtime stage controls">
           <div className="banner">
-            Stage settings control how often each pipeline stage runs and how much work it claims per pass. Larger batch sizes improve throughput when the queue is healthy, but they also make weak selection mistakes more expensive. Lane A is the fast feed into release. Lane B is the slower backlog-drain path.
+            Each command has its own runtime controls here. Batch size controls claim size per pass. Concurrency only appears on commands that support parallel workers.
           </div>
-          <div className="table-shell">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Stage</th>
-                  <th>Enabled</th>
-                  <th>Interval min</th>
-                  <th>Batch</th>
-                  <th>Backoff sec</th>
-                  <th>Concurrency</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stageRows.map((stage) => {
-                  const value = indexing[stage.key] as AdminStageConfigPatch
-                  return (
-                    <tr key={stage.key}>
-                      <td>
-                        <div><strong>{stage.label}</strong></div>
-                        <div className="muted-copy">{stage.description}</div>
-                      </td>
-                      <td><input type="checkbox" checked={Boolean(value.enabled)} onChange={(event) => updateStage(stage.key, { enabled: event.target.checked })} /></td>
-                      <td><input type="number" value={value.interval_minutes ?? 0} onChange={(event) => updateStage(stage.key, { interval_minutes: fieldNumber(event.target.value) })} /></td>
-                      <td><input type="number" value={value.batch_size ?? 0} onChange={(event) => updateStage(stage.key, { batch_size: fieldNumber(event.target.value) })} /></td>
-                      <td><input type="number" value={value.backoff_seconds ?? 0} onChange={(event) => updateStage(stage.key, { backoff_seconds: fieldNumber(event.target.value) })} /></td>
-                      <td><input type="number" disabled={!stage.concurrency} value={stage.concurrency ? value.concurrency ?? 0 : 0} onChange={(event) => updateStage(stage.key, { concurrency: fieldNumber(event.target.value) })} /></td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          <div className="toolbar-grid toolbar-grid--compact">
+            <CheckboxField
+              label="Show advanced settings"
+              checked={showAdvanced}
+              helpText="Advanced controls expose lower-level persistence tuning that should usually stay at the default."
+              onChange={setShowAdvanced}
+            />
+          </div>
+          <div className="settings-stage-groups">
+            {stageGroups.map((group) => (
+              <div className="stack" key={group.title}>
+                <h3 className="section-subtitle">{group.title}</h3>
+                <div className="settings-stage-list">
+                  {group.keys.map((key) => {
+                    const definition = stageDefinition(key)
+                    const value = indexing[key] as AdminStageConfigPatch
+                    return (
+                      <div className="settings-row settings-stage-card stack" key={key}>
+                        <div className="settings-stage-card__header">
+                          <div>
+                            <strong>{definition.label}</strong>
+                            <div className="muted-copy">{definition.description}</div>
+                          </div>
+                        </div>
+                        <div className="toolbar-grid">
+                          <CheckboxField label="Enabled" checked={Boolean(value.enabled)} onChange={(next) => updateStage(key, { enabled: next })} />
+                          <NumberField label="Interval minutes" min={1} step="0.5" value={value.interval_minutes ?? 0} onChange={(next) => updateStage(key, { interval_minutes: next })} />
+                          <NumberField label="Batch size" min={1} value={value.batch_size ?? 0} onChange={(next) => updateStage(key, { batch_size: next })} />
+                          <NumberField label="Backoff seconds" min={0} value={value.backoff_seconds ?? 0} onChange={(next) => updateStage(key, { backoff_seconds: next })} />
+                          {definition.supportsConcurrency ? (
+                            <NumberField label="Concurrency" min={1} value={value.concurrency ?? 1} onChange={(next) => updateStage(key, { concurrency: next })} />
+                          ) : null}
+                        </div>
+                        {showAdvanced && definition.showBinaryUpsertChunk ? (
+                          <div className="toolbar-grid toolbar-grid--compact">
+                            <NumberField
+                              label="Binary upsert DB chunk size"
+                              min={1}
+                              value={value.binary_upsert_db_chunk_size ?? 250}
+                              helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
+                              onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </SettingsSection>
 
