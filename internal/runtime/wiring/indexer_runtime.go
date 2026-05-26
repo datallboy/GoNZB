@@ -460,7 +460,7 @@ func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
 		appCtx.Logger.Warn("Failed to load indexer NNTP runtime settings: %v", err)
 		return nil
 	}
-	return app.ToConfigServers(app.RuntimeServersForCompatibility(runtime))
+	return app.ToConfigServers(app.IndexerNNTPServers(runtime))
 }
 
 func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*nntp.Manager, bool, error) {

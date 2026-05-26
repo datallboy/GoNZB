@@ -2233,6 +2233,8 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 	defer rollbackTx(tx)
 
 	out := &PAR2InspectionBatchResult{}
+	batchSummaryKeys := make([]releaseFamilySummaryKey, 0, len(rows)*2)
+	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, len(rows)*2)
 	for _, row := range rows {
 		if row.BinaryID <= 0 {
 			return out, fmt.Errorf("par2 inspection batch binary id is required")
@@ -2263,6 +2265,9 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 				summary["main_target_count"] = coverage.MainTargetCount
 				summary["target_coverage_updates"] = coverage.UpdatedBinaryCount
 				out.RowsWritten += int64(coverage.UpdatedBinaryCount)
+				for _, key := range coverage.SummaryKeys {
+					batchSummaryKeys = appendReleaseFamilySummaryKey(batchSummaryKeys, seenSummaryKeys, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
+				}
 			}
 		}
 		if err := s.finishBinaryInspectionWithDB(ctx, tx, BinaryInspectionRecord{
@@ -2279,6 +2284,12 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 		}
 		out.RowsWritten++
 		out.FlushedCandidates++
+	}
+	sortReleaseFamilySummaryKeys(batchSummaryKeys)
+	for _, key := range batchSummaryKeys {
+		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+			return out, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return out, fmt.Errorf("commit par2 inspection batch tx: %w", err)
@@ -2499,6 +2510,18 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 				    ),
 				    updated_at = NOW()
 				WHERE id = $1
+				  AND (
+					COALESCE(source_release_key, '') <> $2::text OR
+					COALESCE(release_family_key, '') <> $2::text OR
+					COALESCE(release_key, '') <> $2::text OR
+					COALESCE(file_family_key, '') <> $2::text OR
+					COALESCE(base_stem, '') <> $3::text OR
+					is_auxiliary <> TRUE OR
+					is_main_payload <> FALSE OR
+					expected_archive_file_count < $4::integer OR
+					COALESCE(grouping_evidence_json->>'par2_target_base_stem', '') <> $3::text OR
+					COALESCE(grouping_evidence_json->>'par2_target_coverage_source', '') <> 'inspect_par2'
+				  )
 				RETURNING release_family_key, base_stem, expected_file_count, expected_archive_file_count`,
 				binaryID,
 				releaseKey,
@@ -2567,6 +2590,13 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 			WHERE b.provider_id = $1
 			  AND b.newsgroup_id = $2
 			  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = tv.normalized_name
+			  AND (
+				b.expected_archive_file_count < $3::integer OR
+				(b.file_index <= 0 AND tv.file_index > 0) OR
+				COALESCE(b.grouping_evidence_json->>'par2_target_file_name', '') <> tv.file_name OR
+				COALESCE(b.grouping_evidence_json->>'par2_source_binary_id', '') <> ($4::bigint)::text OR
+				COALESCE(b.grouping_evidence_json->>'par2_target_coverage_source', '') <> 'inspect_par2'
+			  )
 			RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
 			args...,
 		)
@@ -2599,12 +2629,7 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 		}
 	}
 
-	sortReleaseFamilySummaryKeys(summaryKeys)
-	for _, key := range summaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return result, err
-		}
-	}
+	result.SummaryKeys = append(result.SummaryKeys, summaryKeys...)
 
 	return result, nil
 }

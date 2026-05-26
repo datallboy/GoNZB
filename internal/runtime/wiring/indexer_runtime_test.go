@@ -1,11 +1,49 @@
 package wiring
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+type fakeSettingsStore struct {
+	runtime *app.RuntimeSettings
+}
+
+func (f fakeSettingsStore) LoadEffectiveSettings(context.Context, *config.Config) (*config.Config, error) {
+	return nil, nil
+}
+
+func (f fakeSettingsStore) GetRuntimeSettings(context.Context, ...*config.Config) (*app.RuntimeSettings, error) {
+	return f.runtime, nil
+}
+
+func (f fakeSettingsStore) UpdateSettings(context.Context, *app.RuntimeSettings) error {
+	return nil
+}
+
+func (f fakeSettingsStore) WatchSettingsChanges(context.Context) (<-chan struct{}, error) {
+	return nil, nil
+}
+
+func (f fakeSettingsStore) Ping(context.Context) error {
+	return nil
+}
+
+func (f fakeSettingsStore) SchemaVersion(context.Context) (int, error) {
+	return 0, nil
+}
+
+func (f fakeSettingsStore) ExpectedSchemaVersion() int {
+	return 0
+}
+
+func (f fakeSettingsStore) ValidateSchema(context.Context) error {
+	return nil
+}
 
 func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	enabled := true
@@ -143,5 +181,73 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.EnrichPreDBStage.Interval != 90*time.Second || !got.EnrichTMDBStage.Enabled {
 		t.Fatalf("unexpected enrich stage config: predb=%+v tmdb=%+v", got.EnrichPreDBStage, got.EnrichTMDBStage)
+	}
+}
+
+func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
+	appCtx := &app.Context{
+		BootstrapConfig: &config.Config{},
+		SettingsStore: fakeSettingsStore{
+			runtime: &app.RuntimeSettings{
+				Servers: []app.ServerRuntimeSettings{{
+					ID:       "shared",
+					Host:     "shared.example.com",
+					Port:     563,
+					Username: "shared-user",
+					Password: "shared-pass",
+					TLS:      true,
+				}},
+				IndexerServers: []app.ServerRuntimeSettings{{
+					ID:       "indexer",
+					Host:     "indexer.example.com",
+					Port:     563,
+					Username: "indexer-user",
+					Password: "indexer-pass",
+					TLS:      true,
+				}},
+			},
+		},
+	}
+
+	servers := scopedIndexerServers(appCtx)
+	if len(servers) != 1 {
+		t.Fatalf("expected one indexer-scoped server, got %+v", servers)
+	}
+	if servers[0].ID != "indexer" || servers[0].Host != "indexer.example.com" || servers[0].Username != "indexer-user" {
+		t.Fatalf("expected indexer-scoped server selection, got %+v", servers[0])
+	}
+}
+
+func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing.T) {
+	appCtx := &app.Context{
+		BootstrapConfig: &config.Config{},
+		SettingsStore: fakeSettingsStore{
+			runtime: &app.RuntimeSettings{
+				Servers: []app.ServerRuntimeSettings{{
+					ID:       "shared",
+					Host:     "shared.example.com",
+					Port:     563,
+					Username: "shared-user",
+					Password: "shared-pass",
+					TLS:      true,
+				}},
+				DownloaderServers: []app.ServerRuntimeSettings{{
+					ID:       "downloader",
+					Host:     "downloader.example.com",
+					Port:     563,
+					Username: "downloader-user",
+					Password: "downloader-pass",
+					TLS:      true,
+				}},
+			},
+		},
+	}
+
+	servers := scopedDownloaderServers(appCtx)
+	if len(servers) != 1 {
+		t.Fatalf("expected one downloader-scoped server, got %+v", servers)
+	}
+	if servers[0].ID != "downloader" || servers[0].Host != "downloader.example.com" || servers[0].Username != "downloader-user" {
+		t.Fatalf("expected downloader-scoped server selection, got %+v", servers[0])
 	}
 }
