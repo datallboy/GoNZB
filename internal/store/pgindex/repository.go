@@ -83,6 +83,22 @@ func firstNonBlank(values ...string) string {
 	return ""
 }
 
+func stringMapValue(values map[string]any, key string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	raw, ok := values[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
 type BinaryInspectionCandidate struct {
 	StageName          string
 	BinaryID           int64
