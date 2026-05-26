@@ -181,6 +181,20 @@ Live stage-run findings from 2026-05-21:
   - `11868` unique binary upserts, `207.68 headers/sec`, `47593.98 ms` binary upsert, `18166.51 ms` binary refresh
   - `12085` unique binary upserts, `184.31 headers/sec`, `46997.37 ms` binary upsert, `27702.69 ms` binary refresh
 - That serve-vs-once comparison strongly suggests the supervisor orchestration itself is not the Lane B bottleneck. The meaningful difference is concurrent stage pressure, especially from other write-heavy indexer stages and PAR2 activity that can deadlock or hold competing row/advisory locks.
+- After reducing live `recover_yenc` and `inspect_par2` concurrency to `4` each in runtime settings, a fresh serve-mode scheduled `assemble_lane_b` run completed on 2026-05-26 with these aggregate metrics:
+  - `batch_size=60000`, `worker_count=4`, `processed_headers=60000`
+  - `binaries_refreshed=17684`, `unique_binary_upserts=17684`, `binary_upsert_cache_hits=42316`
+  - `headers_per_second=726.99`, `refreshed_binaries_per_second=214.27`
+  - `candidate_selection_duration_ms=18877.37`
+  - `header_match_duration_ms=18849.02`
+  - `binary_upsert_duration_ms=87692.55`
+  - `binary_part_upsert_duration_ms=15790.71`
+  - `binary_refresh_duration_ms=37666.43`
+- Worker-level log samples from that same serve-mode run were much healthier than the earlier 8-worker overlap period and showed the batch shape changing over the pass:
+  - `72` unique upserts, `1393.95 headers/sec`, `1556.55 ms` upsert, `174.05 ms` refresh
+  - `1542` unique upserts, `678.64 headers/sec`, `8444.71 ms` upsert, `3989.50 ms` refresh
+  - `7969-8101` unique upserts, about `235.65-235.71 headers/sec`, about `38820.98-38870.31 ms` upsert, about `16576.17-16926.72 ms` refresh
+- This does not prove the 4/4 setting is globally optimal, but it does show the live supervisor path recovered from the much worse `80-106 headers/sec` / `82s-99s` upsert period observed with heavier overlap.
 
 Current batching audit:
 
