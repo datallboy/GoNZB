@@ -28,6 +28,7 @@ type repository interface {
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
+	UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error)
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
@@ -59,6 +60,16 @@ type recoveryCounters struct {
 	fetchFailures    int
 	skippedByCap     int
 	skippedByBackoff int
+}
+
+type pendingBinaryPart struct {
+	binaryCacheKey  string
+	articleHeaderID int64
+	messageID       string
+	partNumber      int
+	totalParts      int
+	segmentBytes    int64
+	fileName        string
 }
 
 type Service struct {
@@ -225,6 +236,10 @@ func (r claimedBatchRepository) UpsertBinary(ctx context.Context, in pgindex.Bin
 	return r.delegate.UpsertBinary(ctx, in)
 }
 
+func (r claimedBatchRepository) UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error) {
+	return r.delegate.UpsertBinaries(ctx, records)
+}
+
 func (r claimedBatchRepository) UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error {
 	return r.delegate.UpsertBinaryParts(ctx, records)
 }
@@ -281,6 +296,9 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	posterIDsByName := make(map[string]int64, 64)
 	assembledCount := 0
 	binaryIDsByKey := make(map[string]int64, len(headers))
+	orderedBinaryKeys := make([]string, 0, len(headers))
+	binaryRecordsByKey := make(map[string]pgindex.BinaryRecord, len(headers))
+	partSeeds := make([]pendingBinaryPart, 0, len(headers))
 	partRecords := make([]pgindex.BinaryPartRecord, 0, len(headers))
 	laneASelected := 0
 	recovery := recoveryCounters{}
@@ -397,31 +415,64 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 			GroupingEvidence:  matched.GroupingEvidence,
 		}
 		binaryCacheKey := assembleBinaryCacheKey(binaryRecord)
-		binaryID, ok := binaryIDsByKey[binaryCacheKey]
-		if !ok {
-			binaryUpsertStarted := time.Now()
-			var err error
-			binaryID, err = s.repo.UpsertBinary(ctx, binaryRecord)
-			binaryUpsertDuration += time.Since(binaryUpsertStarted)
-			if err != nil {
-				metrics["processed_headers"] = assembledCount
-				metrics["binaries_refreshed"] = len(refreshed)
-				addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
-				return metrics, fmt.Errorf("upsert binary for article %d: %w", header.ID, err)
-			}
-			binaryIDsByKey[binaryCacheKey] = binaryID
+		if _, ok := binaryRecordsByKey[binaryCacheKey]; !ok {
+			orderedBinaryKeys = append(orderedBinaryKeys, binaryCacheKey)
+			binaryRecordsByKey[binaryCacheKey] = binaryRecord
 		}
 
+		partSeeds = append(partSeeds, pendingBinaryPart{
+			binaryCacheKey:  binaryCacheKey,
+			articleHeaderID: header.ID,
+			messageID:       header.MessageID,
+			partNumber:      matched.PartNumber,
+			totalParts:      matched.TotalParts,
+			segmentBytes:    header.Bytes,
+			fileName:        matched.FileName,
+		})
+	}
+
+	if len(orderedBinaryKeys) > 0 {
+		binaryUpsertStarted := time.Now()
+		batchRecords := make([]pgindex.BinaryRecord, 0, len(orderedBinaryKeys))
+		for _, key := range orderedBinaryKeys {
+			batchRecords = append(batchRecords, binaryRecordsByKey[key])
+		}
+		binaryIDs, err := s.repo.UpsertBinaries(ctx, batchRecords)
+		binaryUpsertDuration += time.Since(binaryUpsertStarted)
+		if err != nil {
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+			return metrics, fmt.Errorf("upsert binaries batch: %w", err)
+		}
+		if len(binaryIDs) != len(orderedBinaryKeys) {
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+			return metrics, fmt.Errorf("upsert binaries batch returned %d ids for %d records", len(binaryIDs), len(orderedBinaryKeys))
+		}
+		for i, key := range orderedBinaryKeys {
+			binaryIDsByKey[key] = binaryIDs[i]
+		}
+	}
+
+	for _, seed := range partSeeds {
+		binaryID, ok := binaryIDsByKey[seed.binaryCacheKey]
+		if !ok {
+			metrics["processed_headers"] = assembledCount
+			metrics["binaries_refreshed"] = len(refreshed)
+			addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
+			return metrics, fmt.Errorf("missing binary id for cache key %q", seed.binaryCacheKey)
+		}
 		partRecords = append(partRecords, pgindex.BinaryPartRecord{
 			BinaryID:        binaryID,
-			ArticleHeaderID: header.ID,
-			MessageID:       header.MessageID,
-			PartNumber:      matched.PartNumber,
-			TotalParts:      matched.TotalParts,
-			SegmentBytes:    header.Bytes,
-			FileName:        matched.FileName,
+			ArticleHeaderID: seed.articleHeaderID,
+			MessageID:       seed.messageID,
+			PartNumber:      seed.partNumber,
+			TotalParts:      seed.totalParts,
+			SegmentBytes:    seed.segmentBytes,
+			FileName:        seed.fileName,
 		})
-
 		refreshed[binaryID] = struct{}{}
 	}
 

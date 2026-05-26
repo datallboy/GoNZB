@@ -443,6 +443,15 @@ func (f *fakeRepository) UpsertBinary(_ context.Context, in pgindex.BinaryRecord
 	return 77, nil
 }
 
+func (f *fakeRepository) UpsertBinaries(_ context.Context, records []pgindex.BinaryRecord) ([]int64, error) {
+	f.upsertedBinaries = append(f.upsertedBinaries, records...)
+	out := make([]int64, 0, len(records))
+	for range records {
+		out = append(out, 77)
+	}
+	return out, nil
+}
+
 func (f *fakeRepository) UpsertBinaryParts(_ context.Context, records []pgindex.BinaryPartRecord) error {
 	f.upsertedParts = append(f.upsertedParts, records...)
 	return nil
