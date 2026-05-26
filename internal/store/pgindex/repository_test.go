@@ -4320,6 +4320,100 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectPAR2SkipsVolumesWhenManifestAlreadyHasTargets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.targets.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-targets-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-targets-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	files := []string{
+		"example.par2",
+		"example.vol00+01.par2",
+		"example.vol02+03.par2",
+	}
+	ids := make([]int64, 0, len(files))
+	for idx, name := range files {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			PosterID:          posterID,
+			SourceReleaseKey:  baseKey,
+			ReleaseFamilyKey:  baseKey,
+			FileFamilyKey:     baseKey + "::par2",
+			FamilyKind:        "par2",
+			BaseStem:          "example",
+			IsAuxiliary:       true,
+			IsMainPayload:     false,
+			ReleaseKey:        baseKey,
+			ReleaseName:       "Example PAR2 Targets",
+			BinaryKey:         fmt.Sprintf("%s::%d", baseKey, idx+1),
+			BinaryName:        name,
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: len(files),
+			TotalParts:        1,
+			PostedAt:          &now,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", name, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+			t.Fatalf("seed observed_parts for %s: %v", name, err)
+		}
+		ids = append(ids, binaryID)
+	}
+
+	manifestID := ids[0]
+	if err := store.ReplaceBinaryPAR2Sets(ctx, manifestID, []BinaryPAR2SetRecord{{
+		BinaryID:    manifestID,
+		SetName:     "example.par2",
+		BaseName:    "example.par2",
+		SignatureOK: true,
+	}}); err != nil {
+		t.Fatalf("seed manifest par2 set: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Targets(ctx, manifestID, []BinaryPAR2TargetRecord{{
+		BinaryID: manifestID,
+		FileName: "target.part01.rar",
+		FileSize: 123456,
+	}}); err != nil {
+		t.Fatalf("seed manifest par2 targets: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        manifestID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true, "target_count": 1},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete manifest par2 inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+
+	for _, candidate := range candidates {
+		if candidate.GroupName != baseKey {
+			continue
+		}
+		t.Fatalf("expected no inspect_par2 rerun for manifest-covered set, got %+v", candidate)
+	}
+}
+
 func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
