@@ -150,6 +150,19 @@ func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
 	}
 }
 
+func TestToStageConfigOmitsUnsetBinaryUpsertChunkSize(t *testing.T) {
+	cfg := toStageConfig(IndexingStageRuntimeSettings{
+		Enabled:         true,
+		IntervalMinutes: 10,
+		BatchSize:       100,
+		BackoffSeconds:  0,
+	})
+
+	if cfg.BinaryUpsertDBChunkSize != nil {
+		t.Fatalf("expected unset binary upsert chunk size to remain nil, got %v", *cfg.BinaryUpsertDBChunkSize)
+	}
+}
+
 func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
 	current := &RuntimeSettings{
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{{

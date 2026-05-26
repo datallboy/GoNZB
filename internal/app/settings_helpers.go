@@ -789,14 +789,16 @@ func indexStageRuntimeFromConfigWithConcurrency(cfg config.IndexingStageConfig, 
 
 func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	out := config.IndexingStageConfig{
-		Enabled:                 boolPtr(in.Enabled),
-		IntervalMinutes:         float64Ptr(in.IntervalMinutes),
-		BatchSize:               intPtr(in.BatchSize),
-		BackoffSeconds:          intPtr(in.BackoffSeconds),
-		BinaryUpsertDBChunkSize: intPtr(in.BinaryUpsertDBChunkSize),
+		Enabled:         boolPtr(in.Enabled),
+		IntervalMinutes: float64Ptr(in.IntervalMinutes),
+		BatchSize:       intPtr(in.BatchSize),
+		BackoffSeconds:  intPtr(in.BackoffSeconds),
 	}
 	if in.Concurrency > 0 {
 		out.Concurrency = intPtr(in.Concurrency)
+	}
+	if in.BinaryUpsertDBChunkSize > 0 {
+		out.BinaryUpsertDBChunkSize = intPtr(in.BinaryUpsertDBChunkSize)
 	}
 	return out
 }
