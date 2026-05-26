@@ -668,12 +668,12 @@ func par2FlushSize(opts inspectpkg.Options, concurrency int) int {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
-	size := concurrency * 8
-	if size < 16 {
-		size = 16
+	size := concurrency * 2
+	if size < 4 {
+		size = 4
 	}
-	if size > 128 {
-		size = 128
+	if size > 16 {
+		size = 16
 	}
 	if opts.CandidateBatchSize > 0 && size > opts.CandidateBatchSize {
 		size = opts.CandidateBatchSize

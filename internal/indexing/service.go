@@ -126,10 +126,7 @@ func (s *Service) AssembleLaneBOnce(ctx context.Context) error {
 }
 
 func (s *Service) RecoverYEncOnce(ctx context.Context) error {
-	if s.recoverYEnc == nil {
-		return fmt.Errorf("recover_yenc service is not configured")
-	}
-	return s.recoverYEnc(ctx)
+	return s.runStageOnce(ctx, supervisor.StageRecoverYEnc)
 }
 
 func (s *Service) InspectOnce(ctx context.Context) error {
