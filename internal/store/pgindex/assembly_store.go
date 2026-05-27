@@ -1169,6 +1169,9 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	if err := stageUpsertBinaryChunk(ctx, tx, records); err != nil {
 		return nil, nil, err
 	}
+	if err := stageExistingBinaryChunk(ctx, tx); err != nil {
+		return nil, nil, err
+	}
 
 	upsertQueryStarted := time.Now()
 	if _, err := tx.ExecContext(ctx, `
@@ -1208,9 +1211,8 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		    END,
 		    updated_at = NOW()
 		FROM tmp_upsert_binaries r
-		WHERE b.provider_id = r.provider_id
-		  AND b.newsgroup_id = r.newsgroup_id
-		  AND b.binary_key = r.binary_key
+		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		WHERE b.id = e.binary_id
 		  AND (
 		  	b.poster_id IS DISTINCT FROM COALESCE(r.poster_id, b.poster_id)
 		  	OR b.source_release_key IS DISTINCT FROM r.source_release_key
@@ -1305,52 +1307,70 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			r.grouping_evidence_json,
 			NOW()
 		FROM tmp_upsert_binaries r
-		LEFT JOIN binaries b
-		  ON b.provider_id = r.provider_id
-		 AND b.newsgroup_id = r.newsgroup_id
-		 AND b.binary_key = r.binary_key
-		WHERE b.id IS NULL`); err != nil {
+		LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		WHERE e.binary_id IS NULL`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
 	}
 	rows, err := tx.QueryContext(ctx, `
-		WITH requested AS (
-			SELECT
-				ordinal,
-				provider_id,
-				newsgroup_id,
-				binary_key
-			FROM tmp_upsert_binaries
-		),
-		existing AS (
+		WITH inserted AS (
 			SELECT
 				r.ordinal,
-				b.release_family_key AS existing_release_family_key,
-				b.base_stem AS existing_base_stem,
-				b.expected_file_count AS existing_expected_file_count
-			FROM requested r
+				b.id,
+				b.release_family_key,
+				b.base_stem,
+				b.expected_file_count,
+				r.provider_id,
+				r.newsgroup_id
+			FROM tmp_upsert_binaries r
+			LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
 			JOIN binaries b
 			  ON b.provider_id = r.provider_id
 			 AND b.newsgroup_id = r.newsgroup_id
 			 AND b.binary_key = r.binary_key
+			WHERE e.binary_id IS NULL
 		)
 		SELECT
-			r.ordinal,
-			b.id,
-			COALESCE(e.existing_release_family_key, ''),
-			COALESCE(e.existing_base_stem, ''),
-			COALESCE(e.existing_expected_file_count, 0),
-			b.release_family_key,
-			b.base_stem,
-			b.expected_file_count,
-			r.provider_id,
-			r.newsgroup_id
-		FROM requested r
-		JOIN binaries b
-		  ON b.provider_id = r.provider_id
-		 AND b.newsgroup_id = r.newsgroup_id
-		 AND b.binary_key = r.binary_key
-		LEFT JOIN existing e ON e.ordinal = r.ordinal
-		ORDER BY r.ordinal`)
+			persisted.ordinal,
+			persisted.id,
+			persisted.existing_release_family_key,
+			persisted.existing_base_stem,
+			persisted.existing_expected_file_count,
+			persisted.release_family_key,
+			persisted.base_stem,
+			persisted.expected_file_count,
+			persisted.provider_id,
+			persisted.newsgroup_id
+		FROM (
+			SELECT
+				e.ordinal,
+				e.binary_id AS id,
+				e.existing_release_family_key,
+				e.existing_base_stem,
+				e.existing_expected_file_count,
+				r.release_family_key,
+				r.base_stem,
+				GREATEST(e.existing_expected_file_count, r.expected_file_count) AS expected_file_count,
+				r.provider_id,
+				r.newsgroup_id
+			FROM tmp_existing_binaries e
+			JOIN tmp_upsert_binaries r ON r.ordinal = e.ordinal
+
+			UNION ALL
+
+			SELECT
+				i.ordinal,
+				i.id,
+				'' AS existing_release_family_key,
+				'' AS existing_base_stem,
+				0 AS existing_expected_file_count,
+				i.release_family_key,
+				i.base_stem,
+				i.expected_file_count,
+				i.provider_id,
+				i.newsgroup_id
+			FROM inserted i
+		) persisted
+		ORDER BY persisted.ordinal`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
 	}
@@ -1560,6 +1580,33 @@ func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedB
 		); err != nil {
 			return fmt.Errorf("insert binary upsert temp row: %w", err)
 		}
+	}
+	return nil
+}
+
+func stageExistingBinaryChunk(ctx context.Context, tx *sql.Tx) error {
+	if tx == nil {
+		return fmt.Errorf("binary upsert tx is required")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_existing_binaries ON COMMIT DROP AS
+		SELECT
+			r.ordinal,
+			b.id AS binary_id,
+			b.release_family_key AS existing_release_family_key,
+			b.base_stem AS existing_base_stem,
+			b.expected_file_count AS existing_expected_file_count
+		FROM tmp_upsert_binaries r
+		JOIN binaries b
+		  ON b.provider_id = r.provider_id
+		 AND b.newsgroup_id = r.newsgroup_id
+		 AND b.binary_key = r.binary_key`); err != nil {
+		return fmt.Errorf("stage existing binary upsert rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE UNIQUE INDEX tmp_existing_binaries_ordinal_idx
+		ON tmp_existing_binaries (ordinal)`); err != nil {
+		return fmt.Errorf("index existing binary upsert rows: %w", err)
 	}
 	return nil
 }
@@ -2193,16 +2240,31 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			FROM locked_binaries lb
 			JOIN binary_parts bp ON bp.binary_id = lb.id
 		),
+		part_rows_with_headers AS MATERIALIZED (
+			SELECT
+				p.binary_id,
+				p.segment_bytes,
+				(
+					SELECT ah.article_number
+					FROM article_headers ah
+					WHERE ah.id = p.article_header_id
+				) AS article_number,
+				(
+					SELECT ah.date_utc
+					FROM article_headers ah
+					WHERE ah.id = p.article_header_id
+				) AS date_utc
+			FROM part_rows p
+		),
 		agg AS (
 			SELECT
 				p.binary_id,
 				COUNT(*)::INTEGER AS observed_parts,
 				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
-				COALESCE(MIN(ah.article_number), 0)::BIGINT AS first_article_number,
-				COALESCE(MAX(ah.article_number), 0)::BIGINT AS last_article_number,
-				MIN(ah.date_utc) AS posted_at
-			FROM part_rows p
-			JOIN article_headers ah ON ah.id = p.article_header_id
+				COALESCE(MIN(p.article_number), 0)::BIGINT AS first_article_number,
+				COALESCE(MAX(p.article_number), 0)::BIGINT AS last_article_number,
+				MIN(p.date_utc) AS posted_at
+			FROM part_rows_with_headers p
 			GROUP BY p.binary_id
 		),
 		updated AS (
