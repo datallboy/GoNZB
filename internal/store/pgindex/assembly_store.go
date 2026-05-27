@@ -1539,10 +1539,99 @@ func applyBinaryEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryE
 		return nil
 	}
 
+	deleteIDs := make([]int64, 0, len(records))
+	upsertRecords := make([]binaryEvidenceRecord, 0, len(records))
+	seenDelete := make(map[int64]struct{}, len(records))
+	seenUpsert := make(map[int64]struct{}, len(records))
 	for _, record := range records {
-		if err := upsertBinaryGroupingEvidence(ctx, tx, record.BinaryID, record.Payload, record.KeepDetailed); err != nil {
+		if record.BinaryID <= 0 {
+			return fmt.Errorf("binary id is required")
+		}
+		trimmed := bytes.TrimSpace(record.Payload)
+		if !record.KeepDetailed || len(trimmed) == 0 || bytes.Equal(trimmed, []byte(`{}`)) {
+			if _, ok := seenDelete[record.BinaryID]; ok {
+				continue
+			}
+			seenDelete[record.BinaryID] = struct{}{}
+			deleteIDs = append(deleteIDs, record.BinaryID)
+			continue
+		}
+		if _, ok := seenUpsert[record.BinaryID]; ok {
+			continue
+		}
+		seenUpsert[record.BinaryID] = struct{}{}
+		upsertRecords = append(upsertRecords, binaryEvidenceRecord{
+			BinaryID:     record.BinaryID,
+			Payload:      trimmed,
+			KeepDetailed: true,
+		})
+	}
+
+	if len(deleteIDs) > 0 {
+		if err := deleteBinaryGroupingEvidenceBatch(ctx, tx, deleteIDs); err != nil {
 			return err
 		}
+	}
+	if len(upsertRecords) > 0 {
+		if err := upsertBinaryGroupingEvidenceBatch(ctx, tx, upsertRecords); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if tx == nil {
+		return fmt.Errorf("binary grouping evidence tx is required")
+	}
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(binaryIDs))
+	args := make([]any, 0, len(binaryIDs))
+	for i, binaryID := range binaryIDs {
+		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
+		args = append(args, binaryID)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id) AS (
+			VALUES %s
+		)
+		DELETE FROM binary_grouping_evidence bge
+		USING requested
+		WHERE bge.binary_id = requested.binary_id`, strings.Join(values, ",")), args...); err != nil {
+		return fmt.Errorf("delete binary grouping evidence batch size=%d: %w", len(binaryIDs), err)
+	}
+	return nil
+}
+
+func upsertBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryEvidenceRecord) error {
+	if tx == nil {
+		return fmt.Errorf("binary grouping evidence tx is required")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(records))
+	args := make([]any, 0, len(records)*2)
+	for i, record := range records {
+		base := (i * 2) + 1
+		values = append(values, fmt.Sprintf("($%d::bigint,'matcher','v1',$%d::jsonb,NOW())", base, base+1))
+		args = append(args, record.BinaryID, record.Payload)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO binary_grouping_evidence (
+			binary_id,
+			evidence_source,
+			evidence_version,
+			payload_json,
+			updated_at
+		)
+		VALUES %s
+		ON CONFLICT (binary_id) DO UPDATE
+		SET payload_json = EXCLUDED.payload_json,
+		    updated_at = NOW()`, strings.Join(values, ",")), args...); err != nil {
+		return fmt.Errorf("upsert binary grouping evidence batch size=%d: %w", len(records), err)
 	}
 	return nil
 }

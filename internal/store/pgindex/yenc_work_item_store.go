@@ -251,29 +251,26 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
 			  AND p.subject_file_name = ''
 		),
+		retire_candidates AS (
+			SELECT
+				wi.binary_id,
+				CASE
+					WHEN COALESCE(b.recovered_source, '') = 'yenc_header' THEN 'done'
+					ELSE 'stale'
+				END AS next_status
+			FROM requested r
+			JOIN yenc_recovery_work_items wi ON wi.binary_id = r.binary_id
+			JOIN binaries b ON b.id = wi.binary_id
+			LEFT JOIN eligible e ON e.binary_id = wi.binary_id
+			WHERE e.binary_id IS NULL
+		),
 		retired AS (
 			UPDATE yenc_recovery_work_items wi
-			SET status = CASE
-				WHEN EXISTS (
-					SELECT 1
-					FROM binaries b
-					WHERE b.id = wi.binary_id
-					  AND COALESCE(b.recovered_source, '') = 'yenc_header'
-				) THEN 'done'
-				ELSE 'stale'
-			END,
+			SET status = rc.next_status,
 			    updated_at = NOW()
-			WHERE wi.binary_id IN (SELECT binary_id FROM requested)
-			  AND wi.binary_id NOT IN (SELECT binary_id FROM eligible)
-			  AND wi.status <> CASE
-			  	WHEN EXISTS (
-					SELECT 1
-					FROM binaries b
-					WHERE b.id = wi.binary_id
-					  AND COALESCE(b.recovered_source, '') = 'yenc_header'
-				) THEN 'done'
-				ELSE 'stale'
-			  END
+			FROM retire_candidates rc
+			WHERE wi.binary_id = rc.binary_id
+			  AND wi.status <> rc.next_status
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM retired`,

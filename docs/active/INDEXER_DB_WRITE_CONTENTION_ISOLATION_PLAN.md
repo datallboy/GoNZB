@@ -179,6 +179,40 @@ Current conclusion:
 - moving assemble off inline summary recompute and then batching the dirty-marker writes reduced the refresh-side contention cost meaningfully
 - the next likely technical target is deterministic lock behavior / chunk retry pressure inside `UpsertBinaries`, plus a serve-mode overlap remeasurement after these assemble-only changes
 
+Third focused change on the sprint branch:
+
+- traced the full `assemble lane-b` write path and found that `binary_refresh_ms` still included `syncYEncRecoveryWorkItemsForBinariesInTx`
+- the retirement half of that yEnc sync was catastrophically shaped: on a 2,000-binary sample it scanned about `1.47M` `yenc_recovery_work_items`, seq-scanned about `20.8M` `binaries`, and took about `23.97s`
+- rewrote the retirement update to join only requested binary ids instead of scanning global work-item state
+- batched binary-key advisory locks so `UpsertBinaries` no longer issues one `pg_advisory_xact_lock` statement per binary key
+- batched `binary_grouping_evidence` deletes/upserts so `UpsertBinaries` no longer issues one evidence statement per binary
+
+Plan evidence after the yEnc sync rewrite:
+
+- pre-change sample query: yEnc retirement for a 2,000-binary requested set took about `23970 ms`
+- post-change sample query: the same retirement shape took about `15 ms`
+
+Post-change direct `assemble lane-b --once` sample after the yEnc retirement rewrite:
+
+- worker 1: `binaries_refreshed=110`, `binary_upsert_ms=722.11`, `binary_refresh_ms=1053.56`
+- worker 2: `binaries_refreshed=1754`, `binary_upsert_ms=9365.40`, `binary_refresh_ms=1340.70`
+- worker 3: `binaries_refreshed=8319`, `binary_upsert_ms=33396.44`, `binary_refresh_ms=7233.60`
+- worker 4: `binaries_refreshed=12245`, `binary_upsert_ms=48537.77`, `binary_refresh_ms=10163.17`
+
+Post-change direct `assemble lane-b --once` sample after batched lock/evidence writes:
+
+- worker 1: `binaries_refreshed=83`, `binary_upsert_ms=553.01`, `binary_refresh_ms=278.47`
+- worker 2: `binaries_refreshed=4497`, `binary_upsert_ms=20072.43`, `binary_refresh_ms=4026.24`
+- worker 3: `binaries_refreshed=8172`, `binary_upsert_ms=34890.86`, `binary_refresh_ms=8320.24`
+- worker 4: `binaries_refreshed=13370`, `binary_upsert_ms=51950.00`, `binary_refresh_ms=12229.76`
+
+What this means:
+
+- the hidden yEnc sync query was one of the biggest real assemble costs, even in direct `--once` runs with no other stages active
+- after that rewrite, `binary_refresh_ms` is no longer the dominant tail; it has moved into a much smaller `0.3s-12.2s` band depending on slice composition
+- the remaining direct-run bottleneck is now mostly the core `UpsertBinaries` path itself, not downstream refresh/yEnc summary churn
+- the remaining upsert path still performs a heavyweight `INSERT ... ON CONFLICT` with existing-row comparison logic; the next likely optimization target is reducing what that query has to read/return when assemble does not need immediate old-family summary cleanup
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
