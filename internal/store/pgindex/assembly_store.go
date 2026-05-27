@@ -2085,47 +2085,36 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		return uniqueBinaryIDs[i] < uniqueBinaryIDs[j]
 	})
 
+	for start := 0; start < len(uniqueBinaryIDs); start += refreshBinaryStatsBatchSize {
+		end := start + refreshBinaryStatsBatchSize
+		if end > len(uniqueBinaryIDs) {
+			end = len(uniqueBinaryIDs)
+		}
+		if err := s.refreshBinaryStatsChunk(ctx, uniqueBinaryIDs[start:end]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin refresh binary stats batch tx: %w", err)
 	}
 	defer rollbackTx(tx)
 
-	summaryKeys := make([]releaseFamilySummaryKey, 0, len(uniqueBinaryIDs)*2)
-	seenSummaryKeys := make(map[releaseFamilySummaryKey]struct{}, len(uniqueBinaryIDs)*2)
-	for start := 0; start < len(uniqueBinaryIDs); start += refreshBinaryStatsBatchSize {
-		end := start + refreshBinaryStatsBatchSize
-		if end > len(uniqueBinaryIDs) {
-			end = len(uniqueBinaryIDs)
-		}
-		keys, err := refreshBinaryStatsIDsInTx(ctx, tx, uniqueBinaryIDs[start:end])
-		if err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if _, ok := seenSummaryKeys[key]; ok {
-				continue
-			}
-			seenSummaryKeys[key] = struct{}{}
-			summaryKeys = append(summaryKeys, key)
-		}
+	statsUpdateStarted := time.Now()
+	summaryKeys, err := refreshBinaryStatsIDsInTx(ctx, tx, binaryIDs)
+	if err != nil {
+		return err
 	}
-	sort.Slice(summaryKeys, func(i, j int) bool {
-		a := summaryKeys[i]
-		b := summaryKeys[j]
-		if a.ProviderID != b.ProviderID {
-			return a.ProviderID < b.ProviderID
-		}
-		if a.NewsgroupID != b.NewsgroupID {
-			return a.NewsgroupID < b.NewsgroupID
-		}
-		if a.KeyKind != b.KeyKind {
-			return a.KeyKind < b.KeyKind
-		}
-		return a.FamilyKey < b.FamilyKey
-	})
+	statsUpdateDuration := time.Since(statsUpdateStarted)
+	sortReleaseFamilySummaryKeys(summaryKeys)
 
 	deferredSummaryRefresh := deferReleaseFamilySummaryRefreshFromContext(ctx)
+	summaryMarkStarted := time.Now()
 	if deferredSummaryRefresh {
 		if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
 			return err
@@ -2137,17 +2126,21 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 			}
 		}
 	}
-	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
-		telemetry.recordBatch(len(uniqueBinaryIDs), len(summaryKeys), deferredSummaryRefresh)
-	}
-	if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, uniqueBinaryIDs); err != nil {
+	summaryMarkDuration := time.Since(summaryMarkStarted)
+
+	yencSyncStarted := time.Now()
+	if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, binaryIDs); err != nil {
 		return err
+	}
+	yencSyncDuration := time.Since(yencSyncStarted)
+
+	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), deferredSummaryRefresh, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit refresh binary stats batch tx: %w", err)
 	}
-
 	return nil
 }
 
@@ -2177,13 +2170,20 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		WITH requested(binary_id) AS (
 			VALUES %s
 		),
+		locked_binaries AS MATERIALIZED (
+			SELECT b.id
+			FROM binaries b
+			JOIN requested r ON r.binary_id = b.id
+			ORDER BY b.id
+			FOR UPDATE
+		),
 		part_rows AS MATERIALIZED (
 			SELECT
 				bp.binary_id,
 				bp.segment_bytes,
 				bp.article_header_id
-			FROM requested r
-			JOIN binary_parts bp ON bp.binary_id = r.binary_id
+			FROM locked_binaries lb
+			JOIN binary_parts bp ON bp.binary_id = lb.id
 		),
 		agg AS (
 			SELECT
