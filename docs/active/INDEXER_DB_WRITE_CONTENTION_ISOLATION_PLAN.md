@@ -368,6 +368,43 @@ What this changes in the diagnosis:
 - after this rewrite, the direct refresh tail drops back into the same rough band as `UpsertBinaries`, which should also shorten the window where overlap deadlocks can happen
 - the next remeasurement should be serve-mode again, specifically to see how many `refresh binary stats batch` deadlocks disappear now that the refresh transaction is much shorter
 
+Serve-mode remeasurement after the refresh query rewrite, sampled on `2026-05-27 07:33-07:40 America/New_York` with the same stage mix as the prior benchmark:
+
+- sampled `assemble_lane_b` stage rows:
+  - `66874` completed in about `81.0s`: `binary_upsert_duration_ms=54255`, `binary_refresh_duration_ms=50322`
+  - `66893` failed in about `92.4s`: `binary_upsert_duration_ms=51881`, `binary_refresh_duration_ms=65618`, error `refresh binary stats batch: ... deadlock detected`
+  - `66908` completed in about `112.0s`: `binary_upsert_duration_ms=94196`, `binary_refresh_duration_ms=99125`
+  - `66928` was still running when the temporary serve sample was shut down cleanly
+- sampled overlap during those lane-B runs remained real:
+  - `recover_yenc`: `1-2` overlapping runs
+  - `inspect_par2`: `1-3` overlapping runs
+  - `release`: `1-3` overlapping runs
+  - `assemble_lane_a`: `1-2` overlapping runs
+
+Worker log detail from the same serve window shows how much the refresh query rewrite helped:
+
+- early lane-B slices:
+  - `binaries_refreshed=4135`, `binary_upsert_ms=9531.10`, `binary_refresh_ms=6303.84`
+  - `binaries_refreshed=11319`, `binary_upsert_ms=20266.02`, `binary_refresh_ms=14319.36`
+  - `binaries_refreshed=13706`, `binary_upsert_ms=24356.49`, `binary_refresh_ms=29535.46`
+- later lane-B slices:
+  - `binaries_refreshed=5040`, `binary_upsert_ms=10315.31`, `binary_refresh_ms=13379.97`
+  - `binaries_refreshed=10038`, `binary_upsert_ms=27858.96`, `binary_refresh_ms=28951.38`
+  - `binaries_refreshed=15000`, `binary_upsert_ms=38195.31`, `binary_refresh_ms=41986.12`
+
+Comparison to the pre-rewrite serve baseline:
+
+- before the refresh query rewrite, persisted overnight lane-B runs commonly recorded `binary_refresh_duration_ms` in the `120k-320k` band, with the worst overnight sample at `818564`
+- after the rewrite, the sampled serve rows dropped into a roughly `50k-99k` aggregate refresh band
+- that is still slower than the fresh direct `--once` baseline, but it is a large real reduction in serve-mode refresh cost
+
+Current conclusion after the serve remeasurement:
+
+- the refresh query rewrite materially improved both direct `lane-b --once` and serve-mode lane-B
+- lane-B is still slower under overlap than direct runs, but the remaining gap is no longer dominated by the old full-table `article_headers` scan
+- deadlocks still occur inside `RefreshBinaryStatsBatch` under serve overlap, which means the remaining next target is not the aggregate read shape; it is the shared write surface inside the refresh transaction
+- the most likely remaining contention point is the batched dirty-marker/update work on `release_family_readiness_summaries` and any other summary/queue writes that still happen in the same refresh transaction while `recover_yenc`, `inspect_par2`, and `release` are active
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
