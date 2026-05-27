@@ -447,7 +447,7 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 					  )
 				), TIMESTAMPTZ 'epoch')
 		),
-		next_queue AS (
+		combined_queue AS (
 			SELECT
 				provider_id,
 				newsgroup_id,
@@ -493,6 +493,30 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				has_expected_archive_file_count,
 				readiness_bucket
 			FROM recovered_file_set_candidates
+		),
+		next_queue AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				updated_at,
+				source_release_key,
+				release_key,
+				release_name,
+				posted_at,
+				binary_count,
+				total_bytes,
+				expected_file_count,
+				expected_archive_file_count,
+				complete_binary_count,
+				complete_main_payload_binary_count,
+				expected_file_coverage_pct,
+				archive_file_coverage_pct,
+				has_expected_file_count,
+				has_expected_archive_file_count,
+				readiness_bucket
+			FROM combined_queue
 			ORDER BY
 				CASE
 					WHEN readiness_bucket = '%s' THEN 0

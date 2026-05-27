@@ -278,6 +278,37 @@ Interpretation of the direct baseline:
 - the dominant remaining direct-run cost is still the main `UpsertBinaries` query path, not lock acquisition and not evidence maintenance
 - the spread between workers is driven primarily by per-slice `unique_binary_upserts`, not cumulative timing
 
+Serve-mode remeasurement on `2026-05-26`, with `scrape_*` and enrich stages disabled but `assemble_lane_a`, `assemble_lane_b`, `recover_yenc`, `release`, and inspect stages enabled:
+
+- initial serve sample exposed a release SQL regression in `ListReleaseCandidates`: `invalid UNION/INTERSECT/EXCEPT ORDER BY clause`
+- fixed by splitting the `UNION ALL` queue CTE into `combined_queue` plus ordered `next_queue`
+- follow-up serve sample used a temporary config copy bound to `:18080` so the benchmark would not collide with the existing local `:8080` server
+
+Persisted serve-mode stage metrics from the clean sample window:
+
+- `release` `stage_run=61550`: completed in about `66.7s`, `candidate_families=20000`, `formed=176`, `candidate_list_duration_ms=50136.53`, `ack_candidate_duration_ms=8082.483`
+- `recover_yenc` `stage_run=61554`: completed in about `111.4s`, `attempted=999`, `recovered=997`, `merged=975`, `fetch_failures=2`, `write_ms=29341.355`
+- `inspect_par2` `stage_run=61557`: completed in about `50.9s`, `processed_count=384`, `prefix_fetch_ms=149638.337`, `result_flush_ms=4053.044`
+- `assemble_lane_a` `stage_run=61535`: completed in about `31.2s`, `processed_headers=47742`, `binary_upsert_duration_ms=1195.78`, `binary_refresh_duration_ms=2567.889`
+
+Serve-mode `assemble_lane_b` evidence from supervisor logs during the same run:
+
+- worker sample 1: `unique_binary_upserts=11343`, `binary_upsert_ms=24373.31`, `binary_refresh_ms=20397.05`, `header_match_ms=9042.30`, `binary_part_upsert_ms=11296.60`
+- worker sample 2: `unique_binary_upserts=13179`, `binary_upsert_ms=29493.16`, `binary_refresh_ms=22140.30`, `header_match_ms=8675.47`, `binary_part_upsert_ms=6346.64`
+- those lane-B workers were still active when the `220s` serve timeout shut the process down, so the runtime repair marked the unfinished `assemble_lane_b` row abandoned
+
+What the serve remeasurement says now:
+
+- `assemble_lane_a` is healthy under overlap and no longer a meaningful concern
+- `recover_yenc` and `inspect_par2` are both completing successfully in serve mode with current concurrency
+- `assemble_lane_b` still regresses materially under overlap relative to the direct baseline:
+  - direct baseline large slices now show roughly `8.7s-16.2s` `binary_upsert_ms`
+  - serve-mode lane-B worker samples were roughly `24.4s-29.5s` `binary_upsert_ms`
+  - direct baseline large slices show roughly `5.3s-16.2s` `binary_refresh_ms`
+  - serve-mode lane-B worker samples were roughly `20.4s-22.1s` `binary_refresh_ms`
+- the remaining sprint question is therefore no longer “can direct lane-b be made sane?”; it can
+- the remaining question is what still causes lane-B to slow down when release/recovery/inspect stages are active at the same time
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
