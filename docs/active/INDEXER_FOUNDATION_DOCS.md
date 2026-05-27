@@ -20,8 +20,8 @@ We currently have several planning and reference documents. This file defines wh
 - the grouping-model re-evaluation sprint is complete and ready to archive
 - the database growth trim sprint is complete from a code and schema standpoint
 - the obfuscated-payload hardening sprint is complete and archived
-- NNTP and inspection capacity planning has been split into a separate active doc so throughput/backpressure work does not blur the obfuscated-payload hardening scope
-- recovered-identity grouping follow-up has been split into a separate active doc so cross-group promotion can proceed deliberately
+- NNTP and inspection capacity planning is complete and archived
+- recovered-identity grouping follow-up is complete and archived
 - remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
 
 ## Current Active Docs
@@ -34,31 +34,13 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
-
-Use for:
-
-- current recovered-identity release grouping follow-up
-- designing bounded cross-newsgroup promotion when yEnc, archive, or PAR2 identity evidence is strong
-- preserving per-group article provenance while allowing stronger recovered identity to drive release formation
-- NZB export and downloader filename follow-up that depends on cross-group recovered identity
-
-### `docs/active/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
-
-Use for:
-
-- current PAR2 inspection throughput and batch-persistence work
-- yEnc exact backlog/work-queue planning for fast dashboard stats and candidate selection
-- NNTP pool ownership, queueing, active-connection, and provider-pressure metrics
-- keeping operational capacity work separate from the obfuscated-payload evidence log
-
 ### `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`
 
 Use for:
 
-- the deferred schema and repository plan for reducing serve-mode write contention
+- the current schema and repository plan for reducing serve-mode write contention
 - separating canonical fact writes from derived summary refreshes
-- future lock-ordering, transaction-scope, and rollup-isolation work once the current PAR2/yEnc/assemble tasks are complete
+- lock-ordering, transaction-scope, and rollup-isolation work after the completed PAR2/yEnc/recovered-identity sprints
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
@@ -78,6 +60,22 @@ Use for:
 - importer legacy charset and extensionless archive extraction history
 - yEnc/PAR2 dashboard baseline and investigation history
 - the rationale for splitting operational capacity and recovered-identity grouping into separate active plans
+
+### `docs/archive/completed/indexer/2026-05-26-nntp-capacity-and-recovered-identity/INDEXER_NNTP_AND_INSPECTION_CAPACITY_PLAN.md`
+
+Use for:
+
+- completed PAR2 inspection throughput and persistence history
+- completed yEnc exact backlog/work-queue history
+- NNTP pool ownership, queueing, provider-pressure, and serve-mode capacity findings that led into the contention-isolation follow-up
+
+### `docs/archive/completed/indexer/2026-05-26-nntp-capacity-and-recovered-identity/INDEXER_RECOVERED_IDENTITY_GROUPING_PLAN.md`
+
+Use for:
+
+- completed recovered-identity cross-group release-formation work
+- recovered-file-set candidate shape, groupless acking, and multi-group `release_newsgroups` behavior
+- NZB export provenance validation and downloader yEnc filename-adoption defer rationale
 
 ### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 
@@ -108,15 +106,9 @@ Use for:
 
 The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
 
-Primary active workstreams:
+Primary active workstream:
 
-- make yEnc recovery and PAR2 backlog visibility exact enough for capacity tuning
-- add NNTP and inspection capacity metrics before raising worker counts far enough to pressure the provider account
-- implement bounded cross-group recovered-identity promotion from the active grouping plan
-
-Deferred on-hold planning workstream:
-
-- database write-contention isolation after the current PAR2, yEnc, and assemble measurement tasks are complete
+- database write-contention isolation for the remaining serve-mode assemble/release overlap work
 
 Completed obfuscated-payload hardening workstream:
 
@@ -124,6 +116,13 @@ Completed obfuscated-payload hardening workstream:
 - recorded non-identifying header-shape findings and grouping implications
 - audited downloader yEnc filename adoption risk
 - audited release grouping boundaries before moving recovered-identity promotion into its own active plan
+
+Completed NNTP/inspection and recovered-identity workstreams:
+
+- made PAR2 persistence and live metrics trustworthy enough to identify the true bottlenecks
+- moved yEnc recovery backlog/counting onto a durable work-item queue
+- implemented bounded cross-group recovered-file-set release promotion
+- verified multi-group release provenance through `release_newsgroups` and internal NZB export
 
 Completed database-growth workstream:
 
