@@ -261,6 +261,23 @@ Current state after this change:
 - refresh-side summary/yEnc overhead is no longer the dominant problem
 - assemble still needs a serve-mode overlap remeasurement, because the direct run bottleneck is now substantially reduced and the next question is what still regresses under concurrent stage pressure
 
+Direct baseline after the no-op upsert rewrite, using three additional fresh `assemble lane-b --once` runs on `2026-05-26`:
+
+- worker slices were consistently in the `13.9k-15.0k` claimed-header range
+- `unique_binary_upserts` ranged from about `6345` to `14183`
+- `binary_upsert_ms` ranged from about `6337` to `16199`
+- `binary_upsert_query_ms` ranged from about `5305` to `13361`
+- `binary_upsert_lock_ms` stayed small at about `43-89`
+- `binary_upsert_evidence_ms` stayed modest at about `339-902`
+- `binary_refresh_ms` ranged from about `4452` to `16190`
+- all baseline workers completed with `binary_upsert_chunk_retries=0`
+
+Interpretation of the direct baseline:
+
+- direct `lane-b --once` is now stable enough that retry/deadlock noise is largely gone in the sampled runs
+- the dominant remaining direct-run cost is still the main `UpsertBinaries` query path, not lock acquisition and not evidence maintenance
+- the spread between workers is driven primarily by per-slice `unique_binary_upserts`, not cumulative timing
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
