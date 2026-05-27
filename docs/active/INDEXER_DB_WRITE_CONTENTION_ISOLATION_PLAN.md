@@ -555,11 +555,67 @@ Current best conclusion:
 - the largest remaining measured assemble cost is still the core `UpsertBinaries` query path, with `binary_refresh_stats_update_ms` next behind it during heavy refresh slices
 - if another optimization pass is warranted, the next likely high-value target is `UpsertBinaries` query shape or readback strategy rather than more work on `summary_mark`
 
+## Upsert And Storage Trace
+
+Snapshot taken on `2026-05-27 10:27-10:36 America/New_York`:
+
+- `pg_database_size('gonzb')` was about `192 GB`
+- largest heap/index footprints at that point:
+  - `binaries`: `49 GB` total, `32 GB` heap, `17 GB` indexes
+  - `article_headers`: `47 GB` total, `19 GB` heap, `29 GB` indexes
+  - `binary_grouping_evidence`: `41 GB` total, `40 GB` heap, `637 MB` indexes
+  - `article_header_ingest_payloads`: `24 GB` total, `17 GB` heap, `6560 MB` indexes
+  - `binary_parts`: `18 GB` total, `9072 MB` heap, `9492 MB` indexes
+  - `release_family_readiness_summaries`: `13 GB` total, `8162 MB` heap, `4836 MB` indexes
+- sampled row-width checks show the storage pressure is not primarily in `binaries` string columns:
+  - sampled `binaries.grouping_evidence_json` averaged about `10 B`
+  - sampled `binary_grouping_evidence.payload_json` averaged about `1427 B` with sample max about `1722 B`
+  - sampled `article_header_ingest_payloads.subject` averaged about `42 B`
+  - sampled `article_header_ingest_payloads.xref` averaged about `64 B`
+- storage follow-up should prioritize:
+  - `binary_grouping_evidence` retention and payload shape
+  - `article_header_ingest_payloads` retention policy
+  - `article_headers` and `binary_parts` index footprint review
+
+Live `UpsertBinaries` `EXPLAIN ANALYZE` on a synthetic `2000`-row no-op sample:
+
+- current upsert statement:
+  - about `99 ms` total
+  - `Rows Removed by Conflict Filter: 2000`
+  - `Conflicting Tuples: 2000`
+  - the statement still dirtied about `422` shared buffers even though every row was a no-op conflict
+- current persisted readback query:
+  - about `92 ms` total on the same `2000`-row sample
+  - does two keyed passes through `binaries_provider_id_newsgroup_id_binary_key_key`
+- conclusion:
+  - the persisted readback is a real cost
+  - but it is not large enough, by itself, to justify a risky SQL rewrite without stronger evidence
+
+Safety finding from live `assemble lane-b --once` tracing on PostgreSQL `17.9`:
+
+- a merged single-statement `requested/existing/upserted` experiment was reverted after it caused a backend `SIGSEGV`
+- a fresh `lane-b --once` run on the reverted two-statement path also hit a backend `SIGSEGV` inside the existing `WITH requested ... INSERT ... ON CONFLICT DO UPDATE` statement
+- the failing backend log consistently points at the large `VALUES (...)` + `ON CONFLICT` `UpsertBinaries` statement, not at `RefreshBinaryStatsBatch`
+- during the same window, Postgres was forcing extremely frequent checkpoints:
+  - `max_wal_size = 1024 MB`
+  - checkpoint log lines were occurring about every `4-6s`
+  - Postgres explicitly logged `checkpoints are occurring too frequently`
+
+Current implication:
+
+- the next safe optimization target is not another more complex CTE merge around the persisted readback
+- the bigger immediate risk is the current `UpsertBinaries` statement shape itself on this PostgreSQL build
+- best next path:
+  - reduce lane-B `binary_upsert_db_chunk_size` and remeasure stability/throughput
+  - if crashes persist, replace the inline `VALUES` upsert path with a staging-table or `COPY`-backed path so the hot query stops carrying thousands of scalar parameters and large JSON payloads per chunk
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
 - [x] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Assemble now uses a deferred path, and live telemetry shows current lane-B slices usually do not touch any upsert-time summary keys anyway.
 - [x] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Assemble now defers this path too, and dirty-marker writes are batched instead of one summary row at a time.
+- [ ] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
+- [ ] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [ ] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
