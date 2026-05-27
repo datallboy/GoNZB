@@ -1597,6 +1597,125 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecomput
 	}
 }
 
+func TestUpsertBinaryDeferredSummaryRefreshMarksOldAndNewFamiliesDirtyOnIdentityChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.change.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "original-source",
+		ReleaseFamilyKey:  "original-family",
+		ReleaseKey:        "original-family",
+		ReleaseName:       "Original Family",
+		BinaryKey:         "moving-binary",
+		BinaryName:        "moving.part01.rar",
+		FileName:          "moving.part01.rar",
+		BaseStem:          "original-stem",
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}
+	if _, err := store.UpsertBinary(ctx, record); err != nil {
+		t.Fatalf("seed original binary: %v", err)
+	}
+
+	cleanAt := time.Now().UTC().Add(-time.Hour)
+	for _, key := range []struct {
+		keyKind   string
+		familyKey string
+	}{
+		{keyKind: "release_family", familyKey: "original-family"},
+		{keyKind: "release_family", familyKey: "renamed-family"},
+		{keyKind: "base_stem", familyKey: "original-stem"},
+		{keyKind: "base_stem", familyKey: "renamed-stem"},
+	} {
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO release_family_readiness_summaries (
+				provider_id, newsgroup_id, key_kind, family_key,
+				source_release_key, release_key, release_name,
+				binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+				expected_file_count, expected_archive_file_count, has_expected_file_count, has_expected_archive_file_count,
+				total_bytes, earliest_posted_at, dominant_family_kind, dominant_file_name, dominant_match_confidence,
+				readiness_bucket, expected_file_coverage_pct, archive_file_coverage_pct, updated_at, processed_at
+			)
+			VALUES (
+				1, $1, $2, $3,
+				'', '', '',
+				0, 0, 0, 0,
+				0, 0, false, false,
+				0, NULL, '', '', 0,
+				$4, 0, 0, $5, $5
+			)
+			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			SET updated_at = EXCLUDED.updated_at,
+			    processed_at = EXCLUDED.processed_at`,
+			newsgroupID, key.keyKind, key.familyKey, releaseReadinessStaleCleanupOnly, cleanAt,
+		); err != nil {
+			t.Fatalf("seed readiness row %s/%s: %v", key.keyKind, key.familyKey, err)
+		}
+	}
+
+	changed := record
+	changed.SourceReleaseKey = "renamed-source"
+	changed.ReleaseFamilyKey = "renamed-family"
+	changed.ReleaseKey = "renamed-family"
+	changed.ReleaseName = "Renamed Family"
+	changed.BaseStem = "renamed-stem"
+	changed.ExpectedFileCount = 3
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if _, err := store.UpsertBinary(deferredCtx, changed); err != nil {
+		t.Fatalf("upsert binary with changed deferred identity: %v", err)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT key_kind, family_key, updated_at > COALESCE(processed_at, updated_at) AS is_dirty
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND (
+		  	(key_kind = 'release_family' AND family_key IN ('original-family', 'renamed-family'))
+		  	OR (key_kind = 'base_stem' AND family_key IN ('original-stem', 'renamed-stem'))
+		  )`, newsgroupID,
+	)
+	if err != nil {
+		t.Fatalf("query changed readiness rows: %v", err)
+	}
+	defer rows.Close()
+
+	got := make(map[string]bool, 4)
+	for rows.Next() {
+		var keyKind, familyKey string
+		var isDirty bool
+		if err := rows.Scan(&keyKind, &familyKey, &isDirty); err != nil {
+			t.Fatalf("scan changed readiness row: %v", err)
+		}
+		got[keyKind+":"+familyKey] = isDirty
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate changed readiness rows: %v", err)
+	}
+
+	for _, key := range []string{
+		"release_family:original-family",
+		"release_family:renamed-family",
+		"base_stem:original-stem",
+		"base_stem:renamed-stem",
+	} {
+		if !got[key] {
+			t.Fatalf("expected readiness row %s to be marked dirty, got=%v", key, got)
+		}
+	}
+}
+
 func TestUpsertBinarySkipsUnchangedRowRewriteButUpdatesOnRealChange(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

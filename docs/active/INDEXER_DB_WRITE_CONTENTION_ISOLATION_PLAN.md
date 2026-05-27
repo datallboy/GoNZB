@@ -686,6 +686,89 @@ Serve-mode measurement after the `binaries` reindex and Postgres recreate, sampl
   - small or sparse slices now land in sub-second to single-digit-second refresh bands
   - heavy `15000`-binary slices still spend most of their time in `stats_update` and then `summary_mark`, so there is still optimization headroom there
 
+Refresh trace follow-up on `2026-05-27 15:12-15:20 America/New_York`:
+
+- a dense `15000`-binary `EXPLAIN ANALYZE` of the pre-patch `refreshBinaryStatsIDsInTx` query showed the planner had regressed back to a full `article_headers` seq scan:
+  - scanned about `112.2M` `article_headers` rows
+  - execution time about `60-65s`
+  - most of the time sat in a hash join between `part_rows` and the whole header table
+- the attempted lateral lookup form was flattened back into the same bad hash join by the planner
+- changing the header lookup to correlated scalar subqueries against `article_headers_pkey` fixed it:
+  - the same `15000`-binary `EXPLAIN ANALYZE` dropped to about `1.9s`
+  - the full `article_headers` seq scan disappeared
+  - the plan performed about `38.7k` PK lookups instead of scanning all headers
+
+Direct `assemble lane-b --once` rerun after the scalar-lookup patch:
+
+- worker samples:
+  - `binaries_refreshed=10026`, `binary_refresh_ms=5329.12`, `binary_refresh_stats_update_ms=1369.34`, `summary_mark_ms=3331.60`
+  - `binaries_refreshed=10296`, `binary_refresh_ms=5138.34`, `binary_refresh_stats_update_ms=1352.39`, `summary_mark_ms=3301.37`
+  - `binaries_refreshed=15000`, `binary_refresh_ms=6755.11`, `binary_refresh_stats_update_ms=1868.59`, `summary_mark_ms=4364.61`
+- comparison to the pre-patch post-reindex direct run:
+  - heavy slices were previously `binary_refresh_ms` about `30.7s-38.7s`
+  - `binary_refresh_stats_update_ms` is now about `1.35s-1.87s` on similarly heavy slices
+
+Current interpretation after the trace:
+
+- the old heavy refresh cost was not fundamental
+- the largest remaining refresh component is now `summary_mark`, not `stats_update`
+- the next likely refresh-side optimization target is reducing or deferring `markReleaseFamiliesDirtyBatch` work on very large binary sets
+
+Summary-mark and upsert follow-up on `2026-05-27 15:20-15:39 America/New_York`:
+
+- isolated `summary_mark` measurement with concrete keys:
+  - current `INSERT ... ON CONFLICT` dirty-mark path on `15000` concrete readiness keys: about `208 ms`
+  - split `UPDATE existing clean` + `INSERT missing` version on the same keys: about `305 ms`
+  - interpretation: the multi-second `binary_refresh_summary_mark_ms` seen in live lane-B runs is not caused by a planner disaster in the dirty-mark SQL itself; it is more likely lock overlap between concurrent assemble workers touching the same readiness rows
+- while tracing `UpsertBinaries`, the persisted readback query exposed a correctness issue:
+  - it was re-reading `binaries` after the update and comparing post-update rows to post-update rows
+  - that meant old-vs-new identity changes were effectively invisible in the upsert path
+  - this also explained why the earlier lane-B telemetry often showed `binary_upsert_deferred_summary_keys=0`
+- corrective change:
+  - stage existing matched binary rows into `tmp_existing_binaries` before the update
+  - drive the update from that snapshot by `b.id`
+  - insert only unmatched rows
+  - build the persisted id/identity result from the pre-update snapshot plus inserted rows
+- regression coverage:
+  - added a repository test that updates one binary from `original-family` / `original-stem` to `renamed-family` / `renamed-stem` under deferred summary refresh and verifies all four readiness rows are marked dirty
+
+Live readback trace after the `tmp_existing_binaries` rewrite:
+
+- old persisted-readback shape on a dense `15000`-row sample: about `1389 ms`
+- new persisted-readback shape on the same sample: about `33 ms`
+- interpretation:
+  - the extra duplicate `binaries` lookups in the old readback query were real overhead
+  - the rewrite restores identity-change correctness and materially reduces the readback cost itself
+
+Direct `assemble lane-b --once` rerun after the upsert snapshot fix:
+
+- worker samples:
+  - `binaries_refreshed=12123`, `binary_upsert_ms=30285.19`, `binary_upsert_query_ms=24032.83`, `binary_refresh_ms=7578.73`
+  - `binaries_refreshed=12763`, `binary_upsert_ms=31632.97`, `binary_upsert_query_ms=24913.19`, `binary_refresh_ms=11485.15`
+  - `binaries_refreshed=14731`, `binary_upsert_ms=36013.58`, `binary_upsert_query_ms=28349.52`, `binary_refresh_ms=7839.43`
+- comparison to the post-refresh-fix direct baseline:
+  - refresh remains far below the old `30s-38s` band for heavy slices
+  - the remaining dominant direct-run cost is still `binary_upsert_query_ms`, not `binary_refresh_stats_update_ms`
+
+Serve-mode sample after the upsert snapshot fix, `2026-05-27 15:34:42-15:39:02 America/New_York`:
+
+- completed persisted lane-B run `67192`:
+  - `selected_headers=60000`
+  - `binaries_refreshed=36110`
+  - `binary_upsert_duration_ms=130775.188`
+  - `binary_upsert_query_ms=98556.795`
+  - `binary_refresh_duration_ms=36057.732`
+  - `binary_refresh_stats_update_ms=14643.402`
+  - `binary_refresh_summary_mark_ms=18609.082`
+- worker log samples from the same serve window:
+  - `binaries_refreshed=8286`, `binary_upsert_query_ms=23401.87`, `binary_refresh_summary_mark_ms=4085.91`
+  - `binaries_refreshed=12587`, `binary_upsert_query_ms=33800.15`, `binary_refresh_summary_mark_ms=6770.64`
+  - `binaries_refreshed=13793`, `binary_upsert_query_ms=35043.74`, `binary_refresh_summary_mark_ms=7173.87`
+- interpretation:
+  - the refresh-side catastrophic scan is gone in both direct and serve mode
+  - serve-mode lane-B is now dominated by `binary_upsert_query_ms`, with `summary_mark` as the next largest overlapping write cost
+  - the next worthwhile trace should split `UpsertBinaries` further into temp-stage load, update-existing, insert-missing, and evidence phases so the remaining `binary_upsert_query_ms` can be attacked directly
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
