@@ -309,6 +309,65 @@ What the serve remeasurement says now:
 - the remaining sprint question is therefore no longer “can direct lane-b be made sane?”; it can
 - the remaining question is what still causes lane-B to slow down when release/recovery/inspect stages are active at the same time
 
+Overnight `assemble_lane_b` analysis from `2026-05-27 00:00-07:00 America/New_York` changed that conclusion:
+
+- sampled overnight rows included `218` `assemble_lane_b` runs:
+  - `202` completed, average wall time about `110.7s`, p95 about `235.4s`
+  - `14` failed, average wall time about `160.1s`, p95 about `243.8s`
+  - `2` were abandoned after lease expiry
+- all `14` overnight failures except one were `refresh binary stats batch: ERROR: deadlock detected`
+- one distinct failure at `stage_run=66150` was `upsert binaries batch missing id for ordinal 135`
+- the worst overnight completed runs were not dominated by `binary_upsert_duration_ms`; they were dominated by `binary_refresh_duration_ms`
+  - `stage_run=66202`: `binary_upsert_duration_ms=151013`, `binary_refresh_duration_ms=818564`
+  - `stage_run=64309`: `binary_upsert_duration_ms=41788`, `binary_refresh_duration_ms=311764`
+  - `stage_run=65655`: `binary_upsert_duration_ms=61322`, `binary_refresh_duration_ms=644505`
+- overlap counts on the worst rows were real but fairly steady, usually `2-5` concurrent runs each of `recover_yenc`, `inspect_par2`, `release`, and `assemble_lane_a`
+- that means overlap was amplifying the problem, but the base cost had moved back into lane-B itself
+
+Fresh direct `assemble lane-b --once` validation on `2026-05-27` confirmed that:
+
+- worker 1: `binaries_refreshed=53`, `binary_upsert_ms=51.87`, `binary_refresh_ms=84.04`
+- worker 2: `binaries_refreshed=9973`, `binary_upsert_ms=9858.80`, `binary_refresh_ms=75176.12`
+- worker 3: `binaries_refreshed=10019`, `binary_upsert_ms=9970.42`, `binary_refresh_ms=76692.84`
+- worker 4: `binaries_refreshed=15000`, `binary_upsert_ms=14641.90`, `binary_refresh_ms=80612.59`
+
+That direct run matters because no supervisor overlap was present. The `75s-80s` refresh band meant `RefreshBinaryStatsBatch` itself was still mis-shaped even after the earlier yEnc retirement and deferred-summary changes.
+
+Root-cause trace of `RefreshBinaryStatsBatch`:
+
+- sampled the current `refreshBinaryStatsIDsInTx` query on `8000` recently updated binaries using `EXPLAIN ANALYZE`
+- the existing query spent about `56.5s`
+- the dominant problem was a hash join that seq-scanned the full `article_headers` table:
+  - about `111.4M` `article_headers` rows scanned
+  - about `2.45M` shared buffers read
+  - about `523k` temp buffers read and written
+- this was happening because the query joined `requested -> binary_parts -> article_headers` in one aggregate, which gave the planner enough rope to build a full-table hash side on `article_headers`
+
+Sixth focused change on the sprint branch:
+
+- rewrote `refreshBinaryStatsIDsInTx` to materialize the requested `binary_parts` rows first, then join that bounded set to `article_headers` by primary key
+- sampled `EXPLAIN ANALYZE` for the rewritten shape on the same `8000`-binary cohort:
+  - old shape: about `56509 ms`
+  - new materialized `part_rows` shape: about `919 ms`
+- the new plan used:
+  - index scans on `idx_binary_parts_binary_id`
+  - index scans on `article_headers_pkey`
+  - no global `article_headers` seq scan
+
+Post-change direct `assemble lane-b --once` sample after the refresh query rewrite:
+
+- worker 1: `binaries_refreshed=57`, `binary_upsert_ms=84.19`, `binary_refresh_ms=93.65`
+- worker 2: `binaries_refreshed=5945`, `binary_upsert_ms=5643.32`, `binary_refresh_ms=4595.83`
+- worker 3: `binaries_refreshed=14594`, `binary_upsert_ms=13801.28`, `binary_refresh_ms=16036.01`
+- worker 4: `binaries_refreshed=15000`, `binary_upsert_ms=14047.72`, `binary_refresh_ms=16040.90`
+
+What this changes in the diagnosis:
+
+- lane-B was not only fighting other stages overnight; it was also paying a bad self-inflicted refresh query cost
+- the best next path was not more `UpsertBinaries` tuning first; it was fixing the `RefreshBinaryStatsBatch` aggregate shape
+- after this rewrite, the direct refresh tail drops back into the same rough band as `UpsertBinaries`, which should also shorten the window where overlap deadlocks can happen
+- the next remeasurement should be serve-mode again, specifically to see how many `refresh binary stats batch` deadlocks disappear now that the refresh transaction is much shorter
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
