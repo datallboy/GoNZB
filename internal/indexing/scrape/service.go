@@ -237,27 +237,25 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 
 	s.log.Info("scrape latest: group=%s start=%d high=%d batch=%d", group, start, stats.High, s.opts.BatchSize)
 
-	for from := start; from <= stats.High; from += s.opts.BatchSize {
-		to := from + s.opts.BatchSize - 1
-		if to > stats.High {
-			to = stats.High
-		}
-
-		headers, inserted, _, _, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to, nil)
-		if err != nil {
-			return err
-		}
-		metrics.RangesFetched++
-		metrics.ArticleHeadersSeen += int64(len(headers))
-		metrics.ArticlesInserted += inserted
-		metrics.CheckpointUpdates++
-
-		if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
-			return fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
-		}
-
-		s.log.Info("scrape latest: group=%s range=%d-%d inserted=%d", group, from, to, inserted)
+	to := start + s.opts.BatchSize - 1
+	if to > stats.High {
+		to = stats.High
 	}
+
+	headers, inserted, _, _, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil)
+	if err != nil {
+		return err
+	}
+	metrics.RangesFetched++
+	metrics.ArticleHeadersSeen += int64(len(headers))
+	metrics.ArticlesInserted += inserted
+	metrics.CheckpointUpdates++
+
+	if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
+		return fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
+	}
+
+	s.log.Info("scrape latest: group=%s range=%d-%d inserted=%d", group, start, to, inserted)
 
 	return nil
 }
