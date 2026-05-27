@@ -63,15 +63,18 @@ The safe grouping rule is not "similar headers across groups." The safe rule is 
   - Current bound is intentionally narrow: only `recovered_source='yenc_header'`, non-empty `file_set_key`, more than one newsgroup, more than one main-payload binary, expected file count evidence, and a posting span within 24 hours.
 - [x] Confirm `release_newsgroups` records all participating groups after promotion.
   - Release service now persists all unique cluster newsgroups instead of only the candidate group.
-- [ ] Confirm internal NZB export remains UTF-8, deterministic, and includes the full release group set while preserving file/article membership accuracy.
+- [x] Confirm internal NZB export remains UTF-8, deterministic, and includes the full release group set while preserving file/article membership accuracy.
+  - Verified with catalog/export regressions that `release_newsgroups` round-trips into NZB file group lists and that file/article ordering remains stable.
 
 ## Downloader Filename Follow-Up
 
 The downloader now handles extensionless archive payloads by signature, but yEnc header filename adoption remains a separate design problem. Segment workers already write to preallocated task paths by the time yEnc headers are parsed, so adopting recovered names requires a coordinated task/path transition rather than an unsynchronized worker-side rename.
 
-Action item:
+Decision:
 
-- [ ] Design downloader yEnc filename adoption only if post-extraction signature handling is not sufficient for future samples.
+- [x] Defer downloader yEnc filename adoption unless future samples prove signature-based extraction is not enough.
+  - Current downloader behavior already handles the practical failure mode that triggered this sprint: extensionless/obfuscated archives can be detected and extracted by signature after download.
+  - Renaming files mid-download from recovered yEnc names would require rewriting `DownloadFile` task paths, `.part` paths, queue-file persistence, completed-file moves, and post-processing references in one coordinated transition. That is a downloader workflow change, not an indexer grouping prerequisite.
 
 ## Sign-Off Checklist
 
@@ -79,5 +82,5 @@ Needs completion:
 
 - [x] Cross-group recovered-identity promotion is implemented behind the guardrails above.
 - [x] Synthetic fixtures prove varied headers can still group when recovered identity is strong.
-- [ ] NZB export preserves multi-group provenance after promotion.
-- [ ] Downloader yEnc filename adoption is either implemented safely or explicitly deferred with evidence that signature-based extraction is enough.
+- [x] NZB export preserves multi-group provenance after promotion.
+- [x] Downloader yEnc filename adoption is either implemented safely or explicitly deferred with evidence that signature-based extraction is enough.

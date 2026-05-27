@@ -13,6 +13,8 @@ import (
 	"github.com/datallboy/gonzb/internal/categories/newsnab"
 )
 
+func ptrTime(v time.Time) *time.Time { return &v }
+
 func TestInspectCandidateFilterPasswordRequiresEncryptedRelease(t *testing.T) {
 	filter, err := inspectCandidateFilter("inspect_password")
 	if err != nil {
@@ -1847,6 +1849,172 @@ func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(
 		groupAID, groupBID, familyA, familyB,
 	); err != nil {
 		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
+		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
+func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.catalog.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.catalog.groupb.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-%d", time.Now().UnixNano()),
+		GUID:              fmt.Sprintf("guid-%d", time.Now().UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "catalog-multigroup",
+		ReleaseFamilyKey:  "catalog-multigroup",
+		ReleaseKey:        "catalog-multigroup",
+		GroupName:         "release-group-catalog-multigroup",
+		Title:             "Catalog Multigroup Release",
+		SearchTitle:       "catalog multigroup release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          ptrTime(time.Now().UTC()),
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       groupAID,
+		SourceReleaseKey:  "catalog-multigroup",
+		ReleaseFamilyKey:  "catalog-multigroup",
+		FileFamilyKey:     "catalog-multigroup::movie",
+		FamilyKind:        "file_name",
+		BaseStem:          "catalog-multigroup",
+		IsMainPayload:     true,
+		ReleaseKey:        "catalog-multigroup",
+		ReleaseName:       "Catalog Multigroup Release",
+		BinaryKey:         fmt.Sprintf("catalog-multigroup::binary-%d", time.Now().UnixNano()),
+		BinaryName:        "movie.part01.rar",
+		FileName:          "movie.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupAID, []ArticleHeader{{
+		ArticleNumber: 1001,
+		MessageID:     "<catalog-a@test>",
+		Subject:       `"movie.part01.rar" yEnc (1/2)`,
+		Poster:        "poster-a",
+		DateUTC:       ptrTime(time.Now().UTC()),
+		Bytes:         111,
+	}}); err != nil {
+		t.Fatalf("insert article one: %v", err)
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupBID, []ArticleHeader{{
+		ArticleNumber: 2002,
+		MessageID:     "<catalog-b@test>",
+		Subject:       `"movie.part01.rar" yEnc (2/2)`,
+		Poster:        "poster-b",
+		DateUTC:       ptrTime(time.Now().UTC()),
+		Bytes:         222,
+	}}); err != nil {
+		t.Fatalf("insert article two: %v", err)
+	}
+
+	var articleOneID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		groupAID, "<catalog-a@test>",
+	).Scan(&articleOneID); err != nil {
+		t.Fatalf("load article one id: %v", err)
+	}
+	var articleTwoID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		groupBID, "<catalog-b@test>",
+	).Scan(&articleTwoID); err != nil {
+		t.Fatalf("load article two id: %v", err)
+	}
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryID, ArticleHeaderID: articleOneID, MessageID: "<catalog-a@test>", PartNumber: 1, TotalParts: 2, SegmentBytes: 111, FileName: "movie.part01.rar"},
+		{BinaryID: binaryID, ArticleHeaderID: articleTwoID, MessageID: "<catalog-b@test>", PartNumber: 2, TotalParts: 2, SegmentBytes: 222, FileName: "movie.part01.rar"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "movie.part01.rar",
+		SizeBytes: 333,
+		FileIndex: 1,
+		Articles: []ReleaseFileArticleRecord{
+			{ArticleHeaderID: articleOneID, PartNumber: 1},
+			{ArticleHeaderID: articleTwoID, PartNumber: 2},
+		},
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupBID, groupAID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+
+	groups, err := store.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release newsgroups: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != groupA || groups[1] != groupB {
+		t.Fatalf("unexpected catalog release groups: got %v want [%s %s]", groups, groupA, groupB)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one catalog release file, got %d", len(files))
+	}
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, files[0].ID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 2 {
+		t.Fatalf("expected two article refs, got %d", len(articles))
+	}
+	if articles[0].MessageID != "<catalog-a@test>" || articles[1].MessageID != "<catalog-b@test>" {
+		t.Fatalf("unexpected article refs: %+v", articles)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("cleanup release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binary_parts WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary parts: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM article_headers WHERE id IN ($1, $2)`, articleOneID, articleTwoID); err != nil {
+		t.Fatalf("cleanup article headers: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("cleanup release: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
 		t.Fatalf("cleanup newsgroups: %v", err)
