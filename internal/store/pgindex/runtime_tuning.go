@@ -1,10 +1,17 @@
 package pgindex
 
-import "context"
+import (
+	"context"
+	"strings"
+	"sync"
+	"time"
+)
 
 const defaultBinaryUpsertDBChunkSize = 250
 
 type binaryUpsertChunkSizeContextKey struct{}
+type deferReleaseFamilySummaryRefreshContextKey struct{}
+type binaryUpsertTelemetryContextKey struct{}
 
 func WithBinaryUpsertChunkSize(ctx context.Context, size int) context.Context {
 	if ctx == nil {
@@ -23,4 +30,114 @@ func binaryUpsertChunkSizeFromContext(ctx context.Context) int {
 		}
 	}
 	return defaultBinaryUpsertDBChunkSize
+}
+
+func WithDeferredReleaseFamilySummaryRefresh(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, deferReleaseFamilySummaryRefreshContextKey{}, true)
+}
+
+func deferReleaseFamilySummaryRefreshFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(deferReleaseFamilySummaryRefreshContextKey{}).(bool)
+	return value
+}
+
+type BinaryUpsertTelemetry struct {
+	mu                           sync.Mutex
+	ChunkCount                   int
+	ChunkRows                    int
+	ChunkRetries                 int
+	ChunkRetryDeadlocks          int
+	ChunkRetrySerialization      int
+	ChunkDurationMs              float64
+	ChunkDurationMaxMs           float64
+	DeferredSummaryRefreshChunks int
+	DeferredSummaryKeyCount      int
+}
+
+func (t *BinaryUpsertTelemetry) recordChunk(rows, retries int, elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ChunkCount++
+	t.ChunkRows += rows
+	t.ChunkRetries += retries
+	t.ChunkDurationMs += durationMs
+	if durationMs > t.ChunkDurationMaxMs {
+		t.ChunkDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordRetry(err error) {
+	if t == nil || err == nil {
+		return
+	}
+	text := err.Error()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if containsSQLState(text, "40P01") {
+		t.ChunkRetryDeadlocks++
+	}
+	if containsSQLState(text, "40001") {
+		t.ChunkRetrySerialization++
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordDeferredSummaryRefresh(keys int) {
+	if t == nil || keys <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.DeferredSummaryRefreshChunks++
+	t.DeferredSummaryKeyCount += keys
+}
+
+func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
+	if t == nil {
+		return BinaryUpsertTelemetry{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return BinaryUpsertTelemetry{
+		ChunkCount:                   t.ChunkCount,
+		ChunkRows:                    t.ChunkRows,
+		ChunkRetries:                 t.ChunkRetries,
+		ChunkRetryDeadlocks:          t.ChunkRetryDeadlocks,
+		ChunkRetrySerialization:      t.ChunkRetrySerialization,
+		ChunkDurationMs:              t.ChunkDurationMs,
+		ChunkDurationMaxMs:           t.ChunkDurationMaxMs,
+		DeferredSummaryRefreshChunks: t.DeferredSummaryRefreshChunks,
+		DeferredSummaryKeyCount:      t.DeferredSummaryKeyCount,
+	}
+}
+
+func WithBinaryUpsertTelemetry(ctx context.Context, telemetry *BinaryUpsertTelemetry) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if telemetry == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, binaryUpsertTelemetryContextKey{}, telemetry)
+}
+
+func binaryUpsertTelemetryFromContext(ctx context.Context) *BinaryUpsertTelemetry {
+	if ctx == nil {
+		return nil
+	}
+	telemetry, _ := ctx.Value(binaryUpsertTelemetryContextKey{}).(*BinaryUpsertTelemetry)
+	return telemetry
+}
+
+func containsSQLState(text, code string) bool {
+	return len(text) > 0 && len(code) > 0 && (strings.Contains(text, "SQLSTATE "+code) || strings.Contains(text, "sqlstate "+code))
 }

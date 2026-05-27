@@ -1539,6 +1539,64 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 	}
 }
 
+func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecompute(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.defer.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if _, err := store.UpsertBinary(deferredCtx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "deferred-release-family",
+		SourceReleaseKey:  "deferred-source",
+		ReleaseKey:        "deferred-release-family",
+		ReleaseName:       "Deferred Release Family",
+		BinaryKey:         "deferred-binary",
+		BinaryName:        "deferred.part01.rar",
+		FileName:          "deferred.part01.rar",
+		ExpectedFileCount: 4,
+		TotalParts:        12,
+		MatchConfidence:   0.99,
+		MatchStatus:       "strong",
+	}); err != nil {
+		t.Fatalf("upsert binary with deferred summary refresh: %v", err)
+	}
+
+	var (
+		binaryCount     int
+		readinessBucket string
+		isDirty         bool
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			binary_count,
+			readiness_bucket,
+			updated_at > COALESCE(processed_at, updated_at) AS is_dirty
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-release-family'`, newsgroupID,
+	).Scan(&binaryCount, &readinessBucket, &isDirty); err != nil {
+		t.Fatalf("query deferred summary row: %v", err)
+	}
+	if binaryCount != 0 {
+		t.Fatalf("expected deferred summary row to skip inline recompute, got binary_count=%d", binaryCount)
+	}
+	if readinessBucket != releaseReadinessStaleCleanupOnly {
+		t.Fatalf("expected deferred summary row to stay in stale cleanup placeholder, got %q", readinessBucket)
+	}
+	if !isDirty {
+		t.Fatalf("expected deferred summary row to remain dirty for later refresh")
+	}
+}
+
 func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

@@ -442,8 +442,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 			batchRecords = append(batchRecords, binaryRecordsByKey[key])
 		}
 		upsertCtx := pgindex.WithBinaryUpsertChunkSize(ctx, s.opts.BinaryUpsertDBChunkSize)
+		upsertCtx = pgindex.WithDeferredReleaseFamilySummaryRefresh(upsertCtx)
+		upsertTelemetry := &pgindex.BinaryUpsertTelemetry{}
+		upsertCtx = pgindex.WithBinaryUpsertTelemetry(upsertCtx, upsertTelemetry)
 		binaryIDs, err := s.repo.UpsertBinaries(upsertCtx, batchRecords)
 		binaryUpsertDuration += time.Since(binaryUpsertStarted)
+		addBinaryUpsertTelemetryMetrics(metrics, upsertTelemetry.Snapshot())
 		if err != nil {
 			metrics["processed_headers"] = assembledCount
 			metrics["binaries_refreshed"] = len(refreshed)
@@ -523,7 +527,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		laneASelected,
 		laneBSelected,
@@ -537,6 +541,15 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		metrics["binary_upsert_duration_ms"],
 		metrics["binary_part_upsert_duration_ms"],
 		metrics["binary_refresh_duration_ms"],
+		metrics["binary_upsert_chunk_count"],
+		metrics["binary_upsert_chunk_rows"],
+		metrics["binary_upsert_chunk_retries"],
+		metrics["binary_upsert_chunk_retry_deadlocks"],
+		metrics["binary_upsert_chunk_retry_serialization"],
+		metrics["binary_upsert_chunk_duration_ms"],
+		metrics["binary_upsert_chunk_max_ms"],
+		metrics["binary_upsert_deferred_summary_chunks"],
+		metrics["binary_upsert_deferred_summary_keys"],
 		metrics["unique_binary_upserts"],
 		metrics["binary_upsert_cache_hits"],
 		recovery.attempts,
@@ -554,6 +567,11 @@ func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
 	for key, value := range src {
 		switch key {
 		case "batch_size", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
+			continue
+		case "binary_upsert_chunk_max_ms":
+			if current := numericMetricFloat64(dst, key); numericMetricFloat64(src, key) > current {
+				dst[key] = numericMetricFloat64(src, key)
+			}
 			continue
 		}
 		switch tv := value.(type) {
@@ -603,6 +621,18 @@ func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerM
 	metrics["total_duration_ms"] = durationMillis(totalDuration)
 	metrics["headers_per_second"] = throughputPerSecond(processedHeaders, totalDuration)
 	metrics["refreshed_binaries_per_second"] = throughputPerSecond(refreshedBinaries, totalDuration)
+}
+
+func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryUpsertTelemetry) {
+	metrics["binary_upsert_chunk_count"] = telemetry.ChunkCount
+	metrics["binary_upsert_chunk_rows"] = telemetry.ChunkRows
+	metrics["binary_upsert_chunk_retries"] = telemetry.ChunkRetries
+	metrics["binary_upsert_chunk_retry_deadlocks"] = telemetry.ChunkRetryDeadlocks
+	metrics["binary_upsert_chunk_retry_serialization"] = telemetry.ChunkRetrySerialization
+	metrics["binary_upsert_chunk_duration_ms"] = telemetry.ChunkDurationMs
+	metrics["binary_upsert_chunk_max_ms"] = telemetry.ChunkDurationMaxMs
+	metrics["binary_upsert_deferred_summary_chunks"] = telemetry.DeferredSummaryRefreshChunks
+	metrics["binary_upsert_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
 }
 
 func laneMetricName(lane string) string {

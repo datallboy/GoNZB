@@ -119,10 +119,45 @@ Open this as an active execution sprint only after:
 - deadlock retries and lock-related failures are rare, measured, and attributable when they do happen
 - dashboard/runtime counts remain exact without requiring the heaviest cross-table derived queries on every refresh
 
+## 2026-05-26 Initial Execution Findings
+
+First focused change on the sprint branch:
+
+- added chunk-level `UpsertBinaries` telemetry to assemble metrics and logs
+- added an assemble-only context path that defers inline release-family summary refreshes during binary upsert chunk commits
+- added a regression test proving deferred assemble upserts leave readiness rows dirty without forcing an inline recompute
+
+Targeted validation:
+
+- `go test ./internal/store/pgindex ./internal/indexing/assemble`
+
+Baseline for comparison:
+
+- the most recent pre-branch direct `assemble lane-b --once` sample in the archived NNTP/inspection sprint recorded worker `binary_upsert_ms` in the rough `64s-72s` band, with `binary_refresh_ms` around `3.2s-5.8s` in the best sample and much higher under serve overlap
+- the last persisted serve-mode regression sample remained `stage_run=61510`, where aggregate `binary_upsert_duration_ms=365471.659` and `binary_refresh_duration_ms=304367.373`
+
+Post-change direct `assemble lane-b --once` sample on this branch:
+
+- worker 1: `binaries_refreshed=6972`, `binary_upsert_ms=31562.96`, `binary_refresh_ms=43929.14`, `binary_upsert_chunk_count=28`, `binary_upsert_chunk_retries=0`, `binary_upsert_chunk_max_ms=1466.07`
+- worker 2: `binaries_refreshed=12509`, `binary_upsert_ms=54132.33`, `binary_refresh_ms=50786.86`, `binary_upsert_chunk_count=51`, `binary_upsert_chunk_retries=0`, `binary_upsert_chunk_max_ms=1466.90`
+- worker 3: `binaries_refreshed=13334`, `binary_upsert_ms=58184.44`, `binary_refresh_ms=92715.99`, `binary_upsert_chunk_count=54`, `binary_upsert_chunk_retries=0`, `binary_upsert_chunk_max_ms=1285.15`
+- worker 4: `binaries_refreshed=9515`, `binary_upsert_ms=84330.06`, `binary_refresh_ms=106438.16`, `binary_upsert_chunk_count=39`, `binary_upsert_chunk_retries=2`, `binary_upsert_chunk_retry_deadlocks=2`, `binary_upsert_chunk_max_ms=43555.24`
+
+Key finding from the new telemetry:
+
+- all four workers reported `binary_upsert_deferred_summary_chunks=0` and `binary_upsert_deferred_summary_keys=0`
+- that means the current lane-B slices are usually not hitting the old inline `UpsertBinaries` summary-refresh path at all
+- the remaining dominant tail is still `RefreshBinaryStatsBatch`, plus occasional chunk deadlocks inside the upsert path
+
+Implication for the next patch:
+
+- keep the new `UpsertBinaries` telemetry and assemble-only defer path because they are low-risk and now measurable
+- shift the next isolation change toward `RefreshBinaryStatsBatch` summary ownership/deferral and any lock ordering inside that path, because that is where the live lane-B tail still sits
+
 ## Active Execution Backlog
 
-- [ ] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
-- [ ] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Current code still refreshes summary keys inside each chunk commit.
+- [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
+- [x] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Assemble now uses a deferred path, and live telemetry shows current lane-B slices usually do not touch any upsert-time summary keys anyway.
 - [ ] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Current code still dedupes keys but refreshes each summary one at a time in the same transaction as the stats update.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [ ] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
