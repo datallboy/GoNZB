@@ -2177,18 +2177,25 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		WITH requested(binary_id) AS (
 			VALUES %s
 		),
-		agg AS (
+		part_rows AS MATERIALIZED (
 			SELECT
 				bp.binary_id,
+				bp.segment_bytes,
+				bp.article_header_id
+			FROM requested r
+			JOIN binary_parts bp ON bp.binary_id = r.binary_id
+		),
+		agg AS (
+			SELECT
+				p.binary_id,
 				COUNT(*)::INTEGER AS observed_parts,
-				COALESCE(SUM(bp.segment_bytes), 0)::BIGINT AS total_bytes,
+				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(ah.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(ah.article_number), 0)::BIGINT AS last_article_number,
 				MIN(ah.date_utc) AS posted_at
-			FROM requested r
-			JOIN binary_parts bp ON bp.binary_id = r.binary_id
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			GROUP BY bp.binary_id
+			FROM part_rows p
+			JOIN article_headers ah ON ah.id = p.article_header_id
+			GROUP BY p.binary_id
 		),
 		updated AS (
 			UPDATE binaries b
