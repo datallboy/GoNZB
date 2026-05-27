@@ -618,6 +618,49 @@ Postgres container tuning follow-up:
   - `wal_compression = on`
 - this should reduce forced checkpoint churn during heavy assemble writes, but it is not a substitute for fixing the `UpsertBinaries` statement shape
 
+Follow-up validation on `2026-05-27 10:48-11:10 America/New_York`:
+
+- runtime setting changed: `assemble_lane_b.binary_upsert_db_chunk_size = 100`
+- query-path experiments:
+  - inline `VALUES` + `ON CONFLICT` still crashed
+  - temp staging table + `ON CONFLICT` still crashed
+  - temp staging table + explicit `UPDATE existing` / `INSERT missing` still crashed before reindex
+- that means the crash was not caused only by the wrapper query shape (`VALUES`, `ON CONFLICT`, or CTE usage)
+- the stronger signal was the `binaries` write surface itself, likely including index maintenance on the local PostgreSQL instance
+
+Corrective action:
+
+- `REINDEX TABLE binaries` completed cleanly
+- Postgres container was recreated so the new WAL settings became live:
+  - `max_wal_size = 32GB`
+  - `checkpoint_timeout = 15min`
+  - `wal_compression = on`
+
+Post-reindex / post-recreate direct `assemble lane-b --once` sample:
+
+- command completed successfully with no backend crash
+- all four worker slices completed their `15000`-header claims
+- worker samples:
+  - `binary_upsert_ms=8260.22`, `binary_refresh_ms=38748.03`, `binary_upsert_query_ms=3089.78`
+  - `binary_upsert_ms=11088.79`, `binary_refresh_ms=35815.16`, `binary_upsert_query_ms=5847.35`
+  - `binary_upsert_ms=11442.26`, `binary_refresh_ms=35342.11`, `binary_upsert_query_ms=6245.86`
+  - `binary_upsert_ms=16307.98`, `binary_refresh_ms=30664.85`, `binary_upsert_query_ms=10999.12`
+- all workers showed:
+  - `binary_upsert_chunk_retries=0`
+  - `binary_upsert_chunk_rows=15000`
+  - `unique_binary_upserts=15000`
+
+Current interpretation:
+
+- yes, the earlier crash behavior was more likely tied to `binaries` write/index maintenance on this local database than to any one SQL wrapper pattern
+- the query-shape reductions were still worthwhile:
+  - they lowered successful-chunk `binary_upsert_query_ms`
+  - they removed reliance on the more complex crash-prone paths first
+- after the `binaries` reindex and container recreate, the current safest state is:
+  - keep the staging-table plus explicit `UPDATE` / `INSERT missing` path
+  - keep `assemble_lane_b.binary_upsert_db_chunk_size = 100`
+  - keep the larger WAL budget so checkpoints are not driven by the old `1GB` cap
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

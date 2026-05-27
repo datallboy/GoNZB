@@ -14,7 +14,7 @@ services:
       - -c
       - maintenance_work_mem=512MB
       - -c
-      - max_wal_size=8GB
+      - max_wal_size=32GB
       - -c
       - checkpoint_timeout=15min
       - -c
