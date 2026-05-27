@@ -60,10 +60,28 @@ func lockBinaryIdentityKeys(ctx context.Context, tx *sql.Tx, locks []binaryIdent
 		}
 		return deduped[i].BinaryKey < deduped[j].BinaryKey
 	})
-	for _, lock := range deduped {
-		if err := lockBinaryIdentityKey(ctx, tx, lock.ProviderID, lock.NewsgroupID, lock.BinaryKey); err != nil {
-			return err
-		}
+	values := make([]string, 0, len(deduped))
+	args := make([]any, 0, len(deduped)*3)
+	for i, lock := range deduped {
+		base := (i * 3) + 1
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text)", base, base+1, base+2))
+		args = append(args, lock.ProviderID, lock.NewsgroupID, lock.BinaryKey)
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(provider_id, newsgroup_id, binary_key) AS (
+			VALUES %s
+		)
+		SELECT pg_advisory_xact_lock(hashtext('gonzb-binary-key:' || provider_id::text || ':' || newsgroup_id::text || ':' || binary_key))
+		FROM requested
+		ORDER BY provider_id, newsgroup_id, binary_key`, strings.Join(values, ",")), args...)
+	if err != nil {
+		return fmt.Errorf("lock binary identity keys batch size=%d: %w", len(deduped), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate binary identity lock batch size=%d: %w", len(deduped), err)
 	}
 	return nil
 }
