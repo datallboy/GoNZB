@@ -1232,8 +1232,10 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		telemetry.recordLockDuration(time.Since(lockStarted))
 	}
 
+	persistedValues := buildUpsertBinaryPersistedValues(records)
+	persistedArgs := buildUpsertBinaryPersistedArgs(records)
 	upsertQueryStarted := time.Now()
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		WITH requested (
 			ordinal,
 			provider_id,
@@ -1266,18 +1268,6 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			grouping_evidence_payload
 		) AS (
 			VALUES %s
-		),
-		existing AS (
-			SELECT
-				r.ordinal,
-				b.release_family_key AS existing_release_family_key,
-				b.base_stem AS existing_base_stem,
-				b.expected_file_count AS existing_expected_file_count
-			FROM requested r
-			JOIN binaries b
-			  ON b.provider_id = r.provider_id
-			 AND b.newsgroup_id = r.newsgroup_id
-			 AND b.binary_key = r.binary_key
 		),
 		ordered_requested AS (
 			SELECT *
@@ -1380,6 +1370,35 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			    	ELSE binaries.grouping_evidence_json
 			    END,
 			    updated_at = NOW()
+			WHERE binaries.poster_id IS DISTINCT FROM COALESCE(EXCLUDED.poster_id, binaries.poster_id)
+			   OR binaries.source_release_key IS DISTINCT FROM EXCLUDED.source_release_key
+			   OR binaries.release_family_key IS DISTINCT FROM EXCLUDED.release_family_key
+			   OR binaries.file_set_key IS DISTINCT FROM EXCLUDED.file_set_key
+			   OR binaries.file_family_key IS DISTINCT FROM EXCLUDED.file_family_key
+			   OR binaries.identity_strength IS DISTINCT FROM EXCLUDED.identity_strength
+			   OR binaries.identity_reason IS DISTINCT FROM EXCLUDED.identity_reason
+			   OR binaries.subject_set_token IS DISTINCT FROM EXCLUDED.subject_set_token
+			   OR binaries.subject_set_kind IS DISTINCT FROM EXCLUDED.subject_set_kind
+			   OR binaries.family_kind IS DISTINCT FROM EXCLUDED.family_kind
+			   OR binaries.base_stem IS DISTINCT FROM EXCLUDED.base_stem
+			   OR binaries.is_auxiliary IS DISTINCT FROM EXCLUDED.is_auxiliary
+			   OR binaries.is_main_payload IS DISTINCT FROM EXCLUDED.is_main_payload
+			   OR binaries.release_key IS DISTINCT FROM EXCLUDED.release_key
+			   OR binaries.release_name IS DISTINCT FROM EXCLUDED.release_name
+			   OR binaries.binary_name IS DISTINCT FROM EXCLUDED.binary_name
+			   OR binaries.file_name IS DISTINCT FROM EXCLUDED.file_name
+			   OR (EXCLUDED.file_index > 0 AND binaries.file_index IS DISTINCT FROM EXCLUDED.file_index)
+			   OR binaries.expected_file_count < EXCLUDED.expected_file_count
+			   OR binaries.total_parts < EXCLUDED.total_parts
+			   OR (binaries.posted_at IS NULL AND EXCLUDED.posted_at IS NOT NULL)
+			   OR binaries.match_confidence < EXCLUDED.match_confidence
+			   OR (
+			   	EXCLUDED.match_confidence >= binaries.match_confidence
+			   	AND (
+			   		binaries.match_status IS DISTINCT FROM EXCLUDED.match_status
+			   		OR binaries.grouping_evidence_json IS DISTINCT FROM EXCLUDED.grouping_evidence_json
+			   	)
+			   )
 			RETURNING
 				id,
 				provider_id,
@@ -1388,27 +1407,50 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 				release_family_key,
 				base_stem,
 				expected_file_count
+		) SELECT 1 FROM upserted LIMIT 1`, strings.Join(values, ",")), args...); err != nil {
+		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested (
+			ordinal,
+			provider_id,
+			newsgroup_id,
+			binary_key
+		) AS (
+			VALUES %s
+		),
+		existing AS (
+			SELECT
+				r.ordinal,
+				b.release_family_key AS existing_release_family_key,
+				b.base_stem AS existing_base_stem,
+				b.expected_file_count AS existing_expected_file_count
+			FROM requested r
+			JOIN binaries b
+			  ON b.provider_id = r.provider_id
+			 AND b.newsgroup_id = r.newsgroup_id
+			 AND b.binary_key = r.binary_key
 		)
 		SELECT
 			r.ordinal,
-			u.id,
+			b.id,
 			COALESCE(e.existing_release_family_key, ''),
 			COALESCE(e.existing_base_stem, ''),
 			COALESCE(e.existing_expected_file_count, 0),
-			u.release_family_key,
-			u.base_stem,
-			u.expected_file_count,
+			b.release_family_key,
+			b.base_stem,
+			b.expected_file_count,
 			r.provider_id,
 			r.newsgroup_id
 		FROM requested r
-		JOIN upserted u
-		  ON u.provider_id = r.provider_id
-		 AND u.newsgroup_id = r.newsgroup_id
-		 AND u.binary_key = r.binary_key
+		JOIN binaries b
+		  ON b.provider_id = r.provider_id
+		 AND b.newsgroup_id = r.newsgroup_id
+		 AND b.binary_key = r.binary_key
 		LEFT JOIN existing e ON e.ordinal = r.ordinal
-		ORDER BY r.ordinal`, strings.Join(values, ",")), args...)
+		ORDER BY r.ordinal`, persistedValues), persistedArgs...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
+		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordUpsertQueryDuration(time.Since(upsertQueryStarted))
@@ -1541,6 +1583,23 @@ func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]
 	}
 
 	return false
+}
+
+func buildUpsertBinaryPersistedValues(records []preparedBinaryRecord) string {
+	values := make([]string, 0, len(records))
+	for i := range records {
+		base := (i * 4) + 1
+		values = append(values, fmt.Sprintf("($%d::integer,$%d::bigint,$%d::bigint,$%d::text)", base, base+1, base+2, base+3))
+	}
+	return strings.Join(values, ",")
+}
+
+func buildUpsertBinaryPersistedArgs(records []preparedBinaryRecord) []any {
+	args := make([]any, 0, len(records)*4)
+	for i, record := range records {
+		args = append(args, i, record.record.ProviderID, record.record.NewsgroupID, record.record.BinaryKey)
+	}
+	return args
 }
 
 func applyBinaryEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryEvidenceRecord) error {
