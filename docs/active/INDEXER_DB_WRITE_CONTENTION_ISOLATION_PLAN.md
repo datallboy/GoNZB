@@ -490,6 +490,71 @@ Current conclusion after the lock-ordering and chunked refresh change:
   - and a smaller but real `binary_refresh_summary_mark_ms`
 - if deadlocks recur in a longer stable serve soak, the next specific target should be summary dirty-marker writes, because that subphase is now isolated and measurable
 
+Eighth focused change on the sprint branch:
+
+- `markReleaseFamiliesDirtyBatch` now skips `ON CONFLICT DO UPDATE` rewrites when the target summary row is already dirty
+- `upsertBinaryGroupingEvidenceBatch` now skips `ON CONFLICT DO UPDATE` rewrites when the evidence payload is unchanged
+
+Why this was worth doing:
+
+- table stats on the live database showed:
+  - `release_family_readiness_summaries`: about `13 GB`
+  - `binary_grouping_evidence`: about `40 GB`
+  - `binaries`: about `48 GB`
+- even when subphase timings looked modest, unnecessary rewrites against those table sizes still amplify write latency and lock hold time
+- the new refresh telemetry had already isolated `binary_refresh_summary_mark_ms` as a real contributor, so the next safe reduction was to stop touching rows that were already queued
+
+Additional trace on `binary_refresh_stats_update_ms`:
+
+- sampled the current `refreshBinaryStatsIDsInTx` query again on `8000` recently updated binaries
+- with the aggregate rewrite and deterministic binary locking in place, the sampled plan now finished in about `232 ms`
+- the same sample updated only `93` binaries, which confirms the current query already avoids a large amount of unnecessary work once the row facts are unchanged
+- that means `stats_update` is still expensive in serve mode mainly when a run is genuinely refreshing many changed binaries, not because it has fallen back to another catastrophic full-table scan
+
+Post-change direct `assemble lane-b --once` sample after the no-op summary/evidence writes:
+
+- worker 1: `binaries_refreshed=64`, `binary_upsert_ms=61.21`, `binary_refresh_ms=93.45`
+  - `binary_refresh_stats_update_ms=76.86`
+  - `binary_refresh_summary_mark_ms=3.66`
+  - `binary_refresh_yenc_sync_ms=8.10`
+- worker 2: `binaries_refreshed=10020`, `binary_upsert_ms=4345.37`, `binary_refresh_ms=12037.52`
+  - `binary_refresh_stats_update_ms=8468.12`
+  - `binary_refresh_summary_mark_ms=2429.08`
+  - `binary_refresh_yenc_sync_ms=1103.00`
+- worker 3: `binaries_refreshed=10024`, `binary_upsert_ms=11447.25`, `binary_refresh_ms=10534.87`
+  - `binary_refresh_stats_update_ms=7388.87`
+  - `binary_refresh_summary_mark_ms=2180.92`
+  - `binary_refresh_yenc_sync_ms=934.77`
+- worker 4: `binaries_refreshed=13423`, `binary_upsert_ms=15157.14`, `binary_refresh_ms=13403.93`
+  - `binary_refresh_stats_update_ms=9113.40`
+  - `binary_refresh_summary_mark_ms=3162.55`
+  - `binary_refresh_yenc_sync_ms=1109.50`
+
+What changed relative to the previous direct checkpoint:
+
+- previous comparable large-slice direct sample:
+  - `binaries_refreshed=14340`, `binary_refresh_ms=10870.55`, `summary_mark_ms=2901.68`
+- latest comparable large direct sample:
+  - `binaries_refreshed=13423`, `binary_refresh_ms=13403.93`, `summary_mark_ms=3162.55`
+- so the direct improvement is not dramatic; the no-op suppression looks more like a contention/bloat reduction than a big standalone latency drop
+
+Serve-mode sample after the no-op summary/evidence writes, sampled on `2026-05-27 10:15-10:18 America/New_York`:
+
+- this sample was cut short by a repeated local Postgres `unexpected EOF / recovery mode` event, so persisted stage rows are not reliable enough for a clean benchmark comparison
+- lane-B worker log samples before the database incident still show the new subphase split:
+  - `binaries_refreshed=4121`, `binary_upsert_ms=7968.56`, `binary_refresh_ms=7934.39`, `stats_update_ms=6120.72`, `summary_mark_ms=1207.82`, `yenc_sync_ms=600.76`
+  - small lane-B slice `binaries_refreshed=73`, `binary_refresh_ms=158.78`, `summary_mark_ms=8.86`
+- that supports the same conclusion as the direct run:
+  - `binary_refresh_summary_mark_ms` is real, but not as large as `binary_refresh_stats_update_ms`
+  - `binary_upsert_query_ms` and `binary_refresh_stats_update_ms` remain the two biggest measured assemble write costs
+
+Current best conclusion:
+
+- the refresh-side full-table scan and row-lock ordering issues have been addressed
+- the dirty-marker and evidence no-op suppressions are correct and low-risk, but they are incremental gains, not the next major step-change
+- the largest remaining measured assemble cost is still the core `UpsertBinaries` query path, with `binary_refresh_stats_update_ms` next behind it during heavy refresh slices
+- if another optimization pass is warranted, the next likely high-value target is `UpsertBinaries` query shape or readback strategy rather than more work on `summary_mark`
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
