@@ -12,6 +12,7 @@ const defaultBinaryUpsertDBChunkSize = 250
 type binaryUpsertChunkSizeContextKey struct{}
 type deferReleaseFamilySummaryRefreshContextKey struct{}
 type binaryUpsertTelemetryContextKey struct{}
+type binaryStatsRefreshTelemetryContextKey struct{}
 
 func WithBinaryUpsertChunkSize(ctx context.Context, size int) context.Context {
 	if ctx == nil {
@@ -140,4 +141,61 @@ func binaryUpsertTelemetryFromContext(ctx context.Context) *BinaryUpsertTelemetr
 
 func containsSQLState(text, code string) bool {
 	return len(text) > 0 && len(code) > 0 && (strings.Contains(text, "SQLSTATE "+code) || strings.Contains(text, "sqlstate "+code))
+}
+
+type BinaryStatsRefreshTelemetry struct {
+	mu                            sync.Mutex
+	BatchCount                    int
+	BinaryCount                   int
+	SummaryKeyCount               int
+	DeferredSummaryRefreshBatches int
+	DeferredSummaryKeyCount       int
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, deferred bool) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.BatchCount++
+	t.BinaryCount += binaryCount
+	t.SummaryKeyCount += summaryKeys
+	if deferred {
+		t.DeferredSummaryRefreshBatches++
+		t.DeferredSummaryKeyCount += summaryKeys
+	}
+}
+
+func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
+	if t == nil {
+		return BinaryStatsRefreshTelemetry{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return BinaryStatsRefreshTelemetry{
+		BatchCount:                    t.BatchCount,
+		BinaryCount:                   t.BinaryCount,
+		SummaryKeyCount:               t.SummaryKeyCount,
+		DeferredSummaryRefreshBatches: t.DeferredSummaryRefreshBatches,
+		DeferredSummaryKeyCount:       t.DeferredSummaryKeyCount,
+	}
+}
+
+func WithBinaryStatsRefreshTelemetry(ctx context.Context, telemetry *BinaryStatsRefreshTelemetry) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if telemetry == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, binaryStatsRefreshTelemetryContextKey{}, telemetry)
+}
+
+func binaryStatsRefreshTelemetryFromContext(ctx context.Context) *BinaryStatsRefreshTelemetry {
+	if ctx == nil {
+		return nil
+	}
+	telemetry, _ := ctx.Value(binaryStatsRefreshTelemetryContextKey{}).(*BinaryStatsRefreshTelemetry)
+	return telemetry
 }
