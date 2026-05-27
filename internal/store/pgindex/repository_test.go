@@ -2936,6 +2936,111 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	}
 }
 
+func TestRefreshBinaryStatsDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecompute(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.refresh.defer.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "deferred-refresh-source",
+		ReleaseFamilyKey:  "deferred-refresh-family",
+		ReleaseKey:        "deferred-refresh-family",
+		ReleaseName:       "Deferred Refresh Family",
+		BinaryKey:         "deferred-refresh-binary",
+		BinaryName:        "deferred.refresh.rar",
+		FileName:          "deferred.refresh.rar",
+		ExpectedFileCount: 3,
+		TotalParts:        2,
+		MatchConfidence:   0.97,
+		MatchStatus:       "strong",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	postedAt := time.Date(2026, 5, 26, 22, 0, 0, 0, time.UTC)
+	for idx := 0; idx < 2; idx++ {
+		articleNumber := int64(800 + idx)
+		messageID := fmt.Sprintf("<deferred-refresh-%d-%d@test>", time.Now().UnixNano(), idx)
+		inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       `Deferred Refresh - "deferred.refresh.rar" yEnc (1/2)`,
+			Poster:        "poster-deferred-refresh@example.com",
+			DateUTC:       &postedAt,
+			Bytes:         1024,
+			Lines:         12,
+		}})
+		if err != nil {
+			t.Fatalf("insert article header %d: %v", idx, err)
+		}
+		if inserted != 1 {
+			t.Fatalf("expected 1 inserted article header, got %d", inserted)
+		}
+
+		var articleHeaderID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND article_number = $2`, newsgroupID, articleNumber,
+		).Scan(&articleHeaderID); err != nil {
+			t.Fatalf("lookup article header %d: %v", idx, err)
+		}
+
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleHeaderID,
+			MessageID:       messageID,
+			PartNumber:      idx + 1,
+			TotalParts:      2,
+			SegmentBytes:    1024,
+			FileName:        "deferred.refresh.rar",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", idx, err)
+		}
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
+	}
+
+	var (
+		binaryCount     int
+		readinessBucket string
+		isDirty         bool
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			binary_count,
+			readiness_bucket,
+			updated_at > COALESCE(processed_at, updated_at) AS is_dirty
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-refresh-family'`, newsgroupID,
+	).Scan(&binaryCount, &readinessBucket, &isDirty); err != nil {
+		t.Fatalf("query deferred refresh summary row: %v", err)
+	}
+	if binaryCount != 0 {
+		t.Fatalf("expected deferred refresh summary row to skip inline recompute, got binary_count=%d", binaryCount)
+	}
+	if readinessBucket != releaseReadinessStaleCleanupOnly {
+		t.Fatalf("expected deferred refresh summary placeholder bucket, got %q", readinessBucket)
+	}
+	if !isDirty {
+		t.Fatalf("expected deferred refresh summary row to remain dirty")
+	}
+}
+
 func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

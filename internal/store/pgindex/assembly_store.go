@@ -1118,10 +1118,8 @@ func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBin
 	}
 	sortReleaseFamilySummaryKeys(chunkSummaryKeys)
 	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
-		for _, key := range chunkSummaryKeys {
-			if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
-				return nil, err
-			}
+		if err := markReleaseFamiliesDirtyBatch(ctx, tx, chunkSummaryKeys); err != nil {
+			return nil, err
 		}
 		if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 			telemetry.recordDeferredSummaryRefresh(len(chunkSummaryKeys))
@@ -1967,10 +1965,20 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		return a.FamilyKey < b.FamilyKey
 	})
 
-	for _, key := range summaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+	deferredSummaryRefresh := deferReleaseFamilySummaryRefreshFromContext(ctx)
+	if deferredSummaryRefresh {
+		if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
 			return err
 		}
+	} else {
+		for _, key := range summaryKeys {
+			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+	}
+	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordBatch(len(uniqueBinaryIDs), len(summaryKeys), deferredSummaryRefresh)
 	}
 	if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, uniqueBinaryIDs); err != nil {
 		return err

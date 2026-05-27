@@ -18,6 +18,7 @@ const (
 	releaseReadinessWeakObfuscated   = "weak_obfuscated_set"
 	releaseReadinessPreferBaseStem   = "prefer_base_stem"
 	releaseReadinessOvergrouped      = "overgrouped_contextual"
+	releaseFamilyDirtyBatchSize      = 10000
 )
 
 var summaryOpaqueTokenRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
@@ -376,7 +377,59 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 		return nil
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	return markReleaseFamiliesDirtyBatch(ctx, tx, []releaseFamilySummaryKey{key})
+}
+
+func markReleaseFamiliesDirtyBatch(ctx context.Context, tx *sql.Tx, keys []releaseFamilySummaryKey) error {
+	if tx == nil {
+		return fmt.Errorf("release summary queue tx is required")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	normalized := make([]releaseFamilySummaryKey, 0, len(keys))
+	seen := make(map[releaseFamilySummaryKey]struct{}, len(keys))
+	for _, candidate := range keys {
+		key, ok := normalizeReleaseFamilySummaryKey(candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	sortReleaseFamilySummaryKeys(normalized)
+
+	for start := 0; start < len(normalized); start += releaseFamilyDirtyBatchSize {
+		end := start + releaseFamilyDirtyBatchSize
+		if end > len(normalized) {
+			end = len(normalized)
+		}
+		batch := normalized[start:end]
+		values := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)*5)
+		for i, key := range batch {
+			base := (i * 5) + 1
+			values = append(values, fmt.Sprintf(
+				"($%d,$%d,$%d,$%d,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$%d,0,0,TIMESTAMPTZ 'epoch',NOW())",
+				base, base+1, base+2, base+3, base+4,
+			))
+			args = append(args,
+				key.ProviderID,
+				key.NewsgroupID,
+				key.KeyKind,
+				key.FamilyKey,
+				releaseReadinessStaleCleanupOnly,
+			)
+		}
+
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO release_family_readiness_summaries (
 			provider_id,
 			newsgroup_id,
@@ -404,18 +457,13 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,0,0,TIMESTAMPTZ 'epoch',NOW())
+		VALUES %s
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,
-		key.ProviderID,
-		key.NewsgroupID,
-		key.KeyKind,
-		key.FamilyKey,
-		releaseReadinessStaleCleanupOnly,
-	)
-	if err != nil {
-		return fmt.Errorf("mark release family dirty provider=%d group=%d key_kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
+			strings.Join(values, ",")), args...); err != nil {
+			return fmt.Errorf("mark release family dirty batch count=%d: %w", len(batch), err)
+		}
 	}
 	return nil
 }

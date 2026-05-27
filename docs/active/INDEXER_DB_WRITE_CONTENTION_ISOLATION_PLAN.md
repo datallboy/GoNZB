@@ -154,11 +154,36 @@ Implication for the next patch:
 - keep the new `UpsertBinaries` telemetry and assemble-only defer path because they are low-risk and now measurable
 - shift the next isolation change toward `RefreshBinaryStatsBatch` summary ownership/deferral and any lock ordering inside that path, because that is where the live lane-B tail still sits
 
+Second focused change on the sprint branch:
+
+- `RefreshBinaryStatsBatch` now also supports the assemble-only deferred summary path
+- deferred summary marking now uses batched readiness-row upserts instead of one `markReleaseFamilyDirty` call per key
+- this keeps canonical binary stat updates in place while reducing per-family derived row churn inside assemble
+
+Post-change direct `assemble lane-b --once` sample after refresh deferral plus batched dirty markers:
+
+- worker 1: `binaries_refreshed=6908`, `binary_upsert_ms=36834.49`, `binary_refresh_ms=34940.83`, `binary_refresh_summary_key_count=6850`
+- worker 2: `binaries_refreshed=8737`, `binary_upsert_ms=45546.35`, `binary_refresh_ms=64832.09`, `binary_refresh_summary_key_count=8674`
+- worker 3: `binaries_refreshed=13458`, `binary_upsert_ms=77827.79`, `binary_refresh_ms=65101.33`, `binary_refresh_summary_key_count=13451`
+- worker 4: `binaries_refreshed=9675`, `binary_upsert_ms=115304.76`, `binary_refresh_ms=59702.19`, `binary_upsert_chunk_retries=1`, `binary_upsert_chunk_retry_deadlocks=1`
+
+What changed relative to the previous refresh-deferral-only sample:
+
+- `binary_refresh_ms` dropped from roughly `95.9s` and `110.1s` worst-case workers to roughly `59.7s-65.1s` in the latest run
+- the first worker dropped to `34.9s` refresh time, which is materially below the prior `40.3s`
+- the remaining worst tail is now more clearly the upsert path when it hits deadlock/retry or a very slow chunk, not the refresh-summary loop itself
+
+Current conclusion:
+
+- `RefreshBinaryStatsBatch` was absolutely part of the assemble contention path, not a dashboard-only concern
+- moving assemble off inline summary recompute and then batching the dirty-marker writes reduced the refresh-side contention cost meaningfully
+- the next likely technical target is deterministic lock behavior / chunk retry pressure inside `UpsertBinaries`, plus a serve-mode overlap remeasurement after these assemble-only changes
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
 - [x] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Assemble now uses a deferred path, and live telemetry shows current lane-B slices usually do not touch any upsert-time summary keys anyway.
-- [ ] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Current code still dedupes keys but refreshes each summary one at a time in the same transaction as the stats update.
+- [x] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Assemble now defers this path too, and dirty-marker writes are batched instead of one summary row at a time.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [ ] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
