@@ -1151,78 +1151,12 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	}
 
 	locks := make([]binaryIdentityLock, 0, len(records))
-	values := make([]string, 0, len(records))
-	args := make([]any, 0, len(records)*29)
-	for i, record := range records {
+	for _, record := range records {
 		locks = append(locks, binaryIdentityLock{
 			ProviderID:  record.record.ProviderID,
 			NewsgroupID: record.record.NewsgroupID,
 			BinaryKey:   record.record.BinaryKey,
 		})
-		base := (i * 29) + 1
-		values = append(values, fmt.Sprintf(
-			"($%d::integer,$%d::bigint,$%d::bigint,$%d::bigint,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::boolean,$%d::boolean,$%d::text,$%d::text,$%d::text,$%d::text,$%d::text,$%d::integer,$%d::integer,$%d::integer,$%d::timestamptz,$%d::double precision,$%d::text,$%d::jsonb,$%d::jsonb)",
-			base,
-			base+1,
-			base+2,
-			base+3,
-			base+4,
-			base+5,
-			base+6,
-			base+7,
-			base+8,
-			base+9,
-			base+10,
-			base+11,
-			base+12,
-			base+13,
-			base+14,
-			base+15,
-			base+16,
-			base+17,
-			base+18,
-			base+19,
-			base+20,
-			base+21,
-			base+22,
-			base+23,
-			base+24,
-			base+25,
-			base+26,
-			base+27,
-			base+28,
-		))
-		args = append(args,
-			i,
-			record.record.ProviderID,
-			record.record.NewsgroupID,
-			record.posterID,
-			strings.TrimSpace(record.record.SourceReleaseKey),
-			strings.TrimSpace(record.record.ReleaseFamilyKey),
-			strings.TrimSpace(record.record.FileSetKey),
-			strings.TrimSpace(record.record.FileFamilyKey),
-			strings.TrimSpace(record.record.IdentityStrength),
-			strings.TrimSpace(record.record.IdentityReason),
-			strings.TrimSpace(record.record.SubjectSetToken),
-			strings.TrimSpace(record.record.SubjectSetKind),
-			strings.TrimSpace(record.record.FamilyKind),
-			strings.TrimSpace(record.record.BaseStem),
-			record.record.IsAuxiliary,
-			record.record.IsMainPayload,
-			record.record.ReleaseKey,
-			strings.TrimSpace(record.record.ReleaseName),
-			record.record.BinaryKey,
-			strings.TrimSpace(record.record.BinaryName),
-			strings.TrimSpace(record.record.FileName),
-			record.record.FileIndex,
-			record.record.ExpectedFileCount,
-			record.record.TotalParts,
-			record.postedAt,
-			record.record.MatchConfidence,
-			record.record.MatchStatus,
-			record.inlineEvidenceJSON,
-			record.evidenceJSON,
-		)
 	}
 	lockStarted := time.Now()
 	if err := lockBinaryIdentityKeys(ctx, tx, locks); err != nil {
@@ -1232,12 +1166,86 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		telemetry.recordLockDuration(time.Since(lockStarted))
 	}
 
-	persistedValues := buildUpsertBinaryPersistedValues(records)
-	persistedArgs := buildUpsertBinaryPersistedArgs(records)
+	if err := stageUpsertBinaryChunk(ctx, tx, records); err != nil {
+		return nil, nil, err
+	}
+
 	upsertQueryStarted := time.Now()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		WITH requested (
-			ordinal,
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binaries b
+		SET poster_id = COALESCE(r.poster_id, b.poster_id),
+		    source_release_key = r.source_release_key,
+		    release_family_key = r.release_family_key,
+		    file_set_key = r.file_set_key,
+		    file_family_key = r.file_family_key,
+		    identity_strength = r.identity_strength,
+		    identity_reason = r.identity_reason,
+		    subject_set_token = r.subject_set_token,
+		    subject_set_kind = r.subject_set_kind,
+		    family_kind = r.family_kind,
+		    base_stem = r.base_stem,
+		    is_auxiliary = r.is_auxiliary,
+		    is_main_payload = r.is_main_payload,
+		    release_key = r.release_key,
+		    release_name = r.release_name,
+		    binary_name = r.binary_name,
+		    file_name = r.file_name,
+		    file_index = CASE
+		    	WHEN r.file_index > 0 THEN r.file_index
+		    	ELSE b.file_index
+		    END,
+		    expected_file_count = GREATEST(b.expected_file_count, r.expected_file_count),
+		    total_parts = GREATEST(b.total_parts, r.total_parts),
+		    posted_at = COALESCE(b.posted_at, r.posted_at),
+		    match_confidence = GREATEST(b.match_confidence, r.match_confidence),
+		    match_status = CASE
+		    	WHEN r.match_confidence >= b.match_confidence THEN r.match_status
+		    	ELSE b.match_status
+		    END,
+		    grouping_evidence_json = CASE
+		    	WHEN r.match_confidence >= b.match_confidence THEN r.grouping_evidence_json
+		    	ELSE b.grouping_evidence_json
+		    END,
+		    updated_at = NOW()
+		FROM tmp_upsert_binaries r
+		WHERE b.provider_id = r.provider_id
+		  AND b.newsgroup_id = r.newsgroup_id
+		  AND b.binary_key = r.binary_key
+		  AND (
+		  	b.poster_id IS DISTINCT FROM COALESCE(r.poster_id, b.poster_id)
+		  	OR b.source_release_key IS DISTINCT FROM r.source_release_key
+		  	OR b.release_family_key IS DISTINCT FROM r.release_family_key
+		  	OR b.file_set_key IS DISTINCT FROM r.file_set_key
+		  	OR b.file_family_key IS DISTINCT FROM r.file_family_key
+		  	OR b.identity_strength IS DISTINCT FROM r.identity_strength
+		  	OR b.identity_reason IS DISTINCT FROM r.identity_reason
+		  	OR b.subject_set_token IS DISTINCT FROM r.subject_set_token
+		  	OR b.subject_set_kind IS DISTINCT FROM r.subject_set_kind
+		  	OR b.family_kind IS DISTINCT FROM r.family_kind
+		  	OR b.base_stem IS DISTINCT FROM r.base_stem
+		  	OR b.is_auxiliary IS DISTINCT FROM r.is_auxiliary
+		  	OR b.is_main_payload IS DISTINCT FROM r.is_main_payload
+		  	OR b.release_key IS DISTINCT FROM r.release_key
+		  	OR b.release_name IS DISTINCT FROM r.release_name
+		  	OR b.binary_name IS DISTINCT FROM r.binary_name
+		  	OR b.file_name IS DISTINCT FROM r.file_name
+		  	OR (r.file_index > 0 AND b.file_index IS DISTINCT FROM r.file_index)
+		  	OR b.expected_file_count < r.expected_file_count
+		  	OR b.total_parts < r.total_parts
+		  	OR (b.posted_at IS NULL AND r.posted_at IS NOT NULL)
+		  	OR b.match_confidence < r.match_confidence
+		  	OR (
+		  		r.match_confidence >= b.match_confidence
+		  		AND (
+		  			b.match_status IS DISTINCT FROM r.match_status
+		  			OR b.grouping_evidence_json IS DISTINCT FROM r.grouping_evidence_json
+		  		)
+		  	)
+		  )`); err != nil {
+		return nil, nil, fmt.Errorf("update binaries batch: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO binaries (
 			provider_id,
 			newsgroup_id,
 			poster_id,
@@ -1265,159 +1273,53 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			match_confidence,
 			match_status,
 			grouping_evidence_json,
-			grouping_evidence_payload
-		) AS (
-			VALUES %s
-		),
-		ordered_requested AS (
-			SELECT *
-			FROM requested
-			ORDER BY provider_id, newsgroup_id, binary_key
-		),
-		upserted AS (
-			INSERT INTO binaries (
-				provider_id,
-				newsgroup_id,
-				poster_id,
-				source_release_key,
-				release_family_key,
-				file_set_key,
-				file_family_key,
-				identity_strength,
-				identity_reason,
-				subject_set_token,
-				subject_set_kind,
-				family_kind,
-				base_stem,
-				is_auxiliary,
-				is_main_payload,
-				release_key,
-				release_name,
-				binary_key,
-				binary_name,
-				file_name,
-				file_index,
-				expected_file_count,
-				total_parts,
-				posted_at,
-				match_confidence,
-				match_status,
-				grouping_evidence_json,
-				updated_at
-			)
-			SELECT
-				r.provider_id,
-				r.newsgroup_id,
-				r.poster_id,
-				r.source_release_key,
-				r.release_family_key,
-				r.file_set_key,
-				r.file_family_key,
-				r.identity_strength,
-				r.identity_reason,
-				r.subject_set_token,
-				r.subject_set_kind,
-				r.family_kind,
-				r.base_stem,
-				r.is_auxiliary,
-				r.is_main_payload,
-				r.release_key,
-				r.release_name,
-				r.binary_key,
-				r.binary_name,
-				r.file_name,
-				r.file_index,
-				r.expected_file_count,
-				r.total_parts,
-				r.posted_at,
-				r.match_confidence,
-				r.match_status,
-				r.grouping_evidence_json,
-				NOW()
-			FROM ordered_requested r
-			ON CONFLICT (provider_id, newsgroup_id, binary_key) DO UPDATE
-			SET poster_id = COALESCE(EXCLUDED.poster_id, binaries.poster_id),
-			    source_release_key = EXCLUDED.source_release_key,
-			    release_family_key = EXCLUDED.release_family_key,
-			    file_set_key = EXCLUDED.file_set_key,
-			    file_family_key = EXCLUDED.file_family_key,
-			    identity_strength = EXCLUDED.identity_strength,
-			    identity_reason = EXCLUDED.identity_reason,
-			    subject_set_token = EXCLUDED.subject_set_token,
-			    subject_set_kind = EXCLUDED.subject_set_kind,
-			    family_kind = EXCLUDED.family_kind,
-			    base_stem = EXCLUDED.base_stem,
-			    is_auxiliary = EXCLUDED.is_auxiliary,
-			    is_main_payload = EXCLUDED.is_main_payload,
-			    release_key = EXCLUDED.release_key,
-			    release_name = EXCLUDED.release_name,
-			    binary_name = EXCLUDED.binary_name,
-			    file_name = EXCLUDED.file_name,
-			    file_index = CASE
-			    	WHEN EXCLUDED.file_index > 0 THEN EXCLUDED.file_index
-			    	ELSE binaries.file_index
-			    END,
-			    expected_file_count = GREATEST(binaries.expected_file_count, EXCLUDED.expected_file_count),
-			    total_parts = GREATEST(binaries.total_parts, EXCLUDED.total_parts),
-			    posted_at = COALESCE(binaries.posted_at, EXCLUDED.posted_at),
-			    match_confidence = GREATEST(binaries.match_confidence, EXCLUDED.match_confidence),
-			    match_status = CASE
-			    	WHEN EXCLUDED.match_confidence >= binaries.match_confidence THEN EXCLUDED.match_status
-			    	ELSE binaries.match_status
-			    END,
-			    grouping_evidence_json = CASE
-			    	WHEN EXCLUDED.match_confidence >= binaries.match_confidence THEN EXCLUDED.grouping_evidence_json
-			    	ELSE binaries.grouping_evidence_json
-			    END,
-			    updated_at = NOW()
-			WHERE binaries.poster_id IS DISTINCT FROM COALESCE(EXCLUDED.poster_id, binaries.poster_id)
-			   OR binaries.source_release_key IS DISTINCT FROM EXCLUDED.source_release_key
-			   OR binaries.release_family_key IS DISTINCT FROM EXCLUDED.release_family_key
-			   OR binaries.file_set_key IS DISTINCT FROM EXCLUDED.file_set_key
-			   OR binaries.file_family_key IS DISTINCT FROM EXCLUDED.file_family_key
-			   OR binaries.identity_strength IS DISTINCT FROM EXCLUDED.identity_strength
-			   OR binaries.identity_reason IS DISTINCT FROM EXCLUDED.identity_reason
-			   OR binaries.subject_set_token IS DISTINCT FROM EXCLUDED.subject_set_token
-			   OR binaries.subject_set_kind IS DISTINCT FROM EXCLUDED.subject_set_kind
-			   OR binaries.family_kind IS DISTINCT FROM EXCLUDED.family_kind
-			   OR binaries.base_stem IS DISTINCT FROM EXCLUDED.base_stem
-			   OR binaries.is_auxiliary IS DISTINCT FROM EXCLUDED.is_auxiliary
-			   OR binaries.is_main_payload IS DISTINCT FROM EXCLUDED.is_main_payload
-			   OR binaries.release_key IS DISTINCT FROM EXCLUDED.release_key
-			   OR binaries.release_name IS DISTINCT FROM EXCLUDED.release_name
-			   OR binaries.binary_name IS DISTINCT FROM EXCLUDED.binary_name
-			   OR binaries.file_name IS DISTINCT FROM EXCLUDED.file_name
-			   OR (EXCLUDED.file_index > 0 AND binaries.file_index IS DISTINCT FROM EXCLUDED.file_index)
-			   OR binaries.expected_file_count < EXCLUDED.expected_file_count
-			   OR binaries.total_parts < EXCLUDED.total_parts
-			   OR (binaries.posted_at IS NULL AND EXCLUDED.posted_at IS NOT NULL)
-			   OR binaries.match_confidence < EXCLUDED.match_confidence
-			   OR (
-			   	EXCLUDED.match_confidence >= binaries.match_confidence
-			   	AND (
-			   		binaries.match_status IS DISTINCT FROM EXCLUDED.match_status
-			   		OR binaries.grouping_evidence_json IS DISTINCT FROM EXCLUDED.grouping_evidence_json
-			   	)
-			   )
-			RETURNING
-				id,
-				provider_id,
-				newsgroup_id,
-				binary_key,
-				release_family_key,
-				base_stem,
-				expected_file_count
-		) SELECT 1 FROM upserted LIMIT 1`, strings.Join(values, ",")), args...); err != nil {
+			updated_at
+		)
+		SELECT
+			r.provider_id,
+			r.newsgroup_id,
+			r.poster_id,
+			r.source_release_key,
+			r.release_family_key,
+			r.file_set_key,
+			r.file_family_key,
+			r.identity_strength,
+			r.identity_reason,
+			r.subject_set_token,
+			r.subject_set_kind,
+			r.family_kind,
+			r.base_stem,
+			r.is_auxiliary,
+			r.is_main_payload,
+			r.release_key,
+			r.release_name,
+			r.binary_key,
+			r.binary_name,
+			r.file_name,
+			r.file_index,
+			r.expected_file_count,
+			r.total_parts,
+			r.posted_at,
+			r.match_confidence,
+			r.match_status,
+			r.grouping_evidence_json,
+			NOW()
+		FROM tmp_upsert_binaries r
+		LEFT JOIN binaries b
+		  ON b.provider_id = r.provider_id
+		 AND b.newsgroup_id = r.newsgroup_id
+		 AND b.binary_key = r.binary_key
+		WHERE b.id IS NULL`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested (
-			ordinal,
-			provider_id,
-			newsgroup_id,
-			binary_key
-		) AS (
-			VALUES %s
+	rows, err := tx.QueryContext(ctx, `
+		WITH requested AS (
+			SELECT
+				ordinal,
+				provider_id,
+				newsgroup_id,
+				binary_key
+			FROM tmp_upsert_binaries
 		),
 		existing AS (
 			SELECT
@@ -1448,7 +1350,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		 AND b.newsgroup_id = r.newsgroup_id
 		 AND b.binary_key = r.binary_key
 		LEFT JOIN existing e ON e.ordinal = r.ordinal
-		ORDER BY r.ordinal`, persistedValues), persistedArgs...)
+		ORDER BY r.ordinal`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
 	}
@@ -1541,6 +1443,127 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	return ids, summaryKeys, nil
 }
 
+func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) error {
+	if tx == nil {
+		return fmt.Errorf("binary upsert tx is required")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_upsert_binaries (
+			ordinal INTEGER NOT NULL,
+			provider_id BIGINT NOT NULL,
+			newsgroup_id BIGINT NOT NULL,
+			poster_id BIGINT NOT NULL,
+			source_release_key TEXT NOT NULL,
+			release_family_key TEXT NOT NULL,
+			file_set_key TEXT NOT NULL,
+			file_family_key TEXT NOT NULL,
+			identity_strength TEXT NOT NULL,
+			identity_reason TEXT NOT NULL,
+			subject_set_token TEXT NOT NULL,
+			subject_set_kind TEXT NOT NULL,
+			family_kind TEXT NOT NULL,
+			base_stem TEXT NOT NULL,
+			is_auxiliary BOOLEAN NOT NULL,
+			is_main_payload BOOLEAN NOT NULL,
+			release_key TEXT NOT NULL,
+			release_name TEXT NOT NULL,
+			binary_key TEXT NOT NULL,
+			binary_name TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_index INTEGER NOT NULL,
+			expected_file_count INTEGER NOT NULL,
+			total_parts INTEGER NOT NULL,
+			posted_at TIMESTAMPTZ NULL,
+			match_confidence DOUBLE PRECISION NOT NULL,
+			match_status TEXT NOT NULL,
+			grouping_evidence_json JSONB NOT NULL,
+			grouping_evidence_payload JSONB NOT NULL
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create binary upsert temp table: %w", err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO tmp_upsert_binaries (
+			ordinal,
+			provider_id,
+			newsgroup_id,
+			poster_id,
+			source_release_key,
+			release_family_key,
+			file_set_key,
+			file_family_key,
+			identity_strength,
+			identity_reason,
+			subject_set_token,
+			subject_set_kind,
+			family_kind,
+			base_stem,
+			is_auxiliary,
+			is_main_payload,
+			release_key,
+			release_name,
+			binary_key,
+			binary_name,
+			file_name,
+			file_index,
+			expected_file_count,
+			total_parts,
+			posted_at,
+			match_confidence,
+			match_status,
+			grouping_evidence_json,
+			grouping_evidence_payload
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+			$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+			$21,$22,$23,$24,$25,$26,$27,$28,$29
+		)`)
+	if err != nil {
+		return fmt.Errorf("prepare binary upsert temp insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, record := range records {
+		if _, err := stmt.ExecContext(ctx,
+			i,
+			record.record.ProviderID,
+			record.record.NewsgroupID,
+			record.posterID,
+			strings.TrimSpace(record.record.SourceReleaseKey),
+			strings.TrimSpace(record.record.ReleaseFamilyKey),
+			strings.TrimSpace(record.record.FileSetKey),
+			strings.TrimSpace(record.record.FileFamilyKey),
+			strings.TrimSpace(record.record.IdentityStrength),
+			strings.TrimSpace(record.record.IdentityReason),
+			strings.TrimSpace(record.record.SubjectSetToken),
+			strings.TrimSpace(record.record.SubjectSetKind),
+			strings.TrimSpace(record.record.FamilyKind),
+			strings.TrimSpace(record.record.BaseStem),
+			record.record.IsAuxiliary,
+			record.record.IsMainPayload,
+			record.record.ReleaseKey,
+			strings.TrimSpace(record.record.ReleaseName),
+			record.record.BinaryKey,
+			strings.TrimSpace(record.record.BinaryName),
+			strings.TrimSpace(record.record.FileName),
+			record.record.FileIndex,
+			record.record.ExpectedFileCount,
+			record.record.TotalParts,
+			record.postedAt,
+			record.record.MatchConfidence,
+			record.record.MatchStatus,
+			record.inlineEvidenceJSON,
+			record.evidenceJSON,
+		); err != nil {
+			return fmt.Errorf("insert binary upsert temp row: %w", err)
+		}
+	}
+	return nil
+}
+
 func marshalInlineGroupingEvidence(evidence map[string]any) []byte {
 	if len(evidence) == 0 {
 		return []byte(`{}`)
@@ -1583,23 +1606,6 @@ func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]
 	}
 
 	return false
-}
-
-func buildUpsertBinaryPersistedValues(records []preparedBinaryRecord) string {
-	values := make([]string, 0, len(records))
-	for i := range records {
-		base := (i * 4) + 1
-		values = append(values, fmt.Sprintf("($%d::integer,$%d::bigint,$%d::bigint,$%d::text)", base, base+1, base+2, base+3))
-	}
-	return strings.Join(values, ",")
-}
-
-func buildUpsertBinaryPersistedArgs(records []preparedBinaryRecord) []any {
-	args := make([]any, 0, len(records)*4)
-	for i, record := range records {
-		args = append(args, i, record.record.ProviderID, record.record.NewsgroupID, record.record.BinaryKey)
-	}
-	return args
 }
 
 func applyBinaryEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryEvidenceRecord) error {
