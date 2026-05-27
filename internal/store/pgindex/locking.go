@@ -29,8 +29,8 @@ type binaryIdentityLock struct {
 	BinaryKey   string
 }
 
-func lockBinaryIdentityKeys(ctx context.Context, tx *sql.Tx, locks []binaryIdentityLock) error {
-	if tx == nil {
+func lockBinaryIdentityKeys(ctx context.Context, runner sqlExecQueryer, locks []binaryIdentityLock) error {
+	if runner == nil {
 		return fmt.Errorf("binary identity lock tx is required")
 	}
 	if len(locks) == 0 {
@@ -67,7 +67,7 @@ func lockBinaryIdentityKeys(ctx context.Context, tx *sql.Tx, locks []binaryIdent
 		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text)", base, base+1, base+2))
 		args = append(args, lock.ProviderID, lock.NewsgroupID, lock.BinaryKey)
 	}
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
 		WITH requested(provider_id, newsgroup_id, binary_key) AS (
 			VALUES %s
 		)

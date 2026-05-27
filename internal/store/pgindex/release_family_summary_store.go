@@ -380,8 +380,8 @@ func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgro
 	return markReleaseFamiliesDirtyBatch(ctx, tx, []releaseFamilySummaryKey{key})
 }
 
-func markReleaseFamiliesDirtyBatch(ctx context.Context, tx *sql.Tx, keys []releaseFamilySummaryKey) error {
-	if tx == nil {
+func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, keys []releaseFamilySummaryKey) error {
+	if runner == nil {
 		return fmt.Errorf("release summary queue tx is required")
 	}
 	if len(keys) == 0 {
@@ -429,7 +429,7 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, tx *sql.Tx, keys []relea
 			)
 		}
 
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO release_family_readiness_summaries (
 			provider_id,
 			newsgroup_id,
