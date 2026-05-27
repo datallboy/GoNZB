@@ -609,6 +609,15 @@ Current implication:
   - reduce lane-B `binary_upsert_db_chunk_size` and remeasure stability/throughput
   - if crashes persist, replace the inline `VALUES` upsert path with a staging-table or `COPY`-backed path so the hot query stops carrying thousands of scalar parameters and large JSON payloads per chunk
 
+Postgres container tuning follow-up:
+
+- the local container was still running with `max_wal_size = 1GB`, `checkpoint_timeout = 5min`, and `wal_compression = off`
+- after the crash trace, the compose defaults were updated to:
+  - `max_wal_size = 8GB`
+  - `checkpoint_timeout = 15min`
+  - `wal_compression = on`
+- this should reduce forced checkpoint churn during heavy assemble writes, but it is not a substitute for fixing the `UpsertBinaries` statement shape
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
