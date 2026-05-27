@@ -366,6 +366,28 @@ func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 	return out
 }
 
+func newsgroupIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
+	if len(binaries) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(binaries))
+	seen := make(map[int64]struct{}, len(binaries))
+	for _, binary := range binaries {
+		if binary.NewsgroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[binary.NewsgroupID]; ok {
+			continue
+		}
+		seen[binary.NewsgroupID] = struct{}{}
+		out = append(out, binary.NewsgroupID)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
 	seed := strings.Join([]string{
 		releaseFamilyKey(candidate, binaries),

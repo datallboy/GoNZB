@@ -65,6 +65,12 @@ type ReleaseCandidate struct {
 	TotalBytes                     int64
 }
 
+const (
+	ReleaseCandidateKeyKindReleaseFamily    = "release_family"
+	ReleaseCandidateKeyKindBaseStem         = "base_stem"
+	ReleaseCandidateKeyKindRecoveredFileSet = "recovered_file_set"
+)
+
 type ReleaseCandidateSelectionOptions struct {
 	MinExpectedFileCoveragePct float64
 }
@@ -357,6 +363,90 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
 			) shape ON TRUE
 		),
+		recovered_file_set_candidates AS (
+			SELECT
+				b.provider_id,
+				0::BIGINT AS newsgroup_id,
+				'recovered_file_set'::text AS key_kind,
+				b.file_set_key AS family_key,
+				MAX(b.updated_at) AS updated_at,
+				COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), b.file_set_key) AS source_release_key,
+				b.file_set_key AS release_key,
+				COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), b.file_set_key) AS release_name,
+				MIN(b.posted_at) AS posted_at,
+				COUNT(*)::INTEGER AS binary_count,
+				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
+				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
+				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+				COUNT(*) FILTER (
+					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+				)::INTEGER AS complete_binary_count,
+				COUNT(*) FILTER (
+					WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+					  AND b.total_parts > 0
+					  AND b.observed_parts = b.total_parts
+				)::INTEGER AS complete_main_payload_binary_count,
+				CASE
+					WHEN COALESCE(MAX(b.expected_file_count), 0) > 0 THEN
+						LEAST(
+							100::DOUBLE PRECISION,
+							(COUNT(*) FILTER (
+								WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+								  AND b.total_parts > 0
+								  AND b.observed_parts = b.total_parts
+							)::DOUBLE PRECISION / MAX(b.expected_file_count)::DOUBLE PRECISION) * 100
+						)
+					ELSE 0::DOUBLE PRECISION
+				END AS expected_file_coverage_pct,
+				CASE
+					WHEN COALESCE(MAX(b.expected_archive_file_count), 0) > 0 THEN
+						LEAST(
+							100::DOUBLE PRECISION,
+							(COUNT(*) FILTER (
+								WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+								  AND b.total_parts > 0
+								  AND b.observed_parts = b.total_parts
+							)::DOUBLE PRECISION / MAX(b.expected_archive_file_count)::DOUBLE PRECISION) * 100
+						)
+					ELSE 0::DOUBLE PRECISION
+				END AS archive_file_coverage_pct,
+				(COALESCE(MAX(b.expected_file_count), 0) > 0) AS has_expected_file_count,
+				(COALESCE(MAX(b.expected_archive_file_count), 0) > 0) AS has_expected_archive_file_count,
+				CASE
+					WHEN COUNT(*) FILTER (
+						WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+						  AND b.total_parts > 0
+						  AND b.observed_parts = b.total_parts
+					) > 0 THEN 'actionable'
+					WHEN COUNT(*) > 0 THEN 'fragment_only'
+					ELSE 'stale_cleanup_only'
+				END AS readiness_bucket
+			FROM binaries b
+			WHERE COALESCE(b.recovered_source, '') = 'yenc_header'
+			  AND BTRIM(b.file_set_key) <> ''
+			  AND b.posted_at IS NOT NULL
+			GROUP BY b.provider_id, b.file_set_key
+			HAVING COUNT(DISTINCT b.newsgroup_id) > 1
+			   AND COUNT(*) FILTER (WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)) >= 2
+			   AND COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) > 1
+			   AND (MAX(b.posted_at) - MIN(b.posted_at)) <= INTERVAL '24 hours'
+			   AND MAX(b.updated_at) > COALESCE((
+					SELECT MIN(s.processed_at)
+					FROM release_family_readiness_summaries s
+					WHERE s.provider_id = b.provider_id
+					  AND EXISTS (
+					  	SELECT 1
+					  	FROM binaries bx
+					  	WHERE bx.provider_id = b.provider_id
+					  	  AND bx.file_set_key = b.file_set_key
+					  	  AND bx.newsgroup_id = s.newsgroup_id
+					  	  AND (
+					  	  	(s.key_kind = 'release_family' AND s.family_key = bx.release_family_key) OR
+					  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(bx.base_stem)))
+					  	  )
+					  )
+				), TIMESTAMPTZ 'epoch')
+		),
 		next_queue AS (
 			SELECT
 				provider_id,
@@ -380,6 +470,29 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				has_expected_archive_file_count,
 				readiness_bucket
 			FROM candidate_summaries
+			UNION ALL
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				updated_at,
+				source_release_key,
+				release_key,
+				release_name,
+				posted_at,
+				binary_count,
+				total_bytes,
+				expected_file_count,
+				expected_archive_file_count,
+				complete_binary_count,
+				complete_main_payload_binary_count,
+				expected_file_coverage_pct,
+				archive_file_coverage_pct,
+				has_expected_file_count,
+				has_expected_archive_file_count,
+				readiness_bucket
+			FROM recovered_file_set_candidates
 			ORDER BY
 				CASE
 					WHEN readiness_bucket = '%s' THEN 0
@@ -408,8 +521,9 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 					ELSE 0
 				END DESC,
 				CASE
-					WHEN key_kind = 'base_stem' THEN 0
-					ELSE 1
+					WHEN key_kind = 'recovered_file_set' THEN 0
+					WHEN key_kind = 'base_stem' THEN 1
+					ELSE 2
 				END ASC,
 				updated_at ASC,
 				family_key ASC
@@ -462,8 +576,9 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				ELSE 0
 			END DESC,
 			CASE
-				WHEN q.key_kind = 'base_stem' THEN 0
-				ELSE 1
+				WHEN q.key_kind = 'recovered_file_set' THEN 0
+				WHEN q.key_kind = 'base_stem' THEN 1
+				ELSE 2
 			END ASC,
 			q.updated_at ASC,
 			q.family_key ASC`,
@@ -665,7 +780,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND b.newsgroup_id = $3`
 	}
 	switch keyKind {
-	case "base_stem":
+	case ReleaseCandidateKeyKindBaseStem:
 		candidateSelector = `
 			SELECT b.id
 			FROM binaries b
@@ -677,7 +792,13 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			candidateSelector += `
 			  AND b.newsgroup_id = $3`
 		}
-	case "release_family":
+	case ReleaseCandidateKeyKindReleaseFamily:
+	case ReleaseCandidateKeyKindRecoveredFileSet:
+		candidateSelector = `
+			SELECT b.id
+			FROM binaries b
+			WHERE b.provider_id = $1
+			  AND b.file_set_key = $2`
 	default:
 		candidateSelector += `
 			UNION
@@ -819,7 +940,7 @@ func (s *Store) AckReleaseCandidates(ctx context.Context, candidates []ReleaseCa
 		if candidate.ProviderID <= 0 {
 			return fmt.Errorf("provider id is required")
 		}
-		if candidate.NewsgroupID <= 0 {
+		if candidate.NewsgroupID <= 0 && candidate.KeyKind != ReleaseCandidateKeyKindRecoveredFileSet {
 			return fmt.Errorf("newsgroup id is required")
 		}
 		candidate.KeyKind = strings.TrimSpace(candidate.KeyKind)
@@ -893,26 +1014,68 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 }
 
 func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []ReleaseCandidateAck) error {
-	args := make([]any, 0, len(candidates)*4)
-	values := make([]string, 0, len(candidates))
+	regular := make([]ReleaseCandidateAck, 0, len(candidates))
+	recovered := make([]ReleaseCandidateAck, 0, len(candidates))
 	for _, candidate := range candidates {
-		base := len(args)
-		args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
-		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
+		if candidate.KeyKind == ReleaseCandidateKeyKindRecoveredFileSet {
+			recovered = append(recovered, candidate)
+			continue
+		}
+		regular = append(regular, candidate)
 	}
 
-	_, err := db.ExecContext(ctx, `
-		UPDATE release_family_readiness_summaries s
-		SET processed_at = s.updated_at
-		FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-		WHERE s.provider_id = v.provider_id
-		  AND s.newsgroup_id = v.newsgroup_id
-		  AND s.key_kind = v.key_kind
-		  AND s.family_key = v.family_key`,
-		args...,
-	)
-	if err != nil {
-		return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
+	if len(regular) > 0 {
+		args := make([]any, 0, len(regular)*4)
+		values := make([]string, 0, len(regular))
+		for _, candidate := range regular {
+			base := len(args)
+			args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+			values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			UPDATE release_family_readiness_summaries s
+			SET processed_at = s.updated_at
+			FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+			WHERE s.provider_id = v.provider_id
+			  AND s.newsgroup_id = v.newsgroup_id
+			  AND s.key_kind = v.key_kind
+			  AND s.family_key = v.family_key`,
+			args...,
+		); err != nil {
+			return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
+		}
+	}
+
+	if len(recovered) > 0 {
+		args := make([]any, 0, len(recovered)*2)
+		values := make([]string, 0, len(recovered))
+		for _, candidate := range recovered {
+			base := len(args)
+			args = append(args, candidate.ProviderID, candidate.FamilyKey)
+			values = append(values, fmt.Sprintf("($%d::bigint,$%d::text)", base+1, base+2))
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			UPDATE release_family_readiness_summaries s
+			SET processed_at = s.updated_at
+			FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
+			WHERE s.provider_id = v.provider_id
+			  AND EXISTS (
+			  	SELECT 1
+			  	FROM binaries b
+			  	WHERE b.provider_id = v.provider_id
+			  	  AND b.file_set_key = v.file_set_key
+			  	  AND b.newsgroup_id = s.newsgroup_id
+			  	  AND (
+			  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
+			  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
+			  	  )
+			  )`,
+			args...,
+		); err != nil {
+			return fmt.Errorf("ack %d recovered-file-set release candidates: %w", len(recovered), err)
+		}
 	}
 	return nil
 }
@@ -1253,16 +1416,20 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	return releaseID, nil
 }
 
-func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseFamilyKey string, keepGroupNames []string) error {
+func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error {
 	if providerID <= 0 {
 		return fmt.Errorf("provider id is required")
 	}
+	keyKind = strings.TrimSpace(keyKind)
 	releaseFamilyKey = strings.TrimSpace(releaseFamilyKey)
 	if releaseFamilyKey == "" {
 		return fmt.Errorf("release family key is required")
 	}
 
 	keep := sanitizeStringSlice(keepGroupNames)
+	if keyKind == ReleaseCandidateKeyKindRecoveredFileSet {
+		return s.deleteStaleRecoveredFileSetReleases(ctx, providerID, releaseFamilyKey, keep)
+	}
 	if len(keep) == 0 {
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM releases
@@ -1297,6 +1464,62 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 		return fmt.Errorf("delete stale releases for provider=%d release_family_key=%q keep=%v: %w", providerID, releaseFamilyKey, keep, err)
 	}
 
+	return nil
+}
+
+func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, providerID int64, fileSetKey string, keepGroupNames []string) error {
+	if len(keepGroupNames) == 0 {
+		_, err := s.db.ExecContext(ctx, `
+			DELETE FROM releases r
+			WHERE r.provider_id = $1
+			  AND (
+			  	r.release_family_key = $2
+			  	OR EXISTS (
+			  		SELECT 1
+			  		FROM release_files rf
+			  		JOIN binaries b ON b.id = rf.binary_id
+			  		WHERE rf.release_id = r.release_id
+			  		  AND b.provider_id = $1
+			  		  AND b.file_set_key = $2
+			  	)
+			  )`,
+			providerID,
+			fileSetKey,
+		)
+		if err != nil {
+			return fmt.Errorf("delete stale recovered-file-set releases for provider=%d file_set_key=%q: %w", providerID, fileSetKey, err)
+		}
+		return nil
+	}
+
+	args := make([]any, 0, len(keepGroupNames)+2)
+	args = append(args, providerID, fileSetKey)
+	placeholders := make([]string, 0, len(keepGroupNames))
+	for i, groupName := range keepGroupNames {
+		args = append(args, groupName)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+3))
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM releases r
+		WHERE r.provider_id = $1
+		  AND (
+		  	r.release_family_key = $2
+		  	OR EXISTS (
+		  		SELECT 1
+		  		FROM release_files rf
+		  		JOIN binaries b ON b.id = rf.binary_id
+		  		WHERE rf.release_id = r.release_id
+		  		  AND b.provider_id = $1
+		  		  AND b.file_set_key = $2
+		  	)
+		  )
+		  AND r.group_name NOT IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("delete stale recovered-file-set releases for provider=%d file_set_key=%q keep=%v: %w", providerID, fileSetKey, keepGroupNames, err)
+	}
 	return nil
 }
 

@@ -21,9 +21,16 @@ Current release-family summaries are keyed by:
 - key kind
 - family key
 
-The main release candidate queue carries `newsgroup_id`, so recovered yEnc identity does not yet produce a single cross-group dirty candidate by default.
+The main release candidate queue originally carried only concrete `newsgroup_id` rows. This sprint now adds a second candidate shape for recovered yEnc identity: provider-wide `recovered_file_set` candidates that intentionally use `newsgroup_id = 0`.
 
-`ListBinariesForReleaseCandidate` can already omit the group boundary when called with `newsgroup_id = 0`, but the candidate queue and ack path do not yet model that as a normal candidate shape.
+`ListBinariesForReleaseCandidate` already supported omitting the group boundary when called with `newsgroup_id = 0`; the missing work was making the candidate queue, ack path, and release newsgroup persistence treat that as a normal release-formation shape.
+
+Concrete meaning in current code:
+
+- `ReleaseCandidate` is currently keyed by `provider_id`, `newsgroup_id`, `key_kind`, and `family_key`.
+- `AckReleaseCandidate` currently assumes one concrete `newsgroup_id` and marks only that summary row processed.
+- `ReplaceReleaseNewsgroups` can already store multiple groups, but the release service was still writing only the candidate group instead of the full cluster group set.
+- `ListBinariesForReleaseCandidate` already supports provider-wide selection when `newsgroup_id = 0`, so the main missing piece was candidate/ack modeling rather than binary hydration.
 
 ## Recovery Signal
 
@@ -44,12 +51,18 @@ The safe grouping rule is not "similar headers across groups." The safe rule is 
 
 ## Action Items
 
-- [ ] Design a recovered-identity release candidate shape that can represent cross-group candidates explicitly.
-- [ ] Define how the candidate ack path handles groupless recovered-identity candidates.
-- [ ] Add query support for selecting recovered-identity file sets across groups without weakening normal per-group release summaries.
-- [ ] Add a synthetic multi-group recovered-yEnc grouping fixture with randomized header posters and subjects.
-- [ ] Implement bounded cross-group recovered-identity promotion.
-- [ ] Confirm `release_newsgroups` records all participating groups after promotion.
+- [x] Design a recovered-identity release candidate shape that can represent cross-group candidates explicitly.
+  - Implemented as provider-wide `key_kind='recovered_file_set'` candidates with `newsgroup_id = 0` and `family_key = file_set_key`.
+- [x] Define how the candidate ack path handles groupless recovered-identity candidates.
+  - Implemented by acking the underlying per-group `release_family` and `base_stem` readiness rows that participate in the recovered file set.
+- [x] Add query support for selecting recovered-identity file sets across groups without weakening normal per-group release summaries.
+  - Implemented in `ListReleaseCandidates` and `ListBinariesForReleaseCandidate` using recovered `file_set_key` scope while leaving the existing per-group summary queue intact.
+- [x] Add a synthetic multi-group recovered-yEnc grouping fixture with randomized header posters and subjects.
+  - Implemented in release-store and release-service tests with two-group recovered file-set fixtures.
+- [x] Implement bounded cross-group recovered-identity promotion.
+  - Current bound is intentionally narrow: only `recovered_source='yenc_header'`, non-empty `file_set_key`, more than one newsgroup, more than one main-payload binary, expected file count evidence, and a posting span within 24 hours.
+- [x] Confirm `release_newsgroups` records all participating groups after promotion.
+  - Release service now persists all unique cluster newsgroups instead of only the candidate group.
 - [ ] Confirm internal NZB export remains UTF-8, deterministic, and includes the full release group set while preserving file/article membership accuracy.
 
 ## Downloader Filename Follow-Up
@@ -64,7 +77,7 @@ Action item:
 
 Needs completion:
 
-- [ ] Cross-group recovered-identity promotion is implemented behind the guardrails above.
-- [ ] Synthetic fixtures prove varied headers can still group when recovered identity is strong.
+- [x] Cross-group recovered-identity promotion is implemented behind the guardrails above.
+- [x] Synthetic fixtures prove varied headers can still group when recovered identity is strong.
 - [ ] NZB export preserves multi-group provenance after promotion.
 - [ ] Downloader yEnc filename adoption is either implemented safely or explicitly deferred with evidence that signature-based extraction is enough.
