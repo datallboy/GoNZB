@@ -1078,13 +1078,21 @@ func prepareBinaryRecord(in BinaryRecord) (preparedBinaryRecord, error) {
 }
 
 func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
+	started := time.Now()
+	telemetry := binaryUpsertTelemetryFromContext(ctx)
 	var lastErr error
 	for attempt := 1; attempt <= maxBinaryUpsertBatchRetries; attempt++ {
 		ids, err := s.upsertBinaryChunkOnce(ctx, records)
 		if err == nil {
+			if telemetry != nil {
+				telemetry.recordChunk(len(records), attempt-1, time.Since(started))
+			}
 			return ids, nil
 		}
 		lastErr = err
+		if telemetry != nil && isRetryableBinaryUpsertError(err) {
+			telemetry.recordRetry(err)
+		}
 		if !isRetryableBinaryUpsertError(err) || attempt == maxBinaryUpsertBatchRetries {
 			return nil, err
 		}
@@ -1109,9 +1117,20 @@ func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBin
 		return nil, err
 	}
 	sortReleaseFamilySummaryKeys(chunkSummaryKeys)
-	for _, key := range chunkSummaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return nil, err
+	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
+		for _, key := range chunkSummaryKeys {
+			if err := markReleaseFamilyDirty(ctx, tx, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey); err != nil {
+				return nil, err
+			}
+		}
+		if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+			telemetry.recordDeferredSummaryRefresh(len(chunkSummaryKeys))
+		}
+	} else {
+		for _, key := range chunkSummaryKeys {
+			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
