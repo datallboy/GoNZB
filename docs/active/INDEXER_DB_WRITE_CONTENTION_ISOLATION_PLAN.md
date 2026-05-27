@@ -849,13 +849,51 @@ Current interpretation:
 - the final `insert-missing` write into `binaries` is still the dominant subphase, but the overall dense-worker upsert total dropped by a meaningful margin
 - the next worthwhile step is a serve-mode remeasurement on this staging rewrite before deciding whether a more invasive insert-only fast path is still necessary
 
+Serve-mode remeasurement after the `pgx.CopyFrom` staging rewrite, `2026-05-27 16:05:13-16:10:33 America/New_York`:
+
+- completed persisted lane-B run `67246`:
+  - `selected_headers=60000`
+  - `binaries_refreshed=30676`
+  - `binary_upsert_duration_ms=105334.062`
+  - `binary_upsert_stage_ms=3245.090`
+  - `binary_upsert_existing_snapshot_ms=7463.895`
+  - `binary_upsert_insert_ms=85567.812`
+  - `binary_upsert_query_ms=87230.916`
+  - `binary_refresh_duration_ms=34626.520`
+  - `binary_refresh_stats_update_ms=19840.007`
+  - `binary_refresh_summary_mark_ms=12413.861`
+- same serve window lane-B worker log samples:
+  - `binaries_refreshed=7467`, `binary_upsert_insert_ms=23156.56`, `binary_upsert_query_ms=23635.90`, `binary_refresh_ms=6684.98`
+  - `binaries_refreshed=10452`, `binary_upsert_insert_ms=29211.26`, `binary_upsert_query_ms=29744.83`, `binary_refresh_ms=12199.68`
+  - `binaries_refreshed=12696`, `binary_upsert_insert_ms=33111.80`, `binary_upsert_query_ms=33726.89`, `binary_refresh_ms=15401.96`
+- timed-out persisted lane-B run `67266`:
+  - `status=failed`
+  - `error_text='refresh binary stats batch: refresh binary stats batch: context canceled'`
+  - this was caused by the outer `timeout 320s` ending the serve sample, not by a new deadlock signature
+
+Comparison to the previous serve-mode persisted baseline `67192`:
+
+- `binary_upsert_duration_ms`: `130775.188` -> `105334.062`
+- `binary_upsert_query_ms`: `98556.795` -> `87230.916`
+- `binary_refresh_duration_ms`: `36057.732` -> `34626.520`
+- `binary_refresh_summary_mark_ms`: `18609.082` -> `12413.861`
+- caveat:
+  - `67246` refreshed fewer binaries than `67192` (`30676` vs `36110`), so this is directional rather than perfectly normalized
+
+Current interpretation after the serve remeasurement:
+
+- the `pgx.CopyFrom` lane-B path improved serve-mode assemble as well as direct `--once`
+- the remaining dominant serve-mode cost is still `binary_upsert_insert_ms`, not temp staging or readback
+- refresh remains materially lower than the older pre-refresh-fix serve runs, but still large on heavy overlap slices
+- if lane-B needs another meaningful gain, the next change has to attack the final `INSERT INTO binaries ... SELECT ...` path itself rather than more staging tweaks
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
 - [x] Remove or defer inline release-family summary refresh work from `UpsertBinaries` chunk transactions where practical. Assemble now uses a deferred path, and live telemetry shows current lane-B slices usually do not touch any upsert-time summary keys anyway.
 - [x] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Assemble now defers this path too, and dirty-marker writes are batched instead of one summary row at a time.
-- [ ] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
-- [ ] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
+- [x] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
+- [x] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
-- [ ] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
+- [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
