@@ -57,6 +57,12 @@ type BinaryUpsertTelemetry struct {
 	ChunkRetrySerialization      int
 	ChunkDurationMs              float64
 	ChunkDurationMaxMs           float64
+	LockDurationMs               float64
+	LockDurationMaxMs            float64
+	UpsertQueryDurationMs        float64
+	UpsertQueryDurationMaxMs     float64
+	EvidenceDurationMs           float64
+	EvidenceDurationMaxMs        float64
 	DeferredSummaryRefreshChunks int
 	DeferredSummaryKeyCount      int
 }
@@ -116,8 +122,53 @@ func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
 		ChunkRetrySerialization:      t.ChunkRetrySerialization,
 		ChunkDurationMs:              t.ChunkDurationMs,
 		ChunkDurationMaxMs:           t.ChunkDurationMaxMs,
+		LockDurationMs:               t.LockDurationMs,
+		LockDurationMaxMs:            t.LockDurationMaxMs,
+		UpsertQueryDurationMs:        t.UpsertQueryDurationMs,
+		UpsertQueryDurationMaxMs:     t.UpsertQueryDurationMaxMs,
+		EvidenceDurationMs:           t.EvidenceDurationMs,
+		EvidenceDurationMaxMs:        t.EvidenceDurationMaxMs,
 		DeferredSummaryRefreshChunks: t.DeferredSummaryRefreshChunks,
 		DeferredSummaryKeyCount:      t.DeferredSummaryKeyCount,
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordLockDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.LockDurationMs += durationMs
+	if durationMs > t.LockDurationMaxMs {
+		t.LockDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordUpsertQueryDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.UpsertQueryDurationMs += durationMs
+	if durationMs > t.UpsertQueryDurationMaxMs {
+		t.UpsertQueryDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordEvidenceDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.EvidenceDurationMs += durationMs
+	if durationMs > t.EvidenceDurationMaxMs {
+		t.EvidenceDurationMaxMs = durationMs
 	}
 }
 
