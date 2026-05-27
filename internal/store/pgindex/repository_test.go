@@ -1711,6 +1711,148 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 	}
 }
 
+func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.recovered.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.recovered.groupb.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	fileSetKey := fmt.Sprintf("recovered-file-set-%d", time.Now().UnixNano())
+	familyA := fileSetKey + "-family-a"
+	familyB := fileSetKey + "-family-b"
+	baseA := fileSetKey + "-base-a"
+	baseB := fileSetKey + "-base-b"
+
+	makeRecoveredBinary := func(groupID int64, familyKey, baseStem, binaryKey, fileName string, fileIndex int) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       groupID,
+			SourceReleaseKey:  familyKey,
+			ReleaseFamilyKey:  familyKey,
+			FileSetKey:        fileSetKey,
+			FileFamilyKey:     fileSetKey + "::" + fileName,
+			IdentityStrength:  "recovered_yenc",
+			IdentityReason:    "yenc_header",
+			FamilyKind:        "file_name",
+			BaseStem:          baseStem,
+			IsMainPayload:     true,
+			ReleaseKey:        familyKey,
+			ReleaseName:       familyKey,
+			BinaryKey:         binaryKey,
+			BinaryName:        fileName,
+			FileName:          fileName,
+			FileIndex:         fileIndex,
+			ExpectedFileCount: 2,
+			TotalParts:        10,
+			MatchConfidence:   0.97,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert recovered binary %s: %v", binaryKey, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts,
+			    total_bytes = 12345,
+			    posted_at = NOW() - INTERVAL '30 minutes',
+			    recovered_source = 'yenc_header',
+			    updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update recovered binary %s: %v", binaryKey, err)
+		}
+		return binaryID
+	}
+
+	binaryA := makeRecoveredBinary(groupAID, familyA, baseA, fileSetKey+"::a", "movie.part01.rar", 1)
+	binaryB := makeRecoveredBinary(groupBID, familyB, baseB, fileSetKey+"::b", "movie.part02.rar", 2)
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 2, true, 12345, NOW() - INTERVAL '30 minutes', 'actionable', 50, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $3, 'release_family', $4, $4, $4, $4, 1, 1, 1, 0, 2, true, 12345, NOW() - INTERVAL '20 minutes', 'actionable', 50, NOW(), TIMESTAMPTZ 'epoch')`,
+		groupAID, familyA, groupBID, familyB,
+	); err != nil {
+		t.Fatalf("seed release summaries: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected one candidate, got %d", len(candidates))
+	}
+	candidate := candidates[0]
+	if candidate.KeyKind != ReleaseCandidateKeyKindRecoveredFileSet {
+		t.Fatalf("expected recovered-file-set candidate, got %+v", candidate)
+	}
+	if candidate.NewsgroupID != 0 {
+		t.Fatalf("expected groupless recovered candidate, got newsgroup=%d", candidate.NewsgroupID)
+	}
+	if candidate.ReleaseFamilyKey != fileSetKey {
+		t.Fatalf("expected file set key %q, got %q", fileSetKey, candidate.ReleaseFamilyKey)
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.ReleaseFamilyKey)
+	if err != nil {
+		t.Fatalf("list binaries for recovered-file-set candidate: %v", err)
+	}
+	if len(binaries) != 2 {
+		t.Fatalf("expected both groups' binaries, got %d", len(binaries))
+	}
+
+	if err := store.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.ReleaseFamilyKey); err != nil {
+		t.Fatalf("ack recovered-file-set candidate: %v", err)
+	}
+
+	var pending int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id IN ($1, $2)
+		  AND family_key IN ($3, $4)
+		  AND updated_at > COALESCE(processed_at, TIMESTAMPTZ 'epoch')`,
+		groupAID, groupBID, familyA, familyB,
+	).Scan(&pending); err != nil {
+		t.Fatalf("count pending summaries after ack: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("expected recovered ack to process underlying group summaries, got pending=%d", pending)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id IN ($1, $2)`, binaryA, binaryB); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id IN ($1, $2) AND family_key IN ($3, $4)`,
+		groupAID, groupBID, familyA, familyB,
+	); err != nil {
+		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
+		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
 func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

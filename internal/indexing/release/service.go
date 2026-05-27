@@ -23,7 +23,7 @@ type repository interface {
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
-	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, releaseFamilyKey string, keepGroupNames []string) error
+	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
@@ -360,7 +360,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "stale_cleanup_only" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
 		}
 		if timings != nil {
@@ -374,7 +374,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "fragment_only" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
 		}
 		if timings != nil {
@@ -388,7 +388,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "weak_single_binary" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete weak-single stale releases: %w", err)
 		}
 		if timings != nil {
@@ -402,7 +402,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "weak_obfuscated_set" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete weak-obfuscated stale releases: %w", err)
 		}
 		if timings != nil {
@@ -416,7 +416,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "overgrouped_contextual" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete overgrouped stale releases: %w", err)
 		}
 		if timings != nil {
@@ -430,7 +430,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ReadinessBucket == "prefer_base_stem" {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete prefer-base-stem stale releases: %w", err)
 		}
 		if timings != nil {
@@ -447,7 +447,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if candidate.ExpectedFileCount > 0 && candidate.ExpectedFileCoveragePct < s.opts.ReleaseMinExpectedFileCoveragePct {
 		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete low-coverage stale releases: %w", err)
 		}
 		if timings != nil {
@@ -470,7 +470,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	}
 	if len(binaries) == 0 {
 		start = time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete empty stale releases: %w", err)
 		}
 		if timings != nil {
@@ -490,7 +490,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 	if countCompleteBinaries(binaries) == 0 {
 		start = time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, nil); err != nil {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
 			return candidateOutcome{}, fmt.Errorf("delete fragment-only stale releases: %w", err)
 		}
 		if timings != nil {
@@ -575,7 +575,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			timings.replaceFiles += time.Since(start)
 		}
 		start = time.Now()
-		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{candidate.NewsgroupID}); err != nil {
+		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, newsgroupIDsForCluster(cluster.Binaries)); err != nil {
 			return outcome, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
 		}
 		if timings != nil {
@@ -594,7 +594,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	}
 
 	start = time.Now()
-	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, familyKey, keepGroupNames); err != nil {
+	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, keepGroupNames); err != nil {
 		return outcome, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
 	}
 	if timings != nil {

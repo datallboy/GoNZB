@@ -88,6 +88,89 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 	}
 }
 
+func TestRunOncePersistsAllClusterNewsgroupsForRecoveredFileSetCandidates(t *testing.T) {
+	baseTime := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      0,
+			KeyKind:          pgindex.ReleaseCandidateKeyKindRecoveredFileSet,
+			ReleaseFamilyKey: "shared-file-set",
+			ReleaseKey:       "shared-file-set",
+			ReleaseName:      "shared-file-set",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"shared-file-set": {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       11,
+					ReleaseFamilyKey:  "group-a-family",
+					ReleaseKey:        "group-a-family",
+					ReleaseName:       "obfuscated a",
+					FileName:          "movie.part01.rar",
+					FileIndex:         1,
+					ExpectedFileCount: 2,
+					IsMainPayload:     true,
+					Poster:            "poster-a",
+					PostedAt:          ptrTime(baseTime),
+					TotalParts:        10,
+					ObservedParts:     10,
+					TotalBytes:        700_000_000,
+					MatchConfidence:   0.94,
+				},
+				{
+					BinaryID:          2,
+					ProviderID:        1,
+					NewsgroupID:       12,
+					ReleaseFamilyKey:  "group-b-family",
+					ReleaseKey:        "group-b-family",
+					ReleaseName:       "obfuscated b",
+					FileName:          "movie.part02.rar",
+					FileIndex:         2,
+					ExpectedFileCount: 2,
+					IsMainPayload:     true,
+					Poster:            "poster-b",
+					PostedAt:          ptrTime(baseTime.Add(20 * time.Minute)),
+					TotalParts:        10,
+					ObservedParts:     10,
+					TotalBytes:        710_000_000,
+					MatchConfidence:   0.93,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 201, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55, RequireExpectedFileCountForContextualObfuscated: true})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.newsgroupAssignments) != 1 {
+		t.Fatalf("expected one newsgroup assignment, got %d", len(repo.newsgroupAssignments))
+	}
+	got := repo.newsgroupAssignments[0]
+	want := []int64{11, 12}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected newsgroup count: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected newsgroup assignment at %d: got %v want %v", i, got, want)
+		}
+	}
+	if len(repo.deletedStaleCalls) != 1 {
+		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	}
+	if repo.deletedStaleCalls[0].keyKind != pgindex.ReleaseCandidateKeyKindRecoveredFileSet {
+		t.Fatalf("expected recovered-file-set stale delete, got %+v", repo.deletedStaleCalls[0])
+	}
+}
+
 func TestRunOnceGroupsIndexedObfuscatedFilesIntoReleaseSets(t *testing.T) {
 	baseTime := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1959,6 +2042,7 @@ type fakeReleaseRepository struct {
 	upsertedReleases                   []pgindex.ReleaseRecord
 	replaceFileCalls                   int
 	newsgroupCalls                     int
+	newsgroupAssignments               [][]int64
 	nzbCalls                           int
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
@@ -1970,6 +2054,7 @@ type fakeReleaseRepository struct {
 
 type staleDeleteCall struct {
 	providerID     int64
+	keyKind        string
 	releaseKey     string
 	keepGroupNames []string
 }
@@ -2037,9 +2122,10 @@ func (f *fakeReleaseRepository) UpsertRelease(_ context.Context, in pgindex.Rele
 	return fmt.Sprintf("rel-%d", len(f.upsertedReleases)), nil
 }
 
-func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Context, providerID int64, releaseKey string, keepGroupNames []string) error {
+func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error {
 	f.deletedStaleCalls = append(f.deletedStaleCalls, staleDeleteCall{
 		providerID:     providerID,
+		keyKind:        keyKind,
 		releaseKey:     releaseKey,
 		keepGroupNames: append([]string(nil), keepGroupNames...),
 	})
@@ -2051,8 +2137,9 @@ func (f *fakeReleaseRepository) ReplaceReleaseFiles(context.Context, string, []p
 	return nil
 }
 
-func (f *fakeReleaseRepository) ReplaceReleaseNewsgroups(context.Context, string, []int64) error {
+func (f *fakeReleaseRepository) ReplaceReleaseNewsgroups(_ context.Context, _ string, newsgroupIDs []int64) error {
 	f.newsgroupCalls++
+	f.newsgroupAssignments = append(f.newsgroupAssignments, append([]int64(nil), newsgroupIDs...))
 	return nil
 }
 
