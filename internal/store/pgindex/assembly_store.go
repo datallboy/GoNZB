@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 const (
@@ -1106,6 +1109,10 @@ func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []prep
 }
 
 func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
+	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
+		return s.upsertBinaryChunkOnceDeferredCopy(ctx, records)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin binary upsert chunk tx: %w", err)
@@ -1137,6 +1144,44 @@ func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBin
 	return ids, nil
 }
 
+func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire binary upsert conn: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN`); err != nil {
+		return nil, fmt.Errorf("begin binary upsert conn tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
+	ids, chunkSummaryKeys, err := upsertBinaryChunkWithStage(ctx, conn, records, func() error {
+		return stageUpsertBinaryChunkCopy(ctx, conn, records)
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortReleaseFamilySummaryKeys(chunkSummaryKeys)
+	if err := markReleaseFamiliesDirtyBatch(ctx, conn, chunkSummaryKeys); err != nil {
+		return nil, err
+	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordDeferredSummaryRefresh(len(chunkSummaryKeys))
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return nil, fmt.Errorf("commit binary upsert conn tx: %w", err)
+	}
+	committed = true
+	return ids, nil
+}
+
 func isRetryableBinaryUpsertError(err error) bool {
 	if err == nil {
 		return false
@@ -1146,6 +1191,12 @@ func isRetryableBinaryUpsertError(err error) bool {
 }
 
 func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) ([]int64, []releaseFamilySummaryKey, error) {
+	return upsertBinaryChunkWithStage(ctx, tx, records, func() error {
+		return stageUpsertBinaryChunk(ctx, tx, records)
+	})
+}
+
+func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, records []preparedBinaryRecord, stageFn func() error) ([]int64, []releaseFamilySummaryKey, error) {
 	if len(records) == 0 {
 		return nil, nil, nil
 	}
@@ -1159,7 +1210,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		})
 	}
 	lockStarted := time.Now()
-	if err := lockBinaryIdentityKeys(ctx, tx, locks); err != nil {
+	if err := lockBinaryIdentityKeys(ctx, runner, locks); err != nil {
 		return nil, nil, err
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
@@ -1167,14 +1218,14 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	}
 
 	stageStarted := time.Now()
-	if err := stageUpsertBinaryChunk(ctx, tx, records); err != nil {
+	if err := stageFn(); err != nil {
 		return nil, nil, err
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordStageDuration(time.Since(stageStarted))
 	}
 	existingSnapshotStarted := time.Now()
-	if err := stageExistingBinaryChunk(ctx, tx); err != nil {
+	if err := stageExistingBinaryChunk(ctx, runner); err != nil {
 		return nil, nil, err
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
@@ -1183,7 +1234,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 
 	upsertQueryStarted := time.Now()
 	updateStarted := time.Now()
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := runner.ExecContext(ctx, `
 		UPDATE binaries b
 		SET poster_id = COALESCE(r.poster_id, b.poster_id),
 		    source_release_key = r.source_release_key,
@@ -1259,7 +1310,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		telemetry.recordUpdateDuration(time.Since(updateStarted))
 	}
 	insertStarted := time.Now()
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binaries (
 			provider_id,
 			newsgroup_id,
@@ -1332,7 +1383,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		telemetry.recordInsertDuration(time.Since(insertStarted))
 	}
 	readbackStarted := time.Now()
-	rows, err := tx.QueryContext(ctx, `
+	rows, err := runner.QueryContext(ctx, `
 		WITH inserted AS (
 			SELECT
 				r.ordinal,
@@ -1475,7 +1526,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	}
 
 	evidenceStarted := time.Now()
-	if err := applyBinaryEvidenceBatch(ctx, tx, evidenceRecords); err != nil {
+	if err := applyBinaryEvidenceBatch(ctx, runner, evidenceRecords); err != nil {
 		return nil, nil, err
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
@@ -1606,11 +1657,135 @@ func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedB
 	return nil
 }
 
-func stageExistingBinaryChunk(ctx context.Context, tx *sql.Tx) error {
-	if tx == nil {
+func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []preparedBinaryRecord) error {
+	if conn == nil {
+		return fmt.Errorf("binary upsert conn is required")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	if _, err := conn.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_upsert_binaries (
+			ordinal INTEGER NOT NULL,
+			provider_id BIGINT NOT NULL,
+			newsgroup_id BIGINT NOT NULL,
+			poster_id BIGINT NOT NULL,
+			source_release_key TEXT NOT NULL,
+			release_family_key TEXT NOT NULL,
+			file_set_key TEXT NOT NULL,
+			file_family_key TEXT NOT NULL,
+			identity_strength TEXT NOT NULL,
+			identity_reason TEXT NOT NULL,
+			subject_set_token TEXT NOT NULL,
+			subject_set_kind TEXT NOT NULL,
+			family_kind TEXT NOT NULL,
+			base_stem TEXT NOT NULL,
+			is_auxiliary BOOLEAN NOT NULL,
+			is_main_payload BOOLEAN NOT NULL,
+			release_key TEXT NOT NULL,
+			release_name TEXT NOT NULL,
+			binary_key TEXT NOT NULL,
+			binary_name TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_index INTEGER NOT NULL,
+			expected_file_count INTEGER NOT NULL,
+			total_parts INTEGER NOT NULL,
+			posted_at TIMESTAMPTZ NULL,
+			match_confidence DOUBLE PRECISION NOT NULL,
+			match_status TEXT NOT NULL,
+			grouping_evidence_json JSONB NOT NULL,
+			grouping_evidence_payload JSONB NOT NULL
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create binary upsert temp table: %w", err)
+	}
+
+	err := conn.Raw(func(driverConn any) error {
+		pgxConn := driverConn.(*stdlib.Conn).Conn()
+		rows := pgx.CopyFromSlice(len(records), func(i int) ([]any, error) {
+			record := records[i]
+			return []any{
+				i,
+				record.record.ProviderID,
+				record.record.NewsgroupID,
+				record.posterID,
+				strings.TrimSpace(record.record.SourceReleaseKey),
+				strings.TrimSpace(record.record.ReleaseFamilyKey),
+				strings.TrimSpace(record.record.FileSetKey),
+				strings.TrimSpace(record.record.FileFamilyKey),
+				strings.TrimSpace(record.record.IdentityStrength),
+				strings.TrimSpace(record.record.IdentityReason),
+				strings.TrimSpace(record.record.SubjectSetToken),
+				strings.TrimSpace(record.record.SubjectSetKind),
+				strings.TrimSpace(record.record.FamilyKind),
+				strings.TrimSpace(record.record.BaseStem),
+				record.record.IsAuxiliary,
+				record.record.IsMainPayload,
+				record.record.ReleaseKey,
+				strings.TrimSpace(record.record.ReleaseName),
+				record.record.BinaryKey,
+				strings.TrimSpace(record.record.BinaryName),
+				strings.TrimSpace(record.record.FileName),
+				record.record.FileIndex,
+				record.record.ExpectedFileCount,
+				record.record.TotalParts,
+				record.postedAt,
+				record.record.MatchConfidence,
+				record.record.MatchStatus,
+				record.inlineEvidenceJSON,
+				record.evidenceJSON,
+			}, nil
+		})
+		_, err := pgxConn.CopyFrom(ctx,
+			pgx.Identifier{"tmp_upsert_binaries"},
+			[]string{
+				"ordinal",
+				"provider_id",
+				"newsgroup_id",
+				"poster_id",
+				"source_release_key",
+				"release_family_key",
+				"file_set_key",
+				"file_family_key",
+				"identity_strength",
+				"identity_reason",
+				"subject_set_token",
+				"subject_set_kind",
+				"family_kind",
+				"base_stem",
+				"is_auxiliary",
+				"is_main_payload",
+				"release_key",
+				"release_name",
+				"binary_key",
+				"binary_name",
+				"file_name",
+				"file_index",
+				"expected_file_count",
+				"total_parts",
+				"posted_at",
+				"match_confidence",
+				"match_status",
+				"grouping_evidence_json",
+				"grouping_evidence_payload",
+			},
+			rows,
+		)
+		if err != nil {
+			return fmt.Errorf("copy binary upsert temp rows: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error {
+	if runner == nil {
 		return fmt.Errorf("binary upsert tx is required")
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := runner.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_existing_binaries ON COMMIT DROP AS
 		SELECT
 			r.ordinal,
@@ -1625,7 +1800,7 @@ func stageExistingBinaryChunk(ctx context.Context, tx *sql.Tx) error {
 		 AND b.binary_key = r.binary_key`); err != nil {
 		return fmt.Errorf("stage existing binary upsert rows: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := runner.ExecContext(ctx, `
 		CREATE UNIQUE INDEX tmp_existing_binaries_ordinal_idx
 		ON tmp_existing_binaries (ordinal)`); err != nil {
 		return fmt.Errorf("index existing binary upsert rows: %w", err)
@@ -1677,8 +1852,8 @@ func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]
 	return false
 }
 
-func applyBinaryEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryEvidenceRecord) error {
-	if tx == nil {
+func applyBinaryEvidenceBatch(ctx context.Context, runner sqlExecQueryer, records []binaryEvidenceRecord) error {
+	if runner == nil {
 		return fmt.Errorf("binary grouping evidence tx is required")
 	}
 	if len(records) == 0 {
@@ -1714,20 +1889,20 @@ func applyBinaryEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryE
 	}
 
 	if len(deleteIDs) > 0 {
-		if err := deleteBinaryGroupingEvidenceBatch(ctx, tx, deleteIDs); err != nil {
+		if err := deleteBinaryGroupingEvidenceBatch(ctx, runner, deleteIDs); err != nil {
 			return err
 		}
 	}
 	if len(upsertRecords) > 0 {
-		if err := upsertBinaryGroupingEvidenceBatch(ctx, tx, upsertRecords); err != nil {
+		if err := upsertBinaryGroupingEvidenceBatch(ctx, runner, upsertRecords); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func deleteBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
-	if tx == nil {
+func deleteBinaryGroupingEvidenceBatch(ctx context.Context, runner sqlExecQueryer, binaryIDs []int64) error {
+	if runner == nil {
 		return fmt.Errorf("binary grouping evidence tx is required")
 	}
 	if len(binaryIDs) == 0 {
@@ -1739,7 +1914,7 @@ func deleteBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, binaryID
 		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
 		args = append(args, binaryID)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		WITH requested(binary_id) AS (
 			VALUES %s
 		)
@@ -1751,8 +1926,8 @@ func deleteBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, binaryID
 	return nil
 }
 
-func upsertBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, records []binaryEvidenceRecord) error {
-	if tx == nil {
+func upsertBinaryGroupingEvidenceBatch(ctx context.Context, runner sqlExecQueryer, records []binaryEvidenceRecord) error {
+	if runner == nil {
 		return fmt.Errorf("binary grouping evidence tx is required")
 	}
 	if len(records) == 0 {
@@ -1765,7 +1940,7 @@ func upsertBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, records 
 		values = append(values, fmt.Sprintf("($%d::bigint,'matcher','v1',$%d::jsonb,NOW())", base, base+1))
 		args = append(args, record.BinaryID, record.Payload)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO binary_grouping_evidence (
 			binary_id,
 			evidence_source,

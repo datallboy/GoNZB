@@ -800,6 +800,55 @@ Serve-mode sample after the upsert snapshot fix, `2026-05-27 15:34:42-15:39:02 A
   - lane B is behaving exactly like the design intended: it is mostly paying for inserting new `binaries` rows
   - the next meaningful optimization will need to target the insert-heavy path itself, most likely by reducing temp-stage cost with `pgx` bulk copy and/or introducing a more explicit lane-B new-row fast path
 
+Aggressive lane-B staging rewrite on `2026-05-27 16:00-16:03 America/New_York`:
+
+- assemble deferred chunks now use a dedicated connection with a manual transaction and `pgx.CopyFrom` into `tmp_upsert_binaries`
+- the previous `database/sql` transaction path remains the fallback for non-deferred callers
+- this keeps the lane-B fast path scoped to the assemble workload while leaving the rest of the repository path stable
+
+Direct `assemble lane-b --once` after the `pgx.CopyFrom` staging change:
+
+- dense worker `binaries_refreshed=11180`:
+  - `binary_upsert_stage_ms=689.57`
+  - `binary_upsert_existing_snapshot_ms=1608.45`
+  - `binary_upsert_insert_ms=20248.35`
+  - `binary_upsert_query_ms=20590.33`
+  - `binary_upsert_ms=24509.34`
+- dense worker `binaries_refreshed=13845`:
+  - `binary_upsert_stage_ms=818.40`
+  - `binary_upsert_existing_snapshot_ms=1873.04`
+  - `binary_upsert_insert_ms=24524.29`
+  - `binary_upsert_query_ms=24928.56`
+  - `binary_upsert_ms=29656.94`
+- dense worker `binaries_refreshed=14526`:
+  - `binary_upsert_stage_ms=853.73`
+  - `binary_upsert_existing_snapshot_ms=1985.60`
+  - `binary_upsert_insert_ms=25783.17`
+  - `binary_upsert_query_ms=26217.37`
+  - `binary_upsert_ms=31046.29`
+
+Comparison to the prior ordered-insert direct baseline:
+
+- previous dense `14500-15000` workers:
+  - `binary_upsert_stage_ms` about `2899.56-3106.32`
+  - `binary_upsert_existing_snapshot_ms` about `2030.82-2315.99`
+  - `binary_upsert_insert_ms` about `26321.17-26906.49`
+  - `binary_upsert_query_ms` about `26750.11-27344.33`
+  - `binary_upsert_ms` about `33743.73-36690.88`
+- current dense workers:
+  - `binary_upsert_stage_ms` about `689.57-853.73`
+  - `binary_upsert_existing_snapshot_ms` about `1608.45-1985.60`
+  - `binary_upsert_insert_ms` about `20248.35-25783.17`
+  - `binary_upsert_query_ms` about `20590.33-26217.37`
+  - `binary_upsert_ms` about `24509.34-31046.29`
+
+Current interpretation:
+
+- `pgx.CopyFrom` materially improved the lane-B fast path
+- the temp-stage cost is no longer a major component
+- the final `insert-missing` write into `binaries` is still the dominant subphase, but the overall dense-worker upsert total dropped by a meaningful margin
+- the next worthwhile step is a serve-mode remeasurement on this staging rewrite before deciding whether a more invasive insert-only fast path is still necessary
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
