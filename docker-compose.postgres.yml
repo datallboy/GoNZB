@@ -14,6 +14,12 @@ services:
       - -c
       - maintenance_work_mem=512MB
       - -c
+      - max_wal_size=8GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - wal_compression=on
+      - -c
       - random_page_cost=1.1
       - -c
       - effective_io_concurrency=64
@@ -31,7 +37,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - gonzb_postgres_data:/var/lib/postgresql/data
+      - /mnt/vm-store/docker-vols/gonzb_gonzb_postgres_data/:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gonzb"]
       interval: 5s
