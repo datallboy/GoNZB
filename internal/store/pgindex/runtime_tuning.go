@@ -49,22 +49,32 @@ func deferReleaseFamilySummaryRefreshFromContext(ctx context.Context) bool {
 }
 
 type BinaryUpsertTelemetry struct {
-	mu                           sync.Mutex
-	ChunkCount                   int
-	ChunkRows                    int
-	ChunkRetries                 int
-	ChunkRetryDeadlocks          int
-	ChunkRetrySerialization      int
-	ChunkDurationMs              float64
-	ChunkDurationMaxMs           float64
-	LockDurationMs               float64
-	LockDurationMaxMs            float64
-	UpsertQueryDurationMs        float64
-	UpsertQueryDurationMaxMs     float64
-	EvidenceDurationMs           float64
-	EvidenceDurationMaxMs        float64
-	DeferredSummaryRefreshChunks int
-	DeferredSummaryKeyCount      int
+	mu                            sync.Mutex
+	ChunkCount                    int
+	ChunkRows                     int
+	ChunkRetries                  int
+	ChunkRetryDeadlocks           int
+	ChunkRetrySerialization       int
+	ChunkDurationMs               float64
+	ChunkDurationMaxMs            float64
+	LockDurationMs                float64
+	LockDurationMaxMs             float64
+	StageDurationMs               float64
+	StageDurationMaxMs            float64
+	ExistingSnapshotDurationMs    float64
+	ExistingSnapshotDurationMaxMs float64
+	UpdateDurationMs              float64
+	UpdateDurationMaxMs           float64
+	InsertDurationMs              float64
+	InsertDurationMaxMs           float64
+	ReadbackDurationMs            float64
+	ReadbackDurationMaxMs         float64
+	UpsertQueryDurationMs         float64
+	UpsertQueryDurationMaxMs      float64
+	EvidenceDurationMs            float64
+	EvidenceDurationMaxMs         float64
+	DeferredSummaryRefreshChunks  int
+	DeferredSummaryKeyCount       int
 }
 
 func (t *BinaryUpsertTelemetry) recordChunk(rows, retries int, elapsed time.Duration) {
@@ -115,21 +125,31 @@ func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return BinaryUpsertTelemetry{
-		ChunkCount:                   t.ChunkCount,
-		ChunkRows:                    t.ChunkRows,
-		ChunkRetries:                 t.ChunkRetries,
-		ChunkRetryDeadlocks:          t.ChunkRetryDeadlocks,
-		ChunkRetrySerialization:      t.ChunkRetrySerialization,
-		ChunkDurationMs:              t.ChunkDurationMs,
-		ChunkDurationMaxMs:           t.ChunkDurationMaxMs,
-		LockDurationMs:               t.LockDurationMs,
-		LockDurationMaxMs:            t.LockDurationMaxMs,
-		UpsertQueryDurationMs:        t.UpsertQueryDurationMs,
-		UpsertQueryDurationMaxMs:     t.UpsertQueryDurationMaxMs,
-		EvidenceDurationMs:           t.EvidenceDurationMs,
-		EvidenceDurationMaxMs:        t.EvidenceDurationMaxMs,
-		DeferredSummaryRefreshChunks: t.DeferredSummaryRefreshChunks,
-		DeferredSummaryKeyCount:      t.DeferredSummaryKeyCount,
+		ChunkCount:                    t.ChunkCount,
+		ChunkRows:                     t.ChunkRows,
+		ChunkRetries:                  t.ChunkRetries,
+		ChunkRetryDeadlocks:           t.ChunkRetryDeadlocks,
+		ChunkRetrySerialization:       t.ChunkRetrySerialization,
+		ChunkDurationMs:               t.ChunkDurationMs,
+		ChunkDurationMaxMs:            t.ChunkDurationMaxMs,
+		LockDurationMs:                t.LockDurationMs,
+		LockDurationMaxMs:             t.LockDurationMaxMs,
+		StageDurationMs:               t.StageDurationMs,
+		StageDurationMaxMs:            t.StageDurationMaxMs,
+		ExistingSnapshotDurationMs:    t.ExistingSnapshotDurationMs,
+		ExistingSnapshotDurationMaxMs: t.ExistingSnapshotDurationMaxMs,
+		UpdateDurationMs:              t.UpdateDurationMs,
+		UpdateDurationMaxMs:           t.UpdateDurationMaxMs,
+		InsertDurationMs:              t.InsertDurationMs,
+		InsertDurationMaxMs:           t.InsertDurationMaxMs,
+		ReadbackDurationMs:            t.ReadbackDurationMs,
+		ReadbackDurationMaxMs:         t.ReadbackDurationMaxMs,
+		UpsertQueryDurationMs:         t.UpsertQueryDurationMs,
+		UpsertQueryDurationMaxMs:      t.UpsertQueryDurationMaxMs,
+		EvidenceDurationMs:            t.EvidenceDurationMs,
+		EvidenceDurationMaxMs:         t.EvidenceDurationMaxMs,
+		DeferredSummaryRefreshChunks:  t.DeferredSummaryRefreshChunks,
+		DeferredSummaryKeyCount:       t.DeferredSummaryKeyCount,
 	}
 }
 
@@ -143,6 +163,71 @@ func (t *BinaryUpsertTelemetry) recordLockDuration(elapsed time.Duration) {
 	t.LockDurationMs += durationMs
 	if durationMs > t.LockDurationMaxMs {
 		t.LockDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordStageDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.StageDurationMs += durationMs
+	if durationMs > t.StageDurationMaxMs {
+		t.StageDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordExistingSnapshotDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ExistingSnapshotDurationMs += durationMs
+	if durationMs > t.ExistingSnapshotDurationMaxMs {
+		t.ExistingSnapshotDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordUpdateDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.UpdateDurationMs += durationMs
+	if durationMs > t.UpdateDurationMaxMs {
+		t.UpdateDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordInsertDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.InsertDurationMs += durationMs
+	if durationMs > t.InsertDurationMaxMs {
+		t.InsertDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordReadbackDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ReadbackDurationMs += durationMs
+	if durationMs > t.ReadbackDurationMaxMs {
+		t.ReadbackDurationMaxMs = durationMs
 	}
 }
 
