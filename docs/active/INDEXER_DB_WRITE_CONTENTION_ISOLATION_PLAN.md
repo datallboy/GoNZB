@@ -234,6 +234,33 @@ Current conclusion from phase timing:
 - after batching locks and evidence maintenance, neither lock time nor evidence time is the main problem
 - the dominant remaining cost is the main `INSERT ... ON CONFLICT` query itself, including the pre-read/current-row comparison work around it
 
+Fifth focused change on the sprint branch:
+
+- rewrote `UpsertBinaries` to avoid rewriting unchanged `binaries` rows
+- kept correctness by splitting the operation into:
+  - one upsert statement with `DO UPDATE ... WHERE` only when facts materially change
+  - one readback query in the same transaction to fetch canonical ids/final identity state
+- added a regression test proving identical upserts preserve the same row without bumping `updated_at`, while stronger updates still apply
+
+Post-change direct `assemble lane-b --once` sample after no-op row rewrite avoidance:
+
+- worker 1: `unique_binary_upserts=6619`, `binary_upsert_ms=8733.33`, `query_ms=7488.33`, `refresh_ms=5255.34`
+- worker 2: `unique_binary_upserts=6655`, `binary_upsert_ms=8710.10`, `query_ms=7568.84`, `refresh_ms=8220.54`
+- worker 3: `unique_binary_upserts=7164`, `binary_upsert_ms=9170.73`, `query_ms=7779.04`, `refresh_ms=13573.32`
+- worker 4: `unique_binary_upserts=11263`, `binary_upsert_ms=14203.82`, `query_ms=11878.34`, `refresh_ms=13482.17`
+
+Compared to the prior phase-timed sample:
+
+- previous large-slice workers were at `query_ms` about `10378`, `12523`, and `22454`
+- after skipping unchanged row rewrites, comparable/high-volume workers dropped into about `7488`, `7569`, `7779`, and `11878`
+- per-chunk max query time also dropped into about `639 ms-644 ms`, with no retries in the validation run
+
+Current state after this change:
+
+- direct `assemble lane-b --once` is much healthier than the branch baseline
+- refresh-side summary/yEnc overhead is no longer the dominant problem
+- assemble still needs a serve-mode overlap remeasurement, because the direct run bottleneck is now substantially reduced and the next question is what still regresses under concurrent stage pressure
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

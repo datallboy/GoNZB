@@ -1597,6 +1597,102 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecomput
 	}
 }
 
+func TestUpsertBinarySkipsUnchangedRowRewriteButUpdatesOnRealChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.upsert.noop.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "noop-source",
+		ReleaseFamilyKey:  "noop-family",
+		FileSetKey:        "noop-fileset",
+		FileFamilyKey:     "noop-family::file",
+		IdentityStrength:  "strong",
+		IdentityReason:    "test",
+		SubjectSetToken:   "noop-token",
+		SubjectSetKind:    "subject",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "noop",
+		IsMainPayload:     true,
+		ReleaseKey:        "noop-family",
+		ReleaseName:       "Noop Family",
+		BinaryKey:         "noop-binary",
+		BinaryName:        "noop.rar",
+		FileName:          "noop.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        3,
+		MatchConfidence:   0.95,
+		MatchStatus:       "strong",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"status": "matched",
+			},
+		},
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("initial upsert binary: %v", err)
+	}
+
+	var firstUpdatedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `SELECT updated_at FROM binaries WHERE id = $1`, binaryID).Scan(&firstUpdatedAt); err != nil {
+		t.Fatalf("query initial updated_at: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	sameBinaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("noop upsert binary: %v", err)
+	}
+	if sameBinaryID != binaryID {
+		t.Fatalf("expected same binary id %d, got %d", binaryID, sameBinaryID)
+	}
+
+	var noopUpdatedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `SELECT updated_at FROM binaries WHERE id = $1`, binaryID).Scan(&noopUpdatedAt); err != nil {
+		t.Fatalf("query noop updated_at: %v", err)
+	}
+	if !noopUpdatedAt.Equal(firstUpdatedAt) {
+		t.Fatalf("expected noop upsert to preserve updated_at %s, got %s", firstUpdatedAt.UTC(), noopUpdatedAt.UTC())
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	changed := record
+	changed.MatchConfidence = 0.99
+	changed.MatchStatus = "very_strong"
+	if _, err := store.UpsertBinary(ctx, changed); err != nil {
+		t.Fatalf("changed upsert binary: %v", err)
+	}
+
+	var changedUpdatedAt time.Time
+	var changedStatus string
+	var changedConfidence float64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT updated_at, match_status, match_confidence
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&changedUpdatedAt, &changedStatus, &changedConfidence); err != nil {
+		t.Fatalf("query changed binary row: %v", err)
+	}
+	if !changedUpdatedAt.After(noopUpdatedAt) {
+		t.Fatalf("expected changed upsert to advance updated_at beyond %s, got %s", noopUpdatedAt.UTC(), changedUpdatedAt.UTC())
+	}
+	if changedStatus != "very_strong" || changedConfidence != 0.99 {
+		t.Fatalf("expected changed upsert to persist stronger match, got status=%q confidence=%f", changedStatus, changedConfidence)
+	}
+}
+
 func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
