@@ -532,7 +532,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		laneASelected,
 		laneBSelected,
@@ -561,11 +561,18 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		metrics["binary_upsert_evidence_max_ms"],
 		metrics["binary_upsert_deferred_summary_chunks"],
 		metrics["binary_upsert_deferred_summary_keys"],
+		metrics["binary_refresh_tx_count"],
 		metrics["binary_refresh_batch_count"],
 		metrics["binary_refresh_binary_count"],
 		metrics["binary_refresh_summary_key_count"],
 		metrics["binary_refresh_deferred_summary_batches"],
 		metrics["binary_refresh_deferred_summary_keys"],
+		metrics["binary_refresh_stats_update_ms"],
+		metrics["binary_refresh_stats_update_max_ms"],
+		metrics["binary_refresh_summary_mark_ms"],
+		metrics["binary_refresh_summary_mark_max_ms"],
+		metrics["binary_refresh_yenc_sync_ms"],
+		metrics["binary_refresh_yenc_sync_max_ms"],
 		metrics["unique_binary_upserts"],
 		metrics["binary_upsert_cache_hits"],
 		recovery.attempts,
@@ -658,11 +665,18 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 }
 
 func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryStatsRefreshTelemetry) {
+	metrics["binary_refresh_tx_count"] = telemetry.TxCount
 	metrics["binary_refresh_batch_count"] = telemetry.BatchCount
 	metrics["binary_refresh_binary_count"] = telemetry.BinaryCount
 	metrics["binary_refresh_summary_key_count"] = telemetry.SummaryKeyCount
 	metrics["binary_refresh_deferred_summary_batches"] = telemetry.DeferredSummaryRefreshBatches
 	metrics["binary_refresh_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
+	metrics["binary_refresh_stats_update_ms"] = telemetry.StatsUpdateDurationMs
+	metrics["binary_refresh_stats_update_max_ms"] = telemetry.StatsUpdateDurationMaxMs
+	metrics["binary_refresh_summary_mark_ms"] = telemetry.SummaryMarkDurationMs
+	metrics["binary_refresh_summary_mark_max_ms"] = telemetry.SummaryMarkDurationMaxMs
+	metrics["binary_refresh_yenc_sync_ms"] = telemetry.YEncSyncDurationMs
+	metrics["binary_refresh_yenc_sync_max_ms"] = telemetry.YEncSyncDurationMaxMs
 }
 
 func laneMetricName(lane string) string {

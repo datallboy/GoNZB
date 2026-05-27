@@ -196,25 +196,48 @@ func containsSQLState(text, code string) bool {
 
 type BinaryStatsRefreshTelemetry struct {
 	mu                            sync.Mutex
+	TxCount                       int
 	BatchCount                    int
 	BinaryCount                   int
 	SummaryKeyCount               int
 	DeferredSummaryRefreshBatches int
 	DeferredSummaryKeyCount       int
+	StatsUpdateDurationMs         float64
+	StatsUpdateDurationMaxMs      float64
+	SummaryMarkDurationMs         float64
+	SummaryMarkDurationMaxMs      float64
+	YEncSyncDurationMs            float64
+	YEncSyncDurationMaxMs         float64
 }
 
-func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, deferred bool) {
+func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, deferred bool, statsUpdateDuration, summaryMarkDuration, yencSyncDuration time.Duration) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.TxCount++
 	t.BatchCount++
 	t.BinaryCount += binaryCount
 	t.SummaryKeyCount += summaryKeys
 	if deferred {
 		t.DeferredSummaryRefreshBatches++
 		t.DeferredSummaryKeyCount += summaryKeys
+	}
+	statsUpdateMs := float64(statsUpdateDuration.Microseconds()) / 1000.0
+	t.StatsUpdateDurationMs += statsUpdateMs
+	if statsUpdateMs > t.StatsUpdateDurationMaxMs {
+		t.StatsUpdateDurationMaxMs = statsUpdateMs
+	}
+	summaryMarkMs := float64(summaryMarkDuration.Microseconds()) / 1000.0
+	t.SummaryMarkDurationMs += summaryMarkMs
+	if summaryMarkMs > t.SummaryMarkDurationMaxMs {
+		t.SummaryMarkDurationMaxMs = summaryMarkMs
+	}
+	yencSyncMs := float64(yencSyncDuration.Microseconds()) / 1000.0
+	t.YEncSyncDurationMs += yencSyncMs
+	if yencSyncMs > t.YEncSyncDurationMaxMs {
+		t.YEncSyncDurationMaxMs = yencSyncMs
 	}
 }
 
@@ -225,11 +248,18 @@ func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return BinaryStatsRefreshTelemetry{
+		TxCount:                       t.TxCount,
 		BatchCount:                    t.BatchCount,
 		BinaryCount:                   t.BinaryCount,
 		SummaryKeyCount:               t.SummaryKeyCount,
 		DeferredSummaryRefreshBatches: t.DeferredSummaryRefreshBatches,
 		DeferredSummaryKeyCount:       t.DeferredSummaryKeyCount,
+		StatsUpdateDurationMs:         t.StatsUpdateDurationMs,
+		StatsUpdateDurationMaxMs:      t.StatsUpdateDurationMaxMs,
+		SummaryMarkDurationMs:         t.SummaryMarkDurationMs,
+		SummaryMarkDurationMaxMs:      t.SummaryMarkDurationMaxMs,
+		YEncSyncDurationMs:            t.YEncSyncDurationMs,
+		YEncSyncDurationMaxMs:         t.YEncSyncDurationMaxMs,
 	}
 }
 

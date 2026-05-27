@@ -405,6 +405,91 @@ Current conclusion after the serve remeasurement:
 - deadlocks still occur inside `RefreshBinaryStatsBatch` under serve overlap, which means the remaining next target is not the aggregate read shape; it is the shared write surface inside the refresh transaction
 - the most likely remaining contention point is the batched dirty-marker/update work on `release_family_readiness_summaries` and any other summary/queue writes that still happen in the same refresh transaction while `recover_yenc`, `inspect_par2`, and `release` are active
 
+Seventh focused change on the sprint branch:
+
+- added deterministic `FOR UPDATE` locking of requested `binaries` rows inside `refreshBinaryStatsIDsInTx`
+- changed `RefreshBinaryStatsBatch` from one large transaction to per-chunk transactions
+- added new refresh subphase telemetry:
+  - `binary_refresh_tx_count`
+  - `binary_refresh_stats_update_ms`
+  - `binary_refresh_summary_mark_ms`
+  - `binary_refresh_yenc_sync_ms`
+  - corresponding `*_max_ms` fields
+
+Why this change was necessary:
+
+- the previous deadlock string was still `refresh binary stats batch`, which meant the conflict was happening in the `binaries` refresh/update phase, not in the later dirty-marker write
+- `assemble_lane_b` claims headers, not binaries, so separate lane-B workers can still touch and refresh the same binary rows
+- without deterministic binary row locking, overlapping workers and cross-stage refreshes could still deadlock even after the aggregate query rewrite
+
+Post-change direct `assemble lane-b --once` sample on `2026-05-27`:
+
+- worker 1: `binaries_refreshed=709`, `binary_upsert_ms=822.53`, `binary_refresh_ms=664.41`
+  - `binary_refresh_tx_count=1`
+  - `binary_refresh_stats_update_ms=225.19`
+  - `binary_refresh_summary_mark_ms=189.32`
+  - `binary_refresh_yenc_sync_ms=237.81`
+- worker 2: `binaries_refreshed=1356`, `binary_upsert_ms=1944.34`, `binary_refresh_ms=1007.27`
+  - `binary_refresh_tx_count=1`
+  - `binary_refresh_stats_update_ms=301.76`
+  - `binary_refresh_summary_mark_ms=336.14`
+  - `binary_refresh_yenc_sync_ms=363.76`
+- worker 3: `binaries_refreshed=4816`, `binary_upsert_ms=6170.52`, `binary_refresh_ms=3399.06`
+  - `binary_refresh_tx_count=1`
+  - `binary_refresh_stats_update_ms=1539.70`
+  - `binary_refresh_summary_mark_ms=903.62`
+  - `binary_refresh_yenc_sync_ms=952.33`
+- worker 4: `binaries_refreshed=14340`, `binary_upsert_ms=14480.96`, `binary_refresh_ms=10870.55`
+  - `binary_refresh_tx_count=2`
+  - `binary_refresh_stats_update_ms=6059.09`
+  - `binary_refresh_summary_mark_ms=2901.68`
+  - `binary_refresh_yenc_sync_ms=1899.01`
+
+What the direct sample says:
+
+- the lock-scope changes preserved correctness and kept direct lane-B stable
+- the new subphase metrics show `stats_update` is still the largest refresh component, but `summary_mark` is now large enough to measure and no longer hidden inside one total
+- `yenc_sync` remains bounded and is not the dominant tail anymore
+
+Serve-mode remeasurement after deterministic locking and chunked refresh transactions, sampled on `2026-05-27 09:38-09:45 America/New_York`:
+
+- persisted lane-B stage rows before the database incident:
+  - `66951` completed in about `138.5s`
+    - `binary_upsert_duration_ms=146393.735`
+    - `binary_refresh_duration_ms=115799.781`
+    - `binary_refresh_tx_count=8`
+    - `binary_refresh_stats_update_ms=97850.98`
+    - `binary_refresh_summary_mark_ms=14161.078`
+    - `binary_refresh_yenc_sync_ms=3636.558`
+  - `66985` completed in about `123.7s`
+    - `binary_upsert_duration_ms=118967.045`
+    - `binary_refresh_duration_ms=92789.457`
+    - `binary_refresh_tx_count=7`
+    - `binary_refresh_stats_update_ms=70827.661`
+    - `binary_refresh_summary_mark_ms=14816.567`
+    - `binary_refresh_yenc_sync_ms=7041.916`
+- worker log samples in the same serve window:
+  - `binaries_refreshed=8716`, `binary_refresh_ms=16095.11`, `stats_update_ms=12782.22`, `summary_mark_ms=2615.09`, `yenc_sync_ms=649.12`
+  - `binaries_refreshed=15000`, `binary_refresh_ms=24987.66`, `stats_update_ms=19619.79`, `summary_mark_ms=4203.19`, `yenc_sync_ms=1117.20`
+  - `binaries_refreshed=11984`, `binary_refresh_ms=38261.91`, `stats_update_ms=33617.21`, `summary_mark_ms=3684.13`, `yenc_sync_ms=923.17`
+  - `binaries_refreshed=12991`, `binary_refresh_ms=36455.09`, `stats_update_ms=31831.76`, `summary_mark_ms=3658.66`, `yenc_sync_ms=947.07`
+
+Important result from this serve sample:
+
+- no `refresh binary stats batch` deadlock was recorded before the benchmark ended
+- the sample terminated because the local Postgres instance hit a separate `unexpected EOF` / `database system is in recovery mode` event, which also interrupted unrelated stages
+- so this sample is not a perfect apples-to-apples long soak, but it is still useful because the prior repeated lane-B deadlock did not reproduce before the database incident
+
+Current conclusion after the lock-ordering and chunked refresh change:
+
+- the aggregate query rewrite fixed the largest self-inflicted read cost
+- deterministic binary row locking plus chunked refresh transactions appear to have reduced the assemble refresh deadlock pressure substantially
+- the remaining measured serve-mode tail is now mostly split between:
+  - `binary_upsert_query_ms`
+  - `binary_refresh_stats_update_ms`
+  - and a smaller but real `binary_refresh_summary_mark_ms`
+- if deadlocks recur in a longer stable serve soak, the next specific target should be summary dirty-marker writes, because that subphase is now isolated and measurable
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
