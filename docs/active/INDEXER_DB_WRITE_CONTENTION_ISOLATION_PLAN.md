@@ -769,6 +769,37 @@ Serve-mode sample after the upsert snapshot fix, `2026-05-27 15:34:42-15:39:02 A
   - serve-mode lane-B is now dominated by `binary_upsert_query_ms`, with `summary_mark` as the next largest overlapping write cost
   - the next worthwhile trace should split `UpsertBinaries` further into temp-stage load, update-existing, insert-missing, and evidence phases so the remaining `binary_upsert_query_ms` can be attacked directly
 
+`UpsertBinaries` subphase split follow-up on `2026-05-27 15:43-15:55 America/New_York`:
+
+- new lane-B telemetry now splits binary upsert work into:
+  - `binary_upsert_stage_ms`
+  - `binary_upsert_existing_snapshot_ms`
+  - `binary_upsert_update_ms`
+  - `binary_upsert_insert_ms`
+  - `binary_upsert_readback_ms`
+  - `binary_upsert_evidence_ms`
+- direct `assemble lane-b --once` dense samples show the remaining cost is overwhelmingly the final insert path, not update or readback:
+  - `binaries_refreshed=15000`
+    - `binary_upsert_stage_ms=3096.13`
+    - `binary_upsert_existing_snapshot_ms=2424.73`
+    - `binary_upsert_update_ms=114.68`
+    - `binary_upsert_insert_ms=26774.22`
+    - `binary_upsert_readback_ms=313.06`
+    - `binary_upsert_query_ms=27202.32`
+- low-risk ordered-insert experiment:
+  - changed the `insert-missing` statement to emit rows ordered by `(provider_id, newsgroup_id, binary_key)`, matching the `binaries` unique key
+  - dense `15000`-binary rerun after that change:
+    - `binary_upsert_stage_ms=2899.56`
+    - `binary_upsert_existing_snapshot_ms=2030.82`
+    - `binary_upsert_update_ms=114.69`
+    - `binary_upsert_insert_ms=26321.17`
+    - `binary_upsert_readback_ms=313.93`
+    - `binary_upsert_query_ms=26750.11`
+- interpretation:
+  - ordered inserts helped a little, but not enough to change the overall picture
+  - lane B is behaving exactly like the design intended: it is mostly paying for inserting new `binaries` rows
+  - the next meaningful optimization will need to target the insert-heavy path itself, most likely by reducing temp-stage cost with `pgx` bulk copy and/or introducing a more explicit lane-B new-row fast path
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

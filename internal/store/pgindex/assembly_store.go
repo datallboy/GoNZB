@@ -1166,14 +1166,23 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		telemetry.recordLockDuration(time.Since(lockStarted))
 	}
 
+	stageStarted := time.Now()
 	if err := stageUpsertBinaryChunk(ctx, tx, records); err != nil {
 		return nil, nil, err
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordStageDuration(time.Since(stageStarted))
+	}
+	existingSnapshotStarted := time.Now()
 	if err := stageExistingBinaryChunk(ctx, tx); err != nil {
 		return nil, nil, err
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordExistingSnapshotDuration(time.Since(existingSnapshotStarted))
+	}
 
 	upsertQueryStarted := time.Now()
+	updateStarted := time.Now()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binaries b
 		SET poster_id = COALESCE(r.poster_id, b.poster_id),
@@ -1246,6 +1255,10 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		  )`); err != nil {
 		return nil, nil, fmt.Errorf("update binaries batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordUpdateDuration(time.Since(updateStarted))
+	}
+	insertStarted := time.Now()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binaries (
 			provider_id,
@@ -1308,9 +1321,17 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			NOW()
 		FROM tmp_upsert_binaries r
 		LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		WHERE e.binary_id IS NULL`); err != nil {
+		WHERE e.binary_id IS NULL
+		ORDER BY
+			r.provider_id,
+			r.newsgroup_id,
+			r.binary_key`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordInsertDuration(time.Since(insertStarted))
+	}
+	readbackStarted := time.Now()
 	rows, err := tx.QueryContext(ctx, `
 		WITH inserted AS (
 			SELECT
@@ -1375,6 +1396,7 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordReadbackDuration(time.Since(readbackStarted))
 		telemetry.recordUpsertQueryDuration(time.Since(upsertQueryStarted))
 	}
 	defer rows.Close()
