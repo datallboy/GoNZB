@@ -661,6 +661,31 @@ Current interpretation:
   - keep `assemble_lane_b.binary_upsert_db_chunk_size = 100`
   - keep the larger WAL budget so checkpoints are not driven by the old `1GB` cap
 
+Serve-mode measurement after the `binaries` reindex and Postgres recreate, sampled on `2026-05-27 15:08-15:11 America/New_York`:
+
+- `assemble_lane_b` persisted run `67169` completed cleanly in about `130.1s`
+- serve-mode lane-B aggregate metrics:
+  - `selected_headers=60000`
+  - `binaries_refreshed=37632`
+  - `binary_upsert_duration_ms=77553.943`
+  - `binary_upsert_query_ms=45080.888`
+  - `binary_part_upsert_duration_ms=19573.898`
+  - `binary_refresh_duration_ms=83621.332`
+  - `binary_refresh_stats_update_ms=65934.033`
+  - `binary_refresh_summary_mark_ms=15065.864`
+  - `binary_refresh_yenc_sync_ms=2569.192`
+  - `binary_upsert_chunk_retries=0`
+- serve-mode lane-B worker log samples from the same run:
+  - `binaries_refreshed=75`, `binary_upsert_ms=391.44`, `binary_refresh_ms=218.28`
+  - `binaries_refreshed=7557`, `binary_upsert_ms=28265.35`, `binary_refresh_ms=8928.01`
+  - `binaries_refreshed=15000`, `binary_upsert_ms=22860.44`, `binary_refresh_ms=38865.80`
+  - `binaries_refreshed=15000`, `binary_upsert_ms=26036.71`, `binary_refresh_ms=35609.24`
+- conclusion:
+  - the earlier `30-38s` refresh band is not a fixed cost for every lane-B slice
+  - refresh time still scales sharply with how many binaries a worker actually refreshes
+  - small or sparse slices now land in sub-second to single-digit-second refresh bands
+  - heavy `15000`-binary slices still spend most of their time in `stats_update` and then `summary_mark`, so there is still optimization headroom there
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
