@@ -460,7 +460,8 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, tx *sql.Tx, keys []relea
 		VALUES %s
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
-		    updated_at = NOW()`,
+		    updated_at = NOW()
+		WHERE release_family_readiness_summaries.updated_at <= COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at)`,
 			strings.Join(values, ",")), args...); err != nil {
 			return fmt.Errorf("mark release family dirty batch count=%d: %w", len(batch), err)
 		}

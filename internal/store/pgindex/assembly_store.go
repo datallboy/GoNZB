@@ -1701,7 +1701,8 @@ func upsertBinaryGroupingEvidenceBatch(ctx context.Context, tx *sql.Tx, records 
 		VALUES %s
 		ON CONFLICT (binary_id) DO UPDATE
 		SET payload_json = EXCLUDED.payload_json,
-		    updated_at = NOW()`, strings.Join(values, ",")), args...); err != nil {
+		    updated_at = NOW()
+		WHERE binary_grouping_evidence.payload_json IS DISTINCT FROM EXCLUDED.payload_json`, strings.Join(values, ",")), args...); err != nil {
 		return fmt.Errorf("upsert binary grouping evidence batch size=%d: %w", len(records), err)
 	}
 	return nil
@@ -1734,7 +1735,8 @@ func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int6
 		VALUES ($1, 'matcher', 'v1', $2, NOW())
 		ON CONFLICT (binary_id) DO UPDATE
 		SET payload_json = EXCLUDED.payload_json,
-		    updated_at = NOW()`,
+		    updated_at = NOW()
+		WHERE binary_grouping_evidence.payload_json IS DISTINCT FROM EXCLUDED.payload_json`,
 		binaryID,
 		payload,
 	); err != nil {
