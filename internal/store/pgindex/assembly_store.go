@@ -1224,10 +1224,15 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 			record.evidenceJSON,
 		)
 	}
+	lockStarted := time.Now()
 	if err := lockBinaryIdentityKeys(ctx, tx, locks); err != nil {
 		return nil, nil, err
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordLockDuration(time.Since(lockStarted))
+	}
 
+	upsertQueryStarted := time.Now()
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
 		WITH requested (
 			ordinal,
@@ -1405,6 +1410,9 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 	if err != nil {
 		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordUpsertQueryDuration(time.Since(upsertQueryStarted))
+	}
 	defer rows.Close()
 
 	ids := make([]int64, len(records))
@@ -1480,8 +1488,12 @@ func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinary
 		}
 	}
 
+	evidenceStarted := time.Now()
 	if err := applyBinaryEvidenceBatch(ctx, tx, evidenceRecords); err != nil {
 		return nil, nil, err
+	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordEvidenceDuration(time.Since(evidenceStarted))
 	}
 
 	return ids, summaryKeys, nil

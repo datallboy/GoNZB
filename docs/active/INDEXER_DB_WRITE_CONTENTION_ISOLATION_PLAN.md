@@ -213,6 +213,27 @@ What this means:
 - the remaining direct-run bottleneck is now mostly the core `UpsertBinaries` path itself, not downstream refresh/yEnc summary churn
 - the remaining upsert path still performs a heavyweight `INSERT ... ON CONFLICT` with existing-row comparison logic; the next likely optimization target is reducing what that query has to read/return when assemble does not need immediate old-family summary cleanup
 
+Fourth focused change on the sprint branch:
+
+- added subphase telemetry inside `UpsertBinaries` so `binary_upsert_ms` is now split into:
+  - `binary_upsert_lock_ms`
+  - `binary_upsert_query_ms`
+  - `binary_upsert_evidence_ms`
+
+Post-change direct `assemble lane-b --once` sample with phase timing:
+
+- worker 1: `unique_binary_upserts=84`, `binary_upsert_ms=401.13`, `lock_ms=2.25`, `query_ms=388.99`, `evidence_ms=3.23`
+- worker 2: `unique_binary_upserts=2688`, `binary_upsert_ms=10826.86`, `lock_ms=29.75`, `query_ms=10378.23`, `evidence_ms=132.61`
+- worker 3: `unique_binary_upserts=3232`, `binary_upsert_ms=13110.00`, `lock_ms=28.97`, `query_ms=12522.78`, `evidence_ms=278.51`
+- worker 4: `unique_binary_upserts=6561`, `binary_upsert_ms=23382.06`, `lock_ms=44.29`, `query_ms=22454.15`, `evidence_ms=321.10`
+
+Current conclusion from phase timing:
+
+- the worker values are not cumulative; each worker is processing a different 15k-header slice with a different number of unique binary keys
+- the first worker is usually faster because it often has far fewer unique binary upserts and far more cache hits
+- after batching locks and evidence maintenance, neither lock time nor evidence time is the main problem
+- the dominant remaining cost is the main `INSERT ... ON CONFLICT` query itself, including the pre-read/current-row comparison work around it
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

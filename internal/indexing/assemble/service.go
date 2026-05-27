@@ -532,7 +532,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	addAssembleTimingMetrics(metrics, started, headerMatchDuration, posterDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		laneASelected,
 		laneBSelected,
@@ -553,6 +553,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		metrics["binary_upsert_chunk_retry_serialization"],
 		metrics["binary_upsert_chunk_duration_ms"],
 		metrics["binary_upsert_chunk_max_ms"],
+		metrics["binary_upsert_lock_ms"],
+		metrics["binary_upsert_lock_max_ms"],
+		metrics["binary_upsert_query_ms"],
+		metrics["binary_upsert_query_max_ms"],
+		metrics["binary_upsert_evidence_ms"],
+		metrics["binary_upsert_evidence_max_ms"],
 		metrics["binary_upsert_deferred_summary_chunks"],
 		metrics["binary_upsert_deferred_summary_keys"],
 		metrics["binary_refresh_batch_count"],
@@ -641,6 +647,12 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_chunk_retry_serialization"] = telemetry.ChunkRetrySerialization
 	metrics["binary_upsert_chunk_duration_ms"] = telemetry.ChunkDurationMs
 	metrics["binary_upsert_chunk_max_ms"] = telemetry.ChunkDurationMaxMs
+	metrics["binary_upsert_lock_ms"] = telemetry.LockDurationMs
+	metrics["binary_upsert_lock_max_ms"] = telemetry.LockDurationMaxMs
+	metrics["binary_upsert_query_ms"] = telemetry.UpsertQueryDurationMs
+	metrics["binary_upsert_query_max_ms"] = telemetry.UpsertQueryDurationMaxMs
+	metrics["binary_upsert_evidence_ms"] = telemetry.EvidenceDurationMs
+	metrics["binary_upsert_evidence_max_ms"] = telemetry.EvidenceDurationMaxMs
 	metrics["binary_upsert_deferred_summary_chunks"] = telemetry.DeferredSummaryRefreshChunks
 	metrics["binary_upsert_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
 }
