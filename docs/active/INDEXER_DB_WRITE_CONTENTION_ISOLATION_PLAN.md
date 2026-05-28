@@ -1051,6 +1051,51 @@ Readiness/summary ownership shift on `2026-05-28 11:46-11:57 America/New_York`:
   - readers (`release`, yEnc work-item seeding) refresh summaries on demand from a bounded queue
   - this preserves readiness semantics while narrowing hot write transactions and removing another source of cross-stage overlap
 
+Serve-mode overlap remeasurement after the queue ownership shift on `2026-05-28 12:02-12:06 America/New_York`:
+
+- runtime shape:
+  - `scrape_latest` and `scrape_backfill` were enabled in this sample
+  - `enrich_*` remained disabled
+  - active overlap included `assemble_lane_a`, `assemble_lane_b`, `inspect_par2`, `recover_yenc`, and `release`
+- persisted stage results:
+  - `67380 release`: completed in `15.5s`, `candidate_list_duration_ms=8191.473`, `formed=8`
+  - `67383 recover_yenc`: completed in `14.7s`, `attempted=0`
+  - `67384 assemble_lane_a`: completed in `30.2s`, `selected_headers=6126`, `binaries_refreshed=35`, `binary_upsert_duration_ms=158.277`, `binary_refresh_duration_ms=501.753`
+  - `67385 inspect_par2`: completed in `76.8s`, `processed_count=525`
+  - `67386 assemble_lane_b`: completed in `64.5s`, `selected_headers=60000`, `binaries_refreshed=36801`, `binary_upsert_duration_ms=68669.519`, `binary_refresh_duration_ms=23898.231`, `binary_refresh_summary_mark_ms=12818.961`
+- comparison to the earlier serve baseline before the queue shift and latest lane-B copy path:
+  - earlier serve sample `67246` had `binary_upsert_duration_ms=105334.062`, `binary_refresh_duration_ms=34626.520`, `binary_refresh_summary_mark_ms=12413.861`
+  - new sample `67386` dropped lane-B aggregate upsert time by about `35%`
+  - new sample `67386` dropped lane-B aggregate refresh time by about `31%`
+  - lane-B no longer looks like the stage that requires an immediate concurrency cap; it is materially closer to direct `--once` behavior now
+- new bottleneck exposed by the queue ownership change:
+  - during the same serve window, `release_family_summary_refresh_queue` grew instead of draining:
+    - about `36.7k` queued keys at `12:04`
+    - about `49.7k` queued keys at `12:05`
+    - about `56.7k` queued keys at `12:06`
+  - live `pg_stat_activity` showed:
+    - `release` actively dequeuing queued summary keys with `FOR UPDATE SKIP LOCKED`
+    - concurrent writer stages blocked in `INSERT ... ON CONFLICT` against `release_family_summary_refresh_queue`
+  - `release` currently refreshes only `BatchSize*2` queued keys per run (`2000` with the current default) and then moves on to candidate selection
+  - that bounded drain rate is now too small to keep up with serve-mode writer overlap
+- interpretation:
+  - the queue-based ownership shift did its intended job for hot writer transactions; `assemble_lane_b` improved materially under overlap
+  - the remaining contention is not a lane-B cap problem first; it is a deferred-summary drain-capacity problem
+  - if we add caps or staggering before fixing queue drain throughput, we will be treating the symptom instead of the now-visible bottleneck
+
+Next practical direction after this remeasurement:
+
+- raise summary refresh throughput before adding blunt stage caps:
+  - `RefreshQueuedReleaseFamilySummaries` still dequeues a batch and then recomputes each summary one key at a time inside one transaction
+  - that is now the clearest remaining overlap bottleneck
+- if temporary staggering is needed before the queue drain path is improved, prefer targeted staggering:
+  - do not cap `assemble_lane_a`
+  - do not globally cap `assemble_lane_b` yet
+  - instead, gate `release` candidate formation behind either:
+    - a larger queued-summary drain budget, or
+    - a backlog threshold where `release` performs refresh-only work until the queue is back under control
+- if a queue-based scheduler is introduced, the first useful queue should be for deferred readiness-summary refresh work, not for lane-B itself
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -1062,5 +1107,6 @@ Readiness/summary ownership shift on `2026-05-28 11:46-11:57 America/New_York`:
 - [x] Replace the ineffective `file_set_key` access path with index ordering that matches recovered-file-set release queries, plus a dedicated recovered-file-set candidate index.
 - [ ] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [x] Move readiness-summary recompute ownership to readers: fact writers dirty/enqueue; `release` and yEnc work-item seeding drain and recompute from a bounded refresh queue.
-- [ ] Re-measure serve-mode overlap after the queue-based summary ownership shift and decide whether any temporary concurrency caps or stage staggering are still needed.
+- [x] Re-measure serve-mode overlap after the queue-based summary ownership shift and decide whether any temporary concurrency caps or stage staggering are still needed.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
+- [ ] Increase deferred readiness-summary drain throughput so `release_family_summary_refresh_queue` can keep up with serve-mode writer overlap before candidate formation becomes backlog-bound.
