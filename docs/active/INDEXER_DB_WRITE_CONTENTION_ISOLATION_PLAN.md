@@ -979,7 +979,49 @@ Measured effect of the first pruning step:
 - interpretation:
   - the first index-surface reduction produced a real write-path gain on the hot fact table
   - the dominant cost is still maintaining the remaining large secondary indexes, but the result confirms this is the right optimization direction
-  - `idx_binaries_file_set_key` is still a likely future review target, but it was left intact because recovered-identity release formation still depends on `file_set_key` semantics and has not yet been moved to dedicated summary/work state
+  - `idx_binaries_file_set_key` was left intact at this step because recovered-identity release formation still depends on `file_set_key` semantics and needed a separate query-shape review first
+
+Recovered-file-set follow-up on `2026-05-28 11:32-11:45 America/New_York`:
+
+- first validated that the dropped indexes do not change yEnc recovery or recovered-identity semantics:
+  - `recover_yenc` now uses `yenc_recovery_work_items`, so dropping `idx_binaries_yenc_recovery_backlog` removed only an obsolete selector path
+  - no release/yEnc query semantics changed in that step
+- traced the two remaining `file_set_key` release paths on the live database:
+  - recovered-file-set hydration:
+    - `SELECT b.id FROM binaries b WHERE b.provider_id = $1 AND b.file_set_key = $2`
+    - before index work: parallel seq scan, about `20.6s`
+  - recovered-file-set candidate aggregation:
+    - `WHERE recovered_source='yenc_header' AND BTRIM(file_set_key)<>'' AND posted_at IS NOT NULL GROUP BY provider_id, file_set_key`
+    - before index work: parallel seq scan, about `20.8s`
+- root cause:
+  - the existing `idx_binaries_file_set_key(provider_id, newsgroup_id, file_set_key)` order did not match the actual release query shape (`provider_id + file_set_key`)
+  - the planner ignored it completely
+
+Applied second `file_set_key` access-path correction:
+
+- reordered `idx_binaries_file_set_key` to:
+  - `(provider_id, file_set_key, newsgroup_id)`
+  - same partial predicate: `WHERE btrim(file_set_key) <> ''`
+- tightened recovered-file-set release queries to state `BTRIM(file_set_key) <> ''`, which is already a semantic requirement of the feature and allows the partial index to be considered
+- added a dedicated recovered-file-set candidate index:
+  - `idx_binaries_recovered_file_set_candidates`
+  - key: `(provider_id, file_set_key, newsgroup_id)`
+  - include columns needed by the aggregate
+  - predicate limited to `recovered_source='yenc_header' AND file_set_key<>'' AND posted_at IS NOT NULL`
+
+Measured effect:
+
+- recovered-file-set hydration after the reordered `idx_binaries_file_set_key`:
+  - about `24.8ms`
+  - plan switched to `Index Scan using idx_binaries_file_set_key`
+- recovered-file-set candidate aggregation after the dedicated candidate index:
+  - about `1.11s`
+  - plan switched to `Index Only Scan using idx_binaries_recovered_file_set_candidates`
+  - previous baseline for the same aggregate was about `20.8s`
+- interpretation:
+  - this is a release-stage improvement, not an assemble write-cost reduction directly
+  - it is still aligned with the active plan because it removes another large cross-stage seq-scan against `binaries`
+  - the change preserves recovered-identity grouping semantics; it only replaces ineffective access paths with ones that match the real query shape
 
 ## Active Execution Backlog
 
@@ -989,7 +1031,8 @@ Measured effect of the first pruning step:
 - [x] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
 - [x] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
 - [x] Review the first `binaries` secondary-index pruning set and remove clearly obsolete hot-write indexes (`yenc` backlog, generic `updated_at`, unused `identity_strength`).
-- [ ] Continue reviewing the remaining large `binaries` lookup indexes, especially `file_set_key`, and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
+- [x] Replace the ineffective `file_set_key` access path with index ordering that matches recovered-file-set release queries, plus a dedicated recovered-file-set candidate index.
+- [ ] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.

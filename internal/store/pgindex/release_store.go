@@ -822,6 +822,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			SELECT b.id
 			FROM binaries b
 			WHERE b.provider_id = $1
+			  AND BTRIM(b.file_set_key) <> ''
 			  AND b.file_set_key = $2`
 	default:
 		candidateSelector += `
@@ -1089,8 +1090,9 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			  	SELECT 1
 			  	FROM binaries b
 			  	WHERE b.provider_id = v.provider_id
-			  	  AND b.file_set_key = v.file_set_key
-			  	  AND b.newsgroup_id = s.newsgroup_id
+				  AND b.file_set_key = v.file_set_key
+				  AND BTRIM(b.file_set_key) <> ''
+				  AND b.newsgroup_id = s.newsgroup_id
 			  	  AND (
 			  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
 			  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
@@ -1505,6 +1507,7 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 			  		WHERE rf.release_id = r.release_id
 			  		  AND b.provider_id = $1
 			  		  AND b.file_set_key = $2
+			  		  AND BTRIM(b.file_set_key) <> ''
 			  	)
 			  )`,
 			providerID,
@@ -1536,6 +1539,7 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 		  		WHERE rf.release_id = r.release_id
 		  		  AND b.provider_id = $1
 		  		  AND b.file_set_key = $2
+		  		  AND BTRIM(b.file_set_key) <> ''
 		  	)
 		  )
 		  AND r.group_name NOT IN (`+strings.Join(placeholders, ",")+`)`,
