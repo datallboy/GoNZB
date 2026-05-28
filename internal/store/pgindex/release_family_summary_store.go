@@ -509,6 +509,7 @@ func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit i
 	rows, err := tx.QueryContext(ctx, `
 		WITH next_queue AS (
 			SELECT
+				ctid,
 				provider_id,
 				newsgroup_id,
 				key_kind,
@@ -521,10 +522,7 @@ func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit i
 		dequeued AS (
 			DELETE FROM release_family_summary_refresh_queue q
 			USING next_queue n
-			WHERE q.provider_id = n.provider_id
-			  AND q.newsgroup_id = n.newsgroup_id
-			  AND q.key_kind = n.key_kind
-			  AND q.family_key = n.family_key
+			WHERE q.ctid = n.ctid
 			RETURNING n.provider_id, n.newsgroup_id, n.key_kind, n.family_key
 		)
 		SELECT provider_id, newsgroup_id, key_kind, family_key

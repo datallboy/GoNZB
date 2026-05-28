@@ -1096,6 +1096,52 @@ Next practical direction after this remeasurement:
     - a backlog threshold where `release` performs refresh-only work until the queue is back under control
 - if a queue-based scheduler is introduced, the first useful queue should be for deferred readiness-summary refresh work, not for lane-B itself
 
+Release drain follow-up on `2026-05-28 12:12-12:24 America/New_York`:
+
+- recommendation for `release`:
+  - do not cap release candidate formation first
+  - increase the deferred summary drain budget ahead of candidate selection
+  - keep that drain budget separate from the release candidate batch size
+  - use a bounded default of `10000` queued summaries per run unless explicitly overridden
+- measured end-to-end `RefreshQueuedReleaseFamilySummaries` timings on the live backlog:
+  - `limit=2000`: `refreshed=2000`, about `2446.60 ms`
+  - `limit=5000`: `refreshed=5000`, about `5936.07 ms`
+  - `limit=10000`: `refreshed=10000`, about `10443.56 ms`
+- interpretation:
+  - refresh cost scaled close to linearly
+  - the old effective serve-time drain budget of `2000` was simply too small relative to writer throughput
+  - `10000` is a practical default on this database: large enough to catch up meaningfully, still only about `10.4s` of refresh work at current data scale
+- direct `release --once` sample after raising the drain budget:
+  - queue before run: `3743`
+  - latest persisted release run `67447`:
+    - `summary_refresh_count=3743`
+    - `summary_refresh_duration_ms=3381.028`
+    - `candidate_list_duration_ms=6486.962`
+    - `candidate_families=20000`
+    - `formed=8`
+    - queue after run: `0`
+- query-shape review for the release summary queue:
+  - the `ORDER BY queued_at ... LIMIT n FOR UPDATE SKIP LOCKED` selector was already fine
+  - the delete half was improved to target locked rows by `ctid`
+  - queue dequeue SQL before the change:
+    - `2000` rows: about `38.3 ms`
+    - `5000` rows: about `43.6 ms`
+    - `10000` rows: about `62.7 ms`
+  - queue dequeue SQL after the `ctid` delete rewrite:
+    - `2000` rows: about `17.9 ms`
+    - `5000` rows: about `29.1 ms`
+    - `10000` rows: about `52.7 ms`
+  - interpretation:
+    - this is a useful cleanup and removes one unnecessary full-key join
+    - but it also confirms the dequeue SQL is not the main bottleneck; the dominant cost is still the per-summary recompute work itself
+
+Current release conclusion:
+
+- the next release-side improvement should focus on summary recompute throughput, not candidate selection ordering
+- temporary staging advice, if needed before more code lands:
+  - let `release` run with the larger summary drain budget
+  - if queue backlog still grows under serve load, prefer a refresh-only pass or dedicated summary-refresh stage before introducing blunt assemble caps
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

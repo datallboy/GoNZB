@@ -35,6 +35,7 @@ type repository interface {
 
 type Options struct {
 	BatchSize                                          int
+	SummaryRefreshBatchSize                            int
 	ReleaseMinConfidence                               float64
 	ReleaseMinCompletion                               float64
 	ReleaseMinExpectedFileCoveragePct                  float64
@@ -51,6 +52,9 @@ type Service struct {
 func NewService(repo repository, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 1000
+	}
+	if opts.SummaryRefreshBatchSize <= 0 {
+		opts.SummaryRefreshBatchSize = 10000
 	}
 	if opts.ReleaseMinConfidence <= 0 {
 		opts.ReleaseMinConfidence = 0.55
@@ -104,9 +108,11 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	}
 
 	var (
-		candidates []pgindex.ReleaseCandidate
-		err        error
-		timings    releaseTimings
+		candidates         []pgindex.ReleaseCandidate
+		err                error
+		timings            releaseTimings
+		refreshedSummaries int
+		refreshDuration    time.Duration
 	)
 	if reform {
 		offset := 0
@@ -128,10 +134,13 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		}
 	} else {
 		refreshStart := time.Now()
-		if _, refreshErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.BatchSize*2); refreshErr != nil {
+		var refreshErr error
+		refreshedSummaries, refreshErr = s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+		if refreshErr != nil {
 			return nil, fmt.Errorf("refresh queued release family summaries: %w", refreshErr)
 		}
-		timings.candidateList += time.Since(refreshStart)
+		refreshDuration = time.Since(refreshStart)
+		timings.candidateList += refreshDuration
 		start := time.Now()
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize, pgindex.ReleaseCandidateSelectionOptions{
 			MinExpectedFileCoveragePct: s.opts.ReleaseMinExpectedFileCoveragePct,
@@ -144,6 +153,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics := map[string]any{
 		"reform":                                reform,
 		"batch_size":                            s.opts.BatchSize,
+		"summary_refresh_batch_size":            s.opts.SummaryRefreshBatchSize,
 		"min_confidence":                        s.opts.ReleaseMinConfidence,
 		"min_completion_pct":                    s.opts.ReleaseMinCompletion,
 		"min_expected_file_coverage_pct":        s.opts.ReleaseMinExpectedFileCoveragePct,
@@ -163,6 +173,10 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		"cooled_down_prefer_base_stem_families": 0,
 		"stale_cleanup_families":                0,
 		"fragment_only_families":                0,
+	}
+	if !reform {
+		metrics["summary_refresh_count"] = refreshedSummaries
+		metrics["summary_refresh_duration_ms"] = durationMillis(refreshDuration)
 	}
 	if len(candidates) == 0 {
 		if reform {

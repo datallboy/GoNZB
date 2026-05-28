@@ -1307,6 +1307,22 @@ func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
 	}
 }
 
+func TestRunOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
+	repo := &fakeReleaseRepository{}
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 1000})
+
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if repo.refreshQueuedSummariesCalls != 1 {
+		t.Fatalf("expected one summary refresh call, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if repo.lastRefreshQueuedSummariesLimit != 10000 {
+		t.Fatalf("expected default summary refresh batch size 10000, got %d", repo.lastRefreshQueuedSummariesLimit)
+	}
+}
+
 func TestRunOnceSkipsLowConfidenceReleaseBelowThreshold(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
@@ -2048,6 +2064,7 @@ type fakeReleaseRepository struct {
 	newsgroupAssignments               [][]int64
 	nzbCalls                           int
 	refreshQueuedSummariesCalls        int
+	lastRefreshQueuedSummariesLimit    int
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
 	listBinariesCalls                  int
@@ -2056,8 +2073,9 @@ type fakeReleaseRepository struct {
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
 }
 
-func (f *fakeReleaseRepository) RefreshQueuedReleaseFamilySummaries(context.Context, int) (int, error) {
+func (f *fakeReleaseRepository) RefreshQueuedReleaseFamilySummaries(_ context.Context, limit int) (int, error) {
 	f.refreshQueuedSummariesCalls++
+	f.lastRefreshQueuedSummariesLimit = limit
 	return 0, nil
 }
 
