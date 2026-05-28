@@ -53,6 +53,28 @@ func normalizeReleaseFamilySummaryKey(providerID, newsgroupID int64, keyKind, fa
 	}, true
 }
 
+type releaseFamilySummaryRow struct {
+	ProviderID                     int64
+	NewsgroupID                    int64
+	KeyKind                        string
+	FamilyKey                      string
+	SourceReleaseKey               string
+	ReleaseKey                     string
+	ReleaseName                    string
+	BinaryCount                    int
+	CompleteBinaryCount            int
+	CompleteMainPayloadBinaryCount int
+	ExpectedFileCount              int
+	ExpectedArchiveFileCount       int
+	HasExpectedFileCount           bool
+	HasExpectedArchiveFileCount    bool
+	TotalBytes                     int64
+	EarliestPostedAt               sql.NullTime
+	DominantFamilyKind             string
+	DominantFileName               string
+	DominantMatchConfidence        float64
+}
+
 func appendReleaseFamilySummaryKey(keys []releaseFamilySummaryKey, seen map[releaseFamilySummaryKey]struct{}, providerID, newsgroupID int64, keyKind, familyKey string) []releaseFamilySummaryKey {
 	key, ok := normalizeReleaseFamilySummaryKey(providerID, newsgroupID, keyKind, familyKey)
 	if !ok {
@@ -368,6 +390,294 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	return nil
 }
 
+func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []releaseFamilySummaryKey) error {
+	if tx == nil {
+		return fmt.Errorf("release family summary tx is required")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(keys)*4)
+	values := make([]string, 0, len(keys))
+	for i, key := range keys {
+		base := (i * 4) + 1
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base, base+1, base+2, base+3))
+		args = append(args, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
+	}
+
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+			VALUES %s
+		),
+		aggregates AS (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				COALESCE(MAX(b.source_release_key), '') AS source_release_key,
+				COALESCE(MAX(b.release_key), '') AS release_key,
+				COALESCE(MAX(b.release_name), '') AS release_name,
+				COUNT(b.id)::INTEGER AS binary_count,
+				COALESCE(SUM(
+					CASE
+						WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
+						ELSE 0
+					END
+				), 0)::INTEGER AS complete_binary_count,
+				COALESCE(SUM(
+					CASE
+						WHEN (b.is_main_payload OR NOT b.is_auxiliary)
+						 AND b.observed_parts = b.total_parts
+						 AND b.total_parts > 0 THEN 1
+						ELSE 0
+					END
+				), 0)::INTEGER AS complete_main_payload_binary_count,
+				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
+				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+				COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
+				COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
+				MIN(b.posted_at) AS earliest_posted_at
+			FROM requested r
+			LEFT JOIN binaries b
+			  ON b.provider_id = r.provider_id
+			 AND b.newsgroup_id = r.newsgroup_id
+			 AND b.release_family_key = r.family_key
+			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
+		),
+		dominant AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				COALESCE(family_kind, '') AS dominant_family_kind,
+				COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, ''), '') AS dominant_file_name,
+				COALESCE(match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
+			FROM (
+				SELECT
+					r.provider_id,
+					r.newsgroup_id,
+					r.key_kind,
+					r.family_key,
+					b.family_kind,
+					b.file_name,
+					b.binary_name,
+					b.match_confidence,
+					ROW_NUMBER() OVER (
+						PARTITION BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
+						ORDER BY
+							CASE
+								WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
+								ELSE 1
+							END ASC,
+							CASE
+								WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
+								ELSE 1
+							END ASC,
+							b.observed_parts DESC,
+							b.total_bytes DESC,
+							b.match_confidence DESC,
+							b.id ASC
+					) AS row_num
+				FROM requested r
+				LEFT JOIN binaries b
+				  ON b.provider_id = r.provider_id
+				 AND b.newsgroup_id = r.newsgroup_id
+				 AND b.release_family_key = r.family_key
+			) ranked
+			WHERE row_num = 1
+		)
+		SELECT
+			a.provider_id,
+			a.newsgroup_id,
+			a.key_kind,
+			a.family_key,
+			a.source_release_key,
+			a.release_key,
+			a.release_name,
+			a.binary_count,
+			a.complete_binary_count,
+			a.complete_main_payload_binary_count,
+			a.expected_file_count,
+			a.expected_archive_file_count,
+			a.has_expected_file_count,
+			a.has_expected_archive_file_count,
+			a.total_bytes,
+			a.earliest_posted_at,
+			COALESCE(d.dominant_family_kind, ''),
+			COALESCE(d.dominant_file_name, ''),
+			COALESCE(d.dominant_match_confidence, 0)
+		FROM aggregates a
+		LEFT JOIN dominant d
+		  ON d.provider_id = a.provider_id
+		 AND d.newsgroup_id = a.newsgroup_id
+		 AND d.key_kind = a.key_kind
+		 AND d.family_key = a.family_key
+		ORDER BY a.provider_id, a.newsgroup_id, a.key_kind, a.family_key`,
+		strings.Join(values, ",")), args...)
+	if err != nil {
+		return fmt.Errorf("query release family summary batch count=%d: %w", len(keys), err)
+	}
+	defer rows.Close()
+
+	summaries := make([]releaseFamilySummaryRow, 0, len(keys))
+	for rows.Next() {
+		var row releaseFamilySummaryRow
+		if err := rows.Scan(
+			&row.ProviderID,
+			&row.NewsgroupID,
+			&row.KeyKind,
+			&row.FamilyKey,
+			&row.SourceReleaseKey,
+			&row.ReleaseKey,
+			&row.ReleaseName,
+			&row.BinaryCount,
+			&row.CompleteBinaryCount,
+			&row.CompleteMainPayloadBinaryCount,
+			&row.ExpectedFileCount,
+			&row.ExpectedArchiveFileCount,
+			&row.HasExpectedFileCount,
+			&row.HasExpectedArchiveFileCount,
+			&row.TotalBytes,
+			&row.EarliestPostedAt,
+			&row.DominantFamilyKind,
+			&row.DominantFileName,
+			&row.DominantMatchConfidence,
+		); err != nil {
+			return fmt.Errorf("scan release family summary batch row: %w", err)
+		}
+		summaries = append(summaries, row)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate release family summary batch rows: %w", err)
+	}
+	if len(summaries) == 0 {
+		return nil
+	}
+
+	for _, row := range summaries {
+		readinessBucket := releaseReadinessFragmentOnly
+		if row.BinaryCount == 0 {
+			readinessBucket = releaseReadinessStaleCleanupOnly
+		} else if row.CompleteMainPayloadBinaryCount > 0 {
+			readinessBucket = releaseReadinessActionable
+		}
+		if row.BinaryCount == 1 &&
+			row.CompleteMainPayloadBinaryCount == 1 &&
+			row.ExpectedFileCount <= 0 &&
+			row.ExpectedArchiveFileCount <= 0 &&
+			!summaryAllowsStandaloneBinaryRelease(row.DominantFamilyKind, row.DominantFileName, row.DominantMatchConfidence) {
+			readinessBucket = releaseReadinessWeakSingle
+		}
+		if readinessBucket == releaseReadinessActionable && summaryIsWeakObfuscatedFamily(row.DominantFamilyKind) {
+			readinessBucket = releaseReadinessWeakObfuscated
+		}
+		expectedFileCoveragePct := 0.0
+		if row.ExpectedFileCount > 0 {
+			expectedFileCoveragePct = (float64(row.CompleteBinaryCount) / float64(row.ExpectedFileCount)) * 100
+			if expectedFileCoveragePct > 100 {
+				expectedFileCoveragePct = 100
+			}
+		}
+		archiveFileCoveragePct := 0.0
+		if row.ExpectedArchiveFileCount > 0 {
+			archiveFileCoveragePct = (float64(row.CompleteMainPayloadBinaryCount) / float64(row.ExpectedArchiveFileCount)) * 100
+			if archiveFileCoveragePct > 100 {
+				archiveFileCoveragePct = 100
+			}
+		}
+
+		var earliestPostedAtValue any
+		if row.EarliestPostedAt.Valid {
+			t := row.EarliestPostedAt.Time.UTC()
+			earliestPostedAtValue = t
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO release_family_readiness_summaries (
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				source_release_key,
+				release_key,
+				release_name,
+				binary_count,
+				complete_binary_count,
+				complete_main_payload_binary_count,
+				incomplete_binary_count,
+				expected_file_count,
+				expected_archive_file_count,
+				has_expected_file_count,
+				has_expected_archive_file_count,
+				total_bytes,
+				earliest_posted_at,
+				dominant_family_kind,
+				dominant_file_name,
+				dominant_match_confidence,
+				readiness_bucket,
+				expected_file_coverage_pct,
+				archive_file_coverage_pct,
+				processed_at,
+				updated_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,TIMESTAMPTZ 'epoch',NOW())
+			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			SET source_release_key = EXCLUDED.source_release_key,
+			    release_key = EXCLUDED.release_key,
+			    release_name = EXCLUDED.release_name,
+			    binary_count = EXCLUDED.binary_count,
+			    complete_binary_count = EXCLUDED.complete_binary_count,
+			    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+			    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+			    expected_file_count = EXCLUDED.expected_file_count,
+			    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
+			    has_expected_file_count = EXCLUDED.has_expected_file_count,
+			    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
+			    total_bytes = EXCLUDED.total_bytes,
+			    earliest_posted_at = EXCLUDED.earliest_posted_at,
+			    dominant_family_kind = EXCLUDED.dominant_family_kind,
+			    dominant_file_name = EXCLUDED.dominant_file_name,
+			    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+			    readiness_bucket = EXCLUDED.readiness_bucket,
+			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+			    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
+			    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
+			    updated_at = NOW()`,
+			row.ProviderID,
+			row.NewsgroupID,
+			row.KeyKind,
+			row.FamilyKey,
+			row.SourceReleaseKey,
+			row.ReleaseKey,
+			row.ReleaseName,
+			row.BinaryCount,
+			row.CompleteBinaryCount,
+			row.CompleteMainPayloadBinaryCount,
+			row.BinaryCount-row.CompleteBinaryCount,
+			row.ExpectedFileCount,
+			row.ExpectedArchiveFileCount,
+			row.HasExpectedFileCount,
+			row.HasExpectedArchiveFileCount,
+			row.TotalBytes,
+			earliestPostedAtValue,
+			row.DominantFamilyKind,
+			row.DominantFileName,
+			row.DominantMatchConfidence,
+			readinessBucket,
+			expectedFileCoveragePct,
+			archiveFileCoveragePct,
+		); err != nil {
+			return fmt.Errorf("upsert release family summary row provider=%d group=%d family=%q: %w", row.ProviderID, row.NewsgroupID, row.FamilyKey, err)
+		}
+	}
+
+	return nil
+}
+
 func markReleaseFamilyDirty(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, keyKind, familyKey string) error {
 	if tx == nil {
 		return fmt.Errorf("release summary queue tx is required")
@@ -546,7 +856,20 @@ func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit i
 		return 0, fmt.Errorf("iterate release family summary refresh queue: %w", err)
 	}
 
+	releaseFamilyKeys := make([]releaseFamilySummaryKey, 0, len(keys))
+	otherKeys := make([]releaseFamilySummaryKey, 0, len(keys))
 	for _, key := range keys {
+		if key.KeyKind == "release_family" {
+			releaseFamilyKeys = append(releaseFamilyKeys, key)
+			continue
+		}
+		otherKeys = append(otherKeys, key)
+	}
+
+	if err := refreshReleaseFamilySummariesBatch(ctx, tx, releaseFamilyKeys); err != nil {
+		return 0, err
+	}
+	for _, key := range otherKeys {
 		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
 			return 0, err
 		}

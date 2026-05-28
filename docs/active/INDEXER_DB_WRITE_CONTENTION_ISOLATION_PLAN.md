@@ -1142,6 +1142,41 @@ Current release conclusion:
   - let `release` run with the larger summary drain budget
   - if queue backlog still grows under serve load, prefer a refresh-only pass or dedicated summary-refresh stage before introducing blunt assemble caps
 
+Release summary recompute throughput follow-up on `2026-05-28 12:31-12:51 America/New_York`:
+
+- traced the dirty workload shape before changing code:
+  - dirty summary rows were overwhelmingly `release_family`
+    - `release_family`: `391648`
+    - `base_stem`: `10`
+  - sampled dirty `release_family` keys were mostly one-binary families
+    - on the first `100` dirty families: `p50=1`, `p90=1`, `max=1`
+  - implication:
+    - the old refresh loop was paying two binary reads plus one summary upsert per key even though many keys only describe one binary
+    - a set-based `release_family` read path should help more than further work on `base_stem`
+- implemented next step:
+  - `RefreshQueuedReleaseFamilySummaries` now splits the queue by key kind
+  - `release_family` keys use one set-based aggregate + dominant-row query for the whole batch
+  - only the final summary upserts remain per-row
+  - `base_stem` keys still use the old per-key path because they are currently negligible
+- measured result against the earlier helper baseline:
+  - previous `10000`-summary refresh baseline: about `10443.56 ms`
+  - new `10000`-summary refresh measurement after the set-based read path: about `8295.61 ms`
+  - improvement: about `20.6%%`
+- direct stage-level sample after the change:
+  - seeded queue: `5000`
+  - persisted release run `67448`:
+    - `summary_refresh_batch_size=10000`
+    - `summary_refresh_count=5000`
+    - `summary_refresh_duration_ms=4200.267`
+    - `candidate_list_duration_ms=6714.167`
+    - `candidate_families=20000`
+    - `formed=6`
+    - queue after run: `0`
+- interpretation:
+  - the set-based read path produced a real improvement and validates the direction
+  - the remaining refresh cost is now mostly final summary upsert churn, not repeated binary aggregate reads
+  - if more release-side throughput is needed, the next likely step is batching the final summary writes through a temp stage / merge path rather than returning to per-key read queries
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
