@@ -928,6 +928,59 @@ Current interpretation after the insert trace:
   - isolate derived / stage-specific lookup ownership
   - stop forcing unrelated stages to share the same hot write surface
 
+First `binaries` index-surface reduction on `2026-05-28 11:24-11:31 America/New_York`:
+
+- reset `pg_stat_user_indexes`, then ran one representative overlap sample:
+  - `assemble lane-b --once`
+  - `recover-yenc --once`
+  - `inspect par2 --once`
+  - `release --once`
+- `binaries` index scans after that sample:
+  - actively used:
+    - `binaries_provider_id_newsgroup_id_binary_key_key`: `64949` scans
+    - `idx_binaries_release_family_key`: `39994` scans
+    - `idx_binaries_normalized_file_identity`: `25721` scans
+    - `idx_binaries_par2_inspection_backlog`: `1` scan
+  - unused in the sample:
+    - `idx_binaries_yenc_recovery_backlog`: `0` scans, `2205 MB`
+    - `idx_binaries_file_set_key`: `0` scans, `1691 MB`
+    - `idx_binaries_updated_at`: `0` scans, `186 MB`
+    - `idx_binaries_identity_strength`: `0` scans, `190 MB`
+- code-path review aligned with that usage:
+  - `recover_yenc` now seeds and consumes `yenc_recovery_work_items`; it no longer needs the old `binaries` backlog selector index
+  - no current repository path matched `idx_binaries_updated_at`
+  - `idx_binaries_identity_strength` did not match the only current filter shape (`NOT IN ('weak', 'provisional')`)
+
+Applied first pruning step:
+
+- dropped:
+  - `idx_binaries_yenc_recovery_backlog`
+  - `idx_binaries_updated_at`
+  - `idx_binaries_identity_strength`
+- schema version advanced to `27`
+- reclaimed hot-write index surface:
+  - about `2.58 GB` total removed from the `binaries` index set
+
+Measured effect of the first pruning step:
+
+- control clone measurements on `2000` synthetic new rows:
+  - full current index set: about `63.2 ms`
+  - minus only `idx_binaries_yenc_recovery_backlog`: about `54.1 ms`
+  - minus the full dropped set: about `50.3 ms`
+- real-table `EXPLAIN (ANALYZE, BUFFERS, WAL)` on the same `2000`-row synthetic insert:
+  - before dropping the three indexes:
+    - execution time about `660.9 ms`
+    - `WAL bytes=7047138`
+    - `shared hit=69035`, `shared read=1210`, `dirtied=5385`
+  - after dropping the three indexes:
+    - execution time about `601.6 ms`
+    - `WAL bytes=4210732`
+    - `shared hit=53153`, `shared read=4461`, `dirtied=5058`
+- interpretation:
+  - the first index-surface reduction produced a real write-path gain on the hot fact table
+  - the dominant cost is still maintaining the remaining large secondary indexes, but the result confirms this is the right optimization direction
+  - `idx_binaries_file_set_key` is still a likely future review target, but it was left intact because recovered-identity release formation still depends on `file_set_key` semantics and has not yet been moved to dedicated summary/work state
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -935,7 +988,8 @@ Current interpretation after the insert trace:
 - [x] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Assemble now defers this path too, and dirty-marker writes are batched instead of one summary row at a time.
 - [x] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
 - [x] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
-- [ ] Review the `binaries` secondary-index surface and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
+- [x] Review the first `binaries` secondary-index pruning set and remove clearly obsolete hot-write indexes (`yenc` backlog, generic `updated_at`, unused `identity_strength`).
+- [ ] Continue reviewing the remaining large `binaries` lookup indexes, especially `file_set_key`, and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
