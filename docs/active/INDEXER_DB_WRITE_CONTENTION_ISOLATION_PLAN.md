@@ -887,6 +887,47 @@ Current interpretation after the serve remeasurement:
 - refresh remains materially lower than the older pre-refresh-fix serve runs, but still large on heavy overlap slices
 - if lane-B needs another meaningful gain, the next change has to attack the final `INSERT INTO binaries ... SELECT ...` path itself rather than more staging tweaks
 
+Final `INSERT INTO binaries ... SELECT ...` trace on `2026-05-28 11:12-11:18 America/New_York`:
+
+- direct `EXPLAIN (ANALYZE, BUFFERS, WAL)` of the real lane-B `insert-missing` shape against `2000` synthetic new rows, wrapped in a transaction and rolled back:
+  - planner / source side of the query was cheap:
+    - subquery produced `2000` rows in about `20.7 ms`
+    - sort itself took about `16.7 ms`
+  - full insert into the real `binaries` table took about `660.9 ms`
+  - write footprint for only `2000` inserted rows:
+    - `shared hit=69035`
+    - `shared read=1210`
+    - `dirtied=5385`
+    - `WAL records=20713`
+    - `WAL bytes=7047138`
+  - foreign-key trigger time was measurable but not dominant:
+    - `binaries_newsgroup_id_fkey`: about `13.2 ms`
+    - `binaries_poster_id_fkey`: about `14.3 ms`
+    - `binaries_provider_id_fkey`: about `14.0 ms`
+- control traces using the same `2000` staged rows:
+  - insert into a temp clone with no secondary indexes or foreign keys: about `25.3 ms`
+  - insert into a temp clone with the full current `binaries` index set: about `63.2 ms`
+- the live `binaries` index surface at trace time:
+  - `binaries_provider_id_newsgroup_id_binary_key_key`: `2672 MB`
+  - `idx_binaries_yenc_recovery_backlog`: `2195 MB`
+  - `idx_binaries_file_set_key`: `1691 MB`
+  - `idx_binaries_normalized_file_identity`: `1691 MB`
+  - `idx_binaries_release_family_key`: `1690 MB`
+
+Current interpretation after the insert trace:
+
+- the lane-B `insert-missing` SQL shape is no longer the main problem
+- the expensive part is inserting into the real `binaries` table with its current large secondary-index surface and WAL churn
+- foreign-key checks are real but small relative to the table/index maintenance cost
+- more SQL-level tuning of the `INSERT ... SELECT ...` statement is unlikely to produce another step-change on its own
+- the next meaningful lane-B gain will require reducing what `binaries` has to maintain per new row:
+  - either prune or relocate stage-specific lookup indexes off `binaries`
+  - or move some queue/backlog lookup responsibilities into dedicated work-item tables so `binaries` remains the canonical fact table without carrying every hot-stage selector index
+- this re-aligns directly with the original plan goals:
+  - keep primary fact writes narrow
+  - isolate derived / stage-specific lookup ownership
+  - stop forcing unrelated stages to share the same hot write surface
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -894,6 +935,7 @@ Current interpretation after the serve remeasurement:
 - [x] Remove or defer inline release-family summary refresh work from `RefreshBinaryStatsBatch` where practical. Assemble now defers this path too, and dirty-marker writes are batched instead of one summary row at a time.
 - [x] Re-test `assemble_lane_b` with a smaller `binary_upsert_db_chunk_size` to see whether PostgreSQL `17.9` stability improves without giving back too much throughput.
 - [x] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
+- [ ] Review the `binaries` secondary-index surface and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.
