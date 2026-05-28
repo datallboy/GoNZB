@@ -1023,6 +1023,34 @@ Measured effect:
   - it is still aligned with the active plan because it removes another large cross-stage seq-scan against `binaries`
   - the change preserves recovered-identity grouping semantics; it only replaces ineffective access paths with ones that match the real query shape
 
+Readiness/summary ownership shift on `2026-05-28 11:46-11:57 America/New_York`:
+
+- previous ownership problem:
+  - `assemble` deferred most readiness summary recompute already
+  - `inspect_par2` still refreshed affected release-family summaries inline at the end of its batch transaction
+  - `yenc_recovery` still refreshed affected release-family / base-stem summaries inline inside its merge transaction
+  - `release` read `release_family_readiness_summaries` directly but did not own recompute
+- applied ownership change:
+  - added `release_family_summary_refresh_queue`
+  - `markReleaseFamiliesDirtyBatch` now:
+    - keeps the existing placeholder dirty row behavior for compatibility
+    - also enqueues the summary key into the dedicated refresh queue
+  - `inspect_par2` now only dirties/enqueues summary keys; it no longer recomputes readiness summaries inline
+  - `yenc_recovery` now only dirties/enqueues summary keys; it no longer recomputes readiness summaries inline
+  - `release` now drains a bounded batch of queued summary keys before candidate selection and owns the actual recompute
+  - `BackfillYEncRecoveryWorkItems` also drains a bounded batch before reading readiness buckets, because it is another readiness-summary reader
+- live smoke:
+  - queue before writer pass: `0`
+  - after `inspect_par2 --once` (`stage_run=67377`, `processed_count=535`): queue count `32`
+  - after `release --once` (`stage_run=67378`): queue count `0`
+  - latest release runs after this change:
+    - `67376`: `candidate_list_duration_ms=6650.655`, `candidate_families=20000`, `formed=6`
+    - `67378`: `candidate_list_duration_ms=6983.923`, `candidate_families=20000`, `formed=18`
+- interpretation:
+  - summary recompute ownership has now moved off the hot PAR2 and yEnc writer transactions
+  - readers (`release`, yEnc work-item seeding) refresh summaries on demand from a bounded queue
+  - this preserves readiness semantics while narrowing hot write transactions and removing another source of cross-stage overlap
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -1033,6 +1061,6 @@ Measured effect:
 - [x] Review the first `binaries` secondary-index pruning set and remove clearly obsolete hot-write indexes (`yenc` backlog, generic `updated_at`, unused `identity_strength`).
 - [x] Replace the ineffective `file_set_key` access path with index ordering that matches recovered-file-set release queries, plus a dedicated recovered-file-set candidate index.
 - [ ] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
-- [ ] Decide which stage owns readiness/summary refresh for binaries touched by assemble, PAR2 coverage writes, yEnc recovery writes, and release updates so unrelated stages stop recomputing the same derived rows.
+- [x] Move readiness-summary recompute ownership to readers: fact writers dirty/enqueue; `release` and yEnc work-item seeding drain and recompute from a bounded refresh queue.
+- [ ] Re-measure serve-mode overlap after the queue-based summary ownership shift and decide whether any temporary concurrency caps or stage staggering are still needed.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
-- [ ] Decide whether temporary serve-mode concurrency caps or stage staggering are still needed once the write-overlap changes land, or whether they can be removed.

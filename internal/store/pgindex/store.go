@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-const expectedSchemaVersion = 29
+const expectedSchemaVersion = 30
 
 type Store struct {
 	db *sql.DB

@@ -19,6 +19,7 @@ const (
 	releaseReadinessPreferBaseStem   = "prefer_base_stem"
 	releaseReadinessOvergrouped      = "overgrouped_contextual"
 	releaseFamilyDirtyBatchSize      = 10000
+	releaseFamilySummaryRefreshBatch = 5000
 )
 
 var summaryOpaqueTokenRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
@@ -465,8 +466,98 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 			strings.Join(values, ",")), args...); err != nil {
 			return fmt.Errorf("mark release family dirty batch count=%d: %w", len(batch), err)
 		}
+
+		queueValues := make([]string, 0, len(batch))
+		queueArgs := make([]any, 0, len(batch)*4)
+		for i, key := range batch {
+			base := (i * 4) + 1
+			queueValues = append(queueValues, fmt.Sprintf("($%d,$%d,$%d,$%d,NOW())", base, base+1, base+2, base+3))
+			queueArgs = append(queueArgs, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
+		}
+		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			queued_at
+		)
+		VALUES %s
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET queued_at = EXCLUDED.queued_at`,
+			strings.Join(queueValues, ",")), queueArgs...); err != nil {
+			return fmt.Errorf("enqueue release family summary refresh batch count=%d: %w", len(batch), err)
+		}
 	}
 	return nil
+}
+
+func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = releaseFamilySummaryRefreshBatch
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin release family summary refresh tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH next_queue AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key
+			FROM release_family_summary_refresh_queue
+			ORDER BY queued_at, provider_id, newsgroup_id, key_kind, family_key
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),
+		dequeued AS (
+			DELETE FROM release_family_summary_refresh_queue q
+			USING next_queue n
+			WHERE q.provider_id = n.provider_id
+			  AND q.newsgroup_id = n.newsgroup_id
+			  AND q.key_kind = n.key_kind
+			  AND q.family_key = n.family_key
+			RETURNING n.provider_id, n.newsgroup_id, n.key_kind, n.family_key
+		)
+		SELECT provider_id, newsgroup_id, key_kind, family_key
+		FROM dequeued`,
+		limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("dequeue release family summary refresh batch: %w", err)
+	}
+	defer rows.Close()
+
+	keys := make([]releaseFamilySummaryKey, 0, limit)
+	for rows.Next() {
+		var key releaseFamilySummaryKey
+		if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
+			return 0, fmt.Errorf("scan release family summary refresh queue key: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate release family summary refresh queue: %w", err)
+	}
+
+	for _, key := range keys {
+		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit release family summary refresh tx: %w", err)
+	}
+	return len(keys), nil
 }
 
 func summaryAllowsStandaloneBinaryRelease(familyKind, fileName string, matchConfidence float64) bool {
