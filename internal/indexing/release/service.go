@@ -17,6 +17,7 @@ type logger interface {
 }
 
 type repository interface {
+	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
@@ -126,6 +127,11 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			offset += len(page)
 		}
 	} else {
+		refreshStart := time.Now()
+		if _, refreshErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.BatchSize*2); refreshErr != nil {
+			return nil, fmt.Errorf("refresh queued release family summaries: %w", refreshErr)
+		}
+		timings.candidateList += time.Since(refreshStart)
 		start := time.Now()
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize, pgindex.ReleaseCandidateSelectionOptions{
 			MinExpectedFileCoveragePct: s.opts.ReleaseMinExpectedFileCoveragePct,

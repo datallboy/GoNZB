@@ -209,13 +209,8 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: in.ReleaseFamilyKey},
 		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: in.BaseStem},
 	)
-	for _, key := range dedupeYEncRecoverySummaryKeys(keys) {
-		if key.FamilyKey == "" {
-			continue
-		}
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return nil, err
-		}
+	if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(keys)); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {

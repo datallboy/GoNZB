@@ -76,6 +76,9 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
+	if repo.refreshQueuedSummariesCalls != 1 {
+		t.Fatalf("expected queued summary refresh once, got %d", repo.refreshQueuedSummariesCalls)
+	}
 
 	if len(repo.upsertedReleases) != 2 {
 		t.Fatalf("expected 2 release groups, got %d", len(repo.upsertedReleases))
@@ -2044,12 +2047,18 @@ type fakeReleaseRepository struct {
 	newsgroupCalls                     int
 	newsgroupAssignments               [][]int64
 	nzbCalls                           int
+	refreshQueuedSummariesCalls        int
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
 	listBinariesCalls                  int
 	deletedStaleCalls                  []staleDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
+}
+
+func (f *fakeReleaseRepository) RefreshQueuedReleaseFamilySummaries(context.Context, int) (int, error) {
+	f.refreshQueuedSummariesCalls++
+	return 0, nil
 }
 
 type staleDeleteCall struct {

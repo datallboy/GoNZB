@@ -29,6 +29,9 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 	if limit <= 0 {
 		limit = yencRecoveryWorkItemSeedLimit
 	}
+	if _, err := s.RefreshQueuedReleaseFamilySummaries(ctx, limit*2); err != nil {
+		return 0, 0, fmt.Errorf("refresh queued release family summaries before yenc work item backfill: %w", err)
+	}
 
 	rows, err := s.db.QueryContext(ctx, `
 		WITH candidate_binaries AS (

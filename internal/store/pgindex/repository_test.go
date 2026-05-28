@@ -3256,6 +3256,126 @@ func TestRefreshBinaryStatsDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRe
 	}
 }
 
+func TestRefreshQueuedReleaseFamilySummariesRecomputesDeferredFamily(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.queue.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "queued-refresh-source",
+		ReleaseFamilyKey:  "queued-refresh-family",
+		ReleaseKey:        "queued-refresh-family",
+		ReleaseName:       "Queued Refresh Family",
+		BinaryKey:         "queued-refresh-binary",
+		BinaryName:        "queued.refresh.rar",
+		FileName:          "queued.refresh.rar",
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.97,
+		MatchStatus:       "strong",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	postedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	for idx := 0; idx < 2; idx++ {
+		articleNumber := int64(1800 + idx)
+		messageID := fmt.Sprintf("<queued-refresh-%d-%d@test>", time.Now().UnixNano(), idx)
+		inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       `Queued Refresh - "queued.refresh.rar" yEnc (1/2)`,
+			Poster:        "poster-queued-refresh@example.com",
+			DateUTC:       &postedAt,
+			Bytes:         1024,
+			Lines:         12,
+		}})
+		if err != nil {
+			t.Fatalf("insert article header %d: %v", idx, err)
+		}
+		if inserted != 1 {
+			t.Fatalf("expected 1 inserted article header, got %d", inserted)
+		}
+
+		var articleHeaderID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND article_number = $2`, newsgroupID, articleNumber,
+		).Scan(&articleHeaderID); err != nil {
+			t.Fatalf("lookup article header %d: %v", idx, err)
+		}
+
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleHeaderID,
+			MessageID:       messageID,
+			PartNumber:      idx + 1,
+			TotalParts:      2,
+			SegmentBytes:    1024,
+			FileName:        "queued.refresh.rar",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", idx, err)
+		}
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 100)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refreshed summary key, got %d", refreshed)
+	}
+
+	var (
+		binaryCount  int
+		readiness    string
+		queueCount   int
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT binary_count, readiness_bucket
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'queued-refresh-family'`, newsgroupID,
+	).Scan(&binaryCount, &readiness); err != nil {
+		t.Fatalf("query refreshed summary row: %v", err)
+	}
+	if binaryCount != 1 {
+		t.Fatalf("expected refreshed summary binary_count=1, got %d", binaryCount)
+	}
+	if readiness != releaseReadinessActionable {
+		t.Fatalf("expected actionable readiness after queued refresh, got %q", readiness)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'queued-refresh-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("query refresh queue row: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected queued refresh row to be drained, got %d", queueCount)
+	}
+}
+
 func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

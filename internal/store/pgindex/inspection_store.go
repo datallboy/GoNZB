@@ -2286,10 +2286,8 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 		out.FlushedCandidates++
 	}
 	sortReleaseFamilySummaryKeys(batchSummaryKeys)
-	for _, key := range batchSummaryKeys {
-		if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-			return out, err
-		}
+	if err := markReleaseFamiliesDirtyBatch(ctx, tx, batchSummaryKeys); err != nil {
+		return out, err
 	}
 	if err := tx.Commit(); err != nil {
 		return out, fmt.Errorf("commit par2 inspection batch tx: %w", err)
