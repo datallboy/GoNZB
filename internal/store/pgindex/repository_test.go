@@ -3341,9 +3341,9 @@ func TestRefreshQueuedReleaseFamilySummariesRecomputesDeferredFamily(t *testing.
 	}
 
 	var (
-		binaryCount  int
-		readiness    string
-		queueCount   int
+		binaryCount int
+		readiness   string
+		queueCount  int
 	)
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT binary_count, readiness_bucket
@@ -5360,9 +5360,24 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	if releaseAfter.Value < releaseBefore+1 {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
+	releaseSummaryRefreshBefore := beforeByKey["pending_release_summary_refresh_summaries"].Value
+	releaseSummaryRefreshAfter, ok := afterByKey["pending_release_summary_refresh_summaries"]
+	if !ok {
+		t.Fatalf("missing pending_release_summary_refresh_summaries stat")
+	}
+	if !releaseSummaryRefreshAfter.Available || releaseSummaryRefreshAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_release_summary_refresh_summaries to be cached, got %#v", releaseSummaryRefreshAfter)
+	}
+	if !releaseSummaryRefreshAfter.Exact {
+		t.Fatalf("expected pending_release_summary_refresh_summaries to remain exact")
+	}
+	if releaseSummaryRefreshAfter.Value < releaseSummaryRefreshBefore+1 {
+		t.Fatalf("expected release summary refresh backlog to increase by at least 1, before=%d after=%d", releaseSummaryRefreshBefore, releaseSummaryRefreshAfter.Value)
+	}
 
 	for _, key := range []string{
 		"unassembled_headers",
+		"pending_release_summary_refresh_summaries",
 		"pending_release_candidate_families",
 		"pending_yenc_recovery_binaries",
 		"pending_inspect_discovery_binaries",
@@ -5390,6 +5405,7 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		}
 	}
 	for _, key := range []string{
+		"pending_release_summary_refresh_summaries",
 		"pending_yenc_recovery_binaries",
 		"pending_inspect_par2_binaries",
 	} {

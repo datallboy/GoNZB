@@ -459,6 +459,12 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 		Exact:       false,
 	},
 	{
+		Key:         "pending_release_summary_refresh_summaries",
+		Label:       "Release Summary Refresh Backlog",
+		Description: "Exact count of deferred readiness summaries still waiting for release_summary_refresh processing.",
+		Exact:       true,
+	},
+	{
 		Key:         "pending_release_candidate_families",
 		Label:       "Release Backlog",
 		Description: "Dirty release families still waiting for release processing.",
@@ -920,6 +926,9 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 		return s.EstimateUnassembledArticleHeaders(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
+	case "pending_release_summary_refresh_summaries":
+		count, err := s.CountQueuedReleaseFamilySummaries(ctx)
+		return int64(count), err
 	case "pending_yenc_recovery_binaries":
 		return s.CountPendingYEncRecoveryBinaries(ctx)
 	case "pending_inspect_discovery_binaries":
