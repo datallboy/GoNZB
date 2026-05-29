@@ -55,6 +55,7 @@ type usenetIndexerConfig struct {
 	AssembleLaneA                                   indexerStageConfig
 	AssembleLaneB                                   indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
+	ReleaseSummaryRefreshStage                      indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
 	InspectDiscovery                                indexerStageConfig
 	InspectPAR2                                     indexerStageConfig
@@ -230,10 +231,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		appCtx.Logger,
 		release.Options{
-			BatchSize:                         runtimeCfg.ReleaseStage.BatchSize,
-			ReleaseMinConfidence:              runtimeCfg.ReleaseMinConfidence,
-			ReleaseMinCompletion:              runtimeCfg.ReleaseMinCompletion,
-			ReleaseMinExpectedFileCoveragePct: runtimeCfg.ReleaseMinExpectedFileCoveragePct,
+			BatchSize:                                          runtimeCfg.ReleaseStage.BatchSize,
+			SummaryRefreshBatchSize:                            runtimeCfg.ReleaseSummaryRefreshStage.BatchSize,
+			ReleaseMinConfidence:                               runtimeCfg.ReleaseMinConfidence,
+			ReleaseMinCompletion:                               runtimeCfg.ReleaseMinCompletion,
+			ReleaseMinExpectedFileCoveragePct:                  runtimeCfg.ReleaseMinExpectedFileCoveragePct,
 			RequireExpectedFileCountForContextualObfuscated:    runtimeCfg.RequireExpectedFileCountForContextualObfuscated,
 			RequireExpectedFileCountForContextualObfuscatedSet: true,
 		},
@@ -315,6 +317,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.RecoverYEnc.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(recoverYEncSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageReleaseSummaryRefresh,
+			Interval:    runtimeCfg.ReleaseSummaryRefreshStage.Interval,
+			Enabled:     releaseSvc != nil && runtimeCfg.ReleaseSummaryRefreshStage.Enabled,
+			BatchSize:   runtimeCfg.ReleaseSummaryRefreshStage.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ReleaseSummaryRefreshStage.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(releaseSvc.RunSummaryRefreshOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -581,12 +594,13 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			BackfillPageSize: indexingCfg.EnrichPreDB.BackfillPageSize,
 			MaxBackfillPages: indexingCfg.EnrichPreDB.MaxBackfillPages,
 		}),
-		ScrapeLatest:   newIndexerStageConfig(indexingCfg.ScrapeLatest),
-		ScrapeBackfill: newIndexerStageConfig(indexingCfg.ScrapeBackfill),
-		Assemble:       newIndexerStageConfig(indexingCfg.Assemble),
-		AssembleLaneA:  newIndexerStageConfig(indexingCfg.AssembleLaneA),
-		AssembleLaneB:  newIndexerStageConfig(indexingCfg.AssembleLaneB),
-		RecoverYEnc:    newIndexerStageConfig(indexingCfg.RecoverYEnc),
+		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
+		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
+		Assemble:                   newIndexerStageConfig(indexingCfg.Assemble),
+		AssembleLaneA:              newIndexerStageConfig(indexingCfg.AssembleLaneA),
+		AssembleLaneB:              newIndexerStageConfig(indexingCfg.AssembleLaneB),
+		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),
+		ReleaseSummaryRefreshStage: newIndexerStageConfig(indexingCfg.ReleaseSummaryRefresh),
 		ReleaseStage: newIndexerStageConfig(app.IndexingStageRuntimeSettings{
 			Enabled:         indexingCfg.Release.Enabled,
 			IntervalMinutes: indexingCfg.Release.IntervalMinutes,

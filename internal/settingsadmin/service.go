@@ -361,6 +361,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 		{name: "assemble_lane_a", config: indexing.AssembleLaneA},
 		{name: "assemble_lane_b", config: indexing.AssembleLaneB},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
+		{name: "release_summary_refresh", config: indexing.ReleaseSummaryRefresh},
 		{name: "release", config: app.IndexingStageRuntimeSettings{
 			Enabled:         indexing.Release.Enabled,
 			IntervalMinutes: indexing.Release.IntervalMinutes,

@@ -565,6 +565,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.AssembleLaneB, true
 	case string(supervisor.StageRecoverYEnc):
 		return runtime.Indexing.RecoverYEnc, true
+	case string(supervisor.StageReleaseSummaryRefresh):
+		return runtime.Indexing.ReleaseSummaryRefresh, true
 	case string(supervisor.StageRelease):
 		return app.IndexingStageRuntimeSettings{
 			Enabled:         runtime.Indexing.Release.Enabled,
@@ -617,6 +619,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageAssembleLaneA),
 	string(supervisor.StageAssembleLaneB),
 	string(supervisor.StageRecoverYEnc),
+	string(supervisor.StageReleaseSummaryRefresh),
 	string(supervisor.StageRelease),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
@@ -663,6 +666,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.AssembleLaneB, patch)
 	case string(supervisor.StageRecoverYEnc):
 		applyStagePatch(&indexing.RecoverYEnc, patch)
+	case string(supervisor.StageReleaseSummaryRefresh):
+		applyStagePatch(&indexing.ReleaseSummaryRefresh, patch)
 	case string(supervisor.StageRelease):
 		applyReleaseStagePatch(&indexing.Release, patch)
 	case string(supervisor.StageInspectDiscovery):

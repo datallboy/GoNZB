@@ -95,6 +95,7 @@ type IndexingConfig struct {
 	AssembleLaneA            IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
 	AssembleLaneB            IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
 	RecoverYEnc              IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh    IndexingStageConfig   `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
 	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
 	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
 	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`

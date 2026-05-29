@@ -290,6 +290,7 @@ type UsenetIndexerService interface {
 	AssembleLaneAOnce(ctx context.Context) error
 	AssembleLaneBOnce(ctx context.Context) error
 	RecoverYEncOnce(ctx context.Context) error
+	ReleaseSummaryRefreshOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
 	InspectOnce(ctx context.Context) error
