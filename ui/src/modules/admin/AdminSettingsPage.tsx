@@ -18,6 +18,7 @@ type StageKey =
   | 'assemble_lane_a'
   | 'assemble_lane_b'
   | 'recover_yenc'
+  | 'release_summary_refresh'
   | 'release'
   | 'inspect_discovery'
   | 'inspect_par2'
@@ -46,6 +47,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
   { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
+  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
@@ -60,7 +62,7 @@ const stageDefinitions: StageDefinition[] = [
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
-  { title: 'Release command', keys: ['release'] },
+  { title: 'Release commands', keys: ['release_summary_refresh', 'release'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -99,6 +101,7 @@ function defaultSettings(): RuntimeSettings {
       assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
       recover_yenc: stageDefaults(25, 1),
+      release_summary_refresh: stageDefaults(10000),
       release: {
         ...stageDefaults(1000),
         min_confidence: 0.55,
@@ -202,6 +205,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
       assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
+      release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },

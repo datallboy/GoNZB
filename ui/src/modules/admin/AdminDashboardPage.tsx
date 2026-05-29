@@ -79,6 +79,8 @@ function backlogCommand(stat: IndexerDashboardStat) {
   switch (stat.key) {
     case 'unassembled_headers':
       return 'indexer assemble'
+    case 'pending_release_summary_refresh_summaries':
+      return 'indexer release refresh-summaries'
     case 'pending_release_candidate_families':
       return 'indexer release'
     case 'pending_yenc_recovery_binaries':
