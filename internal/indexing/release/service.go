@@ -17,6 +17,7 @@ type logger interface {
 }
 
 type repository interface {
+	CountQueuedReleaseFamilySummaries(ctx context.Context) (int, error)
 	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
@@ -36,6 +37,8 @@ type repository interface {
 type Options struct {
 	BatchSize                                          int
 	SummaryRefreshBatchSize                            int
+	SummaryRefreshMaxBatches                           int
+	SummaryRefreshCandidateBacklogLimit                int
 	ReleaseMinConfidence                               float64
 	ReleaseMinCompletion                               float64
 	ReleaseMinExpectedFileCoveragePct                  float64
@@ -55,6 +58,12 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 	if opts.SummaryRefreshBatchSize <= 0 {
 		opts.SummaryRefreshBatchSize = 10000
+	}
+	if opts.SummaryRefreshMaxBatches <= 0 {
+		opts.SummaryRefreshMaxBatches = 5
+	}
+	if opts.SummaryRefreshCandidateBacklogLimit <= 0 {
+		opts.SummaryRefreshCandidateBacklogLimit = opts.SummaryRefreshBatchSize * 5
 	}
 	if opts.ReleaseMinConfidence <= 0 {
 		opts.ReleaseMinConfidence = 0.55
@@ -108,11 +117,14 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	}
 
 	var (
-		candidates         []pgindex.ReleaseCandidate
-		err                error
-		timings            releaseTimings
-		refreshedSummaries int
-		refreshDuration    time.Duration
+		candidates              []pgindex.ReleaseCandidate
+		err                     error
+		timings                 releaseTimings
+		refreshedSummaries      int
+		refreshDuration         time.Duration
+		initialSummaryBacklog   int
+		remainingSummaryBacklog int
+		summaryRefreshBatches   int
 	)
 	if reform {
 		offset := 0
@@ -133,14 +145,68 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			offset += len(page)
 		}
 	} else {
-		refreshStart := time.Now()
 		var refreshErr error
-		refreshedSummaries, refreshErr = s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+		initialSummaryBacklog, refreshErr = s.repo.CountQueuedReleaseFamilySummaries(ctx)
 		if refreshErr != nil {
-			return nil, fmt.Errorf("refresh queued release family summaries: %w", refreshErr)
+			return nil, fmt.Errorf("count queued release family summaries: %w", refreshErr)
 		}
-		refreshDuration = time.Since(refreshStart)
-		timings.candidateList += refreshDuration
+		remainingSummaryBacklog = initialSummaryBacklog
+		for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
+			refreshStart := time.Now()
+			refreshedBatch, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+			if batchErr != nil {
+				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
+			}
+			batchDuration := time.Since(refreshStart)
+			refreshDuration += batchDuration
+			timings.candidateList += batchDuration
+			summaryRefreshBatches++
+			refreshedSummaries += refreshedBatch
+			if refreshedBatch <= 0 {
+				break
+			}
+			if refreshedBatch >= remainingSummaryBacklog {
+				remainingSummaryBacklog = 0
+				break
+			}
+			remainingSummaryBacklog -= refreshedBatch
+			if refreshedBatch < s.opts.SummaryRefreshBatchSize {
+				break
+			}
+		}
+		if initialSummaryBacklog > 0 {
+			if count, countErr := s.repo.CountQueuedReleaseFamilySummaries(ctx); countErr == nil {
+				remainingSummaryBacklog = count
+			}
+		}
+		refreshOnlyDueToBacklog := remainingSummaryBacklog > s.opts.SummaryRefreshCandidateBacklogLimit
+		if refreshOnlyDueToBacklog {
+			metrics := map[string]any{
+				"reform":                                  reform,
+				"batch_size":                              s.opts.BatchSize,
+				"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
+				"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
+				"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
+				"summary_refresh_initial_count":           initialSummaryBacklog,
+				"summary_refresh_remaining_count":         remainingSummaryBacklog,
+				"summary_refresh_batches":                 summaryRefreshBatches,
+				"summary_refresh_count":                   refreshedSummaries,
+				"summary_refresh_duration_ms":             durationMillis(refreshDuration),
+				"refresh_only_due_to_summary_backlog":     true,
+				"candidate_families":                      0,
+				"formed":                                  0,
+			}
+			s.log.Info(
+				"release: refresh-only initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f candidate_backlog_limit=%d",
+				initialSummaryBacklog,
+				remainingSummaryBacklog,
+				refreshedSummaries,
+				summaryRefreshBatches,
+				durationMillis(refreshDuration),
+				s.opts.SummaryRefreshCandidateBacklogLimit,
+			)
+			return metrics, nil
+		}
 		start := time.Now()
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize, pgindex.ReleaseCandidateSelectionOptions{
 			MinExpectedFileCoveragePct: s.opts.ReleaseMinExpectedFileCoveragePct,
@@ -151,32 +217,38 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		}
 	}
 	metrics := map[string]any{
-		"reform":                                reform,
-		"batch_size":                            s.opts.BatchSize,
-		"summary_refresh_batch_size":            s.opts.SummaryRefreshBatchSize,
-		"min_confidence":                        s.opts.ReleaseMinConfidence,
-		"min_completion_pct":                    s.opts.ReleaseMinCompletion,
-		"min_expected_file_coverage_pct":        s.opts.ReleaseMinExpectedFileCoveragePct,
-		"candidate_families":                    len(candidates),
-		"formed":                                0,
-		"skipped_fragments":                     0,
-		"skipped_fragments_no_main_payload":     0,
-		"skipped_fragments_single_main":         0,
-		"skipped_fragments_multi_file":          0,
-		"skipped_fragments_contextual_weak":     0,
-		"skipped_confidence":                    0,
-		"skipped_completion":                    0,
-		"cooled_down_low_coverage_families":     0,
-		"cooled_down_weak_single_families":      0,
-		"cooled_down_weak_obfuscated_families":  0,
-		"cooled_down_overgrouped_families":      0,
-		"cooled_down_prefer_base_stem_families": 0,
-		"stale_cleanup_families":                0,
-		"fragment_only_families":                0,
+		"reform":                                  reform,
+		"batch_size":                              s.opts.BatchSize,
+		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
+		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
+		"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
+		"min_confidence":                          s.opts.ReleaseMinConfidence,
+		"min_completion_pct":                      s.opts.ReleaseMinCompletion,
+		"min_expected_file_coverage_pct":          s.opts.ReleaseMinExpectedFileCoveragePct,
+		"candidate_families":                      len(candidates),
+		"formed":                                  0,
+		"skipped_fragments":                       0,
+		"skipped_fragments_no_main_payload":       0,
+		"skipped_fragments_single_main":           0,
+		"skipped_fragments_multi_file":            0,
+		"skipped_fragments_contextual_weak":       0,
+		"skipped_confidence":                      0,
+		"skipped_completion":                      0,
+		"cooled_down_low_coverage_families":       0,
+		"cooled_down_weak_single_families":        0,
+		"cooled_down_weak_obfuscated_families":    0,
+		"cooled_down_overgrouped_families":        0,
+		"cooled_down_prefer_base_stem_families":   0,
+		"stale_cleanup_families":                  0,
+		"fragment_only_families":                  0,
 	}
 	if !reform {
+		metrics["summary_refresh_initial_count"] = initialSummaryBacklog
+		metrics["summary_refresh_remaining_count"] = remainingSummaryBacklog
+		metrics["summary_refresh_batches"] = summaryRefreshBatches
 		metrics["summary_refresh_count"] = refreshedSummaries
 		metrics["summary_refresh_duration_ms"] = durationMillis(refreshDuration)
+		metrics["refresh_only_due_to_summary_backlog"] = false
 	}
 	if len(candidates) == 0 {
 		if reform {

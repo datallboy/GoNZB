@@ -1217,6 +1217,35 @@ Current practical direction after the final-write batching pass:
   - or split summary refresh into its own dedicated stage so release candidate formation is not the only drainer
   - or both
 
+Backlog-aware release draining on `2026-05-29 07:53 America/New_York`:
+
+- implemented service behavior:
+  - `release` now counts queued summary backlog before candidate formation
+  - it drains up to `SummaryRefreshMaxBatches` batches per run
+  - default drain policy on this branch:
+    - `summary_refresh_batch_size=10000`
+    - `summary_refresh_max_batches=5`
+    - `summary_refresh_candidate_backlog_limit=50000`
+  - if the remaining backlog is still above the limit after draining, the run becomes refresh-only and skips candidate formation
+- live stress result on the current database:
+  - persisted release run `69827`:
+    - `summary_refresh_initial_count=3406708`
+    - `summary_refresh_remaining_count=3356708`
+    - `summary_refresh_batches=5`
+    - `summary_refresh_count=50000`
+    - `summary_refresh_duration_ms=39244.366`
+    - `refresh_only_due_to_summary_backlog=true`
+    - `candidate_families=0`
+    - `formed=0`
+  - command log:
+    - `release: refresh-only initial_summary_backlog=3406708 remaining_summary_backlog=3356708 refreshed=50000 batches=5 refresh_duration_ms=39244.37 candidate_backlog_limit=50000`
+- interpretation:
+  - this is the correct behavior for the current backlog scale
+  - release is no longer pretending it can both drain a multi-million summary queue and form candidates in one ordinary run
+  - the next remaining release decision is operational:
+    - keep this refresh-only behavior until backlog is brought back under control
+    - or split summary refresh into a dedicated stage if release candidate formation must remain low-latency under extreme backlog
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

@@ -76,9 +76,6 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
-	if repo.refreshQueuedSummariesCalls != 1 {
-		t.Fatalf("expected queued summary refresh once, got %d", repo.refreshQueuedSummariesCalls)
-	}
 
 	if len(repo.upsertedReleases) != 2 {
 		t.Fatalf("expected 2 release groups, got %d", len(repo.upsertedReleases))
@@ -1308,7 +1305,7 @@ func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
 }
 
 func TestRunOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
-	repo := &fakeReleaseRepository{}
+	repo := &fakeReleaseRepository{queuedSummaryCount: 1000, refreshQueuedSummariesResults: []int{1000}}
 	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 1000})
 
 	if err := svc.RunOnce(context.Background()); err != nil {
@@ -1320,6 +1317,66 @@ func TestRunOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
 	}
 	if repo.lastRefreshQueuedSummariesLimit != 10000 {
 		t.Fatalf("expected default summary refresh batch size 10000, got %d", repo.lastRefreshQueuedSummariesLimit)
+	}
+}
+
+func TestRunOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount:            25000,
+		refreshQueuedSummariesResults: []int{10000, 10000, 5000},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                           1000,
+		SummaryRefreshBatchSize:             10000,
+		SummaryRefreshMaxBatches:            5,
+		SummaryRefreshCandidateBacklogLimit: 50000,
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if repo.refreshQueuedSummariesCalls != 3 {
+		t.Fatalf("expected 3 refresh batches, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if got := metrics["summary_refresh_batches"]; got != 3 {
+		t.Fatalf("expected summary_refresh_batches=3, got %#v", got)
+	}
+	if got := metrics["summary_refresh_count"]; got != 25000 {
+		t.Fatalf("expected summary_refresh_count=25000, got %#v", got)
+	}
+	if got := metrics["refresh_only_due_to_summary_backlog"]; got != false {
+		t.Fatalf("expected refresh_only_due_to_summary_backlog=false, got %#v", got)
+	}
+}
+
+func TestRunOnceSwitchesToRefreshOnlyWhenBacklogRemainsHigh(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount:            300000,
+		refreshQueuedSummariesResults: []int{10000, 10000, 10000, 10000, 10000},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                           1000,
+		SummaryRefreshBatchSize:             10000,
+		SummaryRefreshMaxBatches:            5,
+		SummaryRefreshCandidateBacklogLimit: 50000,
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if repo.refreshQueuedSummariesCalls != 5 {
+		t.Fatalf("expected 5 refresh batches, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if repo.listReleaseCandidatesCalls != 0 {
+		t.Fatalf("expected candidate selection to be skipped, got %d calls", repo.listReleaseCandidatesCalls)
+	}
+	if got := metrics["refresh_only_due_to_summary_backlog"]; got != true {
+		t.Fatalf("expected refresh_only_due_to_summary_backlog=true, got %#v", got)
+	}
+	if got := metrics["summary_refresh_remaining_count"]; got != 250000 {
+		t.Fatalf("expected summary_refresh_remaining_count=250000, got %#v", got)
 	}
 }
 
@@ -2065,6 +2122,8 @@ type fakeReleaseRepository struct {
 	nzbCalls                           int
 	refreshQueuedSummariesCalls        int
 	lastRefreshQueuedSummariesLimit    int
+	queuedSummaryCount                 int
+	refreshQueuedSummariesResults      []int
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
 	listBinariesCalls                  int
@@ -2073,9 +2132,23 @@ type fakeReleaseRepository struct {
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
 }
 
+func (f *fakeReleaseRepository) CountQueuedReleaseFamilySummaries(context.Context) (int, error) {
+	return f.queuedSummaryCount, nil
+}
+
 func (f *fakeReleaseRepository) RefreshQueuedReleaseFamilySummaries(_ context.Context, limit int) (int, error) {
 	f.refreshQueuedSummariesCalls++
 	f.lastRefreshQueuedSummariesLimit = limit
+	if len(f.refreshQueuedSummariesResults) > 0 {
+		n := f.refreshQueuedSummariesResults[0]
+		f.refreshQueuedSummariesResults = f.refreshQueuedSummariesResults[1:]
+		if n >= f.queuedSummaryCount {
+			f.queuedSummaryCount = 0
+		} else {
+			f.queuedSummaryCount -= n
+		}
+		return n, nil
+	}
 	return 0, nil
 }
 

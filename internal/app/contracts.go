@@ -224,6 +224,7 @@ type UsenetIndexStore interface {
 	UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error
 	RefreshBinaryStats(ctx context.Context, binaryID int64) error
 	RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error
+	CountQueuedReleaseFamilySummaries(ctx context.Context) (int, error)
 	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)

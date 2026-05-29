@@ -973,6 +973,18 @@ func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit i
 	return len(keys), nil
 }
 
+func (s *Store) CountQueuedReleaseFamilySummaries(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("pgindex store is not initialized")
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM release_family_summary_refresh_queue`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count queued release family summaries: %w", err)
+	}
+	return count, nil
+}
+
 func summaryAllowsStandaloneBinaryRelease(familyKind, fileName string, matchConfidence float64) bool {
 	familyKind = strings.TrimSpace(strings.ToLower(familyKind))
 	fileName = strings.TrimSpace(fileName)
