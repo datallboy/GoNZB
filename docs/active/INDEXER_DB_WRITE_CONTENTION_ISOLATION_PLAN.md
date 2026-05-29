@@ -1177,6 +1177,46 @@ Release summary recompute throughput follow-up on `2026-05-28 12:31-12:51 Americ
   - the remaining refresh cost is now mostly final summary upsert churn, not repeated binary aggregate reads
   - if more release-side throughput is needed, the next likely step is batching the final summary writes through a temp stage / merge path rather than returning to per-key read queries
 
+Release final summary write batching follow-up on `2026-05-29 07:43-07:44 America/New_York`:
+
+- implemented next step:
+  - refreshed `release_family` summaries are now staged into a temp table and merged into `release_family_readiness_summaries` with one final `INSERT ... SELECT ... ON CONFLICT DO UPDATE`
+  - this replaced the previous per-summary final upsert loop after the set-based read pass
+- live backlog condition at measurement time:
+  - queued refresh backlog was already very large before the run:
+    - seeded count observed as about `3,416,708`
+  - this means the sample is useful as a stress test, not just a small clean-room microbenchmark
+- measured result:
+  - persisted release run `69826`:
+    - `summary_refresh_batch_size=10000`
+    - `summary_refresh_count=10000`
+    - `summary_refresh_duration_ms=6815.45`
+    - `candidate_list_duration_ms=18122.94`
+    - `candidate_families=20000`
+    - `formed=6`
+  - nearby prior release run before this merge-path change:
+    - `69804`
+    - `summary_refresh_duration_ms=7035.84`
+    - `candidate_list_duration_ms=31190.405`
+- interpretation:
+  - batching the final summary write helped, but only modestly on the refresh subphase itself
+  - the candidate-list wall clock improved more than the raw summary-refresh time, which suggests the staged merge reduced transaction friction, but it did not solve the backlog problem
+  - the much more important current fact is backlog scale:
+    - after one `10000`-summary drain run, the queue was still about `3,406,708`
+  - conclusion:
+    - release-side write batching is worth keeping
+    - but the next bottleneck is no longer query shape first; it is drain capacity and refresh scheduling
+    - one `10000`-summary refresh pass per release run is not enough when backlog is in the millions
+
+Current practical direction after the final-write batching pass:
+
+- keep the batched release-family read path
+- keep the staged final summary merge path
+- next highest-value change should be operational or scheduler-oriented:
+  - allow `release` to execute multiple refresh batches before candidate formation when backlog exceeds a threshold
+  - or split summary refresh into its own dedicated stage so release candidate formation is not the only drainer
+  - or both
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.

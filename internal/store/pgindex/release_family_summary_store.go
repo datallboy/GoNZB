@@ -558,6 +558,68 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 		return nil
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_release_family_summary_refresh (
+			provider_id BIGINT NOT NULL,
+			newsgroup_id BIGINT NOT NULL,
+			key_kind TEXT NOT NULL,
+			family_key TEXT NOT NULL,
+			source_release_key TEXT NOT NULL,
+			release_key TEXT NOT NULL,
+			release_name TEXT NOT NULL,
+			binary_count INTEGER NOT NULL,
+			complete_binary_count INTEGER NOT NULL,
+			complete_main_payload_binary_count INTEGER NOT NULL,
+			incomplete_binary_count INTEGER NOT NULL,
+			expected_file_count INTEGER NOT NULL,
+			expected_archive_file_count INTEGER NOT NULL,
+			has_expected_file_count BOOLEAN NOT NULL,
+			has_expected_archive_file_count BOOLEAN NOT NULL,
+			total_bytes BIGINT NOT NULL,
+			earliest_posted_at TIMESTAMPTZ NULL,
+			dominant_family_kind TEXT NOT NULL,
+			dominant_file_name TEXT NOT NULL,
+			dominant_match_confidence DOUBLE PRECISION NOT NULL,
+			readiness_bucket TEXT NOT NULL,
+			expected_file_coverage_pct DOUBLE PRECISION NOT NULL,
+			archive_file_coverage_pct DOUBLE PRECISION NOT NULL
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create release family summary refresh temp table: %w", err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO tmp_release_family_summary_refresh (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			incomplete_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			total_bytes,
+			earliest_posted_at,
+			dominant_family_kind,
+			dominant_file_name,
+			dominant_match_confidence,
+			readiness_bucket,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+		)`)
+	if err != nil {
+		return fmt.Errorf("prepare release family summary refresh temp insert: %w", err)
+	}
+	defer stmt.Close()
+
 	for _, row := range summaries {
 		readinessBucket := releaseReadinessFragmentOnly
 		if row.BinaryCount == 0 {
@@ -596,57 +658,7 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 			earliestPostedAtValue = t
 		}
 
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO release_family_readiness_summaries (
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key,
-				source_release_key,
-				release_key,
-				release_name,
-				binary_count,
-				complete_binary_count,
-				complete_main_payload_binary_count,
-				incomplete_binary_count,
-				expected_file_count,
-				expected_archive_file_count,
-				has_expected_file_count,
-				has_expected_archive_file_count,
-				total_bytes,
-				earliest_posted_at,
-				dominant_family_kind,
-				dominant_file_name,
-				dominant_match_confidence,
-				readiness_bucket,
-				expected_file_coverage_pct,
-				archive_file_coverage_pct,
-				processed_at,
-				updated_at
-			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,TIMESTAMPTZ 'epoch',NOW())
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-			SET source_release_key = EXCLUDED.source_release_key,
-			    release_key = EXCLUDED.release_key,
-			    release_name = EXCLUDED.release_name,
-			    binary_count = EXCLUDED.binary_count,
-			    complete_binary_count = EXCLUDED.complete_binary_count,
-			    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
-			    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
-			    expected_file_count = EXCLUDED.expected_file_count,
-			    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
-			    has_expected_file_count = EXCLUDED.has_expected_file_count,
-			    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
-			    total_bytes = EXCLUDED.total_bytes,
-			    earliest_posted_at = EXCLUDED.earliest_posted_at,
-			    dominant_family_kind = EXCLUDED.dominant_family_kind,
-			    dominant_file_name = EXCLUDED.dominant_file_name,
-			    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
-			    readiness_bucket = EXCLUDED.readiness_bucket,
-			    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
-			    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
-			    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
-			    updated_at = NOW()`,
+		if _, err := stmt.ExecContext(ctx,
 			row.ProviderID,
 			row.NewsgroupID,
 			row.KeyKind,
@@ -671,8 +683,88 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 			expectedFileCoveragePct,
 			archiveFileCoveragePct,
 		); err != nil {
-			return fmt.Errorf("upsert release family summary row provider=%d group=%d family=%q: %w", row.ProviderID, row.NewsgroupID, row.FamilyKey, err)
+			return fmt.Errorf("stage release family summary row provider=%d group=%d family=%q: %w", row.ProviderID, row.NewsgroupID, row.FamilyKey, err)
 		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			incomplete_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			total_bytes,
+			earliest_posted_at,
+			dominant_family_kind,
+			dominant_file_name,
+			dominant_match_confidence,
+			readiness_bucket,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			processed_at,
+			updated_at
+		)
+		SELECT
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			incomplete_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			total_bytes,
+			earliest_posted_at,
+			dominant_family_kind,
+			dominant_file_name,
+			dominant_match_confidence,
+			readiness_bucket,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			TIMESTAMPTZ 'epoch',
+			NOW()
+		FROM tmp_release_family_summary_refresh
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET source_release_key = EXCLUDED.source_release_key,
+		    release_key = EXCLUDED.release_key,
+		    release_name = EXCLUDED.release_name,
+		    binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
+		    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
+		    updated_at = NOW()`); err != nil {
+		return fmt.Errorf("merge release family summary refresh batch count=%d: %w", len(summaries), err)
 	}
 
 	return nil
