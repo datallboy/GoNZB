@@ -111,6 +111,76 @@ func (s *Service) RunReformOnceWithMetrics(ctx context.Context) (map[string]any,
 	return s.runOnceWithMetrics(ctx, true)
 }
 
+func (s *Service) RunSummaryRefreshOnce(ctx context.Context) error {
+	_, err := s.RunSummaryRefreshOnceWithMetrics(ctx)
+	return err
+}
+
+func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	if s.repo == nil {
+		return nil, fmt.Errorf("release repo is required")
+	}
+
+	initialSummaryBacklog, err := s.repo.CountQueuedReleaseFamilySummaries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count queued release family summaries: %w", err)
+	}
+
+	remainingSummaryBacklog := initialSummaryBacklog
+	refreshedSummaries := 0
+	refreshDuration := time.Duration(0)
+	summaryRefreshBatches := 0
+
+	for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
+		refreshStart := time.Now()
+		refreshedBatch, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+		if batchErr != nil {
+			return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
+		}
+		batchDuration := time.Since(refreshStart)
+		refreshDuration += batchDuration
+		summaryRefreshBatches++
+		refreshedSummaries += refreshedBatch
+		if refreshedBatch <= 0 {
+			break
+		}
+		if refreshedBatch >= remainingSummaryBacklog {
+			remainingSummaryBacklog = 0
+			break
+		}
+		remainingSummaryBacklog -= refreshedBatch
+		if refreshedBatch < s.opts.SummaryRefreshBatchSize {
+			break
+		}
+	}
+
+	if initialSummaryBacklog > 0 {
+		if count, countErr := s.repo.CountQueuedReleaseFamilySummaries(ctx); countErr == nil {
+			remainingSummaryBacklog = count
+		}
+	}
+
+	metrics := map[string]any{
+		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
+		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
+		"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
+		"summary_refresh_initial_count":           initialSummaryBacklog,
+		"summary_refresh_remaining_count":         remainingSummaryBacklog,
+		"summary_refresh_batches":                 summaryRefreshBatches,
+		"summary_refresh_count":                   refreshedSummaries,
+		"summary_refresh_duration_ms":             durationMillis(refreshDuration),
+	}
+	s.log.Info(
+		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f",
+		initialSummaryBacklog,
+		remainingSummaryBacklog,
+		refreshedSummaries,
+		summaryRefreshBatches,
+		durationMillis(refreshDuration),
+	)
+	return metrics, nil
+}
+
 func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("release repo is required")
@@ -145,68 +215,12 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			offset += len(page)
 		}
 	} else {
-		var refreshErr error
-		initialSummaryBacklog, refreshErr = s.repo.CountQueuedReleaseFamilySummaries(ctx)
-		if refreshErr != nil {
-			return nil, fmt.Errorf("count queued release family summaries: %w", refreshErr)
+		var countErr error
+		initialSummaryBacklog, countErr = s.repo.CountQueuedReleaseFamilySummaries(ctx)
+		if countErr != nil {
+			return nil, fmt.Errorf("count queued release family summaries: %w", countErr)
 		}
 		remainingSummaryBacklog = initialSummaryBacklog
-		for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
-			refreshStart := time.Now()
-			refreshedBatch, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
-			if batchErr != nil {
-				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
-			}
-			batchDuration := time.Since(refreshStart)
-			refreshDuration += batchDuration
-			timings.candidateList += batchDuration
-			summaryRefreshBatches++
-			refreshedSummaries += refreshedBatch
-			if refreshedBatch <= 0 {
-				break
-			}
-			if refreshedBatch >= remainingSummaryBacklog {
-				remainingSummaryBacklog = 0
-				break
-			}
-			remainingSummaryBacklog -= refreshedBatch
-			if refreshedBatch < s.opts.SummaryRefreshBatchSize {
-				break
-			}
-		}
-		if initialSummaryBacklog > 0 {
-			if count, countErr := s.repo.CountQueuedReleaseFamilySummaries(ctx); countErr == nil {
-				remainingSummaryBacklog = count
-			}
-		}
-		refreshOnlyDueToBacklog := remainingSummaryBacklog > s.opts.SummaryRefreshCandidateBacklogLimit
-		if refreshOnlyDueToBacklog {
-			metrics := map[string]any{
-				"reform":                                  reform,
-				"batch_size":                              s.opts.BatchSize,
-				"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
-				"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
-				"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
-				"summary_refresh_initial_count":           initialSummaryBacklog,
-				"summary_refresh_remaining_count":         remainingSummaryBacklog,
-				"summary_refresh_batches":                 summaryRefreshBatches,
-				"summary_refresh_count":                   refreshedSummaries,
-				"summary_refresh_duration_ms":             durationMillis(refreshDuration),
-				"refresh_only_due_to_summary_backlog":     true,
-				"candidate_families":                      0,
-				"formed":                                  0,
-			}
-			s.log.Info(
-				"release: refresh-only initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f candidate_backlog_limit=%d",
-				initialSummaryBacklog,
-				remainingSummaryBacklog,
-				refreshedSummaries,
-				summaryRefreshBatches,
-				durationMillis(refreshDuration),
-				s.opts.SummaryRefreshCandidateBacklogLimit,
-			)
-			return metrics, nil
-		}
 		start := time.Now()
 		candidates, err = s.repo.ListReleaseCandidates(ctx, s.opts.BatchSize, pgindex.ReleaseCandidateSelectionOptions{
 			MinExpectedFileCoveragePct: s.opts.ReleaseMinExpectedFileCoveragePct,

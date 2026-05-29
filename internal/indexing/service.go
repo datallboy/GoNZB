@@ -92,12 +92,17 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 		ctx,
 		supervisor.StageScrapeLatest,
 		supervisor.StageAssemble,
+		supervisor.StageReleaseSummaryRefresh,
 		supervisor.StageRelease,
 	)
 }
 
 func (s *Service) ReleaseOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageRelease)
+}
+
+func (s *Service) ReleaseSummaryRefreshOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleaseSummaryRefresh)
 }
 
 func (s *Service) ReformReleasesOnce(ctx context.Context) error {

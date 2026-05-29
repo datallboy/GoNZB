@@ -155,6 +155,23 @@ func (r *Runner) ExecuteIndexerRelease(once bool, reform bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerReleaseSummaryRefresh(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.ReleaseSummaryRefreshOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer release refresh-summaries --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer release refresh-summaries --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerReleaseSummaryRefreshScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer release refresh-summaries scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerInspect(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

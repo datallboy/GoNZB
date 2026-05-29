@@ -29,6 +29,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			AssembleLaneA:            defaultAssembleStage(false, 2, 5000, 1),
 			AssembleLaneB:            defaultAssembleStage(false, 10, 2500, 1),
 			RecoverYEnc:              defaultStage(false, 10, 25, 1),
+			ReleaseSummaryRefresh:    defaultStage(false, 2, 10000, 0),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
@@ -182,6 +183,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
 	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
+	out.ReleaseSummaryRefresh = indexStageRuntimeFromConfig(cfg.ReleaseSummaryRefresh, boolValue(cfg.Release.Enabled, true), 2, 10000)
 	out.Release = IndexingReleaseRuntimeSettings{
 		Enabled:                    boolValue(cfg.Release.Enabled, true),
 		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
@@ -318,6 +320,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
 		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
 		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
+		effective.Indexing.ReleaseSummaryRefresh = toStageConfigNoConcurrency(indexing.ReleaseSummaryRefresh)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
 			Enabled:                    boolPtr(indexing.Release.Enabled),
 			IntervalMinutes:            float64Ptr(indexing.Release.IntervalMinutes),
@@ -592,6 +595,7 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.AssembleLaneA.Enabled ||
 		in.AssembleLaneB.Enabled ||
 		in.RecoverYEnc.Enabled ||
+		in.ReleaseSummaryRefresh.Enabled ||
 		in.Release.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
@@ -717,6 +721,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		AssembleLaneA:            mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
 		AssembleLaneB:            mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
 		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
+		ReleaseSummaryRefresh:    mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.ReleaseSummaryRefresh),
 		Release:                  in.Release,
 		Match:                    in.Match,
 		Inspect:                  cloneInspectRuntimeSettings(in.Inspect),

@@ -42,6 +42,10 @@ func RunIndexerRecoverYEncScheduler(ctx context.Context, appCtx *app.Context) er
 	return runIndexerStages(ctx, appCtx, supervisor.StageRecoverYEnc)
 }
 
+func RunIndexerReleaseSummaryRefreshScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageReleaseSummaryRefresh)
+}
+
 // Long-running release mode restart loop lives outside cmd/main.
 func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)

@@ -1246,6 +1246,31 @@ Backlog-aware release draining on `2026-05-29 07:53 America/New_York`:
     - keep this refresh-only behavior until backlog is brought back under control
     - or split summary refresh into a dedicated stage if release candidate formation must remain low-latency under extreme backlog
 
+Split release stages on `2026-05-29 08:13 America/New_York`:
+
+- implemented:
+  - `release_summary_refresh` is now a first-class stage, scheduler target, API/frontend stage, and CLI command:
+    - `gonzb indexer release refresh-summaries --once`
+  - `release` is now formation-only; it records current queued-summary backlog in metrics but no longer drains the queue inline
+  - `pipeline` now runs:
+    - `scrape_latest`
+    - `assemble`
+    - `release_summary_refresh`
+    - `release`
+  - runtime settings now include:
+    - `indexing.release_summary_refresh`
+  - compatibility behavior:
+    - when existing config enables `indexing.release`, derived runtime settings enable `release_summary_refresh` by default with a `2m` interval and `10000` batch size unless overridden
+- validation:
+  - targeted tests passed for release service, runtime wiring, API stage views, settings validation, and runtime command wiring
+  - CLI smoke:
+    - `go run cmd/gonzb/main.go indexer release refresh-summaries --help`
+- interpretation:
+  - release candidate formation and deferred readiness-summary backlog draining are now operationally separable
+  - this makes future scheduling much clearer:
+    - run `release_summary_refresh` frequently to chew backlog
+    - keep `release` focused on low-latency formation from already-refreshed summaries
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -1257,6 +1282,7 @@ Backlog-aware release draining on `2026-05-29 07:53 America/New_York`:
 - [x] Replace the ineffective `file_set_key` access path with index ordering that matches recovered-file-set release queries, plus a dedicated recovered-file-set candidate index.
 - [ ] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [x] Move readiness-summary recompute ownership to readers: fact writers dirty/enqueue; `release` and yEnc work-item seeding drain and recompute from a bounded refresh queue.
+- [x] Split deferred readiness-summary draining into its own `release_summary_refresh` stage, command, runtime setting, and frontend-visible stage so release formation no longer doubles as the only backlog drainer.
 - [x] Re-measure serve-mode overlap after the queue-based summary ownership shift and decide whether any temporary concurrency caps or stage staggering are still needed.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
 - [ ] Increase deferred readiness-summary drain throughput so `release_family_summary_refresh_queue` can keep up with serve-mode writer overlap before candidate formation becomes backlog-bound.

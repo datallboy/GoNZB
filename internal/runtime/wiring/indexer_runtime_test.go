@@ -161,6 +161,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || got.ReleaseMinExpectedFileCoveragePct != 92 || !got.RequireExpectedFileCountForContextualObfuscated {
 		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v min_expected_file_coverage_pct=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.ReleaseMinExpectedFileCoveragePct, got.RequireExpectedFileCountForContextualObfuscated)
 	}
+	if !got.ReleaseSummaryRefreshStage.Enabled || got.ReleaseSummaryRefreshStage.BatchSize != 10000 || got.ReleaseSummaryRefreshStage.Interval != 2*time.Minute {
+		t.Fatalf("unexpected release summary refresh stage config: %+v", got.ReleaseSummaryRefreshStage)
+	}
 	if got.InspectMedia.BatchSize != batch {
 		t.Fatalf("expected inspect_media batch size %d, got %+v", batch, got.InspectMedia)
 	}

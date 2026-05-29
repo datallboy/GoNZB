@@ -127,6 +127,14 @@ var indexerReleaseCmd = &cobra.Command{
 	},
 }
 
+var indexerReleaseRefreshSummariesCmd = &cobra.Command{
+	Use:   "refresh-summaries",
+	Short: "Refresh deferred release readiness summaries continuously; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReleaseSummaryRefresh(releaseOnce)
+	},
+}
+
 var indexerRecoverYEncCmd = &cobra.Command{
 	Use:   "recover-yenc",
 	Short: "Recover obfuscated binary names from yEnc body headers; use --once for a single pass",
@@ -300,6 +308,7 @@ func init() {
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
+	indexerReleaseRefreshSummariesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release summary refresh pass and exit instead of continuous mode")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectDiscoveryCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one discovery inspection pass and exit")
@@ -326,6 +335,7 @@ func init() {
 	indexerAssembleCmd.AddCommand(indexerAssembleLaneBCmd)
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
+	indexerReleaseCmd.AddCommand(indexerReleaseRefreshSummariesCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)

@@ -21,22 +21,23 @@ type logger interface {
 type StageName string
 
 const (
-	StageScrapeLatest     StageName = "scrape_latest"
-	StageScrapeBackfill   StageName = "scrape_backfill"
-	StageAssemble         StageName = "assemble"
-	StageAssembleLaneA    StageName = "assemble_lane_a"
-	StageAssembleLaneB    StageName = "assemble_lane_b"
-	StageRecoverYEnc      StageName = "recover_yenc"
-	StageRelease          StageName = "release"
-	StageInspectDiscovery StageName = "inspect_discovery"
-	StageInspectPAR2      StageName = "inspect_par2"
-	StageInspectNFO       StageName = "inspect_nfo"
-	StageInspectArchive   StageName = "inspect_archive"
-	StageInspectPassword  StageName = "inspect_password"
-	StageInspectMedia     StageName = "inspect_media"
-	StageEnrichPreDB      StageName = "enrich_predb"
-	StageEnrichTMDB       StageName = "enrich_tmdb"
-	StageMaintenance      StageName = "indexer_maintenance"
+	StageScrapeLatest          StageName = "scrape_latest"
+	StageScrapeBackfill        StageName = "scrape_backfill"
+	StageAssemble              StageName = "assemble"
+	StageAssembleLaneA         StageName = "assemble_lane_a"
+	StageAssembleLaneB         StageName = "assemble_lane_b"
+	StageRecoverYEnc           StageName = "recover_yenc"
+	StageReleaseSummaryRefresh StageName = "release_summary_refresh"
+	StageRelease               StageName = "release"
+	StageInspectDiscovery      StageName = "inspect_discovery"
+	StageInspectPAR2           StageName = "inspect_par2"
+	StageInspectNFO            StageName = "inspect_nfo"
+	StageInspectArchive        StageName = "inspect_archive"
+	StageInspectPassword       StageName = "inspect_password"
+	StageInspectMedia          StageName = "inspect_media"
+	StageEnrichPreDB           StageName = "enrich_predb"
+	StageEnrichTMDB            StageName = "enrich_tmdb"
+	StageMaintenance           StageName = "indexer_maintenance"
 )
 
 type Runner interface {
@@ -146,6 +147,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageAssembleLaneA,
 		StageAssembleLaneB,
 		StageRecoverYEnc,
+		StageReleaseSummaryRefresh,
 		StageRelease,
 		StageInspectDiscovery,
 		StageInspectPAR2,

@@ -1304,12 +1304,12 @@ func TestBuildReleaseFilesPreservesBinaryPostedAt(t *testing.T) {
 	}
 }
 
-func TestRunOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
+func TestRunSummaryRefreshOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
 	repo := &fakeReleaseRepository{queuedSummaryCount: 1000, refreshQueuedSummariesResults: []int{1000}}
 	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 1000})
 
-	if err := svc.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run once: %v", err)
+	if err := svc.RunSummaryRefreshOnce(context.Background()); err != nil {
+		t.Fatalf("run summary refresh once: %v", err)
 	}
 
 	if repo.refreshQueuedSummariesCalls != 1 {
@@ -1320,7 +1320,7 @@ func TestRunOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) {
 	}
 }
 
-func TestRunOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) {
+func TestRunSummaryRefreshOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		queuedSummaryCount:            25000,
 		refreshQueuedSummariesResults: []int{10000, 10000, 5000},
@@ -1332,9 +1332,9 @@ func TestRunOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) {
 		SummaryRefreshCandidateBacklogLimit: 50000,
 	})
 
-	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	metrics, err := svc.RunSummaryRefreshOnceWithMetrics(context.Background())
 	if err != nil {
-		t.Fatalf("run once with metrics: %v", err)
+		t.Fatalf("run summary refresh once with metrics: %v", err)
 	}
 	if repo.refreshQueuedSummariesCalls != 3 {
 		t.Fatalf("expected 3 refresh batches, got %d", repo.refreshQueuedSummariesCalls)
@@ -1345,12 +1345,9 @@ func TestRunOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) {
 	if got := metrics["summary_refresh_count"]; got != 25000 {
 		t.Fatalf("expected summary_refresh_count=25000, got %#v", got)
 	}
-	if got := metrics["refresh_only_due_to_summary_backlog"]; got != false {
-		t.Fatalf("expected refresh_only_due_to_summary_backlog=false, got %#v", got)
-	}
 }
 
-func TestRunOnceSwitchesToRefreshOnlyWhenBacklogRemainsHigh(t *testing.T) {
+func TestRunSummaryRefreshOnceLeavesRemainingBacklogWhenCapIsHit(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		queuedSummaryCount:            300000,
 		refreshQueuedSummariesResults: []int{10000, 10000, 10000, 10000, 10000},
@@ -1362,21 +1359,40 @@ func TestRunOnceSwitchesToRefreshOnlyWhenBacklogRemainsHigh(t *testing.T) {
 		SummaryRefreshCandidateBacklogLimit: 50000,
 	})
 
-	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	metrics, err := svc.RunSummaryRefreshOnceWithMetrics(context.Background())
 	if err != nil {
-		t.Fatalf("run once with metrics: %v", err)
+		t.Fatalf("run summary refresh once with metrics: %v", err)
 	}
 	if repo.refreshQueuedSummariesCalls != 5 {
 		t.Fatalf("expected 5 refresh batches, got %d", repo.refreshQueuedSummariesCalls)
 	}
-	if repo.listReleaseCandidatesCalls != 0 {
-		t.Fatalf("expected candidate selection to be skipped, got %d calls", repo.listReleaseCandidatesCalls)
-	}
-	if got := metrics["refresh_only_due_to_summary_backlog"]; got != true {
-		t.Fatalf("expected refresh_only_due_to_summary_backlog=true, got %#v", got)
-	}
 	if got := metrics["summary_refresh_remaining_count"]; got != 250000 {
 		t.Fatalf("expected summary_refresh_remaining_count=250000, got %#v", got)
+	}
+}
+
+func TestRunOnceDoesNotDrainSummaryRefreshQueue(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount: 1000,
+		candidates:         []pgindex.ReleaseCandidate{},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 1000})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+	if repo.refreshQueuedSummariesCalls != 0 {
+		t.Fatalf("expected no summary refresh calls, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if repo.listReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected one release candidate selection call, got %d", repo.listReleaseCandidatesCalls)
+	}
+	if got := metrics["summary_refresh_initial_count"]; got != 1000 {
+		t.Fatalf("expected summary_refresh_initial_count=1000, got %#v", got)
+	}
+	if got := metrics["summary_refresh_remaining_count"]; got != 1000 {
+		t.Fatalf("expected summary_refresh_remaining_count=1000, got %#v", got)
 	}
 }
 
