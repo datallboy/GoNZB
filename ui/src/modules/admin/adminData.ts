@@ -8,6 +8,7 @@ export const stageOptions = [
   { value: 'recover_yenc', label: 'Recover yEnc' },
   { value: 'release_summary_refresh', label: 'Release Summary Refresh' },
   { value: 'release', label: 'Release' },
+  { value: 'release_generate_nzb', label: 'Generate NZB' },
   { value: 'release_archive_nzb', label: 'Archive NZB' },
   { value: 'release_purge_archived_sources', label: 'Purge Archived Sources' },
   { value: 'inspect_discovery', label: 'Inspect Discovery' },

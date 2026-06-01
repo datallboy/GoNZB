@@ -83,6 +83,8 @@ function backlogCommand(stat: IndexerDashboardStat) {
       return 'indexer release refresh-summaries'
     case 'pending_release_candidate_families':
       return 'indexer release'
+    case 'generate_nzb_pending_releases':
+      return 'indexer release generate-nzb'
     case 'archive_pending_releases':
       return 'indexer release archive-nzb'
     case 'archived_waiting_for_purge_releases':

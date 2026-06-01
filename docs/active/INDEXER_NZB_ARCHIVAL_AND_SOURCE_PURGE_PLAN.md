@@ -20,6 +20,42 @@ Reason:
 
 This plan keeps archived releases searchable and downloadable indefinitely by retaining a compact release catalog plus blob-backed NZB, while deleting the large temporary/source tables that are driving database growth.
 
+## Follow-Up Work: Background NZB Pre-Generation
+
+Current gap:
+
+- `nzb_cache.generation_status = 'ready'` is currently reached when the NZB resolver is invoked on demand.
+- In practice this means archival eligibility can lag behind release readiness until a manual/API NZB fetch happens.
+
+Required follow-up:
+
+- Add a dedicated late pipeline stage:
+  - `release_generate_nzb`
+- This stage must pre-generate NZBs in the background for releases that have already crossed the intended public-ready threshold.
+- `release_archive_nzb` should then archive from that ready state, and `release_purge_archived_sources` should continue to purge only after archival metadata is durable and the release is `purge_pending`.
+
+Ready-policy direction:
+
+- The system needs one shared runtime-configurable release-ready policy for:
+  - public indexer visibility
+  - background NZB pre-generation eligibility
+- Any threshold-like rules that determine whether a release is ready enough to become public should not remain hidden as hardcoded literals.
+- At minimum this follow-up should move the current public-ready threshold controls for:
+  - confidence
+  - completion percentage
+  - identity strictness
+  - optional inspect requirement
+  - optional enrich requirement
+  into runtime settings.
+
+Expected pipeline order after this follow-up:
+
+- `release_summary_refresh`
+- `release`
+- `release_generate_nzb`
+- `release_archive_nzb`
+- `release_purge_archived_sources`
+
 ## Implementation Status
 
 Status date: 2026-06-01
@@ -34,8 +70,19 @@ Status date: 2026-06-01
   - Aggregator cache remains in `store.blob_dir`
   - Indexer archive lives in `store.blob_dir/indexer-archive`
 - Added dedicated late stages:
+  - `release_generate_nzb`
   - `release_archive_nzb`
   - `release_purge_archived_sources`
+- Added shared runtime-configurable public-ready policy controls under `indexing.release` for:
+  - `public_min_match_confidence`
+  - `public_min_completion_pct`
+  - `public_min_identity_status`
+  - `public_require_inspection`
+  - `public_require_enrichment`
+- Applied the same public-ready policy to:
+  - public indexer visibility
+  - local `usenet_indexer` aggregator search source
+  - background NZB generation eligibility
 - Added archived NZB serving through the authoritative archive store before any live catalog rebuild path.
 - Added purge-safe lineage snapshots in Postgres and purge execution that only deletes binary lineage when it is not still shared by non-archived releases.
 - Added dashboard stats and stage-throughput visibility for archive and purge backlog/work.
@@ -56,13 +103,24 @@ Status date: 2026-06-01
   - `nzb_cache.generation_status = 'ready'`
   - release has persisted `release_files`
   - release has persisted `release_newsgroups`
-- No additional inspect/enrich gate is enforced yet beyond current release readiness.
-  - Rationale: this rollout is additive archival/purge work and should not redefine existing release readiness semantics in the same change.
+- Implemented operational background generation gate:
+  - release satisfies the shared public-ready policy
+  - release has persisted `release_files`
+  - release has persisted `release_newsgroups`
+  - `nzb_cache.generation_status <> 'ready'`
+  - archive state is effectively `active` or `archive_failed`
+- Inspect/enrich requirements are now runtime-configurable on the public-ready policy and default to disabled.
+  - Rationale: this preserves prior behavior by default while allowing stricter public/generation readiness when desired.
 - Archived object key convention implemented:
   - `releases/<provider_id>/<release_id>/<sha256>.nzb`
 
 ### Sign-off: metrics implemented
 
+- Generate stage metrics:
+  - `generate_candidates`
+  - `generate_attempted`
+  - `generated_ready_count`
+  - `generate_failures`
 - Archive stage metrics:
   - `archive_candidates`
   - `archive_claimed`
@@ -74,11 +132,13 @@ Status date: 2026-06-01
   - `skipped_shared_lineage_rows`
   - `rows_deleted_by_table`
 - Dashboard stats added:
+  - `generate_nzb_pending_releases`
   - `archive_pending_releases`
   - `archived_waiting_for_purge_releases`
   - `purged_archived_releases`
   - `blob_backed_archived_releases`
 - Stage throughput added:
+  - `release_generate_nzb`
   - `release_archive_nzb`
   - `release_purge_archived_sources`
 
@@ -86,6 +146,7 @@ Status date: 2026-06-01
 
 - Added focused unit coverage for:
   - archive stage object-key generation and metadata persistence
+  - background generate stage readiness metric aggregation
   - purge stage metric aggregation
   - filesystem blob store nested archive-key support
 - Full repository validation run completed:
@@ -101,6 +162,10 @@ Status date: 2026-06-01
 - Admin stage API smoke pass completed:
   - `POST /api/v1/indexer/stages/release_archive_nzb/run`
   - `POST /api/v1/indexer/stages/release_purge_archived_sources/run`
+- Background generation stage is now implemented and available through:
+  - runtime settings stage key `release_generate_nzb`
+  - CLI command `gonzb indexer release generate-nzb`
+  - stage API name `release_generate_nzb`
 
 ### Sign-off: performance/baseline note
 
@@ -127,6 +192,9 @@ Status date: 2026-06-01
   - this is an enabled empty-queue baseline, not a throughput-under-load baseline
   - there were no eligible archival or purge candidates in the current catalog during measurement
   - the measurement still validates scheduler wiring, SQLite-backed runtime settings, stage execution, metrics emission, and dashboard visibility
+- Background generation follow-up note:
+  - this implementation now exposes the missing pre-generation stage and runtime public-ready thresholds
+  - a refreshed live baseline for `generate_nzb_pending_releases` should be captured after deployment because the earlier empty-queue archival baseline was measured before the background generation stage existed
 
 ## Blob Storage Direction
 

@@ -19,6 +19,7 @@ type StageKey =
   | 'assemble_lane_b'
   | 'recover_yenc'
   | 'release_summary_refresh'
+  | 'release_generate_nzb'
   | 'release_archive_nzb'
   | 'release_purge_archived_sources'
   | 'release'
@@ -52,6 +53,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
+  { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.' },
   { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.' },
   { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
@@ -67,7 +69,7 @@ const stageDefinitions: StageDefinition[] = [
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
-  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_archive_nzb', 'release_purge_archived_sources'] },
+  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb', 'release_purge_archived_sources'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -113,7 +115,13 @@ function defaultSettings(): RuntimeSettings {
         min_completion_pct: 0,
         min_expected_file_coverage_pct: 90,
         require_expected_file_count_for_contextual_obfuscated: true,
+        public_min_match_confidence: 0.55,
+        public_min_completion_pct: 100,
+        public_min_identity_status: 'probable',
+        public_require_inspection: false,
+        public_require_enrichment: false,
       },
+      release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
       release_purge_archived_sources: stageDefaults(50),
       match: {
@@ -214,6 +222,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
+      release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
       release_purge_archived_sources: { ...defaults.indexing!.release_purge_archived_sources, ...indexing.release_purge_archived_sources },
       match: { ...defaults.indexing!.match, ...indexing.match },
@@ -330,6 +339,11 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       min_completion_pct: indexing.release.min_completion_pct,
       min_expected_file_coverage_pct: indexing.release.min_expected_file_coverage_pct,
       require_expected_file_count_for_contextual_obfuscated: indexing.release.require_expected_file_count_for_contextual_obfuscated,
+      public_min_match_confidence: indexing.release.public_min_match_confidence,
+      public_min_completion_pct: indexing.release.public_min_completion_pct,
+      public_min_identity_status: indexing.release.public_min_identity_status,
+      public_require_inspection: indexing.release.public_require_inspection,
+      public_require_enrichment: indexing.release.public_require_enrichment,
     },
     enrich_predb: {
       enabled: indexing.enrich_predb.enabled,
@@ -737,7 +751,7 @@ export function AdminSettingsPage() {
 
         <SettingsSection title="Release candidate selection and matching">
           <div className="banner">
-            Release settings below affect two different parts of the pipeline. Candidate selection decides which release families are worth processing now. Matching settings affect how article headers are grouped into binaries during assemble.
+            Release settings below affect three different parts of the pipeline. Candidate selection decides which release families are worth processing now. Public-ready policy decides when a release is exposed publicly and becomes eligible for background NZB generation. Matching settings affect how article headers are grouped into binaries during assemble.
           </div>
           <div className="toolbar-grid">
             <NumberField
@@ -770,6 +784,41 @@ export function AdminSettingsPage() {
               helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
               checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
               onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+            />
+            <NumberField
+              label="Public min match confidence"
+              step="0.01"
+              min={0}
+              max={1}
+              value={indexing.release.public_min_match_confidence}
+              helpText="Minimum release identity confidence required before the release becomes public and eligible for background NZB generation."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_match_confidence: value } })}
+            />
+            <NumberField
+              label="Public min completion %"
+              min={0}
+              max={100}
+              value={indexing.release.public_min_completion_pct}
+              helpText="Minimum completion threshold for public visibility and background NZB generation eligibility."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_completion_pct: value } })}
+            />
+            <TextField
+              label="Public min identity status"
+              value={indexing.release.public_min_identity_status}
+              helpText="Allowed values: probable or identified. Probable matches the existing public-ready behavior."
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_identity_status: value } })}
+            />
+            <CheckboxField
+              label="Public require inspection"
+              helpText="Requires at least one inspection-derived media or evidence signal before a release becomes public-ready and NZB generation-eligible."
+              checked={Boolean(indexing.release.public_require_inspection)}
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_inspection: value } })}
+            />
+            <CheckboxField
+              label="Public require enrichment"
+              helpText="Requires external match/enrichment evidence before a release becomes public-ready and NZB generation-eligible."
+              checked={Boolean(indexing.release.public_require_enrichment)}
+              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_enrichment: value } })}
             />
             <NumberField
               label="High confidence threshold"
