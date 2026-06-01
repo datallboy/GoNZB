@@ -738,6 +738,7 @@ export type IndexingRuntimeSettings = {
   assemble_lane_b: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
   release_summary_refresh: AdminStageConfigPatch
+  release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
   release_purge_archived_sources: AdminStageConfigPatch
   release: AdminStageConfigPatch & {
@@ -745,6 +746,11 @@ export type IndexingRuntimeSettings = {
     min_completion_pct: number
     min_expected_file_coverage_pct: number
     require_expected_file_count_for_contextual_obfuscated: boolean
+    public_min_match_confidence: number
+    public_min_completion_pct: number
+    public_min_identity_status: string
+    public_require_inspection: boolean
+    public_require_enrichment: boolean
   }
   match: {
     high_confidence_threshold: number
