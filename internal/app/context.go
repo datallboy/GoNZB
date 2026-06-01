@@ -14,22 +14,23 @@ type Context struct {
 	Logger          *logger.Logger
 
 	// High-level interfaces for services to use
-	NNTP              NNTPManager
-	Aggregator        IndexerAggregator
-	Resolver          ReleaseResolver
-	UsenetIndexer     UsenetIndexerService
-	Processor         Processor
-	Downloader        Downloader
-	Queue             QueueManager
-	NZBParser         NZBParser
-	JobStore          JobStore
-	QueueFileStore    QueueFileStore
-	BlobStore         BlobStore
-	PayloadFetcher    PayloadFetcher
-	PayloadCacheStore PayloadCacheStore
-	SettingsStore     SettingsStore
-	PGIndexStore      UsenetIndexStore
-	ArrNotifier       ArrNotifier
+	NNTP                NNTPManager
+	Aggregator          IndexerAggregator
+	Resolver            ReleaseResolver
+	UsenetIndexer       UsenetIndexerService
+	Processor           Processor
+	Downloader          Downloader
+	Queue               QueueManager
+	NZBParser           NZBParser
+	JobStore            JobStore
+	QueueFileStore      QueueFileStore
+	BlobStore           BlobStore
+	IndexerArchiveStore BlobStore
+	PayloadFetcher      PayloadFetcher
+	PayloadCacheStore   PayloadCacheStore
+	SettingsStore       SettingsStore
+	PGIndexStore        UsenetIndexStore
+	ArrNotifier         ArrNotifier
 
 	DownloaderModule DownloaderModule
 	AggregatorModule AggregatorModule

@@ -147,26 +147,28 @@ type IndexingTMDBRuntimeSettings struct {
 }
 
 type IndexingRuntimeSettings struct {
-	Newsgroups               []string                       `json:"newsgroups,omitempty"`
-	BackfillUntilDateByGroup map[string]string              `json:"backfill_until_date_by_group,omitempty"`
-	ScrapeLatest             IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
-	ScrapeBackfill           IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
-	Assemble                 IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
-	AssembleLaneA            IndexingStageRuntimeSettings   `json:"assemble_lane_a,omitempty"`
-	AssembleLaneB            IndexingStageRuntimeSettings   `json:"assemble_lane_b,omitempty"`
-	RecoverYEnc              IndexingStageRuntimeSettings   `json:"recover_yenc,omitempty"`
-	ReleaseSummaryRefresh    IndexingStageRuntimeSettings   `json:"release_summary_refresh,omitempty"`
-	Release                  IndexingReleaseRuntimeSettings `json:"release,omitempty"`
-	Match                    IndexingMatchRuntimeSettings   `json:"match,omitempty"`
-	Inspect                  IndexingInspectRuntimeSettings `json:"inspect,omitempty"`
-	InspectDiscovery         IndexingStageRuntimeSettings   `json:"inspect_discovery,omitempty"`
-	InspectPAR2              IndexingStageRuntimeSettings   `json:"inspect_par2,omitempty"`
-	InspectNFO               IndexingStageRuntimeSettings   `json:"inspect_nfo,omitempty"`
-	InspectArchive           IndexingStageRuntimeSettings   `json:"inspect_archive,omitempty"`
-	InspectPassword          IndexingStageRuntimeSettings   `json:"inspect_password,omitempty"`
-	InspectMedia             IndexingStageRuntimeSettings   `json:"inspect_media,omitempty"`
-	EnrichPreDB              IndexingPreDBRuntimeSettings   `json:"enrich_predb,omitempty"`
-	EnrichTMDB               IndexingTMDBRuntimeSettings    `json:"enrich_tmdb,omitempty"`
+	Newsgroups                  []string                       `json:"newsgroups,omitempty"`
+	BackfillUntilDateByGroup    map[string]string              `json:"backfill_until_date_by_group,omitempty"`
+	ScrapeLatest                IndexingStageRuntimeSettings   `json:"scrape_latest,omitempty"`
+	ScrapeBackfill              IndexingStageRuntimeSettings   `json:"scrape_backfill,omitempty"`
+	Assemble                    IndexingStageRuntimeSettings   `json:"assemble,omitempty"`
+	AssembleLaneA               IndexingStageRuntimeSettings   `json:"assemble_lane_a,omitempty"`
+	AssembleLaneB               IndexingStageRuntimeSettings   `json:"assemble_lane_b,omitempty"`
+	RecoverYEnc                 IndexingStageRuntimeSettings   `json:"recover_yenc,omitempty"`
+	ReleaseSummaryRefresh       IndexingStageRuntimeSettings   `json:"release_summary_refresh,omitempty"`
+	Release                     IndexingReleaseRuntimeSettings `json:"release,omitempty"`
+	ReleaseArchiveNZB           IndexingStageRuntimeSettings   `json:"release_archive_nzb,omitempty"`
+	ReleasePurgeArchivedSources IndexingStageRuntimeSettings   `json:"release_purge_archived_sources,omitempty"`
+	Match                       IndexingMatchRuntimeSettings   `json:"match,omitempty"`
+	Inspect                     IndexingInspectRuntimeSettings `json:"inspect,omitempty"`
+	InspectDiscovery            IndexingStageRuntimeSettings   `json:"inspect_discovery,omitempty"`
+	InspectPAR2                 IndexingStageRuntimeSettings   `json:"inspect_par2,omitempty"`
+	InspectNFO                  IndexingStageRuntimeSettings   `json:"inspect_nfo,omitempty"`
+	InspectArchive              IndexingStageRuntimeSettings   `json:"inspect_archive,omitempty"`
+	InspectPassword             IndexingStageRuntimeSettings   `json:"inspect_password,omitempty"`
+	InspectMedia                IndexingStageRuntimeSettings   `json:"inspect_media,omitempty"`
+	EnrichPreDB                 IndexingPreDBRuntimeSettings   `json:"enrich_predb,omitempty"`
+	EnrichTMDB                  IndexingTMDBRuntimeSettings    `json:"enrich_tmdb,omitempty"`
 }
 
 type ArrIntegrationRuntimeSettings struct {

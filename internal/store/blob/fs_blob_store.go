@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type CacheIndexer interface {
@@ -28,8 +29,19 @@ func NewFSBlobStore(blobDir string, cache CacheIndexer) (*FSBlobStore, error) {
 	}, nil
 }
 
+func (s *FSBlobStore) pathForKey(key string) string {
+	key = strings.TrimSpace(strings.TrimPrefix(key, "/"))
+	if key == "" {
+		key = "unknown.nzb"
+	}
+	if !strings.HasSuffix(strings.ToLower(key), ".nzb") {
+		key += ".nzb"
+	}
+	return filepath.Join(s.blobDir, filepath.FromSlash(key))
+}
+
 func (s *FSBlobStore) GetNZBReader(id string) (io.ReadCloser, error) {
-	path := filepath.Join(s.blobDir, id+".nzb")
+	path := s.pathForKey(id)
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -45,13 +57,20 @@ func (s *FSBlobStore) GetNZBReader(id string) (io.ReadCloser, error) {
 }
 
 func (s *FSBlobStore) CreateNZBWriter(id string) (io.WriteCloser, error) {
-	return os.Create(filepath.Join(s.blobDir, id+".nzb"))
+	path := s.pathForKey(id)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, err
+	}
+	return os.Create(path)
 }
 
 func (s *FSBlobStore) SaveNZBAtomically(id string, data []byte) (err error) {
-	finalPath := filepath.Join(s.blobDir, id+".nzb")
+	finalPath := s.pathForKey(id)
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
+		return err
+	}
 
-	tmpFile, err := os.CreateTemp(s.blobDir, id+".*.tmp")
+	tmpFile, err := os.CreateTemp(filepath.Dir(finalPath), filepath.Base(finalPath)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp nzb file: %w", err)
 	}
@@ -90,7 +109,7 @@ func (s *FSBlobStore) SaveNZBAtomically(id string, data []byte) (err error) {
 }
 
 func (s *FSBlobStore) Exists(id string) bool {
-	path := filepath.Join(s.blobDir, id+".nzb")
+	path := s.pathForKey(id)
 	info, err := os.Stat(path)
 	if err == nil {
 		_ = s.cache.MarkReleaseCached(context.Background(), id, info.Size(), info.ModTime().Unix())

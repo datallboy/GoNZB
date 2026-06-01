@@ -37,15 +37,27 @@ log:
   level: "info"     # debug, info, warn, error
   include_stdout: true
 
-# Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir stores NZB payload cache files.
+# Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir remains the default
+# aggregator NZB cache root for compatibility when blob.aggregator_cache.root_dir is omitted.
 store:
   sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
-  blob_dir: "/store/nzbs"                # Directory to store cached NZB files
+  blob_dir: "/store/nzbs"                # Default aggregator cache directory
   payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
   
   # PostgreSQL DSN for the Usenet/NZB Indexer module when modules.usenet_indexer.enabled is true.
   pg_dsn: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
+
+# Preferred blob layout for archival versus cache ownership.
+blob:
+  indexer_archive:
+    backend_kind: "fs"
+    root_dir: "/store/indexer-archive"
+    prefix: ""
+  aggregator_cache:
+    backend_kind: "fs"
+    root_dir: "/store/nzbs"
+    prefix: ""
 
 # After first launch, create the initial admin user at /setup, then configure NNTP,
 # aggregator sources, downloader paths, and indexer stages in /admin/settings.

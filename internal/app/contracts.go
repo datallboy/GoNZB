@@ -174,6 +174,12 @@ type UsenetIndexStore interface {
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
+	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
+	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
+	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
+	ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]pgindex.ReleasePurgeCandidate, error)
+	PurgeArchivedReleaseSources(ctx context.Context, releaseID string) (*pgindex.ReleasePurgeResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error
 	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
@@ -293,6 +299,8 @@ type UsenetIndexerService interface {
 	RecoverYEncOnce(ctx context.Context) error
 	ReleaseSummaryRefreshOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	ReleaseArchiveNZBOnce(ctx context.Context) error
+	ReleasePurgeArchivedSourcesOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
 	InspectOnce(ctx context.Context) error
 	InspectDiscoveryOnce(ctx context.Context) error

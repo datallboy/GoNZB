@@ -21,14 +21,20 @@ type usenetIndexCatalog interface {
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
+}
+
+type archiveNZBStore interface {
+	GetNZBReader(key string) (io.ReadCloser, error)
 }
 
 type usenetIndexResolver struct {
 	catalog usenetIndexCatalog
+	archive archiveNZBStore
 }
 
-func NewUsenetIndexResolver(catalog usenetIndexCatalog) *usenetIndexResolver {
-	return &usenetIndexResolver{catalog: catalog}
+func NewUsenetIndexResolver(catalog usenetIndexCatalog, archive archiveNZBStore) *usenetIndexResolver {
+	return &usenetIndexResolver{catalog: catalog, archive: archive}
 }
 
 func (r *usenetIndexResolver) GetRelease(ctx context.Context, sourceReleaseID string) (*domain.Release, error) {
@@ -51,6 +57,22 @@ func (r *usenetIndexResolver) GetNZB(ctx context.Context, rel *domain.Release) (
 	}
 	if rel == nil || strings.TrimSpace(rel.ID) == "" {
 		return nil, fmt.Errorf("usenet index release is required")
+	}
+
+	if r.archive != nil {
+		archiveState, err := r.catalog.GetReleaseArchiveState(ctx, rel.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load archive state for %s: %w", rel.ID, err)
+		}
+		if archiveState != nil && archiveState.ObjectKey != "" {
+			switch archiveState.ArchiveStatus {
+			case "archived", "purge_pending", "purged":
+				reader, err := r.archive.GetNZBReader(archiveState.ObjectKey)
+				if err == nil {
+					return reader, nil
+				}
+			}
+		}
 	}
 
 	files, err := r.catalog.ListCatalogReleaseFiles(ctx, rel.ID)

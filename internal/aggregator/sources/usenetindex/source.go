@@ -24,6 +24,7 @@ type store interface {
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
 }
 
 type Source struct {
@@ -36,7 +37,7 @@ type Source struct {
 func New(s store) *Source {
 	return &Source{
 		store:    s,
-		resolver: resolver.NewUsenetIndexResolver(s),
+		resolver: resolver.NewUsenetIndexResolver(s, nil),
 	}
 }
 

@@ -21,26 +21,28 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		},
 		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
 		Indexing: &IndexingRuntimeSettings{
-			Newsgroups:               []string{},
-			BackfillUntilDateByGroup: map[string]string{},
-			ScrapeLatest:             defaultStage(false, 10, 5000, 0),
-			ScrapeBackfill:           defaultStage(false, 10, 5000, 0),
-			Assemble:                 defaultAssembleStage(false, 10, 5000, 1),
-			AssembleLaneA:            defaultAssembleStage(false, 2, 5000, 1),
-			AssembleLaneB:            defaultAssembleStage(false, 10, 2500, 1),
-			RecoverYEnc:              defaultStage(false, 10, 25, 1),
-			ReleaseSummaryRefresh:    defaultReleaseSummaryRefreshStage(false),
-			Release:                  defaultReleaseStage(false),
-			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
-			InspectDiscovery:         defaultStage(false, 10, 100, 0),
-			InspectPAR2:              defaultStage(false, 10, 100, 4),
-			InspectNFO:               defaultStage(false, 10, 100, 0),
-			InspectArchive:           defaultStage(false, 10, 100, 1),
-			InspectPassword:          defaultStage(false, 10, 100, 0),
-			InspectMedia:             defaultStage(false, 10, 100, 1),
-			EnrichPreDB:              defaultPreDBStage(false),
-			EnrichTMDB:               defaultTMDBStage(false),
+			Newsgroups:                  []string{},
+			BackfillUntilDateByGroup:    map[string]string{},
+			ScrapeLatest:                defaultStage(false, 10, 5000, 0),
+			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
+			Assemble:                    defaultAssembleStage(false, 10, 5000, 1),
+			AssembleLaneA:               defaultAssembleStage(false, 2, 5000, 1),
+			AssembleLaneB:               defaultAssembleStage(false, 10, 2500, 1),
+			RecoverYEnc:                 defaultStage(false, 10, 25, 1),
+			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
+			Release:                     defaultReleaseStage(false),
+			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
+			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
+			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
+			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			InspectDiscovery:            defaultStage(false, 10, 100, 0),
+			InspectPAR2:                 defaultStage(false, 10, 100, 4),
+			InspectNFO:                  defaultStage(false, 10, 100, 0),
+			InspectArchive:              defaultStage(false, 10, 100, 1),
+			InspectPassword:             defaultStage(false, 10, 100, 0),
+			InspectMedia:                defaultStage(false, 10, 100, 1),
+			EnrichPreDB:                 defaultPreDBStage(false),
+			EnrichTMDB:                  defaultTMDBStage(false),
 		},
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
 	}
@@ -203,6 +205,8 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		MinExpectedFileCoveragePct: float64Value(cfg.Release.MinExpectedFileCoveragePct, 90),
 		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
 	}
+	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
+	out.ReleasePurgeArchivedSources = indexStageRuntimeFromConfig(cfg.ReleasePurgeArchivedSources, false, 10, 50)
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
 		ProbableConfidenceThreshold: float64Value(cfg.Match.ProbableConfidenceThreshold, 0.55),
@@ -340,6 +344,8 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			MinExpectedFileCoveragePct: float64Ptr(indexing.Release.MinExpectedFileCoveragePct),
 			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
 		}
+		effective.Indexing.ReleaseArchiveNZB = toStageConfigNoConcurrency(indexing.ReleaseArchiveNZB)
+		effective.Indexing.ReleasePurgeArchivedSources = toStageConfigNoConcurrency(indexing.ReleasePurgeArchivedSources)
 		effective.Indexing.Match = config.IndexingMatchConfig{
 			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),
 			ProbableConfidenceThreshold: float64Ptr(indexing.Match.ProbableConfidenceThreshold),
@@ -606,6 +612,8 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.RecoverYEnc.Enabled ||
 		in.ReleaseSummaryRefresh.Enabled ||
 		in.Release.Enabled ||
+		in.ReleaseArchiveNZB.Enabled ||
+		in.ReleasePurgeArchivedSources.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
 		in.InspectNFO.Enabled ||
@@ -722,26 +730,28 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		return nil
 	}
 	out := &IndexingRuntimeSettings{
-		Newsgroups:               append([]string(nil), in.Newsgroups...),
-		BackfillUntilDateByGroup: cloneStringMap(in.BackfillUntilDateByGroup),
-		ScrapeLatest:             in.ScrapeLatest,
-		ScrapeBackfill:           in.ScrapeBackfill,
-		Assemble:                 mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 5000, 1), in.Assemble),
-		AssembleLaneA:            mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
-		AssembleLaneB:            mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
-		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
-		ReleaseSummaryRefresh:    mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
-		Release:                  in.Release,
-		Match:                    in.Match,
-		Inspect:                  cloneInspectRuntimeSettings(in.Inspect),
-		InspectDiscovery:         in.InspectDiscovery,
-		InspectPAR2:              in.InspectPAR2,
-		InspectNFO:               in.InspectNFO,
-		InspectArchive:           in.InspectArchive,
-		InspectPassword:          in.InspectPassword,
-		InspectMedia:             in.InspectMedia,
-		EnrichPreDB:              in.EnrichPreDB,
-		EnrichTMDB:               in.EnrichTMDB,
+		Newsgroups:                  append([]string(nil), in.Newsgroups...),
+		BackfillUntilDateByGroup:    cloneStringMap(in.BackfillUntilDateByGroup),
+		ScrapeLatest:                in.ScrapeLatest,
+		ScrapeBackfill:              in.ScrapeBackfill,
+		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 5000, 1), in.Assemble),
+		AssembleLaneA:               mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
+		AssembleLaneB:               mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
+		RecoverYEnc:                 mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
+		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
+		Release:                     in.Release,
+		ReleaseArchiveNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
+		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
+		Match:                       in.Match,
+		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
+		InspectDiscovery:            in.InspectDiscovery,
+		InspectPAR2:                 in.InspectPAR2,
+		InspectNFO:                  in.InspectNFO,
+		InspectArchive:              in.InspectArchive,
+		InspectPassword:             in.InspectPassword,
+		InspectMedia:                in.InspectMedia,
+		EnrichPreDB:                 in.EnrichPreDB,
+		EnrichTMDB:                  in.EnrichTMDB,
 	}
 	return out
 }

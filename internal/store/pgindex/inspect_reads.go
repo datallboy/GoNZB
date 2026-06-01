@@ -471,6 +471,30 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 		Exact:       true,
 	},
 	{
+		Key:         "archive_pending_releases",
+		Label:       "Archive Backlog",
+		Description: "Exact count of nzb-ready releases still waiting for release_archive_nzb processing.",
+		Exact:       true,
+	},
+	{
+		Key:         "archived_waiting_for_purge_releases",
+		Label:       "Purge Backlog",
+		Description: "Exact count of archived releases still waiting for release_purge_archived_sources processing.",
+		Exact:       true,
+	},
+	{
+		Key:         "purged_archived_releases",
+		Label:       "Purged Archived Releases",
+		Description: "Exact count of archived releases whose heavy source lineage has already been purged.",
+		Exact:       true,
+	},
+	{
+		Key:         "blob_backed_archived_releases",
+		Label:       "Blob Archived Releases",
+		Description: "Exact count of releases with durable blob-backed NZB archival metadata.",
+		Exact:       true,
+	},
+	{
 		Key:         "pending_yenc_recovery_binaries",
 		Label:       "yEnc Recovery Backlog",
 		Description: "Bounded count of binaries that recover_yenc can inspect now. Values at the cap mean there may be more recoverable work behind the current snapshot.",
@@ -707,6 +731,8 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
+	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
+	{StageName: "release_purge_archived_sources", Label: "Purge Archived Sources", ItemLabel: "releases"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
 	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
@@ -850,6 +876,10 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"recovered", "attempted", "candidates"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
+	case "release_archive_nzb":
+		return []string{"archived_count", "archive_claimed", "archive_candidates"}
+	case "release_purge_archived_sources":
+		return []string{"purged_count", "purge_candidates"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
 		return []string{"processed_count", "candidate_count"}
 	case "enrich_predb", "enrich_tmdb":
@@ -926,6 +956,14 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 		return s.EstimateUnassembledArticleHeaders(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
+	case "archive_pending_releases":
+		return s.countArchiveBacklog(ctx)
+	case "archived_waiting_for_purge_releases":
+		return s.countArchiveState(ctx, "purge_pending")
+	case "purged_archived_releases":
+		return s.countArchiveState(ctx, "purged")
+	case "blob_backed_archived_releases":
+		return s.countBlobArchivedReleases(ctx)
 	case "pending_release_summary_refresh_summaries":
 		count, err := s.CountQueuedReleaseFamilySummaries(ctx)
 		return int64(count), err
@@ -946,6 +984,46 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
 	}
+}
+
+func (s *Store) countArchiveBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM releases r
+		JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
+		WHERE r.source_kind = 'usenet_index'
+		  AND n.generation_status = 'ready'
+		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
+		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count archive backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) countArchiveState(ctx context.Context, state string) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_archive_state
+		WHERE archive_status = $1`, strings.TrimSpace(state)).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count archive state %s: %w", state, err)
+	}
+	return count, nil
+}
+
+func (s *Store) countBlobArchivedReleases(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_archive_state
+		WHERE object_key <> ''
+		  AND archive_status IN ('archived', 'purge_pending', 'purged')`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count blob archived releases: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Store) countTableRows(ctx context.Context, table string) (int64, error) {
