@@ -17,6 +17,7 @@ type Config struct {
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
+	Blob     BlobConfig      `mapstructure:"blob" yaml:"blob"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
@@ -72,6 +73,17 @@ type StoreConfig struct {
 	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
 }
 
+type BlobConfig struct {
+	IndexerArchive  BlobStoreConfig `mapstructure:"indexer_archive" yaml:"indexer_archive"`
+	AggregatorCache BlobStoreConfig `mapstructure:"aggregator_cache" yaml:"aggregator_cache"`
+}
+
+type BlobStoreConfig struct {
+	BackendKind string `mapstructure:"backend_kind" yaml:"backend_kind"`
+	RootDir     string `mapstructure:"root_dir" yaml:"root_dir"`
+	Prefix      string `mapstructure:"prefix" yaml:"prefix"`
+}
+
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
@@ -87,26 +99,28 @@ type AggregatorSourcesConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups               []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest             IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill           IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble                 IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
-	AssembleLaneA            IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
-	AssembleLaneB            IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
-	RecoverYEnc              IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh    IndexingStageConfig   `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                  IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
-	Match                    IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
-	Inspect                  IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
-	InspectDiscovery         IndexingStageConfig   `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2              IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO               IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive           IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword          IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia             IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB              IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB               IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                  []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup    map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill              IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	Assemble                    IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
+	AssembleLaneA               IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
+	AssembleLaneB               IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
+	RecoverYEnc                 IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh       IndexingStageConfig   `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                     IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
+	ReleaseArchiveNZB           IndexingStageConfig   `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources IndexingStageConfig   `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	Match                       IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
+	Inspect                     IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
+	InspectDiscovery            IndexingStageConfig   `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                 IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                  IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive              IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword             IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                 IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                  IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -239,6 +253,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("log.include_stdout", true)
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
+	v.SetDefault("blob.indexer_archive.backend_kind", "fs")
+	v.SetDefault("blob.indexer_archive.root_dir", "")
+	v.SetDefault("blob.indexer_archive.prefix", "")
+	v.SetDefault("blob.aggregator_cache.backend_kind", "fs")
+	v.SetDefault("blob.aggregator_cache.root_dir", "")
+	v.SetDefault("blob.aggregator_cache.prefix", "")
 
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
@@ -267,6 +287,14 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
 	v.SetDefault("indexing.release.min_expected_file_coverage_pct", 90.0)
 	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
+	v.SetDefault("indexing.release_archive_nzb.enabled", false)
+	v.SetDefault("indexing.release_archive_nzb.interval_minutes", 10.0)
+	v.SetDefault("indexing.release_archive_nzb.batch_size", 100)
+	v.SetDefault("indexing.release_archive_nzb.backoff_seconds", 0)
+	v.SetDefault("indexing.release_purge_archived_sources.enabled", false)
+	v.SetDefault("indexing.release_purge_archived_sources.interval_minutes", 10.0)
+	v.SetDefault("indexing.release_purge_archived_sources.batch_size", 50)
+	v.SetDefault("indexing.release_purge_archived_sources.backoff_seconds", 0)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))

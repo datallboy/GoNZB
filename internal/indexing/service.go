@@ -94,6 +94,8 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 		supervisor.StageAssemble,
 		supervisor.StageReleaseSummaryRefresh,
 		supervisor.StageRelease,
+		supervisor.StageReleaseArchiveNZB,
+		supervisor.StageReleasePurgeArchivedSources,
 	)
 }
 
@@ -103,6 +105,14 @@ func (s *Service) ReleaseOnce(ctx context.Context) error {
 
 func (s *Service) ReleaseSummaryRefreshOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageReleaseSummaryRefresh)
+}
+
+func (s *Service) ReleaseArchiveNZBOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleaseArchiveNZB)
+}
+
+func (s *Service) ReleasePurgeArchivedSourcesOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleasePurgeArchivedSources)
 }
 
 func (s *Service) ReformReleasesOnce(ctx context.Context) error {

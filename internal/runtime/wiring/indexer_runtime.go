@@ -22,11 +22,14 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/maintenance"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/indexing/release"
+	"github.com/datallboy/gonzb/internal/indexing/releasearchive"
+	"github.com/datallboy/gonzb/internal/indexing/releasepurge"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/indexing/yencrecover"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/segmentio/ksuid"
 )
@@ -57,6 +60,8 @@ type usenetIndexerConfig struct {
 	RecoverYEnc                                     indexerStageConfig
 	ReleaseSummaryRefreshStage                      indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
+	ReleaseArchiveNZBStage                          indexerStageConfig
+	ReleasePurgeArchivedSourcesStage                indexerStageConfig
 	InspectDiscovery                                indexerStageConfig
 	InspectPAR2                                     indexerStageConfig
 	InspectNFO                                      indexerStageConfig
@@ -242,6 +247,18 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			RequireExpectedFileCountForContextualObfuscatedSet: true,
 		},
 	)
+	archiveResolver := resolver.NewUsenetIndexResolver(appCtx.PGIndexStore, appCtx.IndexerArchiveStore)
+	releaseArchiveSvc := releasearchive.NewService(
+		appCtx.PGIndexStore,
+		archiveResolver,
+		appCtx.IndexerArchiveStore,
+		appCtx.Logger,
+		releasearchive.Options{BatchSize: runtimeCfg.ReleaseArchiveNZBStage.BatchSize},
+	)
+	releasePurgeSvc := releasepurge.NewService(
+		appCtx.PGIndexStore,
+		releasepurge.Options{BatchSize: runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize},
+	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
 	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectDiscoveryFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
@@ -341,6 +358,28 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ReleaseStage.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(releaseSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageReleaseArchiveNZB,
+			Interval:    runtimeCfg.ReleaseArchiveNZBStage.Interval,
+			Enabled:     releaseArchiveSvc != nil && appCtx.IndexerArchiveStore != nil && runtimeCfg.ReleaseArchiveNZBStage.Enabled,
+			BatchSize:   runtimeCfg.ReleaseArchiveNZBStage.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ReleaseArchiveNZBStage.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(releaseArchiveSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageReleasePurgeArchivedSources,
+			Interval:    runtimeCfg.ReleasePurgeArchivedSourcesStage.Interval,
+			Enabled:     releasePurgeSvc != nil && runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled,
+			BatchSize:   runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ReleasePurgeArchivedSourcesStage.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(releasePurgeSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -609,14 +648,16 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			BatchSize:       indexingCfg.Release.BatchSize,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
-		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectDiscovery),
-		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
-		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),
-		InspectArchive:   newIndexerStageConfig(indexingCfg.InspectArchive),
-		InspectPassword:  newIndexerStageConfig(indexingCfg.InspectPassword),
-		InspectMedia:     newIndexerStageConfig(indexingCfg.InspectMedia),
-		EnrichPreDBStage: newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
-		EnrichTMDBStage:  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
+		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
+		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
+		InspectDiscovery:                 newIndexerStageConfig(indexingCfg.InspectDiscovery),
+		InspectPAR2:                      newIndexerStageConfig(indexingCfg.InspectPAR2),
+		InspectNFO:                       newIndexerStageConfig(indexingCfg.InspectNFO),
+		InspectArchive:                   newIndexerStageConfig(indexingCfg.InspectArchive),
+		InspectPassword:                  newIndexerStageConfig(indexingCfg.InspectPassword),
+		InspectMedia:                     newIndexerStageConfig(indexingCfg.InspectMedia),
+		EnrichPreDBStage:                 newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
+		EnrichTMDBStage:                  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
 		MaintenanceStage: indexerStageConfig{
 			Enabled:     true,
 			Interval:    6 * time.Hour,

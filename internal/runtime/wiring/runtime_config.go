@@ -111,6 +111,6 @@ func buildReleaseResolver(appCtx *app.Context, aggregator app.IndexerAggregator)
 	return resolver.NewDefaultReleaseResolver(
 		resolver.NewManualResolver(appCtx.PayloadCacheStore),
 		resolver.NewAggregatorResolver(aggregator),
-		resolver.NewUsenetIndexResolver(appCtx.PGIndexStore),
+		resolver.NewUsenetIndexResolver(appCtx.PGIndexStore, appCtx.IndexerArchiveStore),
 	)
 }

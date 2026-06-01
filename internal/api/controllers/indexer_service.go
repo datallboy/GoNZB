@@ -574,6 +574,10 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			BatchSize:       runtime.Indexing.Release.BatchSize,
 			BackoffSeconds:  runtime.Indexing.Release.BackoffSeconds,
 		}, true
+	case string(supervisor.StageReleaseArchiveNZB):
+		return runtime.Indexing.ReleaseArchiveNZB, true
+	case string(supervisor.StageReleasePurgeArchivedSources):
+		return runtime.Indexing.ReleasePurgeArchivedSources, true
 	case string(supervisor.StageInspectDiscovery):
 		return runtime.Indexing.InspectDiscovery, true
 	case string(supervisor.StageInspectPAR2):
@@ -621,6 +625,8 @@ var allIndexerStages = []string{
 	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageReleaseSummaryRefresh),
 	string(supervisor.StageRelease),
+	string(supervisor.StageReleaseArchiveNZB),
+	string(supervisor.StageReleasePurgeArchivedSources),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
 	string(supervisor.StageInspectNFO),
@@ -670,6 +676,10 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ReleaseSummaryRefresh, patch)
 	case string(supervisor.StageRelease):
 		applyReleaseStagePatch(&indexing.Release, patch)
+	case string(supervisor.StageReleaseArchiveNZB):
+		applyStagePatch(&indexing.ReleaseArchiveNZB, patch)
+	case string(supervisor.StageReleasePurgeArchivedSources):
+		applyStagePatch(&indexing.ReleasePurgeArchivedSources, patch)
 	case string(supervisor.StageInspectDiscovery):
 		applyStagePatch(&indexing.InspectDiscovery, patch)
 	case string(supervisor.StageInspectPAR2):
