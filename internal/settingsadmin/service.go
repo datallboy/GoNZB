@@ -312,6 +312,9 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if stage.config.BatchSize <= 0 {
 			issues = append(issues, "indexing."+stage.name+".batch_size must be greater than 0 when enabled")
 		}
+		if stage.config.MaxBatches < 0 {
+			issues = append(issues, "indexing."+stage.name+".max_batches must be greater than or equal to 0")
+		}
 		if stage.config.BinaryUpsertDBChunkSize < 0 {
 			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than or equal to 0")
 		}

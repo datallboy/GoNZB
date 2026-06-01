@@ -38,6 +38,7 @@ type StageDefinition = {
   description: string
   supportsConcurrency: boolean
   showBinaryUpsertChunk?: boolean
+  showMaxBatches?: boolean
 }
 
 const stageDefinitions: StageDefinition[] = [
@@ -47,7 +48,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
   { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
-  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
+  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
@@ -101,7 +102,7 @@ function defaultSettings(): RuntimeSettings {
       assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
       recover_yenc: stageDefaults(25, 1),
-      release_summary_refresh: stageDefaults(10000),
+      release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
         min_confidence: 0.55,
@@ -698,6 +699,9 @@ export function AdminSettingsPage() {
                           <CheckboxField label="Enabled" checked={Boolean(value.enabled)} onChange={(next) => updateStage(key, { enabled: next })} />
                           <NumberField label="Interval minutes" min={1} step="0.5" value={value.interval_minutes ?? 0} onChange={(next) => updateStage(key, { interval_minutes: next })} />
                           <NumberField label="Batch size" min={1} value={value.batch_size ?? 0} onChange={(next) => updateStage(key, { batch_size: next })} />
+                          {definition.showMaxBatches ? (
+                            <NumberField label="Max batches" min={1} value={value.max_batches ?? 10} onChange={(next) => updateStage(key, { max_batches: next })} />
+                          ) : null}
                           <NumberField label="Backoff seconds" min={0} value={value.backoff_seconds ?? 0} onChange={(next) => updateStage(key, { backoff_seconds: next })} />
                           {definition.supportsConcurrency ? (
                             <NumberField label="Concurrency" min={1} value={value.concurrency ?? 1} onChange={(next) => updateStage(key, { concurrency: next })} />

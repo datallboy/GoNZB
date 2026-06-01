@@ -72,6 +72,7 @@ type indexerStageConfig struct {
 	Enabled                 bool
 	Interval                time.Duration
 	BatchSize               int
+	MaxBatches              int
 	Concurrency             int
 	Backoff                 time.Duration
 	BinaryUpsertDBChunkSize int
@@ -233,6 +234,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		release.Options{
 			BatchSize:                                          runtimeCfg.ReleaseStage.BatchSize,
 			SummaryRefreshBatchSize:                            runtimeCfg.ReleaseSummaryRefreshStage.BatchSize,
+			SummaryRefreshMaxBatches:                           runtimeCfg.ReleaseSummaryRefreshStage.MaxBatches,
 			ReleaseMinConfidence:                               runtimeCfg.ReleaseMinConfidence,
 			ReleaseMinCompletion:                               runtimeCfg.ReleaseMinCompletion,
 			ReleaseMinExpectedFileCoveragePct:                  runtimeCfg.ReleaseMinExpectedFileCoveragePct,
@@ -637,6 +639,7 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		Enabled:                 in.Enabled,
 		Interval:                time.Duration(in.IntervalMinutes * float64(time.Minute)),
 		BatchSize:               in.BatchSize,
+		MaxBatches:              in.MaxBatches,
 		Concurrency:             in.Concurrency,
 		Backoff:                 time.Duration(in.BackoffSeconds) * time.Second,
 		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,

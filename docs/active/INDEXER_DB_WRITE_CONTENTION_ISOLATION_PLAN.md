@@ -1271,6 +1271,85 @@ Split release stages on `2026-05-29 08:13 America/New_York`:
     - run `release_summary_refresh` frequently to chew backlog
     - keep `release` focused on low-latency formation from already-refreshed summaries
 
+Remaining `binaries` index review closeout on `2026-06-01 09:00-09:10 America/New_York`:
+
+- live index usage and size sample on the current DB:
+  - `binaries_provider_id_newsgroup_id_binary_key_key`: `idx_scan=13844405`, size about `5.27 GB`
+  - `idx_binaries_file_set_key`: size about `3.54 GB`
+  - `idx_binaries_normalized_file_identity`: `idx_scan=7801101`, size about `3.37 GB`
+  - `idx_binaries_release_family_key`: `idx_scan=22190252`, size about `3.37 GB`
+  - remaining zero-scan indexes were only:
+    - `idx_binaries_base_stem_archive_expected_family`: about `13.8 MB`
+    - `idx_binaries_base_stem_family_lookup`: about `4.6 MB`
+- live `EXPLAIN (ANALYZE, BUFFERS)` checks on the large remaining lookup indexes:
+  - `idx_binaries_file_set_key` with the actual keyed shape `(provider_id, newsgroup_id, file_set_key)` returned in about `0.07 ms`
+  - `idx_binaries_release_family_key` with the actual keyed shape `(provider_id, newsgroup_id, release_family_key)` returned in about `0.05 ms`
+  - `idx_binaries_normalized_file_identity` with the indexed expression plus its partial-index predicate returned in about `0.56 ms`
+- important nuance:
+  - the large `release_family_key` and normalized-name indexes only look bad if queried with the wrong prefix shape
+  - a deliberately incomplete probe that skipped `newsgroup_id` on `idx_binaries_release_family_key` took about `12.8 s`
+  - a deliberately incomplete normalized-name probe that skipped the partial-index predicate fell back to a bad scan and took about `20.6 s`
+- interpretation:
+  - there is no further meaningful hot-write win left from pruning the remaining large `binaries` indexes in this plan
+  - the remaining large indexes are the right ones to keep because they serve active release formation, recovered-file-set hydration, and PAR2/identity lookups
+  - the only truly unused leftovers are tiny and not worth more migration churn for contention purposes
+  - the remaining large-table/storage story belongs to the separate archival/storage-reduction workstream, not this write-contention plan
+
+Release summary refresh drain throughput follow-up on `2026-06-01 09:05-09:19 America/New_York`:
+
+- baseline before this change:
+  - persisted `release_summary_refresh` run `70555`
+  - `summary_refresh_initial_count=1316365`
+  - `summary_refresh_count=50000`
+  - `summary_refresh_batches=5`
+  - `summary_refresh_duration_ms=43299.259`
+  - remaining backlog after the run: `1266365`
+- implemented:
+  - added `indexing.release_summary_refresh.max_batches` as a real runtime/config/frontend setting
+  - raised the default `release_summary_refresh` drain budget from `5` batches to `10`
+  - wired the setting into runtime and service construction instead of leaving it hardcoded
+- direct remeasurement after the change:
+  - persisted run `70556`
+  - `summary_refresh_initial_count=1266365`
+  - `summary_refresh_count=100000`
+  - `summary_refresh_batches=10`
+  - `summary_refresh_duration_ms=84727.227`
+  - remaining backlog after the run: `1166365`
+- serve-mode remeasurement with full writer overlap (`09:14:07-09:19:26 EDT`):
+  - queue before serve: `1166365`
+  - completed `release_summary_refresh` run `70563`:
+    - `summary_refresh_count=100000`
+    - `summary_refresh_batches=10`
+    - `summary_refresh_duration_ms=156457.155`
+    - `summary_refresh_initial_count=1166365`
+    - `summary_refresh_remaining_count=1080302`
+  - queue at serve shutdown while the next refresh pass was already running: `1014722`
+  - release formation remained active during the same sample:
+    - `release` logged `formed=1516`, then `formed=377`, then `formed=24`
+- interpretation:
+  - doubling the batch budget doubled the per-run drain capacity exactly as expected
+  - under real serve overlap the queue trended down, not up:
+    - `1166365 -> 1080302` after one completed refresh pass
+    - `1166365 -> 1014722` by serve shutdown while the next pass was already in flight
+  - the remaining issue is operational catch-up time, not missing engineering control
+  - recommended steady-state defaults after this plan:
+    - keep `release_summary_refresh.batch_size=10000`
+    - keep `release_summary_refresh.max_batches=10`
+    - keep `release_summary_refresh.interval_minutes=2`
+  - recommended operator action when backlog spikes badly:
+    - temporarily raise `release_summary_refresh.max_batches` above `10`, or shorten its interval, rather than capping assemble first
+  - no additional code change is required in this plan unless future serve samples show backlog growth resuming
+
+Closeout assessment on `2026-06-01`:
+
+- the remaining two backlog items for this plan are complete
+- `assemble_lane_b` is no longer blocked by self-deadlocking refresh work or by inline summary recompute ownership
+- `release_summary_refresh` is now an independently tunable drainer that can reduce backlog under real overlap
+- further work from here should move to:
+  - database storage/archival reduction
+  - operational tuning of `release_summary_refresh` settings if backlog conditions change
+  - optional future scheduler policy work only if production overlap shows the queue growing again
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
@@ -1280,9 +1359,9 @@ Split release stages on `2026-05-29 08:13 America/New_York`:
 - [x] Decide whether `UpsertBinaries` should move to a staging-table / `COPY` path instead of giant inline `VALUES` upserts.
 - [x] Review the first `binaries` secondary-index pruning set and remove clearly obsolete hot-write indexes (`yenc` backlog, generic `updated_at`, unused `identity_strength`).
 - [x] Replace the ineffective `file_set_key` access path with index ordering that matches recovered-file-set release queries, plus a dedicated recovered-file-set candidate index.
-- [ ] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
+- [x] Continue reviewing the remaining large `binaries` lookup indexes and move stage-specific backlog / lookup responsibilities off the hot fact table where practical.
 - [x] Move readiness-summary recompute ownership to readers: fact writers dirty/enqueue; `release` and yEnc work-item seeding drain and recompute from a bounded refresh queue.
 - [x] Split deferred readiness-summary draining into its own `release_summary_refresh` stage, command, runtime setting, and frontend-visible stage so release formation no longer doubles as the only backlog drainer.
 - [x] Re-measure serve-mode overlap after the queue-based summary ownership shift and decide whether any temporary concurrency caps or stage staggering are still needed.
 - [x] Re-measure `assemble_lane_b` in serve mode after summary-refresh isolation changes and compare it directly to `assemble lane-b --once`.
-- [ ] Increase deferred readiness-summary drain throughput so `release_family_summary_refresh_queue` can keep up with serve-mode writer overlap before candidate formation becomes backlog-bound.
+- [x] Increase deferred readiness-summary drain throughput so `release_family_summary_refresh_queue` can keep up with serve-mode writer overlap before candidate formation becomes backlog-bound.

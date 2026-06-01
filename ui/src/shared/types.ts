@@ -268,6 +268,7 @@ export type AdminStageConfigPatch = {
   enabled?: boolean
   interval_minutes?: number
   batch_size?: number
+  max_batches?: number
   concurrency?: number
   backoff_seconds?: number
   binary_upsert_db_chunk_size?: number
