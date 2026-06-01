@@ -611,22 +611,27 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	clusters := clusterBinaries(candidate, binaries)
 	keepGroupNames := make([]string, 0, len(clusters))
 	outcome := candidateOutcome{}
+	clusterTitleCandidates := make([][]pgindex.ReleaseTitleCandidate, len(clusters))
 
-	for _, cluster := range clusters {
+	start = time.Now()
+	allTitleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForClusters(clusters))
+	if timings != nil {
+		timings.titleCandidates += time.Since(start)
+	}
+	if err != nil {
+		return outcome, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
+	}
+	titleCandidatesByID := titleCandidatesByBinaryID(allTitleCandidates)
+	for idx, cluster := range clusters {
+		clusterTitleCandidates[idx] = titleCandidatesForCluster(cluster.Binaries, titleCandidatesByID)
+	}
+
+	for idx, cluster := range clusters {
 		if err := ctx.Err(); err != nil {
 			return outcome, err
 		}
 
-		start = time.Now()
-		titleCandidates, err := s.repo.ListReleaseTitleCandidates(ctx, binaryIDsForCluster(cluster.Binaries))
-		if timings != nil {
-			timings.titleCandidates += time.Since(start)
-		}
-		if err != nil {
-			return outcome, fmt.Errorf("list release title candidates for %s: %w", familyKey, err)
-		}
-
-		record := buildReleaseRecord(candidate, cluster, titleCandidates)
+		record := buildReleaseRecord(candidate, cluster, clusterTitleCandidates[idx])
 		if ok, reason := shouldPersistCluster(cluster, record, s.opts); !ok {
 			outcome.skippedFragments++
 			switch reason {
