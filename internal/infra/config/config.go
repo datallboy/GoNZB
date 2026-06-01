@@ -17,7 +17,6 @@ type Config struct {
 	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
-	Blob     BlobConfig      `mapstructure:"blob" yaml:"blob"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
 
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
@@ -72,17 +71,6 @@ type StoreConfig struct {
 	// PostgreSQL DSN for Usenet/NZB Indexer module.
 	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
 }
-
-type BlobConfig struct {
-	IndexerArchive  BlobStoreConfig `mapstructure:"indexer_archive" yaml:"indexer_archive"`
-	AggregatorCache BlobStoreConfig `mapstructure:"aggregator_cache" yaml:"aggregator_cache"`
-}
-
-type BlobStoreConfig struct {
-	BackendKind string `mapstructure:"backend_kind" yaml:"backend_kind"`
-	Prefix      string `mapstructure:"prefix" yaml:"prefix"`
-}
-
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
@@ -252,10 +240,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("log.include_stdout", true)
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
-	v.SetDefault("blob.indexer_archive.backend_kind", "fs")
-	v.SetDefault("blob.indexer_archive.prefix", "indexer-archive")
-	v.SetDefault("blob.aggregator_cache.backend_kind", "fs")
-	v.SetDefault("blob.aggregator_cache.prefix", "")
 
 	v.SetDefault("store.pg_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
