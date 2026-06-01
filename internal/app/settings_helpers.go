@@ -29,7 +29,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			AssembleLaneA:            defaultAssembleStage(false, 2, 5000, 1),
 			AssembleLaneB:            defaultAssembleStage(false, 10, 2500, 1),
 			RecoverYEnc:              defaultStage(false, 10, 25, 1),
-			ReleaseSummaryRefresh:    defaultStage(false, 2, 10000, 0),
+			ReleaseSummaryRefresh:    defaultReleaseSummaryRefreshStage(false),
 			Release:                  defaultReleaseStage(false),
 			Match:                    IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                  IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
@@ -82,6 +82,12 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 
 func defaultStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	return IndexingStageRuntimeSettings{Enabled: enabled, IntervalMinutes: interval, BatchSize: batch, Concurrency: concurrency}
+}
+
+func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSettings {
+	stage := defaultStage(enabled, 2, 10000, 0)
+	stage.MaxBatches = 10
+	return stage
 }
 
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
@@ -183,7 +189,10 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
 	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
-	out.ReleaseSummaryRefresh = indexStageRuntimeFromConfig(cfg.ReleaseSummaryRefresh, boolValue(cfg.Release.Enabled, true), 2, 10000)
+	out.ReleaseSummaryRefresh = mergeStageRuntimeSettings(
+		defaultReleaseSummaryRefreshStage(boolValue(cfg.Release.Enabled, true)),
+		indexStageRuntimeFromConfig(cfg.ReleaseSummaryRefresh, boolValue(cfg.Release.Enabled, true), 2, 10000),
+	)
 	out.Release = IndexingReleaseRuntimeSettings{
 		Enabled:                    boolValue(cfg.Release.Enabled, true),
 		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
@@ -721,7 +730,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		AssembleLaneA:            mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
 		AssembleLaneB:            mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
 		RecoverYEnc:              mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
-		ReleaseSummaryRefresh:    mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.ReleaseSummaryRefresh),
+		ReleaseSummaryRefresh:    mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                  in.Release,
 		Match:                    in.Match,
 		Inspect:                  cloneInspectRuntimeSettings(in.Inspect),
@@ -753,6 +762,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.BatchSize > 0 {
 		base.BatchSize = override.BatchSize
 	}
+	if override.MaxBatches > 0 {
+		base.MaxBatches = override.MaxBatches
+	}
 	if override.Concurrency > 0 {
 		base.Concurrency = override.Concurrency
 	}
@@ -781,6 +793,7 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		Enabled:                 boolValue(cfg.Enabled, defaultEnabled),
 		IntervalMinutes:         float64Value(cfg.IntervalMinutes, defaultInterval),
 		BatchSize:               intValue(cfg.BatchSize, defaultBatch),
+		MaxBatches:              intValue(cfg.MaxBatches, 0),
 		BackoffSeconds:          intValue(cfg.BackoffSeconds, 0),
 		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
 	}
@@ -798,6 +811,9 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 		IntervalMinutes: float64Ptr(in.IntervalMinutes),
 		BatchSize:       intPtr(in.BatchSize),
 		BackoffSeconds:  intPtr(in.BackoffSeconds),
+	}
+	if in.MaxBatches > 0 {
+		out.MaxBatches = intPtr(in.MaxBatches)
 	}
 	if in.Concurrency > 0 {
 		out.Concurrency = intPtr(in.Concurrency)

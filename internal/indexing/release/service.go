@@ -60,7 +60,7 @@ func NewService(repo repository, log logger, opts Options) *Service {
 		opts.SummaryRefreshBatchSize = 10000
 	}
 	if opts.SummaryRefreshMaxBatches <= 0 {
-		opts.SummaryRefreshMaxBatches = 5
+		opts.SummaryRefreshMaxBatches = 10
 	}
 	if opts.SummaryRefreshCandidateBacklogLimit <= 0 {
 		opts.SummaryRefreshCandidateBacklogLimit = opts.SummaryRefreshBatchSize * 5
