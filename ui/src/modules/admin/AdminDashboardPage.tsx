@@ -102,11 +102,12 @@ function backlogCommand(stat: IndexerDashboardStat) {
     case 'pending_inspect_media_binaries':
       return 'indexer inspect media'
     default:
-      return 'indexer stage'
+      return null
   }
 }
 
 function backlogCard(stat: IndexerDashboardStat) {
+  const command = backlogCommand(stat)
   return (
     <div className="stat-card backlog-stat-card" key={stat.key}>
       <div className="backlog-stat-card__header">
@@ -114,7 +115,7 @@ function backlogCard(stat: IndexerDashboardStat) {
         <small>{stat.exact ? 'exact' : stat.capped ? 'capped estimate' : 'estimate'}</small>
       </div>
       <strong>{formatStatValue(stat)}</strong>
-      <code>{backlogCommand(stat)}</code>
+      {command ? <code>{command}</code> : null}
       <small>{statFreshness(stat)}</small>
       {stat.last_error ? <small className="backlog-stat-card__error">{stat.last_error}</small> : null}
     </div>
