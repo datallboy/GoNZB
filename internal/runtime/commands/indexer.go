@@ -172,6 +172,40 @@ func (r *Runner) ExecuteIndexerReleaseSummaryRefresh(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerReleaseArchiveNZB(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.ReleaseArchiveNZBOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer release archive-nzb --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer release archive-nzb --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerReleaseArchiveNZBScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer release archive-nzb scheduler failed: %v", err)
+	}
+}
+
+func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.ReleasePurgeArchivedSourcesOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer release purge-archived-sources --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer release purge-archived-sources --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerReleasePurgeArchivedSourcesScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer release purge-archived-sources scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerInspect(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

@@ -135,6 +135,22 @@ var indexerReleaseRefreshSummariesCmd = &cobra.Command{
 	},
 }
 
+var indexerReleaseArchiveNZBCmd = &cobra.Command{
+	Use:   "archive-nzb",
+	Short: "Archive ready release NZBs continuously; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReleaseArchiveNZB(releaseOnce)
+	},
+}
+
+var indexerReleasePurgeArchivedSourcesCmd = &cobra.Command{
+	Use:   "purge-archived-sources",
+	Short: "Purge source rows for archived releases continuously; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReleasePurgeArchivedSources(releaseOnce)
+	},
+}
+
 var indexerRecoverYEncCmd = &cobra.Command{
 	Use:   "recover-yenc",
 	Short: "Recover obfuscated binary names from yEnc body headers; use --once for a single pass",
@@ -309,6 +325,8 @@ func init() {
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
 	indexerReleaseRefreshSummariesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release summary refresh pass and exit instead of continuous mode")
+	indexerReleaseArchiveNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archive NZB pass and exit instead of continuous mode")
+	indexerReleasePurgeArchivedSourcesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archived-source purge pass and exit instead of continuous mode")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectDiscoveryCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one discovery inspection pass and exit")
@@ -336,6 +354,8 @@ func init() {
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerReleaseCmd.AddCommand(indexerReleaseRefreshSummariesCmd)
+	indexerReleaseCmd.AddCommand(indexerReleaseArchiveNZBCmd)
+	indexerReleaseCmd.AddCommand(indexerReleasePurgeArchivedSourcesCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
