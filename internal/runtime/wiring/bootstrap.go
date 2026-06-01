@@ -128,21 +128,17 @@ func newIndexerArchiveStore(cfg *config.Config) (app.BlobStore, error) {
 }
 
 func aggregatorCacheRootDir(cfg *config.Config) string {
-	return blobStoreDir(cfg, cfg.Blob.AggregatorCache.Prefix)
+	return blobStoreRoot(cfg)
 }
 
 func indexerArchiveRootDir(cfg *config.Config) string {
-	return blobStoreDir(cfg, cfg.Blob.IndexerArchive.Prefix)
+	return filepath.Join(blobStoreRoot(cfg), "indexer-archive")
 }
 
-func blobStoreDir(cfg *config.Config, prefix string) string {
+func blobStoreRoot(cfg *config.Config) string {
 	root := "./data/blobs"
 	if cfg != nil && strings.TrimSpace(cfg.Store.BlobDir) != "" {
 		root = cfg.Store.BlobDir
 	}
-	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
-	if prefix == "" {
-		return root
-	}
-	return filepath.Join(root, filepath.FromSlash(prefix))
+	return root
 }

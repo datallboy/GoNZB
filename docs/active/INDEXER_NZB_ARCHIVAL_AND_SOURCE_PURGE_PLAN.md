@@ -30,9 +30,9 @@ Status date: 2026-06-01
   - `release_archive_state`
   - `release_archive_lineage_binaries`
   - `release_archive_lineage_article_headers`
-- Added separate logical blob-store configuration:
-  - `blob.indexer_archive`
-  - `blob.aggregator_cache`
+- Added single-root blob-store configuration rooted at `store.blob_dir`.
+  - Aggregator cache remains in `store.blob_dir`
+  - Indexer archive lives in `store.blob_dir/indexer-archive`
 - Added dedicated late stages:
   - `release_archive_nzb`
   - `release_purge_archived_sources`
@@ -199,9 +199,7 @@ Why this is the best forward path:
 - Review current `nzb_cache` responsibilities and decide:
   - extend `nzb_cache`, or
   - add `release_archive_state` plus `release_archive_lineage`
-- Define the recommended store configuration model:
-  - `blob.indexer_archive`
-  - `blob.aggregator_cache`
+- Define the recommended store configuration model rooted at `store.blob_dir`.
 - Define a stable blob-key convention for archived local-indexer releases.
 - Define a stable blob-key convention for aggregator cache entries.
 - Define how blob-provider type and store identifier are stored so local FS and S3-compatible storage are both supported.
@@ -287,12 +285,12 @@ Required properties:
 
 Preferred configuration model:
 
-- `blob.indexer_archive`
-- `blob.aggregator_cache`
+- `store.blob_dir`
 
-Each store should define:
+Internal layout:
 
-- backend kind
+- aggregator cache: `store.blob_dir`
+- indexer archive: `store.blob_dir/indexer-archive`
 - root directory or bucket
 - optional prefix
 - compression behavior
