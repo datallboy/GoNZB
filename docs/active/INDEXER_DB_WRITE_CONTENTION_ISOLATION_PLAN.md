@@ -1350,6 +1350,27 @@ Closeout assessment on `2026-06-01`:
   - operational tuning of `release_summary_refresh` settings if backlog conditions change
   - optional future scheduler policy work only if production overlap shows the queue growing again
 
+Release summary refresh code-review optimization pass on `2026-06-01 09:36-09:37 America/New_York`:
+
+- implemented:
+  - removed the redundant exact queue recount at the end of every `release_summary_refresh` run
+  - switched `release_family` refresh temp staging from per-row prepared inserts to `pgx.CopyFrom` on a single dedicated connection/transaction
+  - removed the unconditional `RefreshQueuedReleaseFamilySummaries(limit*2)` call from yEnc work-item backfill so the dedicated refresh stage owns queue draining again
+- direct remeasurement after the code-review pass:
+  - persisted run `70613`
+  - `summary_refresh_initial_count=1014722`
+  - `summary_refresh_count=100000`
+  - `summary_refresh_batches=10`
+  - `summary_refresh_duration_ms=42779.464`
+  - remaining backlog after the run: `914722`
+- comparison to the prior same-budget direct run:
+  - before code-review pass (`70556`): `100000` refreshed in `84727.227 ms`
+  - after code-review pass (`70613`): `100000` refreshed in `42779.464 ms`
+- interpretation:
+  - the direct `release_summary_refresh` executor time was cut roughly in half without changing the batch budget
+  - the biggest win came from eliminating row-by-row temp-table staging and the extra trailing exact queue scan
+  - yEnc backfill is now cleaner operationally because it no longer competes to drain the same readiness-summary queue on demand
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
