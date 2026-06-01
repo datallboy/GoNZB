@@ -234,6 +234,7 @@ type UsenetIndexStore interface {
 	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
+	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error

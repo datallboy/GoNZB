@@ -2320,6 +2320,23 @@ func (f *fakeReleaseRepository) UpsertRelease(_ context.Context, in pgindex.Rele
 	return fmt.Sprintf("rel-%d", len(f.upsertedReleases)), nil
 }
 
+func (f *fakeReleaseRepository) PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
+	releaseID, err := f.UpsertRelease(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	if err := f.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
+		return "", err
+	}
+	if err := f.ReplaceReleaseNewsgroups(ctx, releaseID, newsgroupIDs); err != nil {
+		return "", err
+	}
+	if err := f.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
+		return "", err
+	}
+	return releaseID, nil
+}
+
 func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error {
 	f.deletedStaleCalls = append(f.deletedStaleCalls, staleDeleteCall{
 		providerID:     providerID,

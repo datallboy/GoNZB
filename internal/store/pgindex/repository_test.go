@@ -2294,6 +2294,78 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	}
 }
 
+func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.snapshot.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.snapshot.groupb.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	now := time.Now().UTC()
+	releaseID, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-snapshot-%d", now.UnixNano()),
+		GUID:              fmt.Sprintf("guid-snapshot-%d", now.UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "snapshot-release",
+		ReleaseFamilyKey:  "snapshot-release",
+		ReleaseKey:        "snapshot-release",
+		GroupName:         "release-group-snapshot",
+		Title:             "Snapshot Release",
+		SearchTitle:       "snapshot release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          &now,
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: &now,
+	}, []ReleaseFileRecord{{
+		FileName:  "snapshot.part01.rar",
+		SizeBytes: 1234,
+		FileIndex: 1,
+	}}, []int64{groupBID, groupAID})
+	if err != nil {
+		t.Fatalf("persist release snapshot: %v", err)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list snapshot files: %v", err)
+	}
+	if len(files) != 1 || files[0].FileName != "snapshot.part01.rar" {
+		t.Fatalf("unexpected files: %+v", files)
+	}
+
+	groups, err := store.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list snapshot groups: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != groupA || groups[1] != groupB {
+		t.Fatalf("unexpected groups: %v", groups)
+	}
+
+	var generationStatus string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT generation_status
+		FROM nzb_cache
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&generationStatus); err != nil {
+		t.Fatalf("load snapshot nzb cache: %v", err)
+	}
+	if generationStatus != "pending" {
+		t.Fatalf("unexpected generation status: %q", generationStatus)
+	}
+}
+
 func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
