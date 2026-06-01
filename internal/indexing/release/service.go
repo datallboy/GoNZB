@@ -154,12 +154,6 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		}
 	}
 
-	if initialSummaryBacklog > 0 {
-		if count, countErr := s.repo.CountQueuedReleaseFamilySummaries(ctx); countErr == nil {
-			remainingSummaryBacklog = count
-		}
-	}
-
 	metrics := map[string]any{
 		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
 		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
