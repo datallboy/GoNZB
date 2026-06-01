@@ -371,6 +371,8 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 			BatchSize:       indexing.Release.BatchSize,
 			BackoffSeconds:  indexing.Release.BackoffSeconds,
 		}},
+		{name: "release_archive_nzb", config: indexing.ReleaseArchiveNZB},
+		{name: "release_purge_archived_sources", config: indexing.ReleasePurgeArchivedSources},
 		{name: "inspect_discovery", config: indexing.InspectDiscovery},
 		{name: "inspect_par2", config: indexing.InspectPAR2},
 		{name: "inspect_nfo", config: indexing.InspectNFO},

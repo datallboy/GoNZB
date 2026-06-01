@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -127,24 +128,21 @@ func newIndexerArchiveStore(cfg *config.Config) (app.BlobStore, error) {
 }
 
 func aggregatorCacheRootDir(cfg *config.Config) string {
-	if cfg == nil {
-		return ""
-	}
-	if root := cfg.Blob.AggregatorCache.RootDir; root != "" {
-		return root
-	}
-	return cfg.Store.BlobDir
+	return blobStoreDir(cfg, cfg.Blob.AggregatorCache.Prefix)
 }
 
 func indexerArchiveRootDir(cfg *config.Config) string {
-	if cfg == nil {
-		return ""
+	return blobStoreDir(cfg, cfg.Blob.IndexerArchive.Prefix)
+}
+
+func blobStoreDir(cfg *config.Config, prefix string) string {
+	root := "./data/blobs"
+	if cfg != nil && strings.TrimSpace(cfg.Store.BlobDir) != "" {
+		root = cfg.Store.BlobDir
 	}
-	if root := cfg.Blob.IndexerArchive.RootDir; root != "" {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if prefix == "" {
 		return root
 	}
-	if cacheRoot := aggregatorCacheRootDir(cfg); cacheRoot != "" {
-		return filepath.Join(filepath.Dir(cacheRoot), "indexer-archive")
-	}
-	return "./data/indexer-archive"
+	return filepath.Join(root, filepath.FromSlash(prefix))
 }

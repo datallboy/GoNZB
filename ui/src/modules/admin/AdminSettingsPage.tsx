@@ -19,6 +19,8 @@ type StageKey =
   | 'assemble_lane_b'
   | 'recover_yenc'
   | 'release_summary_refresh'
+  | 'release_archive_nzb'
+  | 'release_purge_archived_sources'
   | 'release'
   | 'inspect_discovery'
   | 'inspect_par2'
@@ -50,6 +52,8 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
+  { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.' },
+  { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.' },
@@ -63,7 +67,7 @@ const stageDefinitions: StageDefinition[] = [
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
-  { title: 'Release commands', keys: ['release_summary_refresh', 'release'] },
+  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_archive_nzb', 'release_purge_archived_sources'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -110,6 +114,8 @@ function defaultSettings(): RuntimeSettings {
         min_expected_file_coverage_pct: 90,
         require_expected_file_count_for_contextual_obfuscated: true,
       },
+      release_archive_nzb: stageDefaults(100),
+      release_purge_archived_sources: stageDefaults(50),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -208,6 +214,8 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
+      release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
+      release_purge_archived_sources: { ...defaults.indexing!.release_purge_archived_sources, ...indexing.release_purge_archived_sources },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       inspect_discovery: { ...defaults.indexing!.inspect_discovery, ...indexing.inspect_discovery },
