@@ -29,6 +29,7 @@ const (
 	StageRecoverYEnc                 StageName = "recover_yenc"
 	StageReleaseSummaryRefresh       StageName = "release_summary_refresh"
 	StageRelease                     StageName = "release"
+	StageReleaseGenerateNZB          StageName = "release_generate_nzb"
 	StageReleaseArchiveNZB           StageName = "release_archive_nzb"
 	StageReleasePurgeArchivedSources StageName = "release_purge_archived_sources"
 	StageInspectDiscovery            StageName = "inspect_discovery"
@@ -151,6 +152,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageRecoverYEnc,
 		StageReleaseSummaryRefresh,
 		StageRelease,
+		StageReleaseGenerateNZB,
 		StageReleaseArchiveNZB,
 		StageReleasePurgeArchivedSources,
 		StageInspectDiscovery,

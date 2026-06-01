@@ -320,6 +320,7 @@ func (s *runtimeIndexerService) ListReleases(ctx context.Context, params pgindex
 		return nil, 0, errIndexerUnavailable
 	}
 	params.Query = strings.TrimSpace(params.Query)
+	params.ReadyPolicy = s.releaseReadyPolicy(ctx)
 	return s.store.ListPublicIndexerReleases(ctx, params)
 }
 
@@ -327,12 +328,31 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
-	detail, err := s.store.GetPublicIndexerReleaseDetail(ctx, strings.TrimSpace(releaseID))
+	detail, err := s.store.GetPublicIndexerReleaseDetailWithPolicy(ctx, strings.TrimSpace(releaseID), s.releaseReadyPolicy(ctx))
 	if err != nil || detail == nil {
 		return detail, err
 	}
 	detail.Capabilities.CanSendToDownloader = s.downloaderReady
 	return detail, nil
+}
+
+func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.ReleaseReadyPolicy {
+	policy := pgindex.DefaultReleaseReadyPolicy()
+	if s == nil || s.settingsAdmin == nil {
+		return policy
+	}
+	runtime, err := s.settingsAdmin.Get(ctx)
+	if err != nil || runtime == nil || runtime.Indexing == nil {
+		return policy
+	}
+	release := runtime.Indexing.Release
+	return pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+		MinMatchConfidence: release.PublicMinMatchConfidence,
+		MinCompletionPct:   release.PublicMinCompletionPct,
+		MinIdentityStatus:  release.PublicMinIdentityStatus,
+		RequireInspection:  release.PublicRequireInspection,
+		RequireEnrichment:  release.PublicRequireEnrichment,
+	})
 }
 
 func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error) {
@@ -574,6 +594,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 			BatchSize:       runtime.Indexing.Release.BatchSize,
 			BackoffSeconds:  runtime.Indexing.Release.BackoffSeconds,
 		}, true
+	case string(supervisor.StageReleaseGenerateNZB):
+		return runtime.Indexing.ReleaseGenerateNZB, true
 	case string(supervisor.StageReleaseArchiveNZB):
 		return runtime.Indexing.ReleaseArchiveNZB, true
 	case string(supervisor.StageReleasePurgeArchivedSources):
@@ -625,6 +647,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageReleaseSummaryRefresh),
 	string(supervisor.StageRelease),
+	string(supervisor.StageReleaseGenerateNZB),
 	string(supervisor.StageReleaseArchiveNZB),
 	string(supervisor.StageReleasePurgeArchivedSources),
 	string(supervisor.StageInspectDiscovery),
@@ -676,6 +699,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ReleaseSummaryRefresh, patch)
 	case string(supervisor.StageRelease):
 		applyReleaseStagePatch(&indexing.Release, patch)
+	case string(supervisor.StageReleaseGenerateNZB):
+		applyStagePatch(&indexing.ReleaseGenerateNZB, patch)
 	case string(supervisor.StageReleaseArchiveNZB):
 		applyStagePatch(&indexing.ReleaseArchiveNZB, patch)
 	case string(supervisor.StageReleasePurgeArchivedSources):

@@ -403,7 +403,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 			(SELECT COUNT(*)
 			 FROM releases r
 			 LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
-			 WHERE `+publicIndexerReleaseVisibilityClause("r")+`),
+			 WHERE `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+`),
 			(SELECT COUNT(*) FROM releases WHERE completion_pct >= 100),
 			(SELECT COUNT(*) FROM releases WHERE encrypted = TRUE),
 			(SELECT COUNT(*) FROM releases WHERE passworded_known = TRUE),
@@ -468,6 +468,12 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 		Key:         "pending_release_candidate_families",
 		Label:       "Release Backlog",
 		Description: "Dirty release families still waiting for release processing.",
+		Exact:       true,
+	},
+	{
+		Key:         "generate_nzb_pending_releases",
+		Label:       "Generate NZB Backlog",
+		Description: "Exact count of public-ready releases still waiting for release_generate_nzb processing.",
 		Exact:       true,
 	},
 	{
@@ -731,6 +737,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
+	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
 	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
 	{StageName: "release_purge_archived_sources", Label: "Purge Archived Sources", ItemLabel: "releases"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
@@ -876,6 +883,8 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"recovered", "attempted", "candidates"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
+	case "release_generate_nzb":
+		return []string{"generated_ready_count", "generate_attempted", "generate_candidates"}
 	case "release_archive_nzb":
 		return []string{"archived_count", "archive_claimed", "archive_candidates"}
 	case "release_purge_archived_sources":
@@ -956,6 +965,8 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 		return s.EstimateUnassembledArticleHeaders(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
+	case "generate_nzb_pending_releases":
+		return s.countGenerateNZBBacklog(ctx)
 	case "archive_pending_releases":
 		return s.countArchiveBacklog(ctx)
 	case "archived_waiting_for_purge_releases":
@@ -999,6 +1010,25 @@ func (s *Store) countArchiveBacklog(ctx context.Context) (int64, error) {
 		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
 		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count archive backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) countGenerateNZBBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM releases r
+		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
+		WHERE r.source_kind = 'usenet_index'
+		  AND COALESCE(n.generation_status, '') <> 'ready'
+		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
+		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')
+		  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count generate nzb backlog: %w", err)
 	}
 	return count, nil
 }
@@ -1317,9 +1347,9 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	}
 	switch strings.TrimSpace(params.PublicState) {
 	case "public":
-		add("(" + publicIndexerReleaseVisibilityClause("r") + ")")
+		add("(" + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ")")
 	case "internal_only":
-		add("NOT (" + publicIndexerReleaseVisibilityClause("r") + ") AND COALESCE(ro.hidden, FALSE) = FALSE")
+		add("NOT (" + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ") AND COALESCE(ro.hidden, FALSE) = FALSE")
 	case "hidden":
 		add("COALESCE(ro.hidden, FALSE) = TRUE")
 	}
@@ -1462,7 +1492,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.metadata_updated_at,
 			COALESCE(n.generation_status, 'pending'),
 			COALESCE(ro.hidden, FALSE),
-			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
 			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
@@ -1562,7 +1592,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.metadata_updated_at,
 			COALESCE(n.generation_status, 'pending'),
 			COALESCE(ro.hidden, FALSE),
-			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
 			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id

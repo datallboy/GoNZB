@@ -51,6 +51,10 @@ func RunIndexerReleaseScheduler(ctx context.Context, appCtx *app.Context) error 
 	return runIndexerStages(ctx, appCtx, supervisor.StageRelease)
 }
 
+func RunIndexerReleaseGenerateNZBScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageReleaseGenerateNZB)
+}
+
 func RunIndexerReleaseArchiveNZBScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageReleaseArchiveNZB)
 }
