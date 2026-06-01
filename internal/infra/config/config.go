@@ -80,7 +80,6 @@ type BlobConfig struct {
 
 type BlobStoreConfig struct {
 	BackendKind string `mapstructure:"backend_kind" yaml:"backend_kind"`
-	RootDir     string `mapstructure:"root_dir" yaml:"root_dir"`
 	Prefix      string `mapstructure:"prefix" yaml:"prefix"`
 }
 
@@ -254,10 +253,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
 	v.SetDefault("blob.indexer_archive.backend_kind", "fs")
-	v.SetDefault("blob.indexer_archive.root_dir", "")
-	v.SetDefault("blob.indexer_archive.prefix", "")
+	v.SetDefault("blob.indexer_archive.prefix", "indexer-archive")
 	v.SetDefault("blob.aggregator_cache.backend_kind", "fs")
-	v.SetDefault("blob.aggregator_cache.root_dir", "")
 	v.SetDefault("blob.aggregator_cache.prefix", "")
 
 	v.SetDefault("store.pg_dsn", "")

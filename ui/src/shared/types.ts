@@ -738,6 +738,8 @@ export type IndexingRuntimeSettings = {
   assemble_lane_b: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
   release_summary_refresh: AdminStageConfigPatch
+  release_archive_nzb: AdminStageConfigPatch
+  release_purge_archived_sources: AdminStageConfigPatch
   release: AdminStageConfigPatch & {
     min_confidence: number
     min_completion_pct: number
