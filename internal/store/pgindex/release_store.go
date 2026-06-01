@@ -1173,6 +1173,10 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 
 // CHANGED: create/update a release row and keep its id stable.
 func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, error) {
+	return upsertReleaseWithRunner(ctx, s.db, in)
+}
+
+func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in ReleaseRecord) (string, error) {
 	if in.ProviderID <= 0 {
 		return "", fmt.Errorf("provider id is required")
 	}
@@ -1212,7 +1216,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	}
 
 	var releaseID string
-	err = s.db.QueryRowContext(ctx, `
+	err = runner.QueryRowContext(ctx, `
 		INSERT INTO releases (
 			release_id,
 			guid,
@@ -1435,7 +1439,7 @@ func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, er
 	if err != nil {
 		return "", fmt.Errorf("upsert release %q: %w", in.GroupName, err)
 	}
-	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
+	if err := refreshReleaseCategoryRunner(ctx, runner, releaseID); err != nil {
 		return "", err
 	}
 
@@ -1553,18 +1557,30 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 
 // CHANGED: replace release_files atomically for one release.
 func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files []ReleaseFileRecord) error {
-	releaseID = strings.TrimSpace(releaseID)
-	if releaseID == "" {
-		return fmt.Errorf("release id is required")
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `
+	if err := replaceReleaseFilesInRunner(ctx, tx, releaseID, files); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, releaseID string, files []ReleaseFileRecord) error {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+
+	if _, err := runner.ExecContext(ctx, `
 		DELETE FROM release_files
 		WHERE release_id = $1`, releaseID); err != nil {
 		return fmt.Errorf("delete release_files for %s: %w", releaseID, err)
@@ -1591,7 +1607,7 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 			args = append(args, binaryID)
 		}
 		filter := strings.Join(placeholders, ",")
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := runner.ExecContext(ctx, `
 			DELETE FROM release_files
 			WHERE release_id <> $1
 			  AND binary_id IN (`+filter+`)`, args...); err != nil {
@@ -1627,7 +1643,7 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 	}
 
 	if len(placeholders) > 0 {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO release_files (
 				release_id,
 				binary_id,
@@ -1647,6 +1663,21 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 		}
 	}
 
+	return nil
+}
+
+// CHANGED: replace release_newsgroups atomically for one release.
+func (s *Store) ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := replaceReleaseNewsgroupsInRunner(ctx, tx, releaseID, newsgroupIDs); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1654,20 +1685,13 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 	return nil
 }
 
-// CHANGED: replace release_newsgroups atomically for one release.
-func (s *Store) ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error {
+func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer, releaseID string, newsgroupIDs []int64) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return fmt.Errorf("release id is required")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := runner.ExecContext(ctx, `
 		DELETE FROM release_newsgroups
 		WHERE release_id = $1`, releaseID); err != nil {
 		return fmt.Errorf("delete release_newsgroups for %s: %w", releaseID, err)
@@ -1690,7 +1714,7 @@ func (s *Store) ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, 
 	}
 
 	if len(placeholders) > 0 {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO release_newsgroups (release_id, newsgroup_id)
 			VALUES `+strings.Join(placeholders, ","),
 			args...,
@@ -1699,9 +1723,31 @@ func (s *Store) ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, 
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, files []ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	releaseID, err := upsertReleaseWithRunner(ctx, tx, in)
+	if err != nil {
+		return "", err
+	}
+	if err := replaceReleaseFilesInRunner(ctx, tx, releaseID, files); err != nil {
+		return "", err
+	}
+	if err := replaceReleaseNewsgroupsInRunner(ctx, tx, releaseID, newsgroupIDs); err != nil {
+		return "", err
+	}
+	if err := upsertNZBCacheWithRunner(ctx, tx, releaseID, "pending", "", ""); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return releaseID, nil
 }

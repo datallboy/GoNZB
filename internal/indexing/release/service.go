@@ -25,6 +25,7 @@ type repository interface {
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
+	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
@@ -664,34 +665,15 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			return outcome, fmt.Errorf("build release files for %s: %w", record.GroupName, err)
 		}
 
+		newsgroupIDs := newsgroupIDsForCluster(cluster.Binaries)
 		start = time.Now()
-		releaseID, err := s.repo.UpsertRelease(ctx, record)
+		_, err = s.repo.PersistReleaseSnapshot(ctx, record, files, newsgroupIDs)
 		if timings != nil {
-			timings.upsertRelease += time.Since(start)
+			elapsed := time.Since(start)
+			timings.upsertRelease += elapsed
 		}
 		if err != nil {
-			return outcome, fmt.Errorf("upsert release %s: %w", record.GroupName, err)
-		}
-		start = time.Now()
-		if err := s.repo.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
-			return outcome, fmt.Errorf("replace release files for %s: %w", releaseID, err)
-		}
-		if timings != nil {
-			timings.replaceFiles += time.Since(start)
-		}
-		start = time.Now()
-		if err := s.repo.ReplaceReleaseNewsgroups(ctx, releaseID, newsgroupIDsForCluster(cluster.Binaries)); err != nil {
-			return outcome, fmt.Errorf("replace release newsgroups for %s: %w", releaseID, err)
-		}
-		if timings != nil {
-			timings.replaceNewsgroups += time.Since(start)
-		}
-		start = time.Now()
-		if err := s.repo.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
-			return outcome, fmt.Errorf("upsert nzb cache for %s: %w", releaseID, err)
-		}
-		if timings != nil {
-			timings.upsertNZBCache += time.Since(start)
+			return outcome, fmt.Errorf("persist release snapshot %s: %w", record.GroupName, err)
 		}
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)

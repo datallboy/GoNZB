@@ -1284,6 +1284,10 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 
 // CHANGED: seed/update PG nzb cache metadata row for a release.
 func (s *Store) UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error {
+	return upsertNZBCacheWithRunner(ctx, s.db, releaseID, generationStatus, hashSHA256, lastError)
+}
+
+func upsertNZBCacheWithRunner(ctx context.Context, runner sqlExecQueryer, releaseID, generationStatus, hashSHA256, lastError string) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return fmt.Errorf("release id is required")
@@ -1298,7 +1302,7 @@ func (s *Store) UpsertNZBCache(ctx context.Context, releaseID, generationStatus,
 		generatedAt = time.Now().UTC()
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := runner.ExecContext(ctx, `
 		INSERT INTO nzb_cache (
 			release_id,
 			generation_status,

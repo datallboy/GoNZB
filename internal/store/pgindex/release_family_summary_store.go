@@ -561,6 +561,9 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 		return nil
 	}
 
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_release_family_summary_refresh`); err != nil {
+		return fmt.Errorf("drop stale release family summary refresh temp table: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_release_family_summary_refresh (
 			provider_id BIGINT NOT NULL,
@@ -1004,6 +1007,9 @@ func refreshReleaseFamilySummariesBatchCopy(ctx context.Context, conn *sql.Conn,
 		return nil
 	}
 
+	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_release_family_summary_refresh`); err != nil {
+		return fmt.Errorf("drop stale release family summary refresh temp table: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_release_family_summary_refresh (
 			provider_id BIGINT NOT NULL,
@@ -1190,6 +1196,9 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 		}
 	}
 
+	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_release_family_summary_single_refresh`); err != nil {
+		return fmt.Errorf("drop stale single release family summary refresh temp table: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_release_family_summary_single_refresh (
 			provider_id BIGINT NOT NULL,

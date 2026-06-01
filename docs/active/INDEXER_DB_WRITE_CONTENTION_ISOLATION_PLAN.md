@@ -1385,6 +1385,44 @@ Release formation query-churn reduction on `2026-06-01 09:43-09:46 America/New_Y
   - direct run `70615` completed with `formed=0`, so there was no meaningful production wall-clock delta to record from that sample
   - the optimization is still worth keeping because it deterministically removes the prior cluster-level N+1 query pattern whenever one candidate family splits into multiple release clusters
 
+Release formation write-path consolidation on `2026-06-01 09:53-09:56 America/New_York`:
+
+- implemented:
+  - added `PersistReleaseSnapshot` so release row upsert, release file replacement, release newsgroup replacement, NZB-cache seeding, and category refresh happen inside one repository transaction
+  - kept the old `UpsertRelease`, `ReplaceReleaseFiles`, `ReplaceReleaseNewsgroups`, and `UpsertNZBCache` methods for compatibility, but rewired `release` formation to use the single snapshot write path
+  - fixed a temp-table lifecycle bug in `release_summary_refresh` by dropping stale temp tables explicitly before recreate on pooled sessions
+- validation:
+  - targeted and broad package tests passed after the refactor:
+    - `go test ./internal/store/pgindex ./internal/indexing/release ./internal/runtime/wiring ./internal/app`
+  - added a store-level regression test proving `PersistReleaseSnapshot` seeds files, newsgroups, and `nzb_cache` together
+- live measurement:
+  - ran one `release_summary_refresh --once` pass first to reduce backlog:
+    - queue `874722 -> 774722`
+    - refresh run logged `refreshed=100000` in `55810.39 ms`
+  - post-change formed release run `70618`:
+    - `formed=99`
+    - `candidate_list_duration_ms=17683.035`
+    - `title_candidates_duration_ms=105.94`
+    - `upsert_release_duration_ms=526.343`
+    - `replace_files_duration_ms=0`
+    - `replace_newsgroups_duration_ms=0`
+    - `upsert_nzb_cache_duration_ms=0`
+- comparison to pre-consolidation formed runs:
+  - earlier run `70524` (`formed=44`) spent:
+    - `upsert_release_duration_ms=387.094`
+    - `replace_files_duration_ms=253.457`
+    - `replace_newsgroups_duration_ms=180.898`
+    - combined write-path time: `821.449 ms`
+  - earlier run `70481` (`formed=52`) spent:
+    - `upsert_release_duration_ms=499.282`
+    - `replace_files_duration_ms=325.53`
+    - `replace_newsgroups_duration_ms=231.952`
+    - combined write-path time: `1056.764 ms`
+  - new run `70618` (`formed=99`) spent `526.343 ms` total in the consolidated release snapshot write path
+- interpretation:
+  - this is not a perfectly controlled apples-to-apples sample because formed counts differ, but the per-release write overhead dropped sharply after collapsing four separate write phases into one transaction
+  - the change is safe enough to keep because it preserved the existing write semantics while removing extra transaction boundaries and commit churn
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
