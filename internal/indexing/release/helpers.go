@@ -366,6 +366,60 @@ func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 	return out
 }
 
+func binaryIDsForClusters(clusters []releaseCluster) []int64 {
+	if len(clusters) == 0 {
+		return nil
+	}
+	out := make([]int64, 0)
+	seen := make(map[int64]struct{})
+	for _, cluster := range clusters {
+		for _, binary := range cluster.Binaries {
+			if binary.BinaryID <= 0 {
+				continue
+			}
+			if _, ok := seen[binary.BinaryID]; ok {
+				continue
+			}
+			seen[binary.BinaryID] = struct{}{}
+			out = append(out, binary.BinaryID)
+		}
+	}
+	return out
+}
+
+func titleCandidatesByBinaryID(candidates []pgindex.ReleaseTitleCandidate) map[int64][]pgindex.ReleaseTitleCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make(map[int64][]pgindex.ReleaseTitleCandidate, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.BinaryID <= 0 {
+			continue
+		}
+		out[candidate.BinaryID] = append(out[candidate.BinaryID], candidate)
+	}
+	return out
+}
+
+func titleCandidatesForCluster(binaries []pgindex.BinarySummary, byBinaryID map[int64][]pgindex.ReleaseTitleCandidate) []pgindex.ReleaseTitleCandidate {
+	if len(binaries) == 0 || len(byBinaryID) == 0 {
+		return nil
+	}
+	out := make([]pgindex.ReleaseTitleCandidate, 0, len(binaries))
+	seen := make(map[int64]struct{}, len(binaries))
+	for _, binary := range binaries {
+		if binary.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[binary.BinaryID]; ok {
+			continue
+		}
+		seen[binary.BinaryID] = struct{}{}
+		out = append(out, byBinaryID[binary.BinaryID]...)
+	}
+	return out
+}
+
 func newsgroupIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 	if len(binaries) == 0 {
 		return nil

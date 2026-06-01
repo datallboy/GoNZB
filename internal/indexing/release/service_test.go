@@ -88,6 +88,86 @@ func TestRunOnceSplitsSourceReleaseKeyIntoMultipleGroups(t *testing.T) {
 	}
 }
 
+func TestRunOnceBatchesReleaseTitleCandidatesAcrossClusters(t *testing.T) {
+	baseTime := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{
+			{
+				ProviderID:  1,
+				NewsgroupID: 2,
+				ReleaseKey:  "shared source key",
+			},
+		},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"shared source key": {
+				{
+					BinaryID:        1,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "shared source key",
+					ReleaseName:     "Movie One 2026",
+					FileName:        "movie.one.2026.r00",
+					Poster:          "poster-a",
+					PostedAt:        ptrTime(baseTime),
+					TotalParts:      10,
+					ObservedParts:   10,
+					TotalBytes:      700_000_000,
+					MatchConfidence: 0.92,
+				},
+				{
+					BinaryID:        2,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "shared source key",
+					ReleaseName:     "Movie One 2026",
+					FileName:        "movie.one.2026.r01",
+					Poster:          "poster-a",
+					PostedAt:        ptrTime(baseTime.Add(45 * time.Minute)),
+					TotalParts:      10,
+					ObservedParts:   9,
+					TotalBytes:      710_000_000,
+					MatchConfidence: 0.88,
+				},
+				{
+					BinaryID:        3,
+					ProviderID:      1,
+					NewsgroupID:     2,
+					ReleaseKey:      "shared source key",
+					ReleaseName:     "Other Show S01E01",
+					FileName:        "other.show.s01e01.r00",
+					Poster:          "poster-b",
+					PostedAt:        ptrTime(baseTime.Add(30 * time.Hour)),
+					TotalParts:      8,
+					ObservedParts:   8,
+					TotalBytes:      550_000_000,
+					MatchConfidence: 0.90,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 2}},
+			3: {{ArticleHeaderID: 103, PartNumber: 1}},
+		},
+		titleCandidatesByBinaryID: map[int64][]pgindex.ReleaseTitleCandidate{
+			1: {{BinaryID: 1, Source: "archive_entry", Confidence: 0.98, Value: "Movie.One.2026.1080p.mkv"}},
+			3: {{BinaryID: 3, Source: "archive_entry", Confidence: 0.98, Value: "Other.Show.S01E01.720p.mkv"}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55, RequireExpectedFileCountForContextualObfuscated: true})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if repo.listTitleCandidatesCalls != 1 {
+		t.Fatalf("expected one title-candidate listing call, got %d", repo.listTitleCandidatesCalls)
+	}
+	if len(repo.upsertedReleases) != 2 {
+		t.Fatalf("expected 2 release groups, got %d", len(repo.upsertedReleases))
+	}
+}
+
 func TestRunOncePersistsAllClusterNewsgroupsForRecoveredFileSetCandidates(t *testing.T) {
 	baseTime := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -2143,6 +2223,7 @@ type fakeReleaseRepository struct {
 	listReleaseCandidatesCalls         int
 	listExistingReleaseCandidatesCalls int
 	listBinariesCalls                  int
+	listTitleCandidatesCalls           int
 	deletedStaleCalls                  []staleDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
@@ -2226,6 +2307,7 @@ func (f *fakeReleaseRepository) ListBinaryPartArticlesBatch(_ context.Context, b
 }
 
 func (f *fakeReleaseRepository) ListReleaseTitleCandidates(_ context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error) {
+	f.listTitleCandidatesCalls++
 	out := make([]pgindex.ReleaseTitleCandidate, 0, len(binaryIDs))
 	for _, binaryID := range binaryIDs {
 		out = append(out, f.titleCandidatesByBinaryID[binaryID]...)

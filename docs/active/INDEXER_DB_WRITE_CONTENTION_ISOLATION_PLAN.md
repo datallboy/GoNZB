@@ -1371,6 +1371,20 @@ Release summary refresh code-review optimization pass on `2026-06-01 09:36-09:37
   - the biggest win came from eliminating row-by-row temp-table staging and the extra trailing exact queue scan
   - yEnc backfill is now cleaner operationally because it no longer competes to drain the same readiness-summary queue on demand
 
+Release formation query-churn reduction on `2026-06-01 09:43-09:46 America/New_York`:
+
+- implemented:
+  - `formCandidate` now fetches release title evidence once per candidate family instead of once per derived cluster
+  - title candidates are partitioned in memory by `binary_id` and reused across cluster title resolution
+  - added a regression test that proves a multi-cluster family only issues one `ListReleaseTitleCandidates` repository call
+- validation:
+  - targeted release tests passed, including the new multi-cluster batching coverage
+  - broad package validation passed:
+    - `go test ./internal/store/pgindex ./internal/indexing/release ./internal/settingsadmin ./internal/runtime/wiring ./internal/app`
+- live measurement note:
+  - direct run `70615` completed with `formed=0`, so there was no meaningful production wall-clock delta to record from that sample
+  - the optimization is still worth keeping because it deterministically removes the prior cluster-level N+1 query pattern whenever one candidate family splits into multiple release clusters
+
 ## Active Execution Backlog
 
 - [x] Add chunk-level repository telemetry around `UpsertBinaries`: chunk count, rows per chunk, retry count, retry cause, and chunk duration, so lane-B regressions can be tied to actual lock/retry pressure instead of only wall-clock totals.
