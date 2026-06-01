@@ -271,6 +271,38 @@ Status date: 2026-06-01
   - purge also works on the current schema after removing the stale `release_file_articles` reference
   - the remaining non-zero archive and purge backlogs are expected because the scheduler continued processing new batches during measurement
 
+### Sign-off: live storage baseline
+
+- Measurement method:
+  - archive blob-store bytes measured from `store/nzbs/indexer-archive`
+  - archived object bytes measured from `SUM(release_archive_state.object_size_bytes)` over `purge_pending` and `purged`
+  - PostgreSQL on-disk bytes measured from `pg_database_size('gonzb')`
+  - note: PostgreSQL file size does not immediately shrink after deletes; physical reclaim still depends on vacuum/rewrite
+- Before additional manual tail-stage passes:
+  - archive filesystem bytes: `166,459,763`
+  - archived object bytes tracked in Postgres: `166,459,763`
+  - PostgreSQL database bytes: `242,758,903,475`
+  - archived release count (`purge_pending` + `purged`): `841`
+  - purged release count: `350`
+  - purge-pending release count: `491`
+- After additional live `generate -> archive -> purge` movement:
+  - archive filesystem bytes: `186,291,361`
+  - archived object bytes tracked in Postgres: `186,291,361`
+  - PostgreSQL database bytes: `242,918,680,243`
+  - archived release count (`purge_pending` + `purged`): `941`
+  - purged release count: `418`
+  - purge-pending release count: `523`
+- Delta observed during the measurement window:
+  - archive filesystem bytes: `+19,831,598`
+  - archived object bytes tracked in Postgres: `+19,831,598`
+  - PostgreSQL database bytes: `+159,776,768`
+  - archived releases tracked: `+100`
+  - purged releases completed: `+68`
+- Interpretation:
+  - blob-store growth is the cleanest direct measure of archival storage movement for this workflow
+  - Postgres logical source-row deletion happened during the same window, but `pg_database_size` still increased because background ingest and MVCC table bloat dominate short-window physical file size changes
+  - for “space reclaimed on disk” reporting, this workflow needs either per-table size snapshots plus vacuum cadence, or a dedicated reclaim maintenance measurement after purge
+
 ## Blob Storage Direction
 
 ### Chosen direction
