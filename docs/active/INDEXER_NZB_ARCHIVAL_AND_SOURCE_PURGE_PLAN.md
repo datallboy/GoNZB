@@ -166,6 +166,14 @@ Status date: 2026-06-01
   - runtime settings stage key `release_generate_nzb`
   - CLI command `gonzb indexer release generate-nzb`
   - stage API name `release_generate_nzb`
+- Live runtime enablement and baseline capture completed after implementation:
+  - server restarted on the updated code
+  - stage enabled through `PATCH /api/v1/admin/indexer/stages/release_generate_nzb`
+  - runtime settings revision advanced to `74`
+  - persisted runtime value:
+    - `release_generate_nzb.enabled = true`
+    - `release_generate_nzb.interval_minutes = 1`
+    - `release_generate_nzb.batch_size = 100`
 
 ### Sign-off: performance/baseline note
 
@@ -195,6 +203,73 @@ Status date: 2026-06-01
 - Background generation follow-up note:
   - this implementation now exposes the missing pre-generation stage and runtime public-ready thresholds
   - a refreshed live baseline for `generate_nzb_pending_releases` should be captured after deployment because the earlier empty-queue archival baseline was measured before the background generation stage existed
+
+### Sign-off: live background-generation baseline
+
+- Measurement date:
+  - `2026-06-01`
+- Live public-ready catalog size during measurement:
+  - public indexer releases total: `3337`
+- Initial refreshed backlog snapshot after enabling `release_generate_nzb`:
+  - `generate_nzb_pending_releases = 3333`
+  - `archive_pending_releases = 0`
+  - `archived_waiting_for_purge_releases = 0`
+  - `purged_archived_releases = 0`
+  - `blob_backed_archived_releases = 0`
+- First live generate runs:
+  - run `71226` scheduled, completed in about `8.32 s`
+    - `generate_candidates = 100`
+    - `generate_attempted = 100`
+    - `generated_ready_count = 100`
+    - `generate_failures = 0`
+  - run `71247` scheduled, completed in about `6.14 s`
+    - `generate_candidates = 100`
+    - `generate_attempted = 100`
+    - `generated_ready_count = 100`
+    - `generate_failures = 0`
+- First live archive movement:
+  - run `71236` manual, completed in about `20.22 s`
+    - `archive_candidates = 100`
+    - `archive_claimed = 100`
+    - `archived_count = 100`
+    - `archive_failures = 0`
+- Purge validation:
+  - initial purge run on the pre-fix build failed:
+    - run `71248`
+    - `purge_candidates = 50`
+    - error: stale reference to dropped table `release_file_articles`
+  - follow-up code fix applied in commit `016b1c1`
+  - post-fix purge run completed:
+    - run `71279` scheduled, completed in about `16.14 s`
+    - `purge_candidates = 50`
+    - `purged_count = 50`
+    - `skipped_shared_lineage_rows = 0`
+    - deleted rows:
+      - `binaries = 604`
+      - `binary_parts = 131649`
+      - `article_headers = 131649`
+      - `article_header_ingest_payloads = 131649`
+      - `binary_archive_entries = 651`
+      - `binary_inspections = 151`
+      - `binary_inspection_artifacts = 118`
+      - `binary_grouping_evidence = 85`
+      - `binary_media_streams = 85`
+      - `binary_par2_sets = 51`
+      - `binary_par2_targets = 437`
+- Refreshed backlog snapshot after live runs and purge fix:
+  - `generate_nzb_pending_releases = 2941`
+  - `archive_pending_releases = 100`
+  - `archived_waiting_for_purge_releases = 191`
+  - `purged_archived_releases = 50`
+  - `blob_backed_archived_releases = 241`
+- Stage throughput snapshot after the live baseline:
+  - `release_generate_nzb`: `4` completed runs, `0` failed runs, `400` items processed, `6486.70 ms` average run duration
+  - `release_archive_nzb`: `43` completed runs, `0` failed runs, `200` items processed, `821.40 ms` average run duration
+  - `release_purge_archived_sources`: `40` completed runs, `4` failed runs, `50` items processed, `425.37 ms` average completed-run duration
+- Interpretation:
+  - live generation and archive movement are now confirmed under SQLite-backed runtime settings
+  - purge also works on the current schema after removing the stale `release_file_articles` reference
+  - the remaining non-zero archive and purge backlogs are expected because the scheduler continued processing new batches during measurement
 
 ## Blob Storage Direction
 
