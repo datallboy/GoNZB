@@ -445,9 +445,6 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		)
 		  AND NOT EXISTS (
 			SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = p.article_header_id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM release_file_articles rfa WHERE rfa.article_header_id = p.article_header_id
 		  )`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("delete article payloads for %s: %w", releaseID, err)
@@ -464,9 +461,6 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		)
 		  AND NOT EXISTS (
 			SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM release_file_articles rfa WHERE rfa.article_header_id = ah.id
 		  )`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("delete article headers for %s: %w", releaseID, err)
