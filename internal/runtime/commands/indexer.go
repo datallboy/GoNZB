@@ -172,6 +172,23 @@ func (r *Runner) ExecuteIndexerReleaseSummaryRefresh(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerReleaseGenerateNZB(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.ReleaseGenerateNZBOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer release generate-nzb --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer release generate-nzb --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerReleaseGenerateNZBScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer release generate-nzb scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerReleaseArchiveNZB(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

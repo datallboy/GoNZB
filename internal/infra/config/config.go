@@ -96,6 +96,7 @@ type IndexingConfig struct {
 	RecoverYEnc                 IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
 	ReleaseSummaryRefresh       IndexingStageConfig   `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
 	Release                     IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB          IndexingStageConfig   `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
 	ReleaseArchiveNZB           IndexingStageConfig   `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
 	ReleasePurgeArchivedSources IndexingStageConfig   `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
 	Match                       IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
@@ -135,6 +136,11 @@ type IndexingReleaseConfig struct {
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
 	MinExpectedFileCoveragePct                      *float64 `mapstructure:"min_expected_file_coverage_pct" yaml:"min_expected_file_coverage_pct"`
 	RequireExpectedFileCountForContextualObfuscated *bool    `mapstructure:"require_expected_file_count_for_contextual_obfuscated" yaml:"require_expected_file_count_for_contextual_obfuscated"`
+	PublicMinMatchConfidence                        *float64 `mapstructure:"public_min_match_confidence" yaml:"public_min_match_confidence"`
+	PublicMinCompletionPct                          *float64 `mapstructure:"public_min_completion_pct" yaml:"public_min_completion_pct"`
+	PublicMinIdentityStatus                         string   `mapstructure:"public_min_identity_status" yaml:"public_min_identity_status"`
+	PublicRequireInspection                         *bool    `mapstructure:"public_require_inspection" yaml:"public_require_inspection"`
+	PublicRequireEnrichment                         *bool    `mapstructure:"public_require_enrichment" yaml:"public_require_enrichment"`
 }
 
 type IndexingInspectConfig struct {
@@ -268,6 +274,15 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
 	v.SetDefault("indexing.release.min_expected_file_coverage_pct", 90.0)
 	v.SetDefault("indexing.release.require_expected_file_count_for_contextual_obfuscated", true)
+	v.SetDefault("indexing.release.public_min_match_confidence", 0.55)
+	v.SetDefault("indexing.release.public_min_completion_pct", 100.0)
+	v.SetDefault("indexing.release.public_min_identity_status", "probable")
+	v.SetDefault("indexing.release.public_require_inspection", false)
+	v.SetDefault("indexing.release.public_require_enrichment", false)
+	v.SetDefault("indexing.release_generate_nzb.enabled", false)
+	v.SetDefault("indexing.release_generate_nzb.interval_minutes", 10.0)
+	v.SetDefault("indexing.release_generate_nzb.batch_size", 100)
+	v.SetDefault("indexing.release_generate_nzb.backoff_seconds", 0)
 	v.SetDefault("indexing.release_archive_nzb.enabled", false)
 	v.SetDefault("indexing.release_archive_nzb.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_archive_nzb.batch_size", 100)
@@ -446,6 +461,21 @@ func (c *Config) validate() error {
 		if *c.Indexing.Release.MinExpectedFileCoveragePct < 0 || *c.Indexing.Release.MinExpectedFileCoveragePct > 100 {
 			return errors.New("indexing.release.min_expected_file_coverage_pct must be between 0 and 100")
 		}
+	}
+	if c.Indexing.Release.PublicMinMatchConfidence != nil {
+		if *c.Indexing.Release.PublicMinMatchConfidence < 0 || *c.Indexing.Release.PublicMinMatchConfidence > 1 {
+			return errors.New("indexing.release.public_min_match_confidence must be between 0 and 1")
+		}
+	}
+	if c.Indexing.Release.PublicMinCompletionPct != nil {
+		if *c.Indexing.Release.PublicMinCompletionPct < 0 || *c.Indexing.Release.PublicMinCompletionPct > 100 {
+			return errors.New("indexing.release.public_min_completion_pct must be between 0 and 100")
+		}
+	}
+	switch strings.TrimSpace(c.Indexing.Release.PublicMinIdentityStatus) {
+	case "", "probable", "identified":
+	default:
+		return errors.New("indexing.release.public_min_identity_status must be one of: probable, identified")
 	}
 	if err := validateIndexingStageConfig("indexing.inspect_par2", c.Indexing.InspectPAR2); err != nil {
 		return err

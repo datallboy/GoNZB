@@ -22,6 +22,7 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/maintenance"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/indexing/release"
+	"github.com/datallboy/gonzb/internal/indexing/releasegenerate"
 	"github.com/datallboy/gonzb/internal/indexing/releasearchive"
 	"github.com/datallboy/gonzb/internal/indexing/releasepurge"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
@@ -60,8 +61,10 @@ type usenetIndexerConfig struct {
 	RecoverYEnc                                     indexerStageConfig
 	ReleaseSummaryRefreshStage                      indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
+	ReleaseGenerateNZBStage                         indexerStageConfig
 	ReleaseArchiveNZBStage                          indexerStageConfig
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
+	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	InspectDiscovery                                indexerStageConfig
 	InspectPAR2                                     indexerStageConfig
 	InspectNFO                                      indexerStageConfig
@@ -255,6 +258,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.Logger,
 		releasearchive.Options{BatchSize: runtimeCfg.ReleaseArchiveNZBStage.BatchSize},
 	)
+	releaseGenerateSvc := releasegenerate.NewService(
+		appCtx.PGIndexStore,
+		archiveResolver,
+		releasegenerate.Options{
+			BatchSize: runtimeCfg.ReleaseGenerateNZBStage.BatchSize,
+			Policy:    runtimeCfg.ReleaseReadyPolicy,
+		},
+	)
 	releasePurgeSvc := releasepurge.NewService(
 		appCtx.PGIndexStore,
 		releasepurge.Options{BatchSize: runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize},
@@ -358,6 +369,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ReleaseStage.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(releaseSvc.RunOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageReleaseGenerateNZB,
+			Interval:    runtimeCfg.ReleaseGenerateNZBStage.Interval,
+			Enabled:     releaseGenerateSvc != nil && runtimeCfg.ReleaseGenerateNZBStage.Enabled,
+			BatchSize:   runtimeCfg.ReleaseGenerateNZBStage.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ReleaseGenerateNZBStage.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(releaseGenerateSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -648,8 +670,16 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			BatchSize:       indexingCfg.Release.BatchSize,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
+		ReleaseGenerateNZBStage: newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
+		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+			MinMatchConfidence: indexingCfg.Release.PublicMinMatchConfidence,
+			MinCompletionPct:   indexingCfg.Release.PublicMinCompletionPct,
+			MinIdentityStatus:  indexingCfg.Release.PublicMinIdentityStatus,
+			RequireInspection:  indexingCfg.Release.PublicRequireInspection,
+			RequireEnrichment:  indexingCfg.Release.PublicRequireEnrichment,
+		}),
 		InspectDiscovery:                 newIndexerStageConfig(indexingCfg.InspectDiscovery),
 		InspectPAR2:                      newIndexerStageConfig(indexingCfg.InspectPAR2),
 		InspectNFO:                       newIndexerStageConfig(indexingCfg.InspectNFO),

@@ -199,6 +199,7 @@ type UsenetIndexStore interface {
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
+	GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, releaseID string, policy pgindex.ReleaseReadyPolicy) (*pgindex.PublicIndexerReleaseDetail, error)
 	GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	UpsertReleaseOverride(ctx context.Context, in pgindex.ReleaseOverrideRecord) error
 	GetReleaseOverride(ctx context.Context, releaseID string) (*pgindex.ReleaseOverrideRecord, error)
@@ -234,6 +235,7 @@ type UsenetIndexStore interface {
 	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
+	ListReleaseNZBGenerateCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseNZBGenerateCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
@@ -299,6 +301,7 @@ type UsenetIndexerService interface {
 	RecoverYEncOnce(ctx context.Context) error
 	ReleaseSummaryRefreshOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
+	ReleaseGenerateNZBOnce(ctx context.Context) error
 	ReleaseArchiveNZBOnce(ctx context.Context) error
 	ReleasePurgeArchivedSourcesOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error

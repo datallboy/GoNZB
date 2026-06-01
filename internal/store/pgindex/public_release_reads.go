@@ -34,6 +34,7 @@ type PublicIndexerReleaseListParams struct {
 	TVDBID            int64
 	Season            int
 	Episode           int
+	ReadyPolicy       ReleaseReadyPolicy
 }
 
 type PublicIndexerReleaseSummary struct {
@@ -109,24 +110,8 @@ type PublicIndexerReleaseCapabilities struct {
 	CanSendToDownloader bool `json:"can_send_to_downloader"`
 }
 
-func publicIndexerReleaseVisibilityClause(alias string) string {
-	return fmt.Sprintf(`
-		COALESCE(%[1]s.search_title, '') <> ''
-		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) <> 'unknown-release'
-		AND COALESCE(%[1]s.match_confidence, 0) >= 0.55
-		AND COALESCE(%[1]s.completion_pct, 0) >= 100
-		AND COALESCE(%[1]s.identity_status, '') IN ('identified', 'probable')
-		AND COALESCE(%[1]s.size_bytes, 0) > 0
-		AND COALESCE(%[1]s.category_id, 8010) <> 8010
-		AND (
-			COALESCE(%[1]s.expected_file_count, 0) <= 1
-			OR COALESCE(%[1]s.file_count, 0) >= 2
-		)
-		AND NOT (
-			COALESCE(%[1]s.search_title, '') ~* '(^|[^a-z0-9])(seed|test)([^a-z0-9]|$)'
-			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
-		)
-		AND COALESCE(ro.hidden, FALSE) = FALSE`, alias)
+func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolicy) string {
+	return releaseReadyVisibilityClause(alias, policy)
 }
 
 func sanitizePublicPasswordState(raw string) string {
@@ -225,7 +210,7 @@ func publicSortClause(sort string) string {
 }
 
 func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string, []any) {
-	clauses := []string{publicIndexerReleaseVisibilityClause("r")}
+	clauses := []string{publicIndexerReleaseVisibilityClause("r", params.ReadyPolicy)}
 	args := make([]any, 0, 16)
 	arg := 1
 
@@ -393,6 +378,10 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 }
 
 func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*PublicIndexerReleaseDetail, error) {
+	return s.GetPublicIndexerReleaseDetailWithPolicy(ctx, releaseID, DefaultReleaseReadyPolicy())
+}
+
+func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, releaseID string, policy ReleaseReadyPolicy) (*PublicIndexerReleaseDetail, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return nil, fmt.Errorf("release id is required")
@@ -428,7 +417,7 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		WHERE r.release_id = $1
-		  AND (%s)`, publicIndexerReleaseVisibilityClause("r")),
+		  AND (%s)`, publicIndexerReleaseVisibilityClause("r", policy)),
 		releaseID,
 	)
 

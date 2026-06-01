@@ -94,6 +94,11 @@ type IndexingReleaseRuntimeSettings struct {
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
 	MinExpectedFileCoveragePct                      float64 `json:"min_expected_file_coverage_pct,omitempty"`
 	RequireExpectedFileCountForContextualObfuscated bool    `json:"require_expected_file_count_for_contextual_obfuscated,omitempty"`
+	PublicMinMatchConfidence                        float64 `json:"public_min_match_confidence,omitempty"`
+	PublicMinCompletionPct                          float64 `json:"public_min_completion_pct,omitempty"`
+	PublicMinIdentityStatus                         string  `json:"public_min_identity_status,omitempty"`
+	PublicRequireInspection                         bool    `json:"public_require_inspection,omitempty"`
+	PublicRequireEnrichment                         bool    `json:"public_require_enrichment,omitempty"`
 }
 
 type IndexingMatchRuntimeSettings struct {
@@ -157,6 +162,7 @@ type IndexingRuntimeSettings struct {
 	RecoverYEnc                 IndexingStageRuntimeSettings   `json:"recover_yenc,omitempty"`
 	ReleaseSummaryRefresh       IndexingStageRuntimeSettings   `json:"release_summary_refresh,omitempty"`
 	Release                     IndexingReleaseRuntimeSettings `json:"release,omitempty"`
+	ReleaseGenerateNZB          IndexingStageRuntimeSettings   `json:"release_generate_nzb,omitempty"`
 	ReleaseArchiveNZB           IndexingStageRuntimeSettings   `json:"release_archive_nzb,omitempty"`
 	ReleasePurgeArchivedSources IndexingStageRuntimeSettings   `json:"release_purge_archived_sources,omitempty"`
 	Match                       IndexingMatchRuntimeSettings   `json:"match,omitempty"`

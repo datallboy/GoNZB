@@ -135,6 +135,14 @@ var indexerReleaseRefreshSummariesCmd = &cobra.Command{
 	},
 }
 
+var indexerReleaseGenerateNZBCmd = &cobra.Command{
+	Use:   "generate-nzb",
+	Short: "Pre-generate NZBs for public-ready releases continuously; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReleaseGenerateNZB(releaseOnce)
+	},
+}
+
 var indexerReleaseArchiveNZBCmd = &cobra.Command{
 	Use:   "archive-nzb",
 	Short: "Archive ready release NZBs continuously; use --once for a single pass",
@@ -354,6 +362,7 @@ func init() {
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerReleaseCmd.AddCommand(indexerReleaseRefreshSummariesCmd)
+	indexerReleaseCmd.AddCommand(indexerReleaseGenerateNZBCmd)
 	indexerReleaseCmd.AddCommand(indexerReleaseArchiveNZBCmd)
 	indexerReleaseCmd.AddCommand(indexerReleasePurgeArchivedSourcesCmd)
 	indexerCmd.AddCommand(indexerPipelineCmd)

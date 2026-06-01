@@ -31,6 +31,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			RecoverYEnc:                 defaultStage(false, 10, 25, 1),
 			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
 			Release:                     defaultReleaseStage(false),
+			ReleaseGenerateNZB:          defaultStage(false, 10, 100, 0),
 			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
 			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
@@ -102,6 +103,8 @@ func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 	return IndexingReleaseRuntimeSettings{
 		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, MinConfidence: 0.55,
 		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
+		PublicMinMatchConfidence: 0.55, PublicMinCompletionPct: 100, PublicMinIdentityStatus: "probable",
+		PublicRequireInspection: false, PublicRequireEnrichment: false,
 	}
 }
 
@@ -204,7 +207,13 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		MinCompletionPct:           float64Value(cfg.Release.MinCompletionPct, 0),
 		MinExpectedFileCoveragePct: float64Value(cfg.Release.MinExpectedFileCoveragePct, 90),
 		RequireExpectedFileCountForContextualObfuscated: boolValue(cfg.Release.RequireExpectedFileCountForContextualObfuscated, true),
+		PublicMinMatchConfidence:                        float64Value(cfg.Release.PublicMinMatchConfidence, 0.55),
+		PublicMinCompletionPct:                          float64Value(cfg.Release.PublicMinCompletionPct, 100),
+		PublicMinIdentityStatus:                         firstNonEmpty(cfg.Release.PublicMinIdentityStatus, "probable"),
+		PublicRequireInspection:                         boolValue(cfg.Release.PublicRequireInspection, false),
+		PublicRequireEnrichment:                         boolValue(cfg.Release.PublicRequireEnrichment, false),
 	}
+	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
 	out.ReleasePurgeArchivedSources = indexStageRuntimeFromConfig(cfg.ReleasePurgeArchivedSources, false, 10, 50)
 	out.Match = IndexingMatchRuntimeSettings{
@@ -343,7 +352,13 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			MinCompletionPct:           float64Ptr(indexing.Release.MinCompletionPct),
 			MinExpectedFileCoveragePct: float64Ptr(indexing.Release.MinExpectedFileCoveragePct),
 			RequireExpectedFileCountForContextualObfuscated: boolPtr(indexing.Release.RequireExpectedFileCountForContextualObfuscated),
+			PublicMinMatchConfidence:                        float64Ptr(indexing.Release.PublicMinMatchConfidence),
+			PublicMinCompletionPct:                          float64Ptr(indexing.Release.PublicMinCompletionPct),
+			PublicMinIdentityStatus:                         indexing.Release.PublicMinIdentityStatus,
+			PublicRequireInspection:                         boolPtr(indexing.Release.PublicRequireInspection),
+			PublicRequireEnrichment:                         boolPtr(indexing.Release.PublicRequireEnrichment),
 		}
+		effective.Indexing.ReleaseGenerateNZB = toStageConfigNoConcurrency(indexing.ReleaseGenerateNZB)
 		effective.Indexing.ReleaseArchiveNZB = toStageConfigNoConcurrency(indexing.ReleaseArchiveNZB)
 		effective.Indexing.ReleasePurgeArchivedSources = toStageConfigNoConcurrency(indexing.ReleasePurgeArchivedSources)
 		effective.Indexing.Match = config.IndexingMatchConfig{
@@ -612,6 +627,7 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.RecoverYEnc.Enabled ||
 		in.ReleaseSummaryRefresh.Enabled ||
 		in.Release.Enabled ||
+		in.ReleaseGenerateNZB.Enabled ||
 		in.ReleaseArchiveNZB.Enabled ||
 		in.ReleasePurgeArchivedSources.Enabled ||
 		in.InspectDiscovery.Enabled ||
@@ -740,6 +756,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
 		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                     in.Release,
+		ReleaseGenerateNZB:          mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
 		ReleaseArchiveNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
 		Match:                       in.Match,
