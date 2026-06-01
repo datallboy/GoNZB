@@ -90,15 +90,43 @@ Status date: 2026-06-01
   - filesystem blob store nested archive-key support
 - Full repository validation run completed:
   - `go test ./...`
+- Runtime settings were enabled through the admin settings API and persisted in SQLite runtime settings:
+  - revision `73`
+  - `release_archive_nzb.enabled = true`
+  - `release_archive_nzb.interval_minutes = 1`
+  - `release_archive_nzb.batch_size = 100`
+  - `release_purge_archived_sources.enabled = true`
+  - `release_purge_archived_sources.interval_minutes = 1`
+  - `release_purge_archived_sources.batch_size = 50`
+- Admin stage API smoke pass completed:
+  - `POST /api/v1/indexer/stages/release_archive_nzb/run`
+  - `POST /api/v1/indexer/stages/release_purge_archived_sources/run`
 
 ### Sign-off: performance/baseline note
 
-- No before-baseline was captured for this sprint.
-- This matches the intended scope:
-  - feature addition
-  - archival metadata introduction
-  - source-lineage purge capability
-- Performance instrumentation was still added so rollout throughput and reclaim impact can be measured during feature testing.
+- Measured rollout baseline was captured after enabling both stages in runtime settings.
+- Current environment state at measurement time:
+  - `archive_pending_releases = 0`
+  - `archived_waiting_for_purge_releases = 0`
+  - `purged_archived_releases = 0`
+  - `blob_backed_archived_releases = 0`
+- Observed archive-stage empty-pass run:
+  - run id `70752`
+  - status `completed`
+  - duration about `75 ms`
+  - metrics: `archive_candidates = 100`, `archive_claimed = 0`, `archived_count = 0`, `archive_failures = 0`
+- Observed purge-stage empty-pass run:
+  - run id `70759`
+  - status `completed`
+  - duration about `24 ms`
+  - metrics: `purge_candidates = 0`, `purged_count = 0`, `rows_deleted_by_table = {}`, `skipped_shared_lineage_rows = 0`
+- Observed stage-throughput windows after the smoke pass:
+  - `release_archive_nzb`: `2` completed runs in the 1h window, `0` items processed, `79.04 ms` average run duration
+  - `release_purge_archived_sources`: `1` completed run in the 1h window, `0` items processed, `23.95 ms` average run duration
+- Interpretation:
+  - this is an enabled empty-queue baseline, not a throughput-under-load baseline
+  - there were no eligible archival or purge candidates in the current catalog during measurement
+  - the measurement still validates scheduler wiring, SQLite-backed runtime settings, stage execution, metrics emission, and dashboard visibility
 
 ## Blob Storage Direction
 
