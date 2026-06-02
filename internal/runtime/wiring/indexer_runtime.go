@@ -22,8 +22,8 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/maintenance"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/indexing/release"
-	"github.com/datallboy/gonzb/internal/indexing/releasegenerate"
 	"github.com/datallboy/gonzb/internal/indexing/releasearchive"
+	"github.com/datallboy/gonzb/internal/indexing/releasegenerate"
 	"github.com/datallboy/gonzb/internal/indexing/releasepurge"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
@@ -261,6 +261,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	releaseGenerateSvc := releasegenerate.NewService(
 		appCtx.PGIndexStore,
 		archiveResolver,
+		appCtx.IndexerArchiveStore,
 		releasegenerate.Options{
 			BatchSize: runtimeCfg.ReleaseGenerateNZBStage.BatchSize,
 			Policy:    runtimeCfg.ReleaseReadyPolicy,
@@ -670,7 +671,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			BatchSize:       indexingCfg.Release.BatchSize,
 			BackoffSeconds:  indexingCfg.Release.BackoffSeconds,
 		}),
-		ReleaseGenerateNZBStage: newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
+		ReleaseGenerateNZBStage:          newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
 		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
@@ -680,14 +681,14 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			RequireInspection:  indexingCfg.Release.PublicRequireInspection,
 			RequireEnrichment:  indexingCfg.Release.PublicRequireEnrichment,
 		}),
-		InspectDiscovery:                 newIndexerStageConfig(indexingCfg.InspectDiscovery),
-		InspectPAR2:                      newIndexerStageConfig(indexingCfg.InspectPAR2),
-		InspectNFO:                       newIndexerStageConfig(indexingCfg.InspectNFO),
-		InspectArchive:                   newIndexerStageConfig(indexingCfg.InspectArchive),
-		InspectPassword:                  newIndexerStageConfig(indexingCfg.InspectPassword),
-		InspectMedia:                     newIndexerStageConfig(indexingCfg.InspectMedia),
-		EnrichPreDBStage:                 newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
-		EnrichTMDBStage:                  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
+		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectDiscovery),
+		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
+		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),
+		InspectArchive:   newIndexerStageConfig(indexingCfg.InspectArchive),
+		InspectPassword:  newIndexerStageConfig(indexingCfg.InspectPassword),
+		InspectMedia:     newIndexerStageConfig(indexingCfg.InspectMedia),
+		EnrichPreDBStage: newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
+		EnrichTMDBStage:  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
 		MaintenanceStage: indexerStageConfig{
 			Enabled:     true,
 			Interval:    6 * time.Hour,

@@ -98,7 +98,6 @@ export type IndexerOverview = {
   binary_count: number
   file_count: number
   inspection_count: number
-  ready_nzb_count: number
   archived_nzb_count: number
   ready_release_count: number
   completed_release_count: number

@@ -17,7 +17,6 @@ type IndexerOverview struct {
 	BinaryCount           int64 `json:"binary_count"`
 	FileCount             int64 `json:"file_count"`
 	InspectionCount       int64 `json:"inspection_count"`
-	ReadyNZBCount         int64 `json:"ready_nzb_count"`
 	ArchivedNZBCount      int64 `json:"archived_nzb_count"`
 	ReadyReleaseCount     int64 `json:"ready_release_count"`
 	CompletedReleaseCount int64 `json:"completed_release_count"`
@@ -400,7 +399,6 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 			(SELECT GREATEST(COALESCE(reltuples, 0), 0)::bigint FROM pg_class WHERE oid = 'binaries'::regclass),
 			(SELECT COUNT(*) FROM release_files),
 			(SELECT COUNT(*) FROM binary_inspections),
-			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
 			(SELECT COUNT(*)
 			 FROM release_archive_state
 			 WHERE object_key <> ''
@@ -426,7 +424,6 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 		&item.BinaryCount,
 		&item.FileCount,
 		&item.InspectionCount,
-		&item.ReadyNZBCount,
 		&item.ArchivedNZBCount,
 		&item.ReadyReleaseCount,
 		&item.CompletedReleaseCount,
@@ -479,13 +476,13 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "generate_nzb_pending_releases",
 		Label:       "Generate NZB Backlog",
-		Description: "Exact count of public-ready releases still waiting for release_generate_nzb processing.",
+		Description: "Exact count of public-ready releases still waiting for direct archive generation.",
 		Exact:       true,
 	},
 	{
 		Key:         "archive_pending_releases",
-		Label:       "Archive Backlog",
-		Description: "Exact count of nzb-ready releases still waiting for release_archive_nzb processing.",
+		Label:       "Legacy Archive Backlog",
+		Description: "Exact count of legacy nzb_cache-ready releases still waiting for transitional release_archive_nzb processing.",
 		Exact:       true,
 	},
 	{
@@ -1025,11 +1022,9 @@ func (s *Store) countGenerateNZBBacklog(ctx context.Context) (int64, error) {
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM releases r
-		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		WHERE r.source_kind = 'usenet_index'
-		  AND COALESCE(n.generation_status, '') <> 'ready'
 		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
 		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')
@@ -1496,12 +1491,20 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending'),
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN ras.archive_status
+				WHEN COALESCE(n.generation_status, '') <> ''
+				THEN 'legacy_' || n.generation_status
+				ELSE 'pending'
+			END,
 			COALESCE(ro.hidden, FALSE),
 			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
 			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		WHERE %s
 		ORDER BY %s
@@ -1596,12 +1599,20 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending'),
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN ras.archive_status
+				WHEN COALESCE(n.generation_status, '') <> ''
+				THEN 'legacy_' || n.generation_status
+				ELSE 'pending'
+			END,
 			COALESCE(ro.hidden, FALSE),
 			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
 			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		WHERE r.release_id = $1`, releaseID)
 

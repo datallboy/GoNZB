@@ -3,8 +3,6 @@ package resolver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -20,7 +18,6 @@ type usenetIndexCatalog interface {
 	ListCatalogReleaseFiles(ctx context.Context, releaseID string) ([]pgindex.CatalogReleaseFile, error)
 	ListCatalogReleaseFileArticles(ctx context.Context, releaseFileID int64) ([]pgindex.CatalogArticleRef, error)
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
-	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
 	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
 }
 
@@ -93,13 +90,7 @@ func (r *usenetIndexResolver) GetNZB(ctx context.Context, rel *domain.Release) (
 
 	nzbBytes, err := r.buildNZB(ctx, rel, files, groups)
 	if err != nil {
-		_ = r.catalog.UpsertNZBCache(ctx, rel.ID, "failed", "", err.Error())
 		return nil, err
-	}
-
-	hash := sha256.Sum256(nzbBytes)
-	if err := r.catalog.UpsertNZBCache(ctx, rel.ID, "ready", hex.EncodeToString(hash[:]), ""); err != nil {
-		return nil, fmt.Errorf("update nzb cache metadata for %s: %w", rel.ID, err)
 	}
 
 	return io.NopCloser(bytes.NewReader(nzbBytes)), nil
