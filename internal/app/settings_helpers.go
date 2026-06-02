@@ -36,6 +36,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
 			InspectDiscovery:            defaultStage(false, 10, 100, 0),
 			InspectPAR2:                 defaultStage(false, 10, 100, 4),
 			InspectNFO:                  defaultStage(false, 10, 100, 0),
@@ -79,6 +80,8 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	out.NNTPPool = mergeNNTPPoolRuntimeSettings(defaults.NNTPPool, out.NNTPPool)
 	if out.Indexing == nil {
 		out.Indexing = defaults.Indexing
+	} else {
+		out.Indexing = cloneIndexing(out.Indexing)
 	}
 	return out
 }
@@ -236,6 +239,11 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		UnrarPath:        firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
 		PAR2Path:         firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
+	out.StorageGuard = IndexingStorageGuardRuntimeSettings{
+		Enabled:        boolValue(cfg.StorageGuard.Enabled, true),
+		MinFreeBytes:   int64Value(cfg.StorageGuard.MinFreeBytes, 8*1024*1024*1024),
+		MinFreePercent: float64Value(cfg.StorageGuard.MinFreePercent, 5),
+	}
 	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
 	out.InspectPAR2 = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectPAR2, true, 10, 100)
 	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
@@ -380,6 +388,11 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			SevenZipPath:     indexing.Inspect.SevenZipPath,
 			UnrarPath:        indexing.Inspect.UnrarPath,
 			PAR2Path:         indexing.Inspect.PAR2Path,
+		}
+		effective.Indexing.StorageGuard = config.IndexingStorageGuardConfig{
+			Enabled:        boolPtr(indexing.StorageGuard.Enabled),
+			MinFreeBytes:   int64Ptr(indexing.StorageGuard.MinFreeBytes),
+			MinFreePercent: float64Ptr(indexing.StorageGuard.MinFreePercent),
 		}
 		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
 		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
@@ -761,6 +774,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
 		Match:                       in.Match,
 		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
+		StorageGuard:                normalizeStorageGuardRuntimeSettings(in.StorageGuard),
 		InspectDiscovery:            in.InspectDiscovery,
 		InspectPAR2:                 in.InspectPAR2,
 		InspectNFO:                  in.InspectNFO,
@@ -777,6 +791,13 @@ func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInsp
 	out := in
 	out.BlockedMagicHex = append([]string(nil), in.BlockedMagicHex...)
 	return out
+}
+
+func normalizeStorageGuardRuntimeSettings(in IndexingStorageGuardRuntimeSettings) IndexingStorageGuardRuntimeSettings {
+	if !in.Enabled && in.MinFreeBytes == 0 && in.MinFreePercent == 0 {
+		return IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5}
+	}
+	return in
 }
 
 func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) IndexingStageRuntimeSettings {

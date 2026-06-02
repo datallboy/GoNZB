@@ -772,6 +772,11 @@ export type IndexingRuntimeSettings = {
     unrar_path: string
     par2_path: string
   }
+  storage_guard: {
+    enabled: boolean
+    min_free_bytes: number
+    min_free_percent: number
+  }
   inspect_discovery: AdminStageConfigPatch
   inspect_par2: AdminStageConfigPatch
   inspect_nfo: AdminStageConfigPatch

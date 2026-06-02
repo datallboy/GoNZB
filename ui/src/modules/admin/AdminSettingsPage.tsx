@@ -144,6 +144,11 @@ function defaultSettings(): RuntimeSettings {
         unrar_path: 'unrar',
         par2_path: 'par2',
       },
+      storage_guard: {
+        enabled: true,
+        min_free_bytes: 8 * 1024 * 1024 * 1024,
+        min_free_percent: 5,
+      },
       inspect_discovery: stageDefaults(100),
       inspect_par2: stageDefaults(100),
       inspect_nfo: stageDefaults(100),
@@ -227,6 +232,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       release_purge_archived_sources: { ...defaults.indexing!.release_purge_archived_sources, ...indexing.release_purge_archived_sources },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
+      storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
       inspect_discovery: { ...defaults.indexing!.inspect_discovery, ...indexing.inspect_discovery },
       inspect_par2: { ...defaults.indexing!.inspect_par2, ...indexing.inspect_par2 },
       inspect_nfo: { ...defaults.indexing!.inspect_nfo, ...indexing.inspect_nfo },
@@ -344,6 +350,11 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       public_min_identity_status: indexing.release.public_min_identity_status,
       public_require_inspection: indexing.release.public_require_inspection,
       public_require_enrichment: indexing.release.public_require_enrichment,
+    },
+    storage_guard: {
+      enabled: indexing.storage_guard.enabled,
+      min_free_bytes: indexing.storage_guard.min_free_bytes,
+      min_free_percent: indexing.storage_guard.min_free_percent,
     },
     enrich_predb: {
       enabled: indexing.enrich_predb.enabled,
@@ -844,6 +855,36 @@ export function AdminSettingsPage() {
               value={indexing.match.article_bucket_size}
               helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
               onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+            />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Database storage guard">
+          <div className="banner">
+            When free space on the PostgreSQL data volume drops below the configured threshold, growth-heavy indexer stages pause automatically. Maintenance plus the NZB archive and purge tail remain allowed so the system can try to recover space instead of pushing the database further into failure.
+          </div>
+          <div className="toolbar-grid">
+            <CheckboxField
+              label="Enable storage guard"
+              helpText="Checks the PostgreSQL data directory before running growth-heavy indexer stages."
+              checked={Boolean(indexing.storage_guard.enabled)}
+              onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, enabled: value } })}
+            />
+            <NumberField
+              label="Minimum free bytes"
+              min={0}
+              value={indexing.storage_guard.min_free_bytes}
+              helpText="Absolute free-space floor on the PostgreSQL data volume. 0 disables the byte threshold."
+              onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, min_free_bytes: value } })}
+            />
+            <NumberField
+              label="Minimum free percent"
+              min={0}
+              max={100}
+              step="0.1"
+              value={indexing.storage_guard.min_free_percent}
+              helpText="Percentage-based floor on the PostgreSQL data volume. 0 disables the percentage threshold."
+              onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, min_free_percent: value } })}
             />
           </div>
         </SettingsSection>

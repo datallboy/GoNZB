@@ -148,6 +148,9 @@ func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
 	if runtime.Indexing.AssembleLaneA.BinaryUpsertDBChunkSize != 250 || runtime.Indexing.AssembleLaneB.BinaryUpsertDBChunkSize != 250 {
 		t.Fatalf("expected lane chunk-size defaults to be backfilled, got laneA=%+v laneB=%+v", runtime.Indexing.AssembleLaneA, runtime.Indexing.AssembleLaneB)
 	}
+	if !runtime.Indexing.StorageGuard.Enabled || runtime.Indexing.StorageGuard.MinFreeBytes <= 0 || runtime.Indexing.StorageGuard.MinFreePercent <= 0 {
+		t.Fatalf("expected storage guard defaults to be backfilled, got %+v", runtime.Indexing.StorageGuard)
+	}
 }
 
 func TestToStageConfigOmitsUnsetBinaryUpsertChunkSize(t *testing.T) {
