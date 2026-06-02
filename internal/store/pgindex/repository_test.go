@@ -6215,7 +6215,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	}
 }
 
-func TestPublicIndexerReleaseDetailUsesArchiveSnapshotAfterPurge(t *testing.T) {
+func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -6294,7 +6294,7 @@ func TestPublicIndexerReleaseDetailUsesArchiveSnapshotAfterPurge(t *testing.T) {
 		t.Fatalf("expected archived detail for %s", releaseID)
 	}
 	if len(detail.Files) != 2 {
-		t.Fatalf("expected 2 archived snapshot files, got %d", len(detail.Files))
+		t.Fatalf("expected 2 archived catalog files, got %d", len(detail.Files))
 	}
 	if detail.Files[0].FileName != fmt.Sprintf("%s.mkv", token) {
 		t.Fatalf("unexpected first archived file: %+v", detail.Files[0])
@@ -6307,6 +6307,98 @@ func TestPublicIndexerReleaseDetailUsesArchiveSnapshotAfterPurge(t *testing.T) {
 	}
 	if detail.Release.PasswordState != "passworded_known" {
 		t.Fatalf("expected stable archived password state, got %+v", detail.Release)
+	}
+
+	var catalogCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_catalog_files WHERE release_id = $1`, releaseID).Scan(&catalogCount); err != nil {
+		t.Fatalf("count release catalog files: %v", err)
+	}
+	if catalogCount != 2 {
+		t.Fatalf("expected 2 retained release catalog files, got %d", catalogCount)
+	}
+}
+
+func TestIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("admincatalog%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.RuntimeSeconds = 1800
+	})
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET external_year = 2024,
+		    external_media_type = 'tv'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("seed external release metadata: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 900_000_000,
+			FileIndex: 1,
+			Subject:   "subject-one",
+			Poster:    "poster-one",
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.sfv", token),
+			SizeBytes: 1024,
+			FileIndex: 2,
+			Subject:   "subject-two",
+			Poster:    "poster-two",
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.admin.catalog.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   4096,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	detail, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get indexer release detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected detail for %s", releaseID)
+	}
+	if detail.Release.RuntimeSeconds != 1800 || detail.Release.ExternalYear != 2024 || detail.Release.ExternalMediaType != "tv" {
+		t.Fatalf("expected retained release metadata, got %+v", detail.Release)
+	}
+	if len(detail.Files) != 2 {
+		t.Fatalf("expected 2 retained file summaries, got %d", len(detail.Files))
+	}
+	if detail.Files[0].FileID != 0 || detail.Files[0].BinaryID != 0 {
+		t.Fatalf("expected purged retained file summary to have no live file/binary ids, got %+v", detail.Files[0])
+	}
+	if detail.Files[0].Subject == "" || detail.Files[0].Poster == "" {
+		t.Fatalf("expected retained file subject/poster metadata, got %+v", detail.Files[0])
 	}
 }
 

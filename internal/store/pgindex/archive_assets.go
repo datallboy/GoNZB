@@ -67,6 +67,9 @@ func (s *Store) RefreshReleaseArchiveDetailSnapshot(ctx context.Context, release
 	if !exists {
 		return tx.Commit()
 	}
+	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
+		return err
+	}
 	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
 		return err
 	}
@@ -91,6 +94,9 @@ func execReleaseMutationAndRefreshArchiveSnapshot(ctx context.Context, db *sql.D
 	defer rollbackTx(tx)
 
 	if err := mutation(tx); err != nil {
+		return err
+	}
+	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
 		return err
 	}
 	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
