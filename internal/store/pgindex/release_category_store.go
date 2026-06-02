@@ -13,6 +13,10 @@ func (s *Store) refreshReleaseCategory(ctx context.Context, releaseID string) er
 	return refreshReleaseCategoryRunner(ctx, s.db, releaseID)
 }
 
+func (s *Store) refreshReleaseCategoryTx(ctx context.Context, tx *sql.Tx, releaseID string) error {
+	return refreshReleaseCategoryRunner(ctx, tx, releaseID)
+}
+
 func refreshReleaseCategoryRunner(ctx context.Context, runner sqlExecQueryRower, releaseID string) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {

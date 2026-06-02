@@ -836,80 +836,77 @@ func (s *Store) ApplyReleaseEnrichmentUpdate(ctx context.Context, in ReleaseEnri
 		return fmt.Errorf("release id is required")
 	}
 
-	var metadataUpdated any
-	if in.MetadataUpdatedAt != nil {
-		metadataUpdated = in.MetadataUpdatedAt.UTC()
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE releases
-		SET matched_media_title = CASE
-		    	WHEN $2 <> '' THEN $2
-		    	ELSE matched_media_title
-		    END,
-		    original_media_title = CASE
-		    	WHEN $3 <> '' THEN $3
-		    	ELSE original_media_title
-		    END,
-		    tmdb_id = CASE
-		    	WHEN $4 > 0 THEN $4
-		    	ELSE tmdb_id
-		    END,
-		    tvdb_id = CASE
-		    	WHEN $5 > 0 THEN $5
-		    	ELSE tvdb_id
-		    END,
-		    external_media_type = CASE
-		    	WHEN $6 <> '' THEN $6
-		    	ELSE external_media_type
-		    END,
-		    external_year = CASE
-		    	WHEN $7 > 0 THEN $7
-		    	ELSE external_year
-		    END,
-		    season_number = CASE
-		    	WHEN $8 > 0 THEN $8
-		    	ELSE season_number
-		    END,
-		    episode_number = CASE
-		    	WHEN $9 > 0 THEN $9
-		    	ELSE episode_number
-		    END,
-		    season_episode_source = CASE
-		    	WHEN $10 <> '' THEN $10
-		    	ELSE season_episode_source
-		    END,
-		    season_episode_confidence = GREATEST(season_episode_confidence, $11),
-		    identity_status = CASE
-		    	WHEN $12 <> '' THEN $12
-		    	ELSE identity_status
-		    END,
-		    identity_confidence_score = GREATEST(identity_confidence_score, $13),
-		    metadata_updated_at = COALESCE($14, metadata_updated_at),
-		    updated_at = NOW()
-		WHERE release_id = $1`,
-		in.ReleaseID,
-		strings.TrimSpace(in.MatchedMediaTitle),
-		strings.TrimSpace(in.OriginalMediaTitle),
-		in.TMDBID,
-		in.TVDBID,
-		strings.TrimSpace(in.ExternalMediaType),
-		in.ExternalYear,
-		in.SeasonNumber,
-		in.EpisodeNumber,
-		strings.TrimSpace(in.SeasonEpisodeSource),
-		in.SeasonEpisodeConfidence,
-		strings.TrimSpace(in.IdentityStatus),
-		in.IdentityConfidenceScore,
-		metadataUpdated,
-	)
-	if err != nil {
-		return fmt.Errorf("apply release enrichment update %s: %w", in.ReleaseID, err)
-	}
-	if err := s.refreshReleaseCategory(ctx, in.ReleaseID); err != nil {
-		return err
-	}
-	return nil
+	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, in.ReleaseID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE releases
+			SET matched_media_title = CASE
+			    	WHEN $2 <> '' THEN $2
+			    	ELSE matched_media_title
+			    END,
+			    original_media_title = CASE
+			    	WHEN $3 <> '' THEN $3
+			    	ELSE original_media_title
+			    END,
+			    tmdb_id = CASE
+			    	WHEN $4 > 0 THEN $4
+			    	ELSE tmdb_id
+			    END,
+			    tvdb_id = CASE
+			    	WHEN $5 > 0 THEN $5
+			    	ELSE tvdb_id
+			    END,
+			    external_media_type = CASE
+			    	WHEN $6 <> '' THEN $6
+			    	ELSE external_media_type
+			    END,
+			    external_year = CASE
+			    	WHEN $7 > 0 THEN $7
+			    	ELSE external_year
+			    END,
+			    season_number = CASE
+			    	WHEN $8 > 0 THEN $8
+			    	ELSE season_number
+			    END,
+			    episode_number = CASE
+			    	WHEN $9 > 0 THEN $9
+			    	ELSE episode_number
+			    END,
+			    season_episode_source = CASE
+			    	WHEN $10 <> '' THEN $10
+			    	ELSE season_episode_source
+			    END,
+			    season_episode_confidence = GREATEST(season_episode_confidence, $11),
+			    identity_status = CASE
+			    	WHEN $12 <> '' THEN $12
+			    	ELSE identity_status
+			    END,
+			    identity_confidence_score = GREATEST(identity_confidence_score, $13),
+			    metadata_updated_at = COALESCE($14, metadata_updated_at),
+			    updated_at = NOW()
+			WHERE release_id = $1`,
+			in.ReleaseID,
+			strings.TrimSpace(in.MatchedMediaTitle),
+			strings.TrimSpace(in.OriginalMediaTitle),
+			in.TMDBID,
+			in.TVDBID,
+			strings.TrimSpace(in.ExternalMediaType),
+			in.ExternalYear,
+			in.SeasonNumber,
+			in.EpisodeNumber,
+			strings.TrimSpace(in.SeasonEpisodeSource),
+			in.SeasonEpisodeConfidence,
+			strings.TrimSpace(in.IdentityStatus),
+			in.IdentityConfidenceScore,
+			nullableTimeValue(in.MetadataUpdatedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("apply release enrichment update %s: %w", in.ReleaseID, err)
+		}
+		if err := s.refreshReleaseCategoryTx(ctx, tx, in.ReleaseID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpdate) error {
@@ -918,55 +915,52 @@ func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpda
 		return fmt.Errorf("release id is required")
 	}
 
-	var metadataUpdated any
-	if in.MetadataUpdatedAt != nil && !in.MetadataUpdatedAt.IsZero() {
-		metadataUpdated = in.MetadataUpdatedAt.UTC()
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE releases
-		SET title = CASE
-		    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN $2
-		    	ELSE title
-		    END,
-		    deobfuscated_title = CASE
-		    	WHEN $3 <> '' THEN $3
-		    	ELSE deobfuscated_title
-		    END,
-		    title_source = CASE
-		    	WHEN $4 <> '' AND (title_source = '' OR title_source = 'source') THEN $4
-		    	ELSE title_source
-		    END,
-		    title_confidence = CASE
-		    	WHEN $5 > title_confidence AND (title_source = '' OR title_source = 'source') THEN $5
-		    	ELSE title_confidence
-		    END,
-		    identity_status = CASE
-		    	WHEN $6 <> '' AND identity_status <> 'identified' THEN $6
-		    	ELSE identity_status
-		    END,
-		    identity_confidence_score = GREATEST(identity_confidence_score, $7),
-		    search_title = CASE
-		    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN LOWER($2)
-		    	ELSE search_title
-		    END,
-		    metadata_updated_at = COALESCE($8, metadata_updated_at),
-		    updated_at = NOW()
-		WHERE release_id = $1`,
-		releaseID,
-		strings.TrimSpace(in.Title),
-		strings.TrimSpace(in.DeobfuscatedTitle),
-		strings.TrimSpace(in.TitleSource),
-		in.TitleConfidence,
-		strings.TrimSpace(in.IdentityStatus),
-		in.IdentityConfidenceScore,
-		metadataUpdated,
-	)
-	if err != nil {
-		return fmt.Errorf("apply release predb update %s: %w", releaseID, err)
-	}
-	if err := s.refreshReleaseCategory(ctx, releaseID); err != nil {
-		return err
-	}
-	return nil
+	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, releaseID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE releases
+			SET title = CASE
+			    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN $2
+			    	ELSE title
+			    END,
+			    deobfuscated_title = CASE
+			    	WHEN $3 <> '' THEN $3
+			    	ELSE deobfuscated_title
+			    END,
+			    title_source = CASE
+			    	WHEN $4 <> '' AND (title_source = '' OR title_source = 'source') THEN $4
+			    	ELSE title_source
+			    END,
+			    title_confidence = CASE
+			    	WHEN $5 > title_confidence AND (title_source = '' OR title_source = 'source') THEN $5
+			    	ELSE title_confidence
+			    END,
+			    identity_status = CASE
+			    	WHEN $6 <> '' AND identity_status <> 'identified' THEN $6
+			    	ELSE identity_status
+			    END,
+			    identity_confidence_score = GREATEST(identity_confidence_score, $7),
+			    search_title = CASE
+			    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN LOWER($2)
+			    	ELSE search_title
+			    END,
+			    metadata_updated_at = COALESCE($8, metadata_updated_at),
+			    updated_at = NOW()
+			WHERE release_id = $1`,
+			releaseID,
+			strings.TrimSpace(in.Title),
+			strings.TrimSpace(in.DeobfuscatedTitle),
+			strings.TrimSpace(in.TitleSource),
+			in.TitleConfidence,
+			strings.TrimSpace(in.IdentityStatus),
+			in.IdentityConfidenceScore,
+			nullableTimeValue(in.MetadataUpdatedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("apply release predb update %s: %w", releaseID, err)
+		}
+		if err := s.refreshReleaseCategoryTx(ctx, tx, releaseID); err != nil {
+			return err
+		}
+		return nil
+	})
 }

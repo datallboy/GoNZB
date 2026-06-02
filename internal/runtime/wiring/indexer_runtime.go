@@ -279,7 +279,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectNFOSvc := nfo.NewService(appCtx.PGIndexStore, workspaceManager, inspectNFOFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectNFO.BatchSize))
 	inspectArchiveSvc := archive.NewService(appCtx.PGIndexStore, workspaceManager, inspectArchiveFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectArchive, stageOwner))
 	inspectPasswordSvc := password.NewService(appCtx.PGIndexStore, workspaceManager, inspectPasswordFetcher, commandRunner, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectPassword.BatchSize))
-	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectMediaFetcher, commandRunner, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
+	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectMediaFetcher, commandRunner, appCtx.IndexerArchiveStore, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
 	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger)
@@ -634,6 +634,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			BlockedMagicHex:    append([]string(nil), indexingCfg.Inspect.BlockedMagicHex...),
 			MaxArchiveDepth:    indexingCfg.Inspect.MaxArchiveDepth,
 			ToolTimeout:        time.Duration(indexingCfg.Inspect.ToolTimeoutSecs) * time.Second,
+			FFmpegPath:         indexingCfg.Inspect.FFmpegPath,
 			FFProbePath:        indexingCfg.Inspect.FFProbePath,
 			SevenZipPath:       indexingCfg.Inspect.SevenZipPath,
 			UnrarPath:          indexingCfg.Inspect.UnrarPath,

@@ -225,6 +225,19 @@ type fakeBlobStore struct {
 	savedData []byte
 }
 
+func (f *fakeBlobStore) GetObjectReader(string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+func (f *fakeBlobStore) CreateObjectWriter(string) (io.WriteCloser, error) {
+	return nopWriteCloser{Writer: io.Discard}, nil
+}
+func (f *fakeBlobStore) SaveObjectAtomically(key string, data []byte) error {
+	f.savedKey = key
+	f.savedData = append([]byte(nil), data...)
+	return nil
+}
+func (f *fakeBlobStore) ExistsObject(string) bool { return false }
+
 func (f *fakeBlobStore) GetNZBReader(string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(nil)), nil
 }

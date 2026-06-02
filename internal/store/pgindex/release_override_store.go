@@ -28,43 +28,45 @@ func (s *Store) UpsertReleaseOverride(ctx context.Context, in ReleaseOverrideRec
 	if err != nil {
 		return fmt.Errorf("marshal release override tags: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO release_overrides (
-			release_id,
-			display_title,
-			classification_override,
-			tmdb_id_override,
-			tvdb_id_override,
-			imdb_id_override,
-			hidden,
-			notes,
-			tags_json,
-			updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-		ON CONFLICT (release_id) DO UPDATE SET
-			display_title = EXCLUDED.display_title,
-			classification_override = EXCLUDED.classification_override,
-			tmdb_id_override = EXCLUDED.tmdb_id_override,
-			tvdb_id_override = EXCLUDED.tvdb_id_override,
-			imdb_id_override = EXCLUDED.imdb_id_override,
-			hidden = EXCLUDED.hidden,
-			notes = EXCLUDED.notes,
-			tags_json = EXCLUDED.tags_json,
-			updated_at = NOW()`,
-		strings.TrimSpace(in.ReleaseID),
-		strings.TrimSpace(in.DisplayTitle),
-		strings.TrimSpace(in.ClassificationOverride),
-		in.TMDBIDOverride,
-		in.TVDBIDOverride,
-		strings.TrimSpace(in.IMDBIDOverride),
-		in.Hidden,
-		in.Notes,
-		string(tagsJSON),
-	)
-	if err != nil {
-		return fmt.Errorf("upsert release override %s: %w", in.ReleaseID, err)
-	}
-	return nil
+	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, strings.TrimSpace(in.ReleaseID), func(tx *sql.Tx) error {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO release_overrides (
+				release_id,
+				display_title,
+				classification_override,
+				tmdb_id_override,
+				tvdb_id_override,
+				imdb_id_override,
+				hidden,
+				notes,
+				tags_json,
+				updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+			ON CONFLICT (release_id) DO UPDATE SET
+				display_title = EXCLUDED.display_title,
+				classification_override = EXCLUDED.classification_override,
+				tmdb_id_override = EXCLUDED.tmdb_id_override,
+				tvdb_id_override = EXCLUDED.tvdb_id_override,
+				imdb_id_override = EXCLUDED.imdb_id_override,
+				hidden = EXCLUDED.hidden,
+				notes = EXCLUDED.notes,
+				tags_json = EXCLUDED.tags_json,
+				updated_at = NOW()`,
+			strings.TrimSpace(in.ReleaseID),
+			strings.TrimSpace(in.DisplayTitle),
+			strings.TrimSpace(in.ClassificationOverride),
+			in.TMDBIDOverride,
+			in.TVDBIDOverride,
+			strings.TrimSpace(in.IMDBIDOverride),
+			in.Hidden,
+			in.Notes,
+			string(tagsJSON),
+		)
+		if err != nil {
+			return fmt.Errorf("upsert release override %s: %w", in.ReleaseID, err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) GetReleaseOverride(ctx context.Context, releaseID string) (*ReleaseOverrideRecord, error) {

@@ -19,6 +19,42 @@ func NewEphemeralBlobStore() *EphemeralBlobStore {
 	}
 }
 
+func (s *EphemeralBlobStore) GetObjectReader(key string) (io.ReadCloser, error) {
+	s.mu.RLock()
+	b, ok := s.data[key]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("object payload not found for key %s", key)
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (s *EphemeralBlobStore) CreateObjectWriter(key string) (io.WriteCloser, error) {
+	var buf bytes.Buffer
+	return &ephemeralWriter{
+		onClose: func(p []byte) {
+			s.mu.Lock()
+			s.data[key] = append([]byte(nil), p...)
+			s.mu.Unlock()
+		},
+		buf: &buf,
+	}, nil
+}
+
+func (s *EphemeralBlobStore) SaveObjectAtomically(key string, data []byte) error {
+	s.mu.Lock()
+	s.data[key] = append([]byte(nil), data...)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *EphemeralBlobStore) ExistsObject(key string) bool {
+	s.mu.RLock()
+	_, ok := s.data[key]
+	s.mu.RUnlock()
+	return ok
+}
+
 func (s *EphemeralBlobStore) GetNZBReader(key string) (io.ReadCloser, error) {
 	s.mu.RLock()
 	b, ok := s.data[key]

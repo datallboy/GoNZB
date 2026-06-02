@@ -238,6 +238,15 @@ func DetectSignature(data []byte, fileName string) string {
 	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
 		return "png"
 	}
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return "jpeg"
+	}
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		return "gif"
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "webp"
+	}
 	if len(data) >= 6 && string(data[:6]) == "PAR2\x00P" {
 		return "par2"
 	}
@@ -278,6 +287,14 @@ func DetectSignature(data []byte, fileName string) string {
 	switch ext {
 	case ".nfo":
 		return "text"
+	case ".png":
+		return "png"
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".gif":
+		return "gif"
+	case ".webp":
+		return "webp"
 	case ".mkv":
 		return "matroska"
 	case ".mp4", ".m4v":
@@ -294,6 +311,14 @@ func DetectMIMEType(data []byte, fileName string) string {
 	switch DetectSignature(data, fileName) {
 	case "rclone":
 		return "application/octet-stream"
+	case "png":
+		return "image/png"
+	case "jpeg":
+		return "image/jpeg"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
 	case "par2":
 		return "application/x-par2"
 	case "7z":

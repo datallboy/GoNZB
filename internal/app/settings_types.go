@@ -117,6 +117,7 @@ type IndexingInspectRuntimeSettings struct {
 	BlockedMagicHex  []string `json:"blocked_magic_hex,omitempty"`
 	MaxArchiveDepth  int      `json:"max_archive_depth,omitempty"`
 	ToolTimeoutSecs  int      `json:"tool_timeout_seconds,omitempty"`
+	FFmpegPath       string   `json:"ffmpeg_path,omitempty"`
 	FFProbePath      string   `json:"ffprobe_path,omitempty"`
 	SevenZipPath     string   `json:"seven_zip_path,omitempty"`
 	UnrarPath        string   `json:"unrar_path,omitempty"`

@@ -154,6 +154,7 @@ type IndexingInspectConfig struct {
 	BlockedMagicHex  []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
 	MaxArchiveDepth  int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
 	ToolTimeoutSecs  int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFmpegPath       string   `mapstructure:"ffmpeg_path" yaml:"ffmpeg_path"`
 	FFProbePath      string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
 	SevenZipPath     string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
 	UnrarPath        string   `mapstructure:"unrar_path" yaml:"unrar_path"`
@@ -310,6 +311,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.blocked_magic_hex", []string{"52434C4F4E45"})
 	v.SetDefault("indexing.inspect.max_archive_depth", 3)
 	v.SetDefault("indexing.inspect.tool_timeout_seconds", 30)
+	v.SetDefault("indexing.inspect.ffmpeg_path", "ffmpeg")
 	v.SetDefault("indexing.inspect.ffprobe_path", "ffprobe")
 	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
