@@ -153,10 +153,11 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 	for rows.Next() {
 		var item CatalogReleaseFile
 		var postedAt sql.NullTime
+		var binaryID sql.NullInt64
 
 		if err := rows.Scan(
 			&item.ID,
-			&item.BinaryID,
+			&binaryID,
 			&item.FileName,
 			&item.Subject,
 			&item.Poster,
@@ -171,6 +172,9 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 		if postedAt.Valid {
 			t := postedAt.Time.UTC()
 			item.PostedAt = &t
+		}
+		if binaryID.Valid {
+			item.BinaryID = binaryID.Int64
 		}
 
 		out = append(out, item)
@@ -265,7 +269,7 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 		return out, nil
 	}
 
-	var binaryID int64
+	var binaryID sql.NullInt64
 	err = s.db.QueryRowContext(ctx, `
 		SELECT binary_id
 		FROM release_files
@@ -277,10 +281,13 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 	if err != nil {
 		return nil, fmt.Errorf("load release file binary %d: %w", releaseFileID, err)
 	}
+	if !binaryID.Valid || binaryID.Int64 <= 0 {
+		return out, nil
+	}
 
-	fallback, err := s.ListCatalogBinaryArticles(ctx, binaryID)
+	fallback, err := s.ListCatalogBinaryArticles(ctx, binaryID.Int64)
 	if err != nil {
-		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, binaryID, err)
+		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, binaryID.Int64, err)
 	}
 	return fallback, nil
 }

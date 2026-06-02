@@ -5563,6 +5563,51 @@ func TestGetIndexerOverviewCountsArchivedNZBsSeparatelyFromLiveReadyNZBs(t *test
 	}
 }
 
+func TestCatalogReleaseFileReadsTolerateNullBinaryID(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("nullbinary%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1024,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	var fileID int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM release_files WHERE release_id = $1 LIMIT 1`, releaseID).Scan(&fileID); err != nil {
+		t.Fatalf("lookup release file id: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE release_files SET binary_id = NULL WHERE id = $1`, fileID); err != nil {
+		t.Fatalf("null release file binary id: %v", err)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].BinaryID != 0 {
+		t.Fatalf("expected zero binary id after null scan, got %d", files[0].BinaryID)
+	}
+
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, fileID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 0 {
+		t.Fatalf("expected 0 articles for null binary id, got %d", len(articles))
+	}
+}
+
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
