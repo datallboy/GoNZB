@@ -289,6 +289,9 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 		return fmt.Errorf("seed archive lineage article headers %s: %w", in.ReleaseID, err)
 	}
 
+	if err := syncReleaseCatalogFiles(ctx, tx, in.ReleaseID); err != nil {
+		return err
+	}
 	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, in.ReleaseID); err != nil {
 		return err
 	}
@@ -714,20 +717,17 @@ func upsertReleaseArchiveDetailSnapshot(ctx context.Context, tx *sql.Tx, release
 			observed_parts
 		)
 		SELECT
-			rf.release_id,
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.posted_at,
-			COUNT(bp.article_header_id)::integer AS article_count,
-			COALESCE(MAX(b.total_parts), 0)::integer,
-			COALESCE(MAX(b.observed_parts), 0)::integer
-		FROM release_files rf
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		WHERE rf.release_id = $1
-		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.posted_at`,
+			cf.release_id,
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.posted_at,
+			cf.article_count,
+			cf.total_parts,
+			cf.observed_parts
+		FROM release_catalog_files cf
+		WHERE cf.release_id = $1`,
 		releaseID,
 	); err != nil {
 		return fmt.Errorf("seed release archive detail files %s: %w", releaseID, err)

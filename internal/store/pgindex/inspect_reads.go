@@ -1631,26 +1631,26 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 
 	filesRows, err := s.db.QueryContext(ctx, `
 		SELECT
-			rf.id,
+			COALESCE(rf.id, 0),
 			COALESCE(rf.binary_id, 0),
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.subject,
-			rf.poster,
-			rf.posted_at,
-			COUNT(bp.id) AS article_count,
-			COALESCE(b.total_parts, 0),
-			COALESCE(b.observed_parts, 0),
-			COALESCE(b.match_confidence, 0),
-			COALESCE(b.match_status, '')
-		FROM release_files rf
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		WHERE rf.release_id = $1
-		GROUP BY rf.id, rf.binary_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, b.total_parts, b.observed_parts, b.match_confidence, b.match_status
-		ORDER BY rf.file_index, rf.id`, releaseID)
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.subject,
+			cf.poster,
+			cf.posted_at,
+			cf.article_count,
+			cf.total_parts,
+			cf.observed_parts,
+			cf.match_confidence,
+			cf.match_status
+		FROM release_catalog_files cf
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_name = cf.file_name
+		WHERE cf.release_id = $1
+		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list release files for %s: %w", releaseID, err)
 	}

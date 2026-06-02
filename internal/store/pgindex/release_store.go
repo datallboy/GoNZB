@@ -1663,6 +1663,14 @@ func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, rel
 		}
 	}
 
+	tx, ok := runner.(*sql.Tx)
+	if !ok {
+		return fmt.Errorf("replace release files for %s requires transactional runner", releaseID)
+	}
+	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
+		return err
+	}
+
 	return nil
 }
 

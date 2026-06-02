@@ -7,6 +7,7 @@ import (
 
 const articleHeaderPayloadPurgeWindowSize = 250000
 const archiveSnapshotBackfillBatchSize = 500
+const releaseCatalogFilesBackfillBatchSize = 500
 
 type IndexerMaintenanceResult struct {
 	AbandonedStageRuns         int64
@@ -16,6 +17,7 @@ type IndexerMaintenanceResult struct {
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
 	BackfilledArchiveSnapshots int64
+	BackfilledCatalogFiles     int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64
 	PurgedBinaryInspections    int64
@@ -46,6 +48,17 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 	} else {
 		result.YEncWorkItemsUpserted = upserted
 		result.YEncWorkItemsRetired = retired
+	}
+
+	for {
+		backfilled, err := s.BackfillMissingReleaseCatalogFiles(ctx, releaseCatalogFilesBackfillBatchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.BackfilledCatalogFiles += backfilled
+		if backfilled < releaseCatalogFilesBackfillBatchSize {
+			break
+		}
 	}
 
 	for {
@@ -267,8 +280,8 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		DELETE FROM releases r
 		WHERE NOT EXISTS (
 			SELECT 1
-			FROM release_files rf
-			WHERE rf.release_id = r.release_id
+			FROM release_catalog_files cf
+			WHERE cf.release_id = r.release_id
 		)
 		  AND NOT EXISTS (
 			SELECT 1
