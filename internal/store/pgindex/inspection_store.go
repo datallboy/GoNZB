@@ -1356,6 +1356,8 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
 		FROM requested req
+		JOIN binaries b
+		  ON b.id = req.binary_id
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -1408,9 +1410,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			source_updated_at,
 			updated_at
 		)
-		VALUES (
+		SELECT
 			$1,
-			$2,
+			b.id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -1434,7 +1436,8 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			'{}'::jsonb,
 			$4,
 			NOW()
-		)
+		FROM binaries b
+		WHERE b.id = $2
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -2866,9 +2869,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 			source_updated_at,
 			updated_at
 		)
-		VALUES (
+		SELECT
 			$1,
-			$2,
+			b.id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -2892,7 +2895,8 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 			$8,
 			$9,
 			NOW()
-		)
+		FROM binaries b
+		WHERE b.id = $2
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = EXCLUDED.status,
