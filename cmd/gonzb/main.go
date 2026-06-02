@@ -333,6 +333,7 @@ func init() {
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
 	indexerReleaseRefreshSummariesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release summary refresh pass and exit instead of continuous mode")
+	indexerReleaseGenerateNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one NZB pre-generation pass and exit instead of continuous mode")
 	indexerReleaseArchiveNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archive NZB pass and exit instead of continuous mode")
 	indexerReleasePurgeArchivedSourcesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archived-source purge pass and exit instead of continuous mode")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
