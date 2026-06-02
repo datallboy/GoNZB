@@ -1058,16 +1058,19 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
 		}
 
-		if _, err := db.ExecContext(ctx, `
-			UPDATE release_family_readiness_summaries s
-			SET processed_at = s.updated_at
-			FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-			WHERE s.provider_id = v.provider_id
-			  AND s.newsgroup_id = v.newsgroup_id
-			  AND s.key_kind = v.key_kind
-			  AND s.family_key = v.family_key`,
-			args...,
-		); err != nil {
+		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+			_, err := db.ExecContext(ctx, `
+				UPDATE release_family_readiness_summaries s
+				SET processed_at = s.updated_at
+				FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+				WHERE s.provider_id = v.provider_id
+				  AND s.newsgroup_id = v.newsgroup_id
+				  AND s.key_kind = v.key_kind
+				  AND s.family_key = v.family_key`,
+				args...,
+			)
+			return err
+		}); err != nil {
 			return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
 		}
 	}
@@ -1081,25 +1084,28 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			values = append(values, fmt.Sprintf("($%d::bigint,$%d::text)", base+1, base+2))
 		}
 
-		if _, err := db.ExecContext(ctx, `
-			UPDATE release_family_readiness_summaries s
-			SET processed_at = s.updated_at
-			FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
-			WHERE s.provider_id = v.provider_id
-			  AND EXISTS (
-			  	SELECT 1
-			  	FROM binaries b
-			  	WHERE b.provider_id = v.provider_id
-				  AND b.file_set_key = v.file_set_key
-				  AND BTRIM(b.file_set_key) <> ''
-				  AND b.newsgroup_id = s.newsgroup_id
-			  	  AND (
-			  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
-			  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
-			  	  )
-			  )`,
-			args...,
-		); err != nil {
+		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+			_, err := db.ExecContext(ctx, `
+				UPDATE release_family_readiness_summaries s
+				SET processed_at = s.updated_at
+				FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
+				WHERE s.provider_id = v.provider_id
+				  AND EXISTS (
+				  	SELECT 1
+				  	FROM binaries b
+				  	WHERE b.provider_id = v.provider_id
+					  AND b.file_set_key = v.file_set_key
+					  AND BTRIM(b.file_set_key) <> ''
+					  AND b.newsgroup_id = s.newsgroup_id
+				  	  AND (
+				  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
+				  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
+				  	  )
+				  )`,
+				args...,
+			)
+			return err
+		}); err != nil {
 			return fmt.Errorf("ack %d recovered-file-set release candidates: %w", len(recovered), err)
 		}
 	}

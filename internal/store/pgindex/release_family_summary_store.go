@@ -20,6 +20,7 @@ const (
 	releaseReadinessOvergrouped      = "overgrouped_contextual"
 	releaseFamilyDirtyBatchSize      = 10000
 	releaseFamilySummaryRefreshBatch = 5000
+	releaseFamilySummaryMergeRowsMax = 2500
 )
 
 var summaryOpaqueTokenRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
@@ -896,20 +897,26 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 		return nil
 	}
 
-	values := make([]string, 0, len(summaries))
-	args := make([]any, 0, len(summaries)*23)
-	for i, row := range summaries {
-		record := buildReleaseFamilySummaryRefreshRecord(row)
-		base := i*23 + 1
-		placeholders := make([]string, 0, 23)
-		for offset := range 23 {
-			placeholders = append(placeholders, fmt.Sprintf("$%d", base+offset))
+	for start := 0; start < len(summaries); start += releaseFamilySummaryMergeRowsMax {
+		end := start + releaseFamilySummaryMergeRowsMax
+		if end > len(summaries) {
+			end = len(summaries)
 		}
-		values = append(values, "("+strings.Join(placeholders, ",")+",TIMESTAMPTZ 'epoch',NOW())")
-		args = append(args, record...)
-	}
+		batch := summaries[start:end]
+		values := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)*23)
+		for i, row := range batch {
+			record := buildReleaseFamilySummaryRefreshRecord(row)
+			base := i*23 + 1
+			placeholders := make([]string, 0, 23)
+			for offset := range 23 {
+				placeholders = append(placeholders, fmt.Sprintf("$%d", base+offset))
+			}
+			values = append(values, "("+strings.Join(placeholders, ",")+",TIMESTAMPTZ 'epoch',NOW())")
+			args = append(args, record...)
+		}
 
-	if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
+		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO release_family_readiness_summaries (
 			provider_id,
 			newsgroup_id,
@@ -960,8 +967,9 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 		    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
 		    processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
 		    updated_at = NOW()`,
-		strings.Join(values, ",")), args...); err != nil {
-		return fmt.Errorf("merge release family summary rows count=%d: %w", len(summaries), err)
+			strings.Join(values, ",")), args...); err != nil {
+			return fmt.Errorf("merge release family summary rows count=%d batch=%d: %w", len(batch), len(summaries), err)
+		}
 	}
 	return nil
 }
