@@ -331,6 +331,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	if indexing.Inspect.MinBinaryBytes > 0 && indexing.Inspect.MaxBinaryBytes > 0 && indexing.Inspect.MinBinaryBytes > indexing.Inspect.MaxBinaryBytes {
 		issues = append(issues, "indexing.inspect.min_binary_bytes must be less than or equal to indexing.inspect.max_binary_bytes")
 	}
+	if indexing.StorageGuard.MinFreeBytes < 0 {
+		issues = append(issues, "indexing.storage_guard.min_free_bytes must be greater than or equal to 0")
+	}
+	if indexing.StorageGuard.MinFreePercent < 0 || indexing.StorageGuard.MinFreePercent > 100 {
+		issues = append(issues, "indexing.storage_guard.min_free_percent must be between 0 and 100")
+	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
 		clean = strings.ReplaceAll(clean, "0X", "")
@@ -523,7 +529,14 @@ func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	return indexing.ScrapeLatest.Enabled ||
 		indexing.ScrapeBackfill.Enabled ||
 		indexing.Assemble.Enabled ||
+		indexing.AssembleLaneA.Enabled ||
+		indexing.AssembleLaneB.Enabled ||
+		indexing.RecoverYEnc.Enabled ||
+		indexing.ReleaseSummaryRefresh.Enabled ||
 		indexing.Release.Enabled ||
+		indexing.ReleaseGenerateNZB.Enabled ||
+		indexing.ReleaseArchiveNZB.Enabled ||
+		indexing.ReleasePurgeArchivedSources.Enabled ||
 		indexing.InspectDiscovery.Enabled ||
 		indexing.InspectPAR2.Enabled ||
 		indexing.InspectNFO.Enabled ||

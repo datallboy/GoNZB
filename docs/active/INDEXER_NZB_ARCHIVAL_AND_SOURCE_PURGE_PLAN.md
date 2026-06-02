@@ -101,6 +101,35 @@ Expected pipeline order after this follow-up:
 - `release_archive_nzb`
 - `release_purge_archived_sources`
 
+## Follow-Up Work: Database Storage Guard
+
+Current gap:
+
+- Archive and purge reduce long-run database size, but they did not stop growth-heavy stages from continuing when the PostgreSQL data volume was nearly full.
+- The observed failure mode under low disk space was not a clean backlog slowdown. It escalated into:
+  - `unexpected EOF`
+  - `database system is in recovery mode`
+  - `SQLSTATE XX001` corruption panics
+
+Required follow-up:
+
+- Add a runtime-configurable PostgreSQL storage guard.
+- The guard must check the free space of the live PostgreSQL data directory before running indexer stages.
+- When free space drops below the configured threshold, growth-heavy stages must pause automatically.
+- Reclaim-oriented stages must remain allowed:
+  - `indexer_maintenance`
+  - `release_generate_nzb`
+  - `release_archive_nzb`
+  - `release_purge_archived_sources`
+
+Runtime-setting direction:
+
+- Store the storage-guard thresholds in SQLite runtime settings under `indexing.storage_guard`.
+- Minimum controls:
+  - `enabled`
+  - `min_free_bytes`
+  - `min_free_percent`
+
 ## Implementation Status
 
 Status date: 2026-06-01
@@ -133,10 +162,17 @@ Status date: 2026-06-01
   - `public_min_identity_status`
   - `public_require_inspection`
   - `public_require_enrichment`
+- Added runtime-configurable PostgreSQL storage guard controls under `indexing.storage_guard` for:
+  - `enabled`
+  - `min_free_bytes`
+  - `min_free_percent`
 - Applied the same public-ready policy to:
   - public indexer visibility
   - local `usenet_indexer` aggregator search source
   - background NZB generation eligibility
+- Added supervisor stage gating against PostgreSQL data-directory free space:
+  - growth-heavy stages pause when the free-space threshold is crossed
+  - reclaim stages remain runnable so archive/purge/maintenance can try to recover space
 - Added archived NZB serving through the authoritative archive store before any live catalog rebuild path.
 - Added purge-safe lineage snapshots in Postgres and purge execution that only deletes binary lineage when it is not still shared by non-archived releases.
 - Added archived detail snapshot persistence at archive-write time so purged releases can hydrate the frontend detail page without live file or NZB-cache rows.
@@ -173,6 +209,10 @@ Status date: 2026-06-01
   - archive state is effectively `active` or `archive_failed`
 - Inspect/enrich requirements are now runtime-configurable on the public-ready policy and default to disabled.
   - Rationale: this preserves prior behavior by default while allowing stricter public/generation readiness when desired.
+- The existing inspect/enrich-before-public controls are the intended quality gate for richer archived metadata.
+  - `public_require_inspection`
+  - `public_require_enrichment`
+  - Rationale: keep archive-time metadata quality configurable without forcing a larger retained Postgres footprint after purge.
 - Archived object key convention implemented:
   - `releases/<provider_id>/<release_id>/<sha256>.nzb`
 - Archived detail-read ownership implemented:

@@ -65,6 +65,7 @@ type usenetIndexerConfig struct {
 	ReleaseArchiveNZBStage                          indexerStageConfig
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
+	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	InspectDiscovery                                indexerStageConfig
 	InspectPAR2                                     indexerStageConfig
 	InspectNFO                                      indexerStageConfig
@@ -505,8 +506,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}),
 		},
 	}, supervisor.Options{
-		Tracker: appCtx.PGIndexStore,
-		Owner:   stageOwner,
+		Tracker:   appCtx.PGIndexStore,
+		Owner:     stageOwner,
+		StageGate: newIndexerStageStorageGuard(appCtx.PGIndexStore, runtimeCfg.StorageGuard),
 	})
 
 	service := indexing.NewService(supervisorSvc, indexing.Options{
@@ -681,6 +683,11 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			RequireInspection:  indexingCfg.Release.PublicRequireInspection,
 			RequireEnrichment:  indexingCfg.Release.PublicRequireEnrichment,
 		}),
+		StorageGuard: pgindex.DatabaseStorageGuardConfig{
+			Enabled:        indexingCfg.StorageGuard.Enabled,
+			MinFreeBytes:   indexingCfg.StorageGuard.MinFreeBytes,
+			MinFreePercent: indexingCfg.StorageGuard.MinFreePercent,
+		},
 		InspectDiscovery: newIndexerStageConfig(indexingCfg.InspectDiscovery),
 		InspectPAR2:      newIndexerStageConfig(indexingCfg.InspectPAR2),
 		InspectNFO:       newIndexerStageConfig(indexingCfg.InspectNFO),

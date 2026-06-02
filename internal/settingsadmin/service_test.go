@@ -73,6 +73,23 @@ func TestValidateRuntimeSettingsAllowsLocalIndexerAggregatorSourceWhenModuleEnab
 	}
 }
 
+func TestValidateRuntimeSettingsRejectsInvalidStorageGuardThresholds(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.StorageGuard.MinFreeBytes = -1
+	runtime.Indexing.StorageGuard.MinFreePercent = 101
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "indexing.storage_guard.min_free_bytes") {
+		t.Fatalf("expected min_free_bytes detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.storage_guard.min_free_percent") {
+		t.Fatalf("expected min_free_percent detail, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsAggregatorMissingSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	caps := BuildCapabilities(&config.Config{

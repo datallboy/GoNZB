@@ -86,29 +86,30 @@ type AggregatorSourcesConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups                  []string              `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup    map[string]string     `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest                IndexingStageConfig   `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill              IndexingStageConfig   `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble                    IndexingStageConfig   `mapstructure:"assemble" yaml:"assemble"`
-	AssembleLaneA               IndexingStageConfig   `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
-	AssembleLaneB               IndexingStageConfig   `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
-	RecoverYEnc                 IndexingStageConfig   `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh       IndexingStageConfig   `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                     IndexingReleaseConfig `mapstructure:"release" yaml:"release"`
-	ReleaseGenerateNZB          IndexingStageConfig   `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
-	ReleaseArchiveNZB           IndexingStageConfig   `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
-	ReleasePurgeArchivedSources IndexingStageConfig   `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
-	Match                       IndexingMatchConfig   `mapstructure:"match" yaml:"match"`
-	Inspect                     IndexingInspectConfig `mapstructure:"inspect" yaml:"inspect"`
-	InspectDiscovery            IndexingStageConfig   `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2                 IndexingStageConfig   `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO                  IndexingStageConfig   `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive              IndexingStageConfig   `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword             IndexingStageConfig   `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia                IndexingStageConfig   `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB                 IndexingPreDBConfig   `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB                  IndexingTMDBConfig    `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
+	AssembleLaneA               IndexingStageConfig        `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
+	AssembleLaneB               IndexingStageConfig        `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
+	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB          IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
+	ReleaseArchiveNZB           IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
+	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
+	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive              IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword             IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                 IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                  IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -157,6 +158,12 @@ type IndexingInspectConfig struct {
 	SevenZipPath     string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
 	UnrarPath        string   `mapstructure:"unrar_path" yaml:"unrar_path"`
 	PAR2Path         string   `mapstructure:"par2_path" yaml:"par2_path"`
+}
+
+type IndexingStorageGuardConfig struct {
+	Enabled        *bool    `mapstructure:"enabled" yaml:"enabled"`
+	MinFreeBytes   *int64   `mapstructure:"min_free_bytes" yaml:"min_free_bytes"`
+	MinFreePercent *float64 `mapstructure:"min_free_percent" yaml:"min_free_percent"`
 }
 
 type IndexingPreDBConfig struct {
@@ -307,6 +314,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.seven_zip_path", "7z")
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
+	v.SetDefault("indexing.storage_guard.enabled", true)
+	v.SetDefault("indexing.storage_guard.min_free_bytes", int64(8*1024*1024*1024))
+	v.SetDefault("indexing.storage_guard.min_free_percent", 5.0)
 	v.SetDefault("indexing.inspect_discovery.enabled", false)
 	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
@@ -558,6 +568,12 @@ func (c *Config) validate() error {
 	}
 	if c.Indexing.Inspect.ToolTimeoutSecs < 0 {
 		return errors.New("indexing.inspect.tool_timeout_seconds must be greater than or equal to 0")
+	}
+	if c.Indexing.StorageGuard.MinFreeBytes != nil && *c.Indexing.StorageGuard.MinFreeBytes < 0 {
+		return errors.New("indexing.storage_guard.min_free_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.StorageGuard.MinFreePercent != nil && (*c.Indexing.StorageGuard.MinFreePercent < 0 || *c.Indexing.StorageGuard.MinFreePercent > 100) {
+		return errors.New("indexing.storage_guard.min_free_percent must be between 0 and 100")
 	}
 	if c.Indexing.EnrichPreDB.HTTPTimeoutSeconds != nil && *c.Indexing.EnrichPreDB.HTTPTimeoutSeconds <= 0 {
 		return errors.New("indexing.enrich_predb.http_timeout_seconds must be greater than 0")

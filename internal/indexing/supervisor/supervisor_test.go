@@ -140,6 +140,40 @@ func TestRunStageOnceSkipsWhenTrackerDoesNotClaim(t *testing.T) {
 	}
 }
 
+func TestRunStageOnceSkipsWhenStageGateBlocks(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: true,
+			Run:     &pgindex.IndexerStageRun{ID: 88, StageName: string(StageAssembleLaneB)},
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageAssembleLaneB,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		Tracker: tracker,
+		Owner:   "test-owner",
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			return StageGateDecision{Allowed: false, Reason: "low space"}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageAssembleLaneB); err != nil {
+		t.Fatalf("run stage once: %v", err)
+	}
+	if tracker.claims != 0 {
+		t.Fatalf("expected stage gate to block before claim, got %d claims", tracker.claims)
+	}
+}
+
 func TestRunStageOnceCompletesTrackedRun(t *testing.T) {
 	tracker := &fakeTracker{
 		claimResult: &pgindex.IndexerStageClaimResult{

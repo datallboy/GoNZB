@@ -86,11 +86,19 @@ type Tracker interface {
 	FailIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
 }
 
+type StageGateDecision struct {
+	Allowed bool
+	Reason  string
+}
+
+type StageGateFunc func(ctx context.Context, stage Stage, trigger string) (StageGateDecision, error)
+
 type Options struct {
 	Tracker           Tracker
 	Owner             string
 	LeaseDuration     time.Duration
 	HeartbeatInterval time.Duration
+	StageGate         StageGateFunc
 }
 
 type Supervisor struct {
@@ -100,6 +108,7 @@ type Supervisor struct {
 	owner             string
 	leaseDuration     time.Duration
 	heartbeatInterval time.Duration
+	stageGate         StageGateFunc
 }
 
 func New(log logger, stages []Stage, options ...Options) *Supervisor {
@@ -138,6 +147,7 @@ func New(log logger, stages []Stage, options ...Options) *Supervisor {
 		owner:             opts.Owner,
 		leaseDuration:     opts.LeaseDuration,
 		heartbeatInterval: opts.HeartbeatInterval,
+		stageGate:         opts.StageGate,
 	}
 }
 
@@ -246,6 +256,18 @@ func (s *Supervisor) runStage(ctx context.Context, stage Stage, trigger string) 
 func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.stageGate != nil {
+		decision, err := s.stageGate(ctx, stage, trigger)
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			if s.log != nil {
+				s.log.Warn("index stage blocked stage=%s trigger=%s reason=%s", stage.Name, trigger, decision.Reason)
+			}
+			return nil
+		}
 	}
 
 	if s.tracker == nil {

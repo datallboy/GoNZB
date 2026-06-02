@@ -31,6 +31,7 @@ api:
 # - download paths/options
 # - indexing stage schedules/newsgroups/enrichment settings
 # - release public-ready policy thresholds and release_generate_nzb/archive/purge stage controls
+# - indexer PostgreSQL storage guard thresholds
 
 # Application Logging
 log:
