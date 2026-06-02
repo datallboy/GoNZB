@@ -2,12 +2,18 @@ package pgindex
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 )
 
 const defaultBinaryUpsertDBChunkSize = 250
+
+const (
+	defaultRetryableTxAttempts = 3
+	defaultRetryableTxDelay    = 200 * time.Millisecond
+)
 
 type binaryUpsertChunkSizeContextKey struct{}
 type deferReleaseFamilySummaryRefreshContextKey struct{}
@@ -277,6 +283,40 @@ func binaryUpsertTelemetryFromContext(ctx context.Context) *BinaryUpsertTelemetr
 
 func containsSQLState(text, code string) bool {
 	return len(text) > 0 && len(code) > 0 && (strings.Contains(text, "SQLSTATE "+code) || strings.Contains(text, "sqlstate "+code))
+}
+
+func isRetryablePostgresTxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return containsSQLState(text, "40P01") || containsSQLState(text, "40001")
+}
+
+func retryRetryablePostgresTx(ctx context.Context, attempts int, fn func() error) error {
+	if attempts <= 0 {
+		attempts = defaultRetryableTxAttempts
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			if !isRetryablePostgresTxError(err) || attempt == attempts {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * defaultRetryableTxDelay):
+			}
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("retryable postgres transaction did not execute")
 }
 
 type BinaryStatsRefreshTelemetry struct {

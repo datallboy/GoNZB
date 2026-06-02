@@ -141,82 +141,89 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 	}
 	normalizeYEncHeaderRecoveryRecord(&in)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin yenc recovery tx: %w", err)
-	}
-	defer rollbackTx(tx)
+	var result *YEncHeaderRecoveryResult
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin yenc recovery tx: %w", err)
+		}
+		defer rollbackTx(tx)
 
-	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
-	if err != nil {
+		seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
+		if err != nil {
+			return err
+		}
+		if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
+			return err
+		}
+
+		targetID, err := findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+		if err != nil {
+			return err
+		}
+		if targetID == 0 || targetID == in.BinaryID {
+			if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
+				return err
+			}
+			targetID = in.BinaryID
+		} else {
+			if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
+				return err
+			}
+			if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
+				return err
+			}
+			if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, in.BinaryID); err != nil {
+				return fmt.Errorf("delete merged yenc source binary %d: %w", in.BinaryID, err)
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE article_header_ingest_payloads
+			SET yenc_recovery_retry_after = NULL
+			WHERE article_header_id = $1`,
+			in.ArticleHeaderID,
+		); err != nil {
+			return fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE yenc_recovery_work_items
+			SET status = 'done',
+			    ready_at = NOW(),
+			    updated_at = NOW()
+			WHERE binary_id IN ($1, $2)`,
+			in.BinaryID,
+			targetID,
+		); err != nil {
+			return fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
+		}
+
+		keys, err := refreshBinaryStatsInTx(ctx, tx, targetID)
+		if err != nil {
+			return err
+		}
+		keys = append(keys,
+			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: seed.ReleaseFamilyKey},
+			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: seed.BaseStem},
+			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: in.ReleaseFamilyKey},
+			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: in.BaseStem},
+		)
+		if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(keys)); err != nil {
+			return err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit yenc recovery tx: %w", err)
+		}
+		result = &YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: targetID, Merged: targetID != in.BinaryID}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
-		return nil, err
-	}
-
-	targetID, err := findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
-	if err != nil {
-		return nil, err
-	}
-	if targetID == 0 || targetID == in.BinaryID {
-		if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
-			return nil, err
-		}
-		targetID = in.BinaryID
-	} else {
-		if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
-			return nil, err
-		}
-		if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
-			return nil, err
-		}
-		if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, in.BinaryID); err != nil {
-			return nil, fmt.Errorf("delete merged yenc source binary %d: %w", in.BinaryID, err)
-		}
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE article_header_ingest_payloads
-		SET yenc_recovery_retry_after = NULL
-		WHERE article_header_id = $1`,
-		in.ArticleHeaderID,
-	); err != nil {
-		return nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE yenc_recovery_work_items
-		SET status = 'done',
-		    ready_at = NOW(),
-		    updated_at = NOW()
-		WHERE binary_id IN ($1, $2)`,
-		in.BinaryID,
-		targetID,
-	); err != nil {
-		return nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
-	}
-
-	keys, err := refreshBinaryStatsInTx(ctx, tx, targetID)
-	if err != nil {
-		return nil, err
-	}
-	keys = append(keys,
-		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: seed.ReleaseFamilyKey},
-		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: seed.BaseStem},
-		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: in.ReleaseFamilyKey},
-		releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: in.BaseStem},
-	)
-	if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(keys)); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit yenc recovery tx: %w", err)
-	}
-	return &YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: targetID, Merged: targetID != in.BinaryID}, nil
+	return result, nil
 }
 
 type yencRecoveryBinarySeed struct {

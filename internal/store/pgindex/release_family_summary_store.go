@@ -1421,86 +1421,97 @@ func (s *Store) RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit i
 		limit = releaseFamilySummaryRefreshBatch
 	}
 
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("acquire release family summary refresh conn: %w", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, `BEGIN`); err != nil {
-		return 0, fmt.Errorf("begin release family summary refresh conn tx: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+	refreshed := 0
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("acquire release family summary refresh conn: %w", err)
 		}
-	}()
+		defer conn.Close()
 
-	rows, err := conn.QueryContext(ctx, `
-		WITH next_queue AS (
-			SELECT
-				ctid,
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key
-			FROM release_family_summary_refresh_queue
-			ORDER BY queued_at, provider_id, newsgroup_id, key_kind, family_key
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		),
-		dequeued AS (
-			DELETE FROM release_family_summary_refresh_queue q
-			USING next_queue n
-			WHERE q.ctid = n.ctid
-			RETURNING n.provider_id, n.newsgroup_id, n.key_kind, n.family_key
+		if _, err := conn.ExecContext(ctx, `BEGIN`); err != nil {
+			return fmt.Errorf("begin release family summary refresh conn tx: %w", err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+			}
+		}()
+
+		rows, err := conn.QueryContext(ctx, `
+			WITH next_queue AS (
+				SELECT
+					ctid,
+					provider_id,
+					newsgroup_id,
+					key_kind,
+					family_key
+				FROM release_family_summary_refresh_queue
+				ORDER BY queued_at, provider_id, newsgroup_id, key_kind, family_key
+				LIMIT $1
+				FOR UPDATE SKIP LOCKED
+			),
+			dequeued AS (
+				DELETE FROM release_family_summary_refresh_queue q
+				USING next_queue n
+				WHERE q.ctid = n.ctid
+				RETURNING n.provider_id, n.newsgroup_id, n.key_kind, n.family_key
+			)
+			SELECT provider_id, newsgroup_id, key_kind, family_key
+			FROM dequeued`,
+			limit,
 		)
-		SELECT provider_id, newsgroup_id, key_kind, family_key
-		FROM dequeued`,
-		limit,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("dequeue release family summary refresh batch: %w", err)
-	}
-	defer rows.Close()
-
-	keys := make([]releaseFamilySummaryKey, 0, limit)
-	for rows.Next() {
-		var key releaseFamilySummaryKey
-		if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
-			return 0, fmt.Errorf("scan release family summary refresh queue key: %w", err)
+		if err != nil {
+			return fmt.Errorf("dequeue release family summary refresh batch: %w", err)
 		}
-		keys = append(keys, key)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate release family summary refresh queue: %w", err)
-	}
 
-	releaseFamilyKeys := make([]releaseFamilySummaryKey, 0, len(keys))
-	otherKeys := make([]releaseFamilySummaryKey, 0, len(keys))
-	for _, key := range keys {
-		if key.KeyKind == "release_family" {
-			releaseFamilyKeys = append(releaseFamilyKeys, key)
-			continue
+		keys := make([]releaseFamilySummaryKey, 0, limit)
+		for rows.Next() {
+			var key releaseFamilySummaryKey
+			if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan release family summary refresh queue key: %w", err)
+			}
+			keys = append(keys, key)
 		}
-		otherKeys = append(otherKeys, key)
-	}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate release family summary refresh queue: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close release family summary refresh queue rows: %w", err)
+		}
 
-	if err := refreshReleaseFamilySummariesBatchCopy(ctx, conn, releaseFamilyKeys); err != nil {
+		releaseFamilyKeys := make([]releaseFamilySummaryKey, 0, len(keys))
+		otherKeys := make([]releaseFamilySummaryKey, 0, len(keys))
+		for _, key := range keys {
+			if key.KeyKind == "release_family" {
+				releaseFamilyKeys = append(releaseFamilyKeys, key)
+				continue
+			}
+			otherKeys = append(otherKeys, key)
+		}
+
+		if err := refreshReleaseFamilySummariesBatchCopy(ctx, conn, releaseFamilyKeys); err != nil {
+			return err
+		}
+		for _, key := range otherKeys {
+			if err := refreshReleaseFamilySummaryConn(ctx, conn, key); err != nil {
+				return err
+			}
+		}
+
+		if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+			return fmt.Errorf("commit release family summary refresh conn tx: %w", err)
+		}
+		committed = true
+		refreshed = len(keys)
+		return nil
+	}); err != nil {
 		return 0, err
 	}
-	for _, key := range otherKeys {
-		if err := refreshReleaseFamilySummaryConn(ctx, conn, key); err != nil {
-			return 0, err
-		}
-	}
-
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return 0, fmt.Errorf("commit release family summary refresh conn tx: %w", err)
-	}
-	committed = true
-	return len(keys), nil
+	return refreshed, nil
 }
 
 func (s *Store) CountQueuedReleaseFamilySummaries(ctx context.Context) (int, error) {
