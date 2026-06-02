@@ -6,6 +6,7 @@ import (
 )
 
 const articleHeaderPayloadPurgeWindowSize = 250000
+const archiveSnapshotBackfillBatchSize = 500
 
 type IndexerMaintenanceResult struct {
 	AbandonedStageRuns         int64
@@ -47,10 +48,15 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		result.YEncWorkItemsRetired = retired
 	}
 
-	if backfilled, err := s.BackfillMissingReleaseArchiveDetailSnapshots(ctx, 500); err != nil {
-		return nil, err
-	} else {
-		result.BackfilledArchiveSnapshots = backfilled
+	for {
+		backfilled, err := s.BackfillMissingReleaseArchiveDetailSnapshots(ctx, archiveSnapshotBackfillBatchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.BackfilledArchiveSnapshots += backfilled
+		if backfilled < archiveSnapshotBackfillBatchSize {
+			break
+		}
 	}
 
 	if err := s.runIndexerMaintenanceMetadataCleanup(ctx, result); err != nil {
