@@ -20,6 +20,73 @@ Reason:
 
 This plan keeps archived releases searchable and downloadable indefinitely by retaining a compact release catalog plus blob-backed NZB, while deleting the large temporary/source tables that are driving database growth.
 
+## Follow-Up Work: Permanent Release Catalog Model
+
+Current gap:
+
+- The current implementation still has a split ownership model:
+  - `releases` is the live canonical catalog row
+  - archive-detail snapshot tables are the post-purge detail shape
+- That works for compatibility, but it means archived detail data is copied from the live release model into archive tables instead of being owned durably from the start.
+- It also makes later enrich/inspect/title-fix updates depend on snapshot refresh logic rather than updating one permanent catalog shape directly.
+
+Required follow-up:
+
+- Treat `releases` as the permanent long-lived catalog row for both active and archived releases.
+- Move durable UI-facing detail ownership into the permanent catalog model from the moment a release is formed, rather than only at archive time.
+- Treat binary/article/grouping lineage as temporary build inputs whose purpose ends once:
+  - release identity is stable enough for the permanent catalog
+  - the durable NZB has been written to the archive blob store
+
+Target direction:
+
+- Keep `releases` as the primary searchable/listable/enrichable release row.
+- Keep or reshape release detail/file tables so they are durable catalog metadata, not temporary lineage pointers.
+- The long-term durable release model must continue to support:
+  - frontend release detail hydration
+  - admin release detail hydration at a reasonable summary level
+  - later title fixes and release overrides
+  - later TMDB/TVDB enrichment updates
+  - later poster/thumbnail metadata attachment
+- Heavy source-graph tables should become explicitly temporary:
+  - `binaries`
+  - `binary_parts`
+  - `article_headers`
+  - `article_header_ingest_payloads`
+  - binary-side grouping and inspection evidence tables
+
+Schema-planning direction:
+
+- Prefer converging toward one durable release catalog model instead of indefinitely keeping:
+  - live release detail tables for active releases, plus
+  - separate archive-detail snapshot tables for purged releases
+- `release_archive_detail_snapshots` and related child tables should be treated as a transition step, not the final steady-state schema, unless later implementation proves that keeping a separate archived-detail shape is materially better for query cost or maintenance.
+- The preferred steady state is:
+  - `releases` as the permanent catalog row
+  - durable release detail/file metadata attached directly to the permanent catalog model
+  - `release_archive_state` as archive-object ownership and purge lifecycle state
+  - temporary lineage tables deleted soon after durable NZB generation succeeds
+
+Expected lifecycle after this follow-up:
+
+1. Release formation writes the permanent release catalog row.
+2. Durable detail metadata needed by the UI is stored on the permanent catalog path early, not copied later from transient lineage.
+3. `release_generate_nzb` writes the authoritative NZB into archive storage.
+4. After archive success, temporary source lineage is purged aggressively.
+5. The retained permanent release catalog continues to support:
+   - search/listing
+   - detail pages
+   - later inspect rollups
+   - later enrichment/title/poster updates
+
+Planning constraints:
+
+- Do not move to JSON snapshot blobs for this model.
+- Keep fielded columns and child tables for retained release metadata.
+- Any retained file rows in the permanent catalog must not require live `binary_id` ownership after purge.
+- Purge design must continue to prioritize database-size reduction over preserving forensic binary/article detail forever.
+- The schema transition needs a clear migration path from the current archive-detail snapshot tables so already archived releases do not lose detail-page fidelity.
+
 ## Follow-Up Work: Archived Detail Snapshots
 
 Current gap:
@@ -188,6 +255,8 @@ Status date: 2026-06-01
 
 - `nzb_cache` is now legacy transition metadata only. It is not archival truth and is no longer the primary handoff between generation and archival.
 - Archive-detail snapshots are stored as fielded columns and child rows, not JSON blobs.
+- Archive-detail snapshot tables are now considered a transitional schema step, not necessarily the final steady-state catalog model.
+  - Preferred long-term direction: keep `releases` as the permanent enriched catalog row and move durable retained detail ownership onto the permanent catalog path rather than continuing to copy it into a separate archived-detail model.
 - The implemented release state flow is:
   - `active`
   - `archive_pending`
