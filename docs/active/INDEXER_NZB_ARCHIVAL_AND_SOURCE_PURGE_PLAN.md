@@ -20,6 +20,51 @@ Reason:
 
 This plan keeps archived releases searchable and downloadable indefinitely by retaining a compact release catalog plus blob-backed NZB, while deleting the large temporary/source tables that are driving database growth.
 
+## Follow-Up Work: Archived Detail Snapshots
+
+Current gap:
+
+- The first archival implementation kept `release_files`, `release_newsgroups`, and `nzb_cache` after purge so the frontend detail page could still hydrate from the live catalog shape.
+- That preserves compatibility, but it does not reach the actual storage-reduction goal because archived releases still retain part of the hot relational detail model in Postgres.
+
+Required follow-up:
+
+- Add dedicated archive-detail snapshot tables for archived releases.
+- Snapshot data must be stored in fielded columns and child rows, not JSON payload blobs.
+- The snapshot must hold enough detail-page data to serve archived and purged releases without needing:
+  - `release_files`
+  - `release_newsgroups`
+  - `nzb_cache`
+  - binary/article lineage tables
+
+Chosen snapshot direction:
+
+- Keep the `releases` row as the primary searchable/listable catalog row.
+- Add archive-detail snapshot tables for the detail-page shape:
+  - one header row for release/media/external fields
+  - one child table for archived file summaries
+  - one child table for subtitle languages
+- Do not store snapshot payloads as JSON objects.
+
+Expected purge expansion after this follow-up:
+
+- Continue deleting:
+  - `binaries`
+  - `binary_parts`
+  - `article_headers`
+  - `article_header_ingest_payloads`
+  - binary-side inspection/evidence tables
+- Also delete for fully purged archived releases:
+  - `release_files`
+  - `release_newsgroups`
+  - `nzb_cache`
+  - `release_archive_lineage_binaries`
+  - `release_archive_lineage_article_headers`
+
+Guardrail:
+
+- Indexer maintenance must not treat purged archived releases as orphan releases once their live `release_files` rows are removed.
+
 ## Follow-Up Work: Background NZB Pre-Generation
 
 Current gap:
@@ -66,6 +111,10 @@ Status date: 2026-06-01
   - `release_archive_state`
   - `release_archive_lineage_binaries`
   - `release_archive_lineage_article_headers`
+- Added fielded archive-detail snapshot tables for purged-release hydration:
+  - `release_archive_detail_snapshots`
+  - `release_archive_detail_files`
+  - `release_archive_detail_subtitle_languages`
 - Added single-root blob-store configuration rooted at `store.blob_dir`.
   - Aggregator cache remains in `store.blob_dir`
   - Indexer archive lives in `store.blob_dir/indexer-archive`
@@ -85,11 +134,19 @@ Status date: 2026-06-01
   - background NZB generation eligibility
 - Added archived NZB serving through the authoritative archive store before any live catalog rebuild path.
 - Added purge-safe lineage snapshots in Postgres and purge execution that only deletes binary lineage when it is not still shared by non-archived releases.
+- Added archived detail snapshot persistence at archive-write time so purged releases can hydrate the frontend detail page without live file or NZB-cache rows.
+- Extended purge to delete:
+  - `release_files`
+  - `release_newsgroups`
+  - `nzb_cache`
+  - archive lineage rows
+- Updated public detail reads to prefer the archive-detail snapshot for `purged` releases.
 - Added dashboard stats and stage-throughput visibility for archive and purge backlog/work.
 
 ### Sign-off: execution choices made
 
 - `nzb_cache` remains generation/hash metadata only. It is not archival truth.
+- Archive-detail snapshots are stored as fielded columns and child rows, not JSON blobs.
 - The implemented release state flow is:
   - `active`
   - `archive_pending`
@@ -113,6 +170,9 @@ Status date: 2026-06-01
   - Rationale: this preserves prior behavior by default while allowing stricter public/generation readiness when desired.
 - Archived object key convention implemented:
   - `releases/<provider_id>/<release_id>/<sha256>.nzb`
+- Archived detail-read ownership implemented:
+  - list/search continue to read from `releases`
+  - purged detail-page hydration reads from archive-detail snapshot tables
 
 ### Sign-off: metrics implemented
 
@@ -149,6 +209,7 @@ Status date: 2026-06-01
   - background generate stage readiness metric aggregation
   - purge stage metric aggregation
   - filesystem blob store nested archive-key support
+  - purged archived-release detail hydration through snapshot tables
 - Full repository validation run completed:
   - `go test ./...`
 - Runtime settings were enabled through the admin settings API and persisted in SQLite runtime settings:
