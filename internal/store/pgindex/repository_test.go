@@ -5608,6 +5608,59 @@ func TestCatalogReleaseFileReadsTolerateNullBinaryID(t *testing.T) {
 	}
 }
 
+func TestCompleteBinaryInspectionToleratesDeletedBinaryWithExistingRow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      1,
+		SourceReleaseKey: "finish-stale-source",
+		ReleaseFamilyKey: "finish-stale-family",
+		ReleaseKey:       "finish-stale-family",
+		ReleaseName:      "Finish Stale Family",
+		BinaryKey:        "finish-stale-binary",
+		BinaryName:       "finish-stale-binary",
+		FileName:         "finish-stale.mkv",
+		FileIndex:        1,
+		TotalParts:       2,
+		MatchConfidence:  0.9,
+		MatchStatus:      "identified",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.StartBinaryInspection(ctx, "inspect_media", binaryID, "", nil); err != nil {
+		t.Fatalf("start binary inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("delete binary: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"probe_mode": "heuristic",
+		},
+	}); err != nil {
+		t.Fatalf("complete binary inspection after delete: %v", err)
+	}
+
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_media' AND binary_id = $1`, binaryID).Scan(&status); err != nil {
+		t.Fatalf("read completed inspection row: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected completed inspection status, got %q", status)
+	}
+}
+
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
