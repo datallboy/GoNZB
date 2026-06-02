@@ -111,6 +111,11 @@ Status date: 2026-06-01
   - `release_archive_state`
   - `release_archive_lineage_binaries`
   - `release_archive_lineage_article_headers`
+- Switched late NZB generation to archive-first semantics:
+  - `release_generate_nzb` now writes the durable NZB directly into the indexer archive store
+  - successful generation immediately marks the release `purge_pending`
+  - public/aggregator download flows now prefer the authoritative archive store
+  - on-demand resolver fetches no longer create or refresh `nzb_cache.ready`
 - Added fielded archive-detail snapshot tables for purged-release hydration:
   - `release_archive_detail_snapshots`
   - `release_archive_detail_files`
@@ -145,7 +150,7 @@ Status date: 2026-06-01
 
 ### Sign-off: execution choices made
 
-- `nzb_cache` remains generation/hash metadata only. It is not archival truth.
+- `nzb_cache` is now legacy transition metadata only. It is not archival truth and is no longer the primary handoff between generation and archival.
 - Archive-detail snapshots are stored as fielded columns and child rows, not JSON blobs.
 - The implemented release state flow is:
   - `active`
@@ -155,16 +160,16 @@ Status date: 2026-06-01
   - `purged`
 - The plan’s intermediate steady `archived` state is collapsed in code into direct handoff from durable archive write to `purge_pending`.
   - Rationale: once the blob write and Postgres metadata commit succeed, the release is immediately purge-eligible in the current implementation.
-- Implemented operational `nzb-ready` gate:
+- Implemented operational direct-archive generation gate:
   - `releases.source_kind = 'usenet_index'`
-  - `nzb_cache.generation_status = 'ready'`
-  - release has persisted `release_files`
-  - release has persisted `release_newsgroups`
-- Implemented operational background generation gate:
   - release satisfies the shared public-ready policy
   - release has persisted `release_files`
   - release has persisted `release_newsgroups`
-  - `nzb_cache.generation_status <> 'ready'`
+  - archive state is effectively `active` or `archive_failed`
+- Implemented operational legacy archive-backfill gate:
+  - `nzb_cache.generation_status = 'ready'`
+  - release has persisted `release_files`
+  - release has persisted `release_newsgroups`
   - archive state is effectively `active` or `archive_failed`
 - Inspect/enrich requirements are now runtime-configurable on the public-ready policy and default to disabled.
   - Rationale: this preserves prior behavior by default while allowing stricter public/generation readiness when desired.
@@ -179,7 +184,7 @@ Status date: 2026-06-01
 - Generate stage metrics:
   - `generate_candidates`
   - `generate_attempted`
-  - `generated_ready_count`
+  - `archived_count`
   - `generate_failures`
 - Archive stage metrics:
   - `archive_candidates`
@@ -263,7 +268,8 @@ Status date: 2026-06-01
   - the measurement still validates scheduler wiring, SQLite-backed runtime settings, stage execution, metrics emission, and dashboard visibility
 - Background generation follow-up note:
   - this implementation now exposes the missing pre-generation stage and runtime public-ready thresholds
-  - a refreshed live baseline for `generate_nzb_pending_releases` should be captured after deployment because the earlier empty-queue archival baseline was measured before the background generation stage existed
+  - the earliest live baseline below predates the archive-first follow-up and therefore reports `generated_ready_count`
+  - current code writes directly to the archive store and reports `archived_count` from `release_generate_nzb`
 
 ### Sign-off: live background-generation baseline
 
