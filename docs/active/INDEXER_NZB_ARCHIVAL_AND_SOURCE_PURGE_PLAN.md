@@ -216,6 +216,10 @@ Status date: 2026-06-01
   - `release_archive_detail_snapshots`
   - `release_archive_detail_files`
   - `release_archive_detail_subtitle_languages`
+- Added a permanent durable file-detail path owned by the release catalog:
+  - `release_catalog_files`
+  - release formation now syncs durable file summaries into the permanent catalog path
+  - public and admin release detail reads now hydrate file summaries from the durable catalog path rather than the transient `release_files` table
 - Added single-root blob-store configuration rooted at `store.blob_dir`.
   - Aggregator cache remains in `store.blob_dir`
   - Indexer archive lives in `store.blob_dir/indexer-archive`
@@ -248,7 +252,9 @@ Status date: 2026-06-01
   - `release_newsgroups`
   - `nzb_cache`
   - archive lineage rows
-- Updated public detail reads to prefer the archive-detail snapshot for `purged` releases.
+- Kept durable retained file metadata outside the transient purge path:
+  - `release_catalog_files` survives purge and remains the canonical file-summary source for release detail hydration
+- Updated public and admin detail reads to hydrate retained file detail from the durable permanent catalog path instead of depending on transient `release_files`.
 - Added dashboard stats and stage-throughput visibility for archive and purge backlog/work.
 
 ### Sign-off: execution choices made
@@ -257,6 +263,10 @@ Status date: 2026-06-01
 - Archive-detail snapshots are stored as fielded columns and child rows, not JSON blobs.
 - Archive-detail snapshot tables are now considered a transitional schema step, not necessarily the final steady-state catalog model.
   - Preferred long-term direction: keep `releases` as the permanent enriched catalog row and move durable retained detail ownership onto the permanent catalog path rather than continuing to copy it into a separate archived-detail model.
+- The current implementation now follows that preferred direction for file-level detail retention:
+  - transient `release_files` remains for binary/article-bound workflows
+  - `release_catalog_files` is the durable file-detail catalog retained across purge
+  - archive-detail snapshot tables remain transitional compatibility/backfill state, not the primary detail-read path
 - The implemented release state flow is:
   - `active`
   - `archive_pending`
@@ -324,6 +334,7 @@ Status date: 2026-06-01
   - purge stage metric aggregation
   - filesystem blob store nested archive-key support
   - purged archived-release detail hydration through snapshot tables
+  - purged archived-release detail hydration through the durable permanent catalog-file path
 - Full repository validation run completed:
   - `go test ./...`
 - Runtime settings were enabled through the admin settings API and persisted in SQLite runtime settings:
