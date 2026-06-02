@@ -14,6 +14,7 @@ type IndexerMaintenanceResult struct {
 	AbandonedBinaryInspections int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
+	BackfilledArchiveSnapshots int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64
 	PurgedBinaryInspections    int64
@@ -44,6 +45,12 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 	} else {
 		result.YEncWorkItemsUpserted = upserted
 		result.YEncWorkItemsRetired = retired
+	}
+
+	if backfilled, err := s.BackfillMissingReleaseArchiveDetailSnapshots(ctx, 500); err != nil {
+		return nil, err
+	} else {
+		result.BackfilledArchiveSnapshots = backfilled
 	}
 
 	if err := s.runIndexerMaintenanceMetadataCleanup(ctx, result); err != nil {
