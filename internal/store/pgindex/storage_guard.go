@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 )
@@ -14,6 +15,7 @@ type DatabaseStorageStatus struct {
 	FilesystemFreeBytes   int64
 	FilesystemTotalBytes  int64
 	FilesystemFreePercent float64
+	FilesystemVisible     bool
 }
 
 type DatabaseStorageGuardConfig struct {
@@ -47,6 +49,11 @@ func (s *Store) DatabaseStorageStatus(ctx context.Context) (*DatabaseStorageStat
 	dataDir := filepath.Clean(status.DataDirectory)
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(dataDir, &fs); err != nil {
+		if os.IsNotExist(err) || err == syscall.ENOENT || err == syscall.EPERM || err == syscall.EACCES {
+			status.DataDirectory = dataDir
+			status.FilesystemVisible = false
+			return status, nil
+		}
 		return nil, fmt.Errorf("stat postgres data directory %s: %w", dataDir, err)
 	}
 	blockSize := uint64(fs.Bsize)
@@ -56,12 +63,16 @@ func (s *Store) DatabaseStorageStatus(ctx context.Context) (*DatabaseStorageStat
 		status.FilesystemFreePercent = (float64(status.FilesystemFreeBytes) / float64(status.FilesystemTotalBytes)) * 100
 	}
 	status.DataDirectory = dataDir
+	status.FilesystemVisible = true
 	return status, nil
 }
 
 func EvaluateDatabaseStorageGuard(status DatabaseStorageStatus, cfg DatabaseStorageGuardConfig) DatabaseStorageGuardEvaluation {
 	evaluation := DatabaseStorageGuardEvaluation{Status: status}
 	if !cfg.Enabled {
+		return evaluation
+	}
+	if !status.FilesystemVisible {
 		return evaluation
 	}
 
