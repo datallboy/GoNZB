@@ -23,7 +23,6 @@ const (
 	assemblePriorityHeaderWindowMultiplier = 40
 	assemblePriorityHeaderMinScan          = 5000
 	assemblePriorityHeaderMaxScan          = 100000
-	maxBinaryUpsertBatchRetries            = 3
 	refreshBinaryStatsBatchSize            = 8000
 )
 
@@ -1084,7 +1083,7 @@ func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []prep
 	started := time.Now()
 	telemetry := binaryUpsertTelemetryFromContext(ctx)
 	var lastErr error
-	for attempt := 1; attempt <= maxBinaryUpsertBatchRetries; attempt++ {
+	for attempt := 1; attempt <= defaultRetryableTxAttempts; attempt++ {
 		ids, err := s.upsertBinaryChunkOnce(ctx, records)
 		if err == nil {
 			if telemetry != nil {
@@ -1093,16 +1092,16 @@ func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []prep
 			return ids, nil
 		}
 		lastErr = err
-		if telemetry != nil && isRetryableBinaryUpsertError(err) {
+		if telemetry != nil && isRetryablePostgresTxError(err) {
 			telemetry.recordRetry(err)
 		}
-		if !isRetryableBinaryUpsertError(err) || attempt == maxBinaryUpsertBatchRetries {
+		if !isRetryablePostgresTxError(err) || attempt == defaultRetryableTxAttempts {
 			return nil, err
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+		case <-time.After(time.Duration(attempt) * defaultRetryableTxDelay):
 		}
 	}
 	return nil, lastErr
@@ -1180,14 +1179,6 @@ func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records [
 	}
 	committed = true
 	return ids, nil
-}
-
-func isRetryableBinaryUpsertError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := err.Error()
-	return strings.Contains(text, "SQLSTATE 40P01") || strings.Contains(text, "SQLSTATE 40001")
 }
 
 func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) ([]int64, []releaseFamilySummaryKey, error) {
@@ -2007,28 +1998,29 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin binary parts upsert tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
-	const maxBinaryPartBatchRecords = 8000
-	for start := 0; start < len(records); start += maxBinaryPartBatchRecords {
-		end := start + maxBinaryPartBatchRecords
-		if end > len(records) {
-			end = len(records)
+	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin binary parts upsert tx: %w", err)
 		}
-		if err := upsertBinaryPartsChunk(ctx, tx, records[start:end]); err != nil {
-			return err
+		defer rollbackTx(tx)
+
+		const maxBinaryPartBatchRecords = 8000
+		for start := 0; start < len(records); start += maxBinaryPartBatchRecords {
+			end := start + maxBinaryPartBatchRecords
+			if end > len(records) {
+				end = len(records)
+			}
+			if err := upsertBinaryPartsChunk(ctx, tx, records[start:end]); err != nil {
+				return err
+			}
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit binary parts upsert tx: %w", err)
-	}
-
-	return nil
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit binary parts upsert tx: %w", err)
+		}
+		return nil
+	})
 }
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
