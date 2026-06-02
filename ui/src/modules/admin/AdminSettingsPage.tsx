@@ -731,7 +731,14 @@ export function AdminSettingsPage() {
                         </div>
                         <div className="toolbar-grid">
                           <CheckboxField label="Enabled" checked={Boolean(value.enabled)} onChange={(next) => updateStage(key, { enabled: next })} />
-                          <NumberField label="Interval minutes" min={1} step="0.5" value={value.interval_minutes ?? 0} onChange={(next) => updateStage(key, { interval_minutes: next })} />
+                          <NumberField
+                            label="Interval minutes"
+                            min={0.1}
+                            step="0.1"
+                            value={value.interval_minutes ?? 0}
+                            helpText="Supports sub-minute scheduling. Example: 0.1 = 6 seconds."
+                            onChange={(next) => updateStage(key, { interval_minutes: next })}
+                          />
                           <NumberField label="Batch size" min={1} value={value.batch_size ?? 0} onChange={(next) => updateStage(key, { batch_size: next })} />
                           {definition.showMaxBatches ? (
                             <NumberField label="Max batches" min={1} value={value.max_batches ?? 10} onChange={(next) => updateStage(key, { max_batches: next })} />
