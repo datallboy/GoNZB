@@ -2854,6 +2854,45 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 		return fmt.Errorf("marshal inspection summary for %s/%d: %w", in.StageName, in.BinaryID, err)
 	}
 
+	res, err := execer.ExecContext(ctx, `
+		UPDATE binary_inspections
+		SET release_id = COALESCE(
+				CASE
+					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
+					THEN $3
+					ELSE NULL
+				END,
+				release_id
+			),
+		    status = $4,
+		    finished_at = NOW(),
+		    error_text = $5,
+		    materialized_bytes = $6,
+		    tool_provenance_json = $7,
+		    summary_json = $8,
+		    source_updated_at = COALESCE($9, source_updated_at),
+		    inspection_claimed_by = '',
+		    inspection_claimed_until = NULL,
+		    updated_at = NOW()
+		WHERE stage_name = $1
+		  AND binary_id = $2`,
+		in.StageName,
+		in.BinaryID,
+		releaseID,
+		status,
+		strings.TrimSpace(in.ErrorText),
+		in.MaterializedBytes,
+		toolJSON,
+		summaryJSON,
+		sourceUpdated,
+	)
+	if err != nil {
+		return fmt.Errorf("finish binary inspection %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+	if rows, rowsErr := res.RowsAffected(); rowsErr == nil && rows > 0 {
+		return nil
+	}
+
 	_, err = execer.ExecContext(ctx, `
 		INSERT INTO binary_inspections (
 			stage_name,
