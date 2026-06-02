@@ -5503,6 +5503,69 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	}
 }
 
+func TestGetIndexerOverviewCountsArchivedNZBsSeparatelyFromLiveReadyNZBs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("overviewarchived%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1024,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.overview.archived.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   1024,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	overview, err := store.GetIndexerOverview(ctx)
+	if err != nil {
+		t.Fatalf("get indexer overview: %v", err)
+	}
+	if overview.ReadyNZBCount < 1 {
+		t.Fatalf("expected live ready nzb count to include seeded release, got %+v", overview)
+	}
+	if overview.ArchivedNZBCount < 1 {
+		t.Fatalf("expected archived nzb count to include seeded release, got %+v", overview)
+	}
+
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	overview, err = store.GetIndexerOverview(ctx)
+	if err != nil {
+		t.Fatalf("get indexer overview after purge: %v", err)
+	}
+	if overview.ArchivedNZBCount < 1 {
+		t.Fatalf("expected archived nzb count to persist after purge, got %+v", overview)
+	}
+}
+
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

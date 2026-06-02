@@ -18,6 +18,7 @@ type IndexerOverview struct {
 	FileCount             int64 `json:"file_count"`
 	InspectionCount       int64 `json:"inspection_count"`
 	ReadyNZBCount         int64 `json:"ready_nzb_count"`
+	ArchivedNZBCount      int64 `json:"archived_nzb_count"`
 	ReadyReleaseCount     int64 `json:"ready_release_count"`
 	CompletedReleaseCount int64 `json:"completed_release_count"`
 	EncryptedReleaseCount int64 `json:"encrypted_release_count"`
@@ -401,6 +402,10 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 			(SELECT COUNT(*) FROM binary_inspections),
 			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
 			(SELECT COUNT(*)
+			 FROM release_archive_state
+			 WHERE object_key <> ''
+			   AND archive_status IN ('purge_pending', 'purged')),
+			(SELECT COUNT(*)
 			 FROM releases r
 			 LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			 WHERE `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+`),
@@ -422,6 +427,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 		&item.FileCount,
 		&item.InspectionCount,
 		&item.ReadyNZBCount,
+		&item.ArchivedNZBCount,
 		&item.ReadyReleaseCount,
 		&item.CompletedReleaseCount,
 		&item.EncryptedReleaseCount,
