@@ -6110,6 +6110,101 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	}
 }
 
+func TestPublicIndexerReleaseDetailUsesArchiveSnapshotAfterPurge(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("archivedetail%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.RuntimeSeconds = 3600
+		in.PrimaryResolution = "1080p"
+		in.PrimaryVideoCodec = "x265"
+		in.PrimaryAudioCodec = "dts"
+		in.SubtitleLanguages = []string{"en", "es"}
+		in.PasswordState = "passworded_known"
+	})
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1_400_000_000,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.par2", token),
+			SizeBytes: 128_000,
+			FileIndex: 2,
+			IsPars:    true,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.archive.detail.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	for _, table := range []string{"release_files", "release_newsgroups", "nzb_cache", "release_archive_lineage_binaries", "release_archive_lineage_article_headers"} {
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE release_id = $1", table)
+		if err := store.DB().QueryRowContext(ctx, query, releaseID).Scan(&count); err != nil {
+			t.Fatalf("count %s rows: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s rows to be purged, got %d", table, count)
+		}
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get archived public detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected archived detail for %s", releaseID)
+	}
+	if len(detail.Files) != 2 {
+		t.Fatalf("expected 2 archived snapshot files, got %d", len(detail.Files))
+	}
+	if detail.Files[0].FileName != fmt.Sprintf("%s.mkv", token) {
+		t.Fatalf("unexpected first archived file: %+v", detail.Files[0])
+	}
+	if detail.Media.RuntimeSeconds != 3600 || detail.Media.PrimaryVideoCodec != "x265" {
+		t.Fatalf("expected archived media snapshot to survive purge, got %+v", detail.Media)
+	}
+	if len(detail.Media.SubtitleLanguages) != 2 {
+		t.Fatalf("expected subtitle snapshot to survive purge, got %+v", detail.Media.SubtitleLanguages)
+	}
+	if detail.Release.PasswordState != "passworded_known" {
+		t.Fatalf("expected stable archived password state, got %+v", detail.Release)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

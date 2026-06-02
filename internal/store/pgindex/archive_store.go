@@ -55,6 +55,14 @@ type ReleasePurgeResult struct {
 	DeletedArticlePayloadRows int64            `json:"deleted_article_payload_rows"`
 }
 
+type releaseArchiveDetailSnapshot struct {
+	Release      PublicIndexerReleaseSummary
+	Files        []PublicIndexerReleaseFileSummary
+	Media        PublicIndexerReleaseMediaSummary
+	External     PublicIndexerReleaseExternal
+	Capabilities PublicIndexerReleaseCapabilities
+}
+
 func (s *Store) GetReleaseArchiveState(ctx context.Context, releaseID string) (*ReleaseArchiveState, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
@@ -281,6 +289,10 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 		return fmt.Errorf("seed archive lineage article headers %s: %w", in.ReleaseID, err)
 	}
 
+	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, in.ReleaseID); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit archive store tx %s: %w", in.ReleaseID, err)
 	}
@@ -436,6 +448,30 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		result.DeletedRowsByTable["binaries"] = deleted
 	}
 
+	deletedReleaseFiles, err := execDeleteCount(ctx, tx, `
+		DELETE FROM release_files
+		WHERE release_id = $1`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("delete release files for %s: %w", releaseID, err)
+	}
+	result.DeletedRowsByTable["release_files"] = deletedReleaseFiles
+
+	deletedReleaseNewsgroups, err := execDeleteCount(ctx, tx, `
+		DELETE FROM release_newsgroups
+		WHERE release_id = $1`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("delete release newsgroups for %s: %w", releaseID, err)
+	}
+	result.DeletedRowsByTable["release_newsgroups"] = deletedReleaseNewsgroups
+
+	deletedNZBCache, err := execDeleteCount(ctx, tx, `
+		DELETE FROM nzb_cache
+		WHERE release_id = $1`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("delete nzb cache for %s: %w", releaseID, err)
+	}
+	result.DeletedRowsByTable["nzb_cache"] = deletedNZBCache
+
 	deletedPayloads, err := execDeleteCount(ctx, tx, `
 		DELETE FROM article_header_ingest_payloads p
 		WHERE p.article_header_id IN (
@@ -467,6 +503,22 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 	}
 	result.DeletedArticleHeaderRows = deletedHeaders
 	result.DeletedRowsByTable["article_headers"] = deletedHeaders
+
+	deletedLineageBinaries, err := execDeleteCount(ctx, tx, `
+		DELETE FROM release_archive_lineage_binaries
+		WHERE release_id = $1`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("delete release archive lineage binaries for %s: %w", releaseID, err)
+	}
+	result.DeletedRowsByTable["release_archive_lineage_binaries"] = deletedLineageBinaries
+
+	deletedLineageHeaders, err := execDeleteCount(ctx, tx, `
+		DELETE FROM release_archive_lineage_article_headers
+		WHERE release_id = $1`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("delete release archive lineage article headers for %s: %w", releaseID, err)
+	}
+	result.DeletedRowsByTable["release_archive_lineage_article_headers"] = deletedLineageHeaders
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE release_archive_state
@@ -525,4 +577,353 @@ func archiveFirstNonBlank(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func upsertReleaseArchiveDetailSnapshot(ctx context.Context, tx *sql.Tx, releaseID string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO release_archive_detail_snapshots (
+			release_id,
+			guid,
+			title,
+			posted_at,
+			added_at,
+			size_bytes,
+			file_count,
+			completion_pct,
+			category_id,
+			category,
+			classification,
+			has_par2,
+			has_nfo,
+			password_state,
+			availability_score,
+			availability_tier,
+			media_quality_score,
+			media_quality_tier,
+			tmdb_id,
+			tvdb_id,
+			imdb_id,
+			external_media_type,
+			external_title,
+			external_year,
+			metadata_updated_at,
+			runtime_seconds,
+			primary_resolution,
+			primary_video_codec,
+			primary_audio_codec,
+			sample_present,
+			archive_count,
+			video_count,
+			audio_count,
+			updated_at
+		)
+		SELECT
+			r.release_id,
+			COALESCE(r.guid, ''),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
+			r.posted_at,
+			r.created_at,
+			r.size_bytes,
+			r.file_count,
+			r.completion_pct,
+			r.category_id,
+			COALESCE(r.category, ''),
+			COALESCE(NULLIF(ro.classification_override, ''), r.classification),
+			r.has_par2,
+			r.has_nfo,
+			r.password_state,
+			r.availability_score,
+			COALESCE(r.availability_tier, ''),
+			r.media_quality_score,
+			COALESCE(r.media_quality_tier, ''),
+			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
+			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
+			COALESCE(ro.imdb_id_override, ''),
+			COALESCE(r.external_media_type, ''),
+			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			r.external_year,
+			r.metadata_updated_at,
+			r.runtime_seconds,
+			COALESCE(r.primary_resolution, ''),
+			COALESCE(r.primary_video_codec, ''),
+			COALESCE(r.primary_audio_codec, ''),
+			r.sample_present,
+			r.archive_count,
+			r.video_count,
+			r.audio_count,
+			NOW()
+		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		WHERE r.release_id = $1
+		ON CONFLICT (release_id) DO UPDATE
+		SET guid = EXCLUDED.guid,
+		    title = EXCLUDED.title,
+		    posted_at = EXCLUDED.posted_at,
+		    added_at = EXCLUDED.added_at,
+		    size_bytes = EXCLUDED.size_bytes,
+		    file_count = EXCLUDED.file_count,
+		    completion_pct = EXCLUDED.completion_pct,
+		    category_id = EXCLUDED.category_id,
+		    category = EXCLUDED.category,
+		    classification = EXCLUDED.classification,
+		    has_par2 = EXCLUDED.has_par2,
+		    has_nfo = EXCLUDED.has_nfo,
+		    password_state = EXCLUDED.password_state,
+		    availability_score = EXCLUDED.availability_score,
+		    availability_tier = EXCLUDED.availability_tier,
+		    media_quality_score = EXCLUDED.media_quality_score,
+		    media_quality_tier = EXCLUDED.media_quality_tier,
+		    tmdb_id = EXCLUDED.tmdb_id,
+		    tvdb_id = EXCLUDED.tvdb_id,
+		    imdb_id = EXCLUDED.imdb_id,
+		    external_media_type = EXCLUDED.external_media_type,
+		    external_title = EXCLUDED.external_title,
+		    external_year = EXCLUDED.external_year,
+		    metadata_updated_at = EXCLUDED.metadata_updated_at,
+		    runtime_seconds = EXCLUDED.runtime_seconds,
+		    primary_resolution = EXCLUDED.primary_resolution,
+		    primary_video_codec = EXCLUDED.primary_video_codec,
+		    primary_audio_codec = EXCLUDED.primary_audio_codec,
+		    sample_present = EXCLUDED.sample_present,
+		    archive_count = EXCLUDED.archive_count,
+		    video_count = EXCLUDED.video_count,
+		    audio_count = EXCLUDED.audio_count,
+		    updated_at = NOW()`,
+		releaseID,
+	); err != nil {
+		return fmt.Errorf("upsert release archive detail snapshot %s: %w", releaseID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM release_archive_detail_files WHERE release_id = $1`, releaseID); err != nil {
+		return fmt.Errorf("clear release archive detail files %s: %w", releaseID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM release_archive_detail_subtitle_languages WHERE release_id = $1`, releaseID); err != nil {
+		return fmt.Errorf("clear release archive detail subtitles %s: %w", releaseID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO release_archive_detail_files (
+			release_id,
+			file_name,
+			size_bytes,
+			file_index,
+			is_pars,
+			posted_at,
+			article_count,
+			total_parts,
+			observed_parts
+		)
+		SELECT
+			rf.release_id,
+			rf.file_name,
+			rf.size_bytes,
+			rf.file_index,
+			rf.is_pars,
+			rf.posted_at,
+			COUNT(bp.article_header_id)::integer AS article_count,
+			COALESCE(MAX(b.total_parts), 0)::integer,
+			COALESCE(MAX(b.observed_parts), 0)::integer
+		FROM release_files rf
+		LEFT JOIN binaries b ON b.id = rf.binary_id
+		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+		WHERE rf.release_id = $1
+		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.posted_at`,
+		releaseID,
+	); err != nil {
+		return fmt.Errorf("seed release archive detail files %s: %w", releaseID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO release_archive_detail_subtitle_languages (
+			release_id,
+			ordinal,
+			language
+		)
+		SELECT
+			r.release_id,
+			l.ordinal::integer,
+			l.language
+		FROM releases r
+		CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(r.subtitle_languages_json, '[]'::jsonb)) WITH ORDINALITY AS l(language, ordinal)
+		WHERE r.release_id = $1`,
+		releaseID,
+	); err != nil {
+		return fmt.Errorf("seed release archive detail subtitle languages %s: %w", releaseID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) getReleaseArchiveDetailSnapshot(ctx context.Context, releaseID string) (*releaseArchiveDetailSnapshot, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			release_id,
+			guid,
+			title,
+			posted_at,
+			added_at,
+			size_bytes,
+			file_count,
+			completion_pct,
+			category_id,
+			category,
+			classification,
+			has_par2,
+			has_nfo,
+			password_state,
+			availability_score,
+			availability_tier,
+			media_quality_score,
+			media_quality_tier,
+			tmdb_id,
+			tvdb_id,
+			imdb_id,
+			external_media_type,
+			external_title,
+			external_year,
+			metadata_updated_at,
+			runtime_seconds,
+			primary_resolution,
+			primary_video_codec,
+			primary_audio_codec,
+			sample_present,
+			archive_count,
+			video_count,
+			audio_count
+		FROM release_archive_detail_snapshots
+		WHERE release_id = $1`, releaseID)
+
+	var snapshot releaseArchiveDetailSnapshot
+	var (
+		postedAt          sql.NullTime
+		addedAt           sql.NullTime
+		metadataUpdatedAt sql.NullTime
+	)
+	if err := row.Scan(
+		&snapshot.Release.ReleaseID,
+		&snapshot.Release.GUID,
+		&snapshot.Release.Title,
+		&postedAt,
+		&addedAt,
+		&snapshot.Release.SizeBytes,
+		&snapshot.Release.FileCount,
+		&snapshot.Release.CompletionPct,
+		&snapshot.Release.CategoryID,
+		&snapshot.Release.Category,
+		&snapshot.Release.Classification,
+		&snapshot.Release.HasPAR2,
+		&snapshot.Release.HasNFO,
+		&snapshot.Release.PasswordState,
+		&snapshot.Release.AvailabilityScore,
+		&snapshot.Release.AvailabilityTier,
+		&snapshot.Release.MediaQualityScore,
+		&snapshot.Release.MediaQualityTier,
+		&snapshot.Release.TMDBID,
+		&snapshot.Release.TVDBID,
+		&snapshot.Release.IMDBID,
+		&snapshot.Release.ExternalMediaType,
+		&snapshot.Release.ExternalTitle,
+		&snapshot.Release.ExternalYear,
+		&metadataUpdatedAt,
+		&snapshot.Media.RuntimeSeconds,
+		&snapshot.Media.PrimaryResolution,
+		&snapshot.Media.PrimaryVideoCodec,
+		&snapshot.Media.PrimaryAudioCodec,
+		&snapshot.Media.SamplePresent,
+		&snapshot.Media.ArchiveCount,
+		&snapshot.Media.VideoCount,
+		&snapshot.Media.AudioCount,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get release archive detail snapshot %s: %w", releaseID, err)
+	}
+	if postedAt.Valid {
+		t := postedAt.Time.UTC()
+		snapshot.Release.PostedAt = &t
+	}
+	if addedAt.Valid {
+		t := addedAt.Time.UTC()
+		snapshot.Release.AddedAt = &t
+	}
+	if metadataUpdatedAt.Valid {
+		t := metadataUpdatedAt.Time.UTC()
+		snapshot.Release.MetadataUpdatedAt = &t
+	}
+	snapshot.Release.PasswordState = sanitizePublicPasswordState(snapshot.Release.PasswordState)
+	snapshot.External = PublicIndexerReleaseExternal{
+		TMDBID:            snapshot.Release.TMDBID,
+		TVDBID:            snapshot.Release.TVDBID,
+		IMDBID:            snapshot.Release.IMDBID,
+		ExternalMediaType: snapshot.Release.ExternalMediaType,
+		ExternalTitle:     snapshot.Release.ExternalTitle,
+		ExternalYear:      snapshot.Release.ExternalYear,
+		MetadataUpdatedAt: snapshot.Release.MetadataUpdatedAt,
+	}
+
+	fileRows, err := s.db.QueryContext(ctx, `
+		SELECT
+			file_name,
+			size_bytes,
+			file_index,
+			is_pars,
+			posted_at,
+			article_count,
+			total_parts,
+			observed_parts
+		FROM release_archive_detail_files
+		WHERE release_id = $1
+		ORDER BY file_index, file_name`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list release archive detail files %s: %w", releaseID, err)
+	}
+	defer fileRows.Close()
+	snapshot.Files = make([]PublicIndexerReleaseFileSummary, 0, 16)
+	for fileRows.Next() {
+		var item PublicIndexerReleaseFileSummary
+		var filePostedAt sql.NullTime
+		if err := fileRows.Scan(
+			&item.FileName,
+			&item.SizeBytes,
+			&item.FileIndex,
+			&item.IsPars,
+			&filePostedAt,
+			&item.ArticleCount,
+			&item.TotalParts,
+			&item.ObservedParts,
+		); err != nil {
+			return nil, fmt.Errorf("scan release archive detail file %s: %w", releaseID, err)
+		}
+		if filePostedAt.Valid {
+			t := filePostedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		snapshot.Files = append(snapshot.Files, item)
+	}
+	if err := fileRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate release archive detail files %s: %w", releaseID, err)
+	}
+
+	subtitleRows, err := s.db.QueryContext(ctx, `
+		SELECT language
+		FROM release_archive_detail_subtitle_languages
+		WHERE release_id = $1
+		ORDER BY ordinal`, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("list release archive detail subtitles %s: %w", releaseID, err)
+	}
+	defer subtitleRows.Close()
+	for subtitleRows.Next() {
+		var language string
+		if err := subtitleRows.Scan(&language); err != nil {
+			return nil, fmt.Errorf("scan release archive detail subtitle %s: %w", releaseID, err)
+		}
+		snapshot.Media.SubtitleLanguages = append(snapshot.Media.SubtitleLanguages, language)
+	}
+	if err := subtitleRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate release archive detail subtitles %s: %w", releaseID, err)
+	}
+
+	return &snapshot, nil
 }

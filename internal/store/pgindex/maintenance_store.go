@@ -256,6 +256,12 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 			SELECT 1
 			FROM release_files rf
 			WHERE rf.release_id = r.release_id
+		)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM release_archive_state ras
+			WHERE ras.release_id = r.release_id
+			  AND ras.archive_status IN ('purge_pending', 'purged')
 		)`); err != nil {
 		return fmt.Errorf("purge orphan releases: %w", err)
 	} else if result.PurgedOrphanReleases, err = res.RowsAffected(); err != nil {

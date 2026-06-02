@@ -429,6 +429,42 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 		return nil, fmt.Errorf("get public indexer release detail %s: %w", releaseID, err)
 	}
 
+	archiveState, err := s.GetReleaseArchiveState(ctx, releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("get public indexer release archive state %s: %w", releaseID, err)
+	}
+	if archiveState != nil && archiveState.ArchiveStatus == "purged" {
+		snapshot, err := s.getReleaseArchiveDetailSnapshot(ctx, releaseID)
+		if err != nil {
+			return nil, fmt.Errorf("get public archived release snapshot %s: %w", releaseID, err)
+		}
+		if snapshot != nil {
+			snapshot.Release.ReleaseID = release.ReleaseID
+			if snapshot.Release.GUID == "" {
+				snapshot.Release.GUID = release.GUID
+			}
+			if snapshot.Release.Title == "" {
+				snapshot.Release.Title = release.Title
+			}
+			if snapshot.Release.PostedAt == nil {
+				snapshot.Release.PostedAt = release.PostedAt
+			}
+			if snapshot.Release.AddedAt == nil {
+				snapshot.Release.AddedAt = release.AddedAt
+			}
+			if snapshot.Release.MetadataUpdatedAt == nil {
+				snapshot.Release.MetadataUpdatedAt = release.MetadataUpdatedAt
+			}
+			return &PublicIndexerReleaseDetail{
+				Release:      snapshot.Release,
+				Files:        snapshot.Files,
+				Media:        snapshot.Media,
+				External:     snapshot.External,
+				Capabilities: snapshot.Capabilities,
+			}, nil
+		}
+	}
+
 	var (
 		runtimeSeconds    int
 		primaryResolution string
