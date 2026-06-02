@@ -38,6 +38,7 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
 		mediaFetcher{body: []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00}, fileName: "example.feature.2026.mkv"},
 		mediaRunner{output: []byte(ffprobeJSON)},
+		nil,
 		testMediaLogger{},
 		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
 	)
@@ -101,6 +102,7 @@ func TestRunOnceSkipsArchiveProbeWhenArchiveEntryAlreadyHasStrongMediaSignals(t 
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
 		nil,
 		nil,
+		nil,
 		testMediaLogger{},
 		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
 	)
@@ -140,6 +142,7 @@ type fakeMediaRepository struct {
 	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	mediaStreams   []pgindex.BinaryMediaStreamRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
+	previewKey     string
 }
 
 func (f *fakeMediaRepository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
@@ -175,6 +178,11 @@ func (f *fakeMediaRepository) ReplaceBinaryMediaStreams(_ context.Context, _ int
 
 func (f *fakeMediaRepository) ApplyReleaseInspectionUpdate(_ context.Context, in pgindex.ReleaseInspectionUpdate) error {
 	f.releaseUpdates = append(f.releaseUpdates, in)
+	return nil
+}
+
+func (f *fakeMediaRepository) SetReleaseArchivePreview(_ context.Context, _ string, objectKey, _ string, _ string) error {
+	f.previewKey = objectKey
 	return nil
 }
 

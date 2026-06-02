@@ -139,6 +139,7 @@ function defaultSettings(): RuntimeSettings {
         blocked_magic_hex: ['52434C4F4E45'],
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
+        ffmpeg_path: 'ffmpeg',
         ffprobe_path: 'ffprobe',
         seven_zip_path: '7z',
         unrar_path: 'unrar',
@@ -922,6 +923,7 @@ export function AdminSettingsPage() {
             />
             <NumberField label="Max archive depth" value={indexing.inspect.max_archive_depth} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_archive_depth: value } })} />
             <NumberField label="Tool timeout seconds" value={indexing.inspect.tool_timeout_seconds} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, tool_timeout_seconds: value } })} />
+            <TextField label="ffmpeg path" value={indexing.inspect.ffmpeg_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, ffmpeg_path: value } })} />
             <TextField label="ffprobe path" value={indexing.inspect.ffprobe_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, ffprobe_path: value } })} />
             <TextField label="7z path" value={indexing.inspect.seven_zip_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, seven_zip_path: value } })} />
             <TextField label="unrar path" value={indexing.inspect.unrar_path} onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, unrar_path: value } })} />

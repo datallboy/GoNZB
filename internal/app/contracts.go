@@ -272,6 +272,7 @@ type UsenetIndexStore interface {
 	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
 	UpdateReleasePasswordCandidateStatus(ctx context.Context, candidateID int64, status string, verifiedAt *time.Time, lastError string) error
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	SetReleaseArchivePreview(ctx context.Context, releaseID, objectKey, contentType, sourceKind string) error
 	ListReleaseEnrichmentCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.ReleaseEnrichmentCandidate, error)
 	UpsertPredbEntries(ctx context.Context, rows []pgindex.PredbEntryRecord) error
 	GetPredbBackfillWindow(ctx context.Context) (*pgindex.PredbBackfillWindow, error)
@@ -399,6 +400,10 @@ type QueueFileStore interface {
 
 type BlobStore interface {
 	// Blobs: File System
+	GetObjectReader(key string) (io.ReadCloser, error)
+	CreateObjectWriter(key string) (io.WriteCloser, error)
+	SaveObjectAtomically(key string, data []byte) error
+	ExistsObject(key string) bool
 	GetNZBReader(key string) (io.ReadCloser, error)
 	CreateNZBWriter(key string) (io.WriteCloser, error)
 	SaveNZBAtomically(key string, data []byte) error
@@ -411,6 +416,10 @@ type PayloadFetcher interface {
 }
 
 type PayloadCacheStore interface {
+	GetObjectReader(key string) (io.ReadCloser, error)
+	CreateObjectWriter(key string) (io.WriteCloser, error)
+	SaveObjectAtomically(key string, data []byte) error
+	ExistsObject(key string) bool
 	GetNZBReader(key string) (io.ReadCloser, error)
 	CreateNZBWriter(key string) (io.WriteCloser, error)
 	SaveNZBAtomically(key string, data []byte) error

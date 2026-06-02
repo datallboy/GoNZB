@@ -46,6 +46,7 @@ type Options struct {
 	BlockedMagicHex    []string
 	MaxArchiveDepth    int
 	ToolTimeout        time.Duration
+	FFmpegPath         string
 	FFProbePath        string
 	SevenZipPath       string
 	UnrarPath          string
@@ -129,6 +130,9 @@ func DefaultOptions(opts Options) Options {
 	}
 	if strings.TrimSpace(opts.FFProbePath) == "" {
 		opts.FFProbePath = "ffprobe"
+	}
+	if strings.TrimSpace(opts.FFmpegPath) == "" {
+		opts.FFmpegPath = "ffmpeg"
 	}
 	if strings.TrimSpace(opts.SevenZipPath) == "" {
 		opts.SevenZipPath = "7z"

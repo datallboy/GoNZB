@@ -103,6 +103,7 @@ type BinaryInspectionCandidate struct {
 	StageName          string
 	BinaryID           int64
 	ReleaseID          string
+	ProviderID         int64
 	ReleaseTitle       string
 	SourceTitle        string
 	DeobfuscatedTitle  string

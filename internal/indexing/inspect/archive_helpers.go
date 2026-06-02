@@ -241,6 +241,40 @@ func BestMediaEntry(entries []string) string {
 	return bestSample
 }
 
+func BestPreviewImageEntry(entries []string) string {
+	bestScreenshot := ""
+	bestImage := ""
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry)
+		if name == "" || !isArchiveImageEntry(name) {
+			continue
+		}
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "screenshot") || strings.Contains(lower, "screenshots") || strings.Contains(lower, "/screen") || strings.Contains(lower, "\\screen") {
+			if bestScreenshot == "" {
+				bestScreenshot = name
+			}
+			continue
+		}
+		if bestImage == "" {
+			bestImage = name
+		}
+	}
+	if bestScreenshot != "" {
+		return bestScreenshot
+	}
+	return bestImage
+}
+
+func isArchiveImageEntry(name string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(name))) {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+		return true
+	default:
+		return false
+	}
+}
+
 func isSampleArchiveEntry(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(lower, "/sample/") ||

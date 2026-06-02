@@ -35,6 +35,34 @@ func TestFSBlobStoreSupportsNestedNZBKeys(t *testing.T) {
 	}
 }
 
+func TestFSBlobStoreSupportsGenericObjects(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFSBlobStore(dir, noopCacheIndexer{})
+	if err != nil {
+		t.Fatalf("new fs blob store: %v", err)
+	}
+
+	if err := store.SaveObjectAtomically("releases/1/rel/preview.jpg", []byte("image")); err != nil {
+		t.Fatalf("save object: %v", err)
+	}
+	if !store.ExistsObject("releases/1/rel/preview.jpg") {
+		t.Fatalf("expected generic object to exist")
+	}
+
+	reader, err := store.GetObjectReader("releases/1/rel/preview.jpg")
+	if err != nil {
+		t.Fatalf("get object: %v", err)
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if string(body) != "image" {
+		t.Fatalf("payload=%q want image", string(body))
+	}
+}
+
 type noopCacheIndexer struct{}
 
 func (noopCacheIndexer) MarkReleaseCached(context.Context, string, int64, int64) error { return nil }

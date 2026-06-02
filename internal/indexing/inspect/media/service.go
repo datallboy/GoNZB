@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -36,7 +37,12 @@ type repository interface {
 	ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName string, binaryID int64, rows []pgindex.BinaryInspectionArtifactRecord) error
 	ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []pgindex.BinaryMediaStreamRecord) error
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
+	SetReleaseArchivePreview(ctx context.Context, releaseID, objectKey, contentType, sourceKind string) error
 	inspectpkg.CatalogReader
+}
+
+type blobStore interface {
+	SaveObjectAtomically(key string, data []byte) error
 }
 
 type Service struct {
@@ -44,12 +50,13 @@ type Service struct {
 	workspace *inspectpkg.WorkspaceManager
 	fetcher   inspectpkg.ArticleFetcher
 	runner    inspectpkg.CommandRunner
+	store     blobStore
 	log       logger
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, log logger, opts inspectpkg.Options) *Service {
-	return &Service{repo: repo, workspace: workspace, fetcher: fetcher, runner: runner, log: log, opts: inspectpkg.DefaultOptions(opts)}
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, store blobStore, log logger, opts inspectpkg.Options) *Service {
+	return &Service{repo: repo, workspace: workspace, fetcher: fetcher, runner: runner, store: store, log: log, opts: inspectpkg.DefaultOptions(opts)}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -472,6 +479,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["archive_entry"] = mediaEntry
 		summary["archive_entry_count"] = len(archiveEntries)
 	}
+	if err := s.persistArchivePreview(ctx, candidate, archiveEntries, mediaEntry, stagePath, archiveBacked, probeMode, summary); err != nil && s.log != nil {
+		s.log.Warn("inspect_media: preview generation skipped binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
+	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
 		BinaryID:          candidate.BinaryID,
@@ -519,6 +529,72 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 	return nil
+}
+
+func (s *Service) persistArchivePreview(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, archiveEntries []string, mediaEntry, stagePath string, archiveBacked bool, probeMode string, summary map[string]any) error {
+	if s.store == nil || s.repo == nil {
+		return nil
+	}
+	previewBytes, contentType, sourceKind, err := s.generatePreview(ctx, candidate, archiveEntries, mediaEntry, stagePath, archiveBacked)
+	if err != nil {
+		return err
+	}
+	if len(previewBytes) == 0 {
+		return nil
+	}
+	objectKey := previewObjectKey(candidate.ProviderID, candidate.ReleaseID, contentType)
+	if err := s.store.SaveObjectAtomically(objectKey, previewBytes); err != nil {
+		return err
+	}
+	if err := s.repo.SetReleaseArchivePreview(ctx, candidate.ReleaseID, objectKey, contentType, sourceKind); err != nil {
+		return err
+	}
+	summary["preview_object_key"] = objectKey
+	summary["preview_source_kind"] = sourceKind
+	summary["preview_content_type"] = contentType
+	summary["preview_probe_mode"] = probeMode
+	return nil
+}
+
+func (s *Service) generatePreview(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, archiveEntries []string, mediaEntry, stagePath string, archiveBacked bool) ([]byte, string, string, error) {
+	imageEntry := inspectpkg.BestPreviewImageEntry(archiveEntries)
+	if archiveBacked && imageEntry != "" && s.fetcher != nil && s.runner != nil {
+		workspaceDir := filepath.Dir(stagePath)
+		data, mimeType, err := inspectpkg.MaterializeArchivePreviewImage(ctx, s.repo, s.fetcher, s.runner, candidate, imageEntry, workspaceDir, s.opts, s.log)
+		if err == nil && len(data) > 0 {
+			return data, mimeType, "archive_image", nil
+		}
+	}
+	if strings.TrimSpace(s.opts.FFmpegPath) == "" || s.runner == nil {
+		return nil, "", "", nil
+	}
+	if archiveBacked && mediaEntry != "" && s.fetcher != nil && inspectpkg.IsVideoFile(mediaEntry) {
+		workspaceDir := filepath.Dir(stagePath)
+		data, err := inspectpkg.MaterializeArchiveVideoThumbnail(ctx, s.repo, s.fetcher, s.runner, candidate, mediaEntry, workspaceDir, s.opts, s.log)
+		if err == nil && len(data) > 0 {
+			return data, "image/jpeg", "ffmpeg_archive", nil
+		}
+	}
+	if !archiveBacked && inspectpkg.IsVideoFile(candidate.FileName) {
+		data, err := inspectpkg.RunFFmpegThumbnail(ctx, s.runner, s.opts.FFmpegPath, stagePath)
+		if err == nil && len(data) > 0 {
+			return data, "image/jpeg", "ffmpeg_direct", nil
+		}
+	}
+	return nil, "", "", nil
+}
+
+func previewObjectKey(providerID int64, releaseID, contentType string) string {
+	ext := ".jpg"
+	switch strings.TrimSpace(contentType) {
+	case "image/png":
+		ext = ".png"
+	case "image/webp":
+		ext = ".webp"
+	case "image/gif":
+		ext = ".gif"
+	}
+	return path.Join("releases", fmt.Sprintf("%d", providerID), strings.TrimSpace(releaseID), "preview"+ext)
 }
 
 func normalizeMatch(v string) string {

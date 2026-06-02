@@ -767,6 +767,7 @@ export type IndexingRuntimeSettings = {
     blocked_magic_hex: string[]
     max_archive_depth: number
     tool_timeout_seconds: number
+    ffmpeg_path: string
     ffprobe_path: string
     seven_zip_path: string
     unrar_path: string
