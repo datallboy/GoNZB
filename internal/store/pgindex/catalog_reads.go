@@ -50,9 +50,14 @@ func (s *Store) GetCatalogReleaseByID(ctx context.Context, releaseID string) (*d
 			r.posted_at,
 			r.category,
 			r.poster,
-			COALESCE(n.generation_status, 'pending')
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN TRUE
+				ELSE FALSE
+			END
 		FROM releases r
-		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		WHERE r.release_id = $1`, releaseID)
 
 	rel, err := scanCatalogRelease(row)
@@ -86,9 +91,14 @@ func (s *Store) SearchCatalogReleases(ctx context.Context, query string, limit i
 			r.posted_at,
 			r.category,
 			r.poster,
-			COALESCE(n.generation_status, 'pending')
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN TRUE
+				ELSE FALSE
+			END
 		FROM releases r
-		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		WHERE r.search_title ILIKE '%' || $1 || '%'
 		ORDER BY r.posted_at DESC NULLS LAST, r.title
 		LIMIT $2`, query, limit)
@@ -378,7 +388,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 	var rel domain.Release
 	var source string
 	var postedAt sql.NullTime
-	var generationStatus string
+	var archived bool
 
 	if err := scanner.Scan(
 		&rel.ID,
@@ -389,7 +399,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 		&postedAt,
 		&rel.Category,
 		&rel.Poster,
-		&generationStatus,
+		&archived,
 	); err != nil {
 		return nil, err
 	}
@@ -398,7 +408,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 		rel.PublishDate = postedAt.Time.UTC()
 	}
 	rel.Source = source
-	rel.CachePresent = strings.EqualFold(generationStatus, "ready")
+	rel.CachePresent = archived
 
 	return &rel, nil
 }

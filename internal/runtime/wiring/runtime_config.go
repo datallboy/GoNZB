@@ -96,7 +96,7 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 	}
 
 	if effective.Aggregator.Sources.UsenetIndexer.Enabled && appCtx.PGIndexStore != nil {
-		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin))
+		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin, appCtx.IndexerArchiveStore))
 	}
 
 	for _, idxCfg := range effective.Indexers {

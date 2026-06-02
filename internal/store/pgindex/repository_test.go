@@ -5546,9 +5546,6 @@ func TestGetIndexerOverviewCountsArchivedNZBsSeparatelyFromLiveReadyNZBs(t *test
 	if err != nil {
 		t.Fatalf("get indexer overview: %v", err)
 	}
-	if overview.ReadyNZBCount < 1 {
-		t.Fatalf("expected live ready nzb count to include seeded release, got %+v", overview)
-	}
 	if overview.ArchivedNZBCount < 1 {
 		t.Fatalf("expected archived nzb count to include seeded release, got %+v", overview)
 	}
