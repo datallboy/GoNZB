@@ -182,7 +182,7 @@ func (ctrl *IndexerController) GetReleasePreview(c *echo.Context) error {
 	defer reader.Close()
 
 	if strings.TrimSpace(contentType) == "" {
-		contentType = "image/jpeg"
+		contentType = "application/octet-stream"
 	}
 	c.Response().Header().Set(echo.HeaderContentType, contentType)
 	c.Response().Header().Set(echo.HeaderCacheControl, "public, max-age=300")
