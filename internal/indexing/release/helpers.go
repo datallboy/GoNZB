@@ -56,6 +56,7 @@ var (
 	numericNoiseOnlyRE   = regexp.MustCompile(`^[a-f0-9]{8,}$`)
 	longOpaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 	numberedNoiseTitleRE = regexp.MustCompile(`^\d{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
+	xxxKeywordRE         = regexp.MustCompile(`(?i)\b(xxx|porn|nsfw|onlyfans|brazzers|playboy|erotica|adultdvd|adulttime|fakehub|vixen|blacked|deeper)\b`)
 )
 
 func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) []releaseCluster {
@@ -301,6 +302,7 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		DeobfuscatedTitle: titleInfo.DeobfuscatedTitle,
 		MatchedMediaTitle: titleInfo.MatchedMediaTitle,
 		TitleSource:       titleInfo.TitleSource,
+		Poster:            dominantPoster(cluster.Binaries),
 	})
 
 	return pgindex.ReleaseRecord{
@@ -1237,6 +1239,9 @@ func summarizeFiles(binaries []pgindex.BinarySummary) (hasPAR2, hasNFO bool, arc
 }
 
 func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount, audioCount int) string {
+	if clusterLooksXXX(binaries) {
+		return "xxx"
+	}
 	switch {
 	case videoCount > 0 && archiveCount > 0:
 		return "video_archive"
@@ -1251,6 +1256,21 @@ func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount,
 	default:
 		return "misc"
 	}
+}
+
+func clusterLooksXXX(binaries []pgindex.BinarySummary) bool {
+	for _, binary := range binaries {
+		text := strings.Join([]string{
+			strings.TrimSpace(binary.ReleaseName),
+			strings.TrimSpace(binary.FileName),
+			strings.TrimSpace(binary.BinaryName),
+			strings.TrimSpace(binary.Poster),
+		}, " ")
+		if xxxKeywordRE.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectPrimaryResolution(binaries []pgindex.BinarySummary) (string, []string) {

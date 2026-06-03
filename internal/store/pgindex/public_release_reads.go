@@ -81,6 +81,7 @@ type PublicIndexerReleaseDetail struct {
 	Files        []PublicIndexerReleaseFileSummary `json:"files"`
 	Media        PublicIndexerReleaseMediaSummary  `json:"media"`
 	External     PublicIndexerReleaseExternal      `json:"external"`
+	Preview      PublicIndexerReleasePreview       `json:"preview"`
 	Capabilities PublicIndexerReleaseCapabilities  `json:"capabilities"`
 }
 
@@ -104,6 +105,14 @@ type PublicIndexerReleaseExternal struct {
 	ExternalTitle     string     `json:"external_title,omitempty"`
 	ExternalYear      int        `json:"external_year,omitempty"`
 	MetadataUpdatedAt *time.Time `json:"metadata_updated_at,omitempty"`
+}
+
+type PublicIndexerReleasePreview struct {
+	ObjectKey   string     `json:"object_key,omitempty"`
+	ContentType string     `json:"content_type,omitempty"`
+	SourceKind  string     `json:"source_kind,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	URL         string     `json:"url,omitempty"`
 }
 
 type PublicIndexerReleaseCapabilities struct {
@@ -430,15 +439,19 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 	}
 
 	var (
-		runtimeSeconds    int
-		primaryResolution string
-		primaryVideoCodec string
-		primaryAudioCodec string
-		subtitleJSON      []byte
-		samplePresent     bool
-		archiveCount      int
-		videoCount        int
-		audioCount        int
+		runtimeSeconds     int
+		primaryResolution  string
+		primaryVideoCodec  string
+		primaryAudioCodec  string
+		subtitleJSON       []byte
+		samplePresent      bool
+		archiveCount       int
+		videoCount         int
+		audioCount         int
+		previewObjectKey   string
+		previewContentType string
+		previewSourceKind  string
+		previewUpdatedAt   sql.NullTime
 	)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -450,9 +463,14 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 			COALESCE(sample_present, FALSE),
 			COALESCE(archive_count, 0),
 			COALESCE(video_count, 0),
-			COALESCE(audio_count, 0)
-		FROM releases
-		WHERE release_id = $1`, releaseID,
+			COALESCE(audio_count, 0),
+			COALESCE(ras.preview_object_key, ''),
+			COALESCE(ras.preview_content_type, ''),
+			COALESCE(ras.preview_source_kind, ''),
+			ras.preview_updated_at
+		FROM releases r
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
+		WHERE r.release_id = $1`, releaseID,
 	).Scan(
 		&runtimeSeconds,
 		&primaryResolution,
@@ -463,6 +481,10 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 		&archiveCount,
 		&videoCount,
 		&audioCount,
+		&previewObjectKey,
+		&previewContentType,
+		&previewSourceKind,
+		&previewUpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("get public release media summary %s: %w", releaseID, err)
 	}
@@ -517,6 +539,16 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 		return nil, fmt.Errorf("iterate public release files for %s: %w", releaseID, err)
 	}
 
+	preview := PublicIndexerReleasePreview{
+		ObjectKey:   previewObjectKey,
+		ContentType: previewContentType,
+		SourceKind:  previewSourceKind,
+	}
+	if previewUpdatedAt.Valid {
+		t := previewUpdatedAt.Time.UTC()
+		preview.UpdatedAt = &t
+	}
+
 	return &PublicIndexerReleaseDetail{
 		Release: release,
 		Files:   files,
@@ -540,5 +572,6 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 			ExternalYear:      release.ExternalYear,
 			MetadataUpdatedAt: release.MetadataUpdatedAt,
 		},
+		Preview: preview,
 	}, nil
 }

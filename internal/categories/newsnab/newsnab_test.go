@@ -56,6 +56,17 @@ func TestResolveReleaseCategoryConsoleSwitch(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseCategoryXXXByPosterHint(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification: "audio",
+		Title:          "opaque release",
+		Poster:         "Brazzers",
+	})
+	if got.RootID != XXXRoot {
+		t.Fatalf("expected XXX root, got %+v", got)
+	}
+}
+
 func TestParseNameSupportsDisplayNames(t *testing.T) {
 	id, ok := ParseName("Movies > HD")
 	if !ok || id != MoviesHD {

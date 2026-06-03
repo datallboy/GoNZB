@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,6 +138,10 @@ func (s *stubIndexerService) ListReleases(ctx context.Context, params pgindex.Pu
 
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
+}
+
+func (s *stubIndexerService) GetReleasePreview(ctx context.Context, releaseID string) (io.ReadCloser, string, error) {
+	return nil, "", nil
 }
 
 func (s *stubIndexerService) ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error) {

@@ -6742,6 +6742,46 @@ func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T
 	}
 }
 
+func TestPublicIndexerReleaseDetailIncludesPreviewMetadata(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicpreview%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, nil)
+
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO release_archive_state (
+			release_id,
+			archive_status,
+			preview_object_key,
+			preview_content_type,
+			preview_source_kind,
+			preview_updated_at,
+			updated_at
+		) VALUES ($1, 'purge_pending', 'releases/1/`+token+`/preview.jpg', 'image/jpeg', 'archive_image', NOW(), NOW())
+		ON CONFLICT (release_id) DO UPDATE
+		SET preview_object_key = EXCLUDED.preview_object_key,
+		    preview_content_type = EXCLUDED.preview_content_type,
+		    preview_source_kind = EXCLUDED.preview_source_kind,
+		    preview_updated_at = EXCLUDED.preview_updated_at,
+		    updated_at = NOW()`,
+		releaseID,
+	); err != nil {
+		t.Fatalf("seed release archive preview state: %v", err)
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public release detail with preview: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected detail for %s", releaseID)
+	}
+	if detail.Preview.ObjectKey == "" || detail.Preview.ContentType != "image/jpeg" || detail.Preview.SourceKind != "archive_image" {
+		t.Fatalf("expected preview metadata, got %+v", detail.Preview)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

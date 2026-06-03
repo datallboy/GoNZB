@@ -558,21 +558,27 @@ func (s *Service) persistArchivePreview(ctx context.Context, candidate pgindex.B
 
 func (s *Service) generatePreview(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, archiveEntries []string, mediaEntry, stagePath string, archiveBacked bool) ([]byte, string, string, error) {
 	imageEntry := inspectpkg.BestPreviewImageEntry(archiveEntries)
-	if archiveBacked && imageEntry != "" && s.fetcher != nil && s.runner != nil {
+	if imageEntry != "" && s.fetcher != nil && s.runner != nil {
 		workspaceDir := filepath.Dir(stagePath)
 		data, mimeType, err := inspectpkg.MaterializeArchivePreviewImage(ctx, s.repo, s.fetcher, s.runner, candidate, imageEntry, workspaceDir, s.opts, s.log)
 		if err == nil && len(data) > 0 {
-			return data, mimeType, "archive_image", nil
+			if archiveBacked {
+				return data, mimeType, "archive_image", nil
+			}
+			return data, mimeType, "archive_image_prearchive", nil
 		}
 	}
 	if strings.TrimSpace(s.opts.FFmpegPath) == "" || s.runner == nil {
 		return nil, "", "", nil
 	}
-	if archiveBacked && mediaEntry != "" && s.fetcher != nil && inspectpkg.IsVideoFile(mediaEntry) {
+	if mediaEntry != "" && s.fetcher != nil && inspectpkg.IsVideoFile(mediaEntry) {
 		workspaceDir := filepath.Dir(stagePath)
 		data, err := inspectpkg.MaterializeArchiveVideoThumbnail(ctx, s.repo, s.fetcher, s.runner, candidate, mediaEntry, workspaceDir, s.opts, s.log)
 		if err == nil && len(data) > 0 {
-			return data, "image/jpeg", "ffmpeg_archive", nil
+			if archiveBacked {
+				return data, "image/jpeg", "ffmpeg_archive", nil
+			}
+			return data, "image/jpeg", "ffmpeg_archive_prearchive", nil
 		}
 	}
 	if !archiveBacked && inspectpkg.IsVideoFile(candidate.FileName) {

@@ -65,15 +65,21 @@ export function IndexerReleaseDetailPage() {
   }
 
   const { release, media, external, files, capabilities } = data
+  const preview = data.preview?.url ? data.preview : null
 
   return (
     <div className="page-section public-detail">
       <div className="page-card public-detail__hero">
-        <div>
+        <div className="public-detail__hero-copy">
           <p className="eyebrow">Release</p>
           <h1 className="page-title">{release.title}</h1>
           <div className="public-detail__scene">{simpleName}</div>
         </div>
+        {preview ? (
+          <div className="public-detail__preview">
+            <img src={preview.url} alt={`${release.title} preview`} loading="lazy" />
+          </div>
+        ) : null}
         <div className="button-row">
           <Link className="secondary-button" to="/indexer/releases">
             Back to browse
@@ -150,6 +156,7 @@ export function IndexerReleaseDetailPage() {
             </div>
           </dl>
         </div>
+
       </div>
 
       <div className="page-card" id="release-files">
