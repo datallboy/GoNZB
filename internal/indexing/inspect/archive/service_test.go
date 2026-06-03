@@ -31,7 +31,7 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 		}},
 	}
 
-	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, nil, testArchiveLogger{}, inspectpkg.Options{})
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 		},
 	}
 
-	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, nil, testArchiveLogger{}, inspectpkg.Options{})
 	candidates, err := svc.dedupeCandidates(context.Background(), repo.candidates)
 	if err != nil {
 		t.Fatalf("dedupe candidates: %v", err)
@@ -143,6 +143,7 @@ func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *tes
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir(), SevenZipPath: "7z"}),
 		fakeArchiveFetcher{},
 		fakeArchiveCommandRunner{output: "Enter password (will not be echoed):", err: fmt.Errorf("password required")},
+		nil,
 		testArchiveLogger{},
 		inspectpkg.Options{SevenZipPath: "7z"},
 	)
@@ -224,6 +225,10 @@ func (f *fakeArchiveRepository) ApplyReleaseInspectionUpdate(_ context.Context, 
 	return nil
 }
 
+func (f *fakeArchiveRepository) SetReleaseArchivePreview(context.Context, string, string, string, string) error {
+	return nil
+}
+
 func (f *fakeArchiveRepository) ListCatalogReleaseFiles(context.Context, string) ([]pgindex.CatalogReleaseFile, error) {
 	return f.files, nil
 }
@@ -264,11 +269,15 @@ func (fakeArchiveFetcher) Fetch(context.Context, string, []string) (io.Reader, e
 }
 
 type fakeArchiveCommandRunner struct {
-	output string
-	err    error
+	output  string
+	err     error
+	runFunc func(context.Context, string, ...string) ([]byte, error)
 }
 
-func (f fakeArchiveCommandRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+func (f fakeArchiveCommandRunner) Run(ctx context.Context, tool string, args ...string) ([]byte, error) {
+	if f.runFunc != nil {
+		return f.runFunc(ctx, tool, args...)
+	}
 	return []byte(f.output), f.err
 }
 
