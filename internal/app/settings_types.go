@@ -130,6 +130,13 @@ type IndexingStorageGuardRuntimeSettings struct {
 	MinFreePercent float64 `json:"min_free_percent,omitempty"`
 }
 
+type IndexingMemoryGuardRuntimeSettings struct {
+	Enabled             bool    `json:"enabled,omitempty"`
+	MinAvailableBytes   int64   `json:"min_available_bytes,omitempty"`
+	MinAvailablePercent float64 `json:"min_available_percent,omitempty"`
+	MinSwapFreeBytes    int64   `json:"min_swap_free_bytes,omitempty"`
+}
+
 type IndexingPreDBRuntimeSettings struct {
 	Enabled            bool    `json:"enabled,omitempty"`
 	IntervalMinutes    float64 `json:"interval_minutes,omitempty"`
@@ -175,6 +182,7 @@ type IndexingRuntimeSettings struct {
 	Match                       IndexingMatchRuntimeSettings        `json:"match,omitempty"`
 	Inspect                     IndexingInspectRuntimeSettings      `json:"inspect,omitempty"`
 	StorageGuard                IndexingStorageGuardRuntimeSettings `json:"storage_guard,omitempty"`
+	MemoryGuard                 IndexingMemoryGuardRuntimeSettings  `json:"memory_guard,omitempty"`
 	InspectDiscovery            IndexingStageRuntimeSettings        `json:"inspect_discovery,omitempty"`
 	InspectPAR2                 IndexingStageRuntimeSettings        `json:"inspect_par2,omitempty"`
 	InspectNFO                  IndexingStageRuntimeSettings        `json:"inspect_nfo,omitempty"`

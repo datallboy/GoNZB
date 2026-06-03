@@ -337,6 +337,15 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	if indexing.StorageGuard.MinFreePercent < 0 || indexing.StorageGuard.MinFreePercent > 100 {
 		issues = append(issues, "indexing.storage_guard.min_free_percent must be between 0 and 100")
 	}
+	if indexing.MemoryGuard.MinAvailableBytes < 0 {
+		issues = append(issues, "indexing.memory_guard.min_available_bytes must be greater than or equal to 0")
+	}
+	if indexing.MemoryGuard.MinAvailablePercent < 0 || indexing.MemoryGuard.MinAvailablePercent > 100 {
+		issues = append(issues, "indexing.memory_guard.min_available_percent must be between 0 and 100")
+	}
+	if indexing.MemoryGuard.MinSwapFreeBytes < 0 {
+		issues = append(issues, "indexing.memory_guard.min_swap_free_bytes must be greater than or equal to 0")
+	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
 		clean = strings.ReplaceAll(clean, "0X", "")

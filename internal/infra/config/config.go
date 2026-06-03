@@ -102,6 +102,7 @@ type IndexingConfig struct {
 	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
 	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
 	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	MemoryGuard                 IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
 	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
 	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
 	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
@@ -165,6 +166,13 @@ type IndexingStorageGuardConfig struct {
 	Enabled        *bool    `mapstructure:"enabled" yaml:"enabled"`
 	MinFreeBytes   *int64   `mapstructure:"min_free_bytes" yaml:"min_free_bytes"`
 	MinFreePercent *float64 `mapstructure:"min_free_percent" yaml:"min_free_percent"`
+}
+
+type IndexingMemoryGuardConfig struct {
+	Enabled             *bool    `mapstructure:"enabled" yaml:"enabled"`
+	MinAvailableBytes   *int64   `mapstructure:"min_available_bytes" yaml:"min_available_bytes"`
+	MinAvailablePercent *float64 `mapstructure:"min_available_percent" yaml:"min_available_percent"`
+	MinSwapFreeBytes    *int64   `mapstructure:"min_swap_free_bytes" yaml:"min_swap_free_bytes"`
 }
 
 type IndexingPreDBConfig struct {
@@ -576,6 +584,15 @@ func (c *Config) validate() error {
 	}
 	if c.Indexing.StorageGuard.MinFreePercent != nil && (*c.Indexing.StorageGuard.MinFreePercent < 0 || *c.Indexing.StorageGuard.MinFreePercent > 100) {
 		return errors.New("indexing.storage_guard.min_free_percent must be between 0 and 100")
+	}
+	if c.Indexing.MemoryGuard.MinAvailableBytes != nil && *c.Indexing.MemoryGuard.MinAvailableBytes < 0 {
+		return errors.New("indexing.memory_guard.min_available_bytes must be greater than or equal to 0")
+	}
+	if c.Indexing.MemoryGuard.MinAvailablePercent != nil && (*c.Indexing.MemoryGuard.MinAvailablePercent < 0 || *c.Indexing.MemoryGuard.MinAvailablePercent > 100) {
+		return errors.New("indexing.memory_guard.min_available_percent must be between 0 and 100")
+	}
+	if c.Indexing.MemoryGuard.MinSwapFreeBytes != nil && *c.Indexing.MemoryGuard.MinSwapFreeBytes < 0 {
+		return errors.New("indexing.memory_guard.min_swap_free_bytes must be greater than or equal to 0")
 	}
 	if c.Indexing.EnrichPreDB.HTTPTimeoutSeconds != nil && *c.Indexing.EnrichPreDB.HTTPTimeoutSeconds <= 0 {
 		return errors.New("indexing.enrich_predb.http_timeout_seconds must be greater than 0")

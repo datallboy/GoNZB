@@ -22,12 +22,31 @@ type cachedStorageGuard struct {
 	mu         sync.Mutex
 }
 
-func newIndexerStageStorageGuard(repo databaseStorageStatusReader, cfg pgindex.DatabaseStorageGuardConfig) supervisor.StageGateFunc {
-	if repo == nil || !cfg.Enabled {
+func newIndexerStageResourceGuard(repo databaseStorageStatusReader, storageCfg pgindex.DatabaseStorageGuardConfig, memoryCfg IndexerMemoryGuardConfig) supervisor.StageGateFunc {
+	var gates []supervisor.StageGateFunc
+	if repo != nil && storageCfg.Enabled {
+		guard := &cachedStorageGuard{repo: repo, config: storageCfg}
+		gates = append(gates, guard.allowStage)
+	}
+	if memoryCfg.Enabled {
+		guard := &cachedMemoryGuard{config: memoryCfg}
+		gates = append(gates, guard.allowStage)
+	}
+	if len(gates) == 0 {
 		return nil
 	}
-	guard := &cachedStorageGuard{repo: repo, config: cfg}
-	return guard.allowStage
+	return func(ctx context.Context, stage supervisor.Stage, trigger string) (supervisor.StageGateDecision, error) {
+		for _, gate := range gates {
+			decision, err := gate(ctx, stage, trigger)
+			if err != nil {
+				return supervisor.StageGateDecision{}, err
+			}
+			if !decision.Allowed {
+				return decision, nil
+			}
+		}
+		return supervisor.StageGateDecision{Allowed: true}, nil
+	}
 }
 
 func (g *cachedStorageGuard) allowStage(ctx context.Context, stage supervisor.Stage, trigger string) (supervisor.StageGateDecision, error) {

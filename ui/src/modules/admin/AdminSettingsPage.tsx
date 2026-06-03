@@ -150,6 +150,12 @@ function defaultSettings(): RuntimeSettings {
         min_free_bytes: 8 * 1024 * 1024 * 1024,
         min_free_percent: 5,
       },
+      memory_guard: {
+        enabled: true,
+        min_available_bytes: 2 * 1024 * 1024 * 1024,
+        min_available_percent: 10,
+        min_swap_free_bytes: 512 * 1024 * 1024,
+      },
       inspect_discovery: stageDefaults(100),
       inspect_par2: stageDefaults(100),
       inspect_nfo: stageDefaults(100),
@@ -234,6 +240,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
+      memory_guard: { ...defaults.indexing!.memory_guard, ...indexing.memory_guard },
       inspect_discovery: { ...defaults.indexing!.inspect_discovery, ...indexing.inspect_discovery },
       inspect_par2: { ...defaults.indexing!.inspect_par2, ...indexing.inspect_par2 },
       inspect_nfo: { ...defaults.indexing!.inspect_nfo, ...indexing.inspect_nfo },
@@ -356,6 +363,12 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       enabled: indexing.storage_guard.enabled,
       min_free_bytes: indexing.storage_guard.min_free_bytes,
       min_free_percent: indexing.storage_guard.min_free_percent,
+    },
+    memory_guard: {
+      enabled: indexing.memory_guard.enabled,
+      min_available_bytes: indexing.memory_guard.min_available_bytes,
+      min_available_percent: indexing.memory_guard.min_available_percent,
+      min_swap_free_bytes: indexing.memory_guard.min_swap_free_bytes,
     },
     enrich_predb: {
       enabled: indexing.enrich_predb.enabled,
@@ -893,6 +906,43 @@ export function AdminSettingsPage() {
               value={indexing.storage_guard.min_free_percent}
               helpText="Percentage-based floor on the PostgreSQL data volume. 0 disables the percentage threshold."
               onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, min_free_percent: value } })}
+            />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Memory pressure guard">
+          <div className="banner">
+            When host memory or free swap drops below the configured threshold, memory-heavy and growth-heavy indexer stages pause before the kernel OOM killer has to terminate the process. Maintenance and purge remain allowed.
+          </div>
+          <div className="toolbar-grid">
+            <CheckboxField
+              label="Enable memory guard"
+              helpText="Checks host memory pressure before running memory-heavy indexer stages."
+              checked={Boolean(indexing.memory_guard.enabled)}
+              onChange={(value) => setIndexing({ ...indexing, memory_guard: { ...indexing.memory_guard, enabled: value } })}
+            />
+            <NumberField
+              label="Minimum available bytes"
+              min={0}
+              value={indexing.memory_guard.min_available_bytes}
+              helpText="Absolute available-memory floor from /proc/meminfo. 0 disables the byte threshold."
+              onChange={(value) => setIndexing({ ...indexing, memory_guard: { ...indexing.memory_guard, min_available_bytes: value } })}
+            />
+            <NumberField
+              label="Minimum available percent"
+              min={0}
+              max={100}
+              step="0.1"
+              value={indexing.memory_guard.min_available_percent}
+              helpText="Percent-based available-memory floor. 0 disables the percentage threshold."
+              onChange={(value) => setIndexing({ ...indexing, memory_guard: { ...indexing.memory_guard, min_available_percent: value } })}
+            />
+            <NumberField
+              label="Minimum swap free bytes"
+              min={0}
+              value={indexing.memory_guard.min_swap_free_bytes}
+              helpText="Free-swap floor. Useful when the system can still report healthy RAM but is already swap-starved."
+              onChange={(value) => setIndexing({ ...indexing, memory_guard: { ...indexing.memory_guard, min_swap_free_bytes: value } })}
             />
           </div>
         </SettingsSection>

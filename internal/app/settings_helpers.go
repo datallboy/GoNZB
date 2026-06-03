@@ -37,6 +37,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
+			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
 			InspectDiscovery:            defaultStage(false, 10, 100, 0),
 			InspectPAR2:                 defaultStage(false, 10, 100, 4),
 			InspectNFO:                  defaultStage(false, 10, 100, 0),
@@ -245,6 +246,12 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		MinFreeBytes:   int64Value(cfg.StorageGuard.MinFreeBytes, 8*1024*1024*1024),
 		MinFreePercent: float64Value(cfg.StorageGuard.MinFreePercent, 5),
 	}
+	out.MemoryGuard = IndexingMemoryGuardRuntimeSettings{
+		Enabled:             boolValue(cfg.MemoryGuard.Enabled, true),
+		MinAvailableBytes:   int64Value(cfg.MemoryGuard.MinAvailableBytes, 2*1024*1024*1024),
+		MinAvailablePercent: float64Value(cfg.MemoryGuard.MinAvailablePercent, 10),
+		MinSwapFreeBytes:    int64Value(cfg.MemoryGuard.MinSwapFreeBytes, 512*1024*1024),
+	}
 	out.InspectDiscovery = indexStageRuntimeFromConfig(cfg.InspectDiscovery, true, 10, 100)
 	out.InspectPAR2 = indexStageRuntimeFromConfigWithConcurrency(cfg.InspectPAR2, true, 10, 100)
 	out.InspectNFO = indexStageRuntimeFromConfig(cfg.InspectNFO, true, 10, 100)
@@ -395,6 +402,12 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			Enabled:        boolPtr(indexing.StorageGuard.Enabled),
 			MinFreeBytes:   int64Ptr(indexing.StorageGuard.MinFreeBytes),
 			MinFreePercent: float64Ptr(indexing.StorageGuard.MinFreePercent),
+		}
+		effective.Indexing.MemoryGuard = config.IndexingMemoryGuardConfig{
+			Enabled:             boolPtr(indexing.MemoryGuard.Enabled),
+			MinAvailableBytes:   int64Ptr(indexing.MemoryGuard.MinAvailableBytes),
+			MinAvailablePercent: float64Ptr(indexing.MemoryGuard.MinAvailablePercent),
+			MinSwapFreeBytes:    int64Ptr(indexing.MemoryGuard.MinSwapFreeBytes),
 		}
 		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
 		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
@@ -777,6 +790,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		Match:                       in.Match,
 		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
 		StorageGuard:                normalizeStorageGuardRuntimeSettings(in.StorageGuard),
+		MemoryGuard:                 normalizeMemoryGuardRuntimeSettings(in.MemoryGuard),
 		InspectDiscovery:            in.InspectDiscovery,
 		InspectPAR2:                 in.InspectPAR2,
 		InspectNFO:                  in.InspectNFO,
@@ -798,6 +812,25 @@ func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInsp
 func normalizeStorageGuardRuntimeSettings(in IndexingStorageGuardRuntimeSettings) IndexingStorageGuardRuntimeSettings {
 	if !in.Enabled && in.MinFreeBytes == 0 && in.MinFreePercent == 0 {
 		return IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5}
+	}
+	return in
+}
+
+func normalizeMemoryGuardRuntimeSettings(in IndexingMemoryGuardRuntimeSettings) IndexingMemoryGuardRuntimeSettings {
+	if !in.Enabled && in.MinAvailableBytes == 0 && in.MinAvailablePercent == 0 && in.MinSwapFreeBytes == 0 {
+		return IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024}
+	}
+	if in.MinAvailableBytes < 0 {
+		in.MinAvailableBytes = 0
+	}
+	if in.MinAvailablePercent < 0 {
+		in.MinAvailablePercent = 0
+	}
+	if in.MinAvailablePercent > 100 {
+		in.MinAvailablePercent = 100
+	}
+	if in.MinSwapFreeBytes < 0 {
+		in.MinSwapFreeBytes = 0
 	}
 	return in
 }
