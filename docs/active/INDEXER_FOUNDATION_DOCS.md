@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-05-14
+Snapshot date: 2026-06-03
 
 This is an internal execution and planning index for ongoing indexer work. It is not intended to be an end-user documentation entrypoint.
 
@@ -23,6 +23,7 @@ We currently have several planning and reference documents. This file defines wh
 - NNTP and inspection capacity planning is complete and archived
 - recovered-identity grouping follow-up is complete and archived
 - remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
+- the NZB archival and source-purge sprint is substantially complete and is now primarily closeout/reference work
 
 ## Current Active Docs
 
@@ -34,21 +35,29 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_DB_WRITE_CONTENTION_ISOLATION_PLAN.md`
+### `docs/active/INDEXER_STAGE_OWNERSHIP_AND_SCHEMA_BOUNDARIES_PLAN.md`
 
 Use for:
 
-- the current schema and repository plan for reducing serve-mode write contention
-- separating canonical fact writes from derived summary refreshes
-- lock-ordering, transaction-scope, and rollup-isolation work after the completed PAR2/yEnc/recovered-identity sprints
+- the active execution plan for enforcing stage ownership and table boundaries
+- removing remaining cross-stage write-backs and tightening repository/query ownership
+- finishing the durable release-catalog and purge-boundary follow-up after the archival sprint
+
+### `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
+
+Use for:
+
+- the implemented architecture and closeout reference for local-indexer NZB archival and source purge
+- archival-state, durable-catalog, and purge-lineage decisions that still inform current schema work
+- any remaining operational validation or cleanup tied directly to the archival rollout
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
 
 - the living whole-system schema map for the current indexer
-- determining which tables are canonical versus derived before cleanup
-- tracing how ingest, assemble, recovery, release, inspect, and maintenance interact across the current schema
+- the enforceable ownership rules for stage reads and writes
+- the table ownership matrix, purge contract, and migration path for schema-boundary work
 
 ## Recently Completed Sprint Docs
 
@@ -104,11 +113,24 @@ Use for:
 
 ## Current Execution Focus
 
-The just-completed focus was database growth trimming and retention reduction after the grouping sprint proved the yEnc/PAR2 promotion path was working.
+The just-completed focus was NZB archival/source purge and the remaining serve-mode contention hardening after the earlier database-growth trim sprint.
 
 Primary active workstream:
 
-- database write-contention isolation for the remaining serve-mode assemble/release overlap work
+- stage ownership and schema-boundary enforcement for the remaining serve-mode contention and long-term maintainability work
+
+Primary active goals:
+
+- keep each hot table owned by one canonical stage wherever practical
+- remove remaining cross-stage write-backs into shared derived or upstream fact tables
+- finish the durable release-catalog boundary so purge can stay aggressive without breaking release detail or enrichment
+- keep purge as the explicit terminal cleanup owner for source lineage, not a general-purpose downstream mutator
+
+Closeout/reference storage-reduction workstream:
+
+- blob-backed NZB archival and source-graph purge for completed local-indexer releases
+- replacing age-based storage retention with release-ready archival eligibility
+- planning logical purge plus physical reclaim so the Postgres volume stays bounded
 
 Completed obfuscated-payload hardening workstream:
 
