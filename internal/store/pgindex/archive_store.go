@@ -59,6 +59,14 @@ type ReleasePurgeResult struct {
 	DeletedArticlePayloadRows int64            `json:"deleted_article_payload_rows"`
 }
 
+type releasePurgePreflight struct {
+	ArchiveStatus            string
+	ObjectKey                string
+	ReleaseExists            bool
+	HasCatalogFiles          bool
+	HasCompletedMediaInspect bool
+}
+
 type releaseArchiveDetailSnapshot struct {
 	Release      PublicIndexerReleaseSummary
 	Files        []PublicIndexerReleaseFileSummary
@@ -370,6 +378,17 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]R
 		SELECT release_id, object_key
 		FROM release_archive_state
 		WHERE archive_status = 'purge_pending'
+		  AND COALESCE(object_key, '') <> ''
+		  AND EXISTS (
+			SELECT 1
+			FROM releases r
+			WHERE r.release_id = release_archive_state.release_id
+		  )
+		  AND EXISTS (
+			SELECT 1
+			FROM release_catalog_files cf
+			WHERE cf.release_id = release_archive_state.release_id
+		  )
 		  AND EXISTS (
 			SELECT 1
 			FROM release_files rf
@@ -400,6 +419,14 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]R
 	return out, nil
 }
 
+// PurgeArchivedReleaseSources performs terminal cleanup after archive durability and
+// durable catalog retention are already satisfied. Delete order is intentional:
+// 1. validate purge contract and lock archive state
+// 2. delete shared-safe binary lineage by binary owner tables first via binary FK cascade root
+// 3. delete release-scoped transitional bridge/runtime rows
+// 4. delete article payload/header rows that are no longer referenced by any remaining binary parts
+// 5. delete release archive lineage tracking rows
+// 6. mark the release archive state as purged
 func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID string) (*ReleasePurgeResult, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
@@ -416,19 +443,24 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		DeletedRowsByTable: map[string]int64{},
 	}
 
-	var status string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT archive_status
-		FROM release_archive_state
-		WHERE release_id = $1
-		FOR UPDATE`, releaseID).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("release archive state not found for %s", releaseID)
-		}
-		return nil, fmt.Errorf("lock release archive state %s: %w", releaseID, err)
+	preflight, err := loadReleasePurgePreflight(ctx, tx, releaseID, true)
+	if err != nil {
+		return nil, err
 	}
-	if status != "purge_pending" {
+	if preflight.ArchiveStatus != "purge_pending" {
 		return nil, fmt.Errorf("release %s is not purge_pending", releaseID)
+	}
+	if strings.TrimSpace(preflight.ObjectKey) == "" {
+		return nil, fmt.Errorf("release %s does not have a durable archive object key", releaseID)
+	}
+	if !preflight.ReleaseExists {
+		return nil, fmt.Errorf("release %s does not exist in durable catalog", releaseID)
+	}
+	if !preflight.HasCatalogFiles {
+		return nil, fmt.Errorf("release %s does not have durable catalog files", releaseID)
+	}
+	if !preflight.HasCompletedMediaInspect {
+		return nil, fmt.Errorf("release %s has not completed inspect_media", releaseID)
 	}
 
 	var totalLineageBinaries int64
@@ -579,6 +611,56 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		return nil, fmt.Errorf("commit purge tx %s: %w", releaseID, err)
 	}
 	return result, nil
+}
+
+func loadReleasePurgePreflight(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, releaseID string, lock bool) (*releasePurgePreflight, error) {
+	query := `
+		SELECT
+			ras.archive_status,
+			COALESCE(ras.object_key, ''),
+			EXISTS (
+				SELECT 1
+				FROM releases r
+				WHERE r.release_id = ras.release_id
+			),
+			EXISTS (
+				SELECT 1
+				FROM release_catalog_files cf
+				WHERE cf.release_id = ras.release_id
+			),
+			EXISTS (
+				SELECT 1
+				FROM release_files rf
+				JOIN binary_inspections bmi
+				  ON bmi.binary_id = rf.binary_id
+				 AND bmi.stage_name = 'inspect_media'
+				 AND bmi.status = 'completed'
+				WHERE rf.release_id = ras.release_id
+			)
+		FROM release_archive_state ras
+		WHERE ras.release_id = $1`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var out releasePurgePreflight
+	if err := q.QueryRowContext(ctx, query, releaseID).Scan(
+		&out.ArchiveStatus,
+		&out.ObjectKey,
+		&out.ReleaseExists,
+		&out.HasCatalogFiles,
+		&out.HasCompletedMediaInspect,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("release archive state not found for %s", releaseID)
+		}
+		if lock {
+			return nil, fmt.Errorf("lock release archive state %s: %w", releaseID, err)
+		}
+		return nil, fmt.Errorf("load purge preflight %s: %w", releaseID, err)
+	}
+	return &out, nil
 }
 
 func execDeleteCount(ctx context.Context, runner interface {
