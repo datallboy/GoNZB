@@ -386,6 +386,23 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	}
 }
 
+func TestApplyReleaseInspectionUpdateReturnsReleaseNotFoundForMissingRelease(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	hasNFO := true
+
+	err := store.ApplyReleaseInspectionUpdate(ctx, ReleaseInspectionUpdate{
+		ReleaseID: "missing-release-id",
+		HasNFO:    &hasNFO,
+	})
+	if err == nil {
+		t.Fatal("expected missing release error")
+	}
+	if !IsReleaseNotFound(err) {
+		t.Fatalf("expected ErrReleaseNotFound, got %v", err)
+	}
+}
+
 func TestApplyReleaseEnrichmentUpdateRefreshesTVCategory(t *testing.T) {
 	store := openTestStore(t)
 	releaseID := seedTestRelease(t, store, "enrich_tv_category")
