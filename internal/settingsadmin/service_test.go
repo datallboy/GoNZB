@@ -90,6 +90,27 @@ func TestValidateRuntimeSettingsRejectsInvalidStorageGuardThresholds(t *testing.
 	}
 }
 
+func TestValidateRuntimeSettingsRejectsInvalidMemoryGuardThresholds(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.MemoryGuard.MinAvailableBytes = -1
+	runtime.Indexing.MemoryGuard.MinAvailablePercent = 101
+	runtime.Indexing.MemoryGuard.MinSwapFreeBytes = -1
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_available_bytes") {
+		t.Fatalf("expected min_available_bytes detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_available_percent") {
+		t.Fatalf("expected min_available_percent detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_swap_free_bytes") {
+		t.Fatalf("expected min_swap_free_bytes detail, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsAggregatorMissingSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	caps := BuildCapabilities(&config.Config{

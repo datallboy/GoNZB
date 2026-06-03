@@ -785,6 +785,12 @@ export type IndexingRuntimeSettings = {
     min_free_bytes: number
     min_free_percent: number
   }
+  memory_guard: {
+    enabled: boolean
+    min_available_bytes: number
+    min_available_percent: number
+    min_swap_free_bytes: number
+  }
   inspect_discovery: AdminStageConfigPatch
   inspect_par2: AdminStageConfigPatch
   inspect_nfo: AdminStageConfigPatch
