@@ -170,6 +170,24 @@ func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([
 			  AND n.generation_status = 'ready'
 			  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 			  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+			  AND EXISTS (
+				SELECT 1
+				FROM release_files rf
+				JOIN binary_inspections bai
+				  ON bai.binary_id = rf.binary_id
+				 AND bai.stage_name = 'inspect_archive'
+				 AND bai.status = 'completed'
+				WHERE rf.release_id = r.release_id
+			  )
+			  AND EXISTS (
+				SELECT 1
+				FROM release_files rf
+				JOIN binary_inspections bmi
+				  ON bmi.binary_id = rf.binary_id
+				 AND bmi.stage_name = 'inspect_media'
+				 AND bmi.status = 'completed'
+				WHERE rf.release_id = r.release_id
+			  )
 			  AND COALESCE((
 				SELECT ras.archive_status
 				FROM release_archive_state ras
@@ -352,6 +370,15 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]R
 		SELECT release_id, object_key
 		FROM release_archive_state
 		WHERE archive_status = 'purge_pending'
+		  AND EXISTS (
+			SELECT 1
+			FROM release_files rf
+			JOIN binary_inspections bmi
+			  ON bmi.binary_id = rf.binary_id
+			 AND bmi.stage_name = 'inspect_media'
+			 AND bmi.status = 'completed'
+			WHERE rf.release_id = release_archive_state.release_id
+		  )
 		ORDER BY purge_eligible_at ASC NULLS FIRST, archived_at ASC NULLS FIRST, release_id
 		LIMIT $1`, limit)
 	if err != nil {
