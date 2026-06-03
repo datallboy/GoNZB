@@ -1315,6 +1315,18 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		WITH requested(binary_id, requested_release_id, source_updated_at, lookup_binary_id) AS (
 			VALUES %s
+		),
+		locked_binaries AS (
+			SELECT
+				req.binary_id,
+				req.requested_release_id,
+				req.source_updated_at,
+				req.lookup_binary_id,
+				b.id AS locked_binary_id
+			FROM requested req
+			JOIN binaries b
+			  ON b.id = req.binary_id
+			FOR KEY SHARE OF b
 		)
 		INSERT INTO binary_inspections (
 			stage_name,
@@ -1334,7 +1346,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		)
 		SELECT
 			$1,
-			req.binary_id,
+			req.locked_binary_id,
 			COALESCE(
 				CASE
 					WHEN req.requested_release_id <> '' AND EXISTS (
@@ -1363,9 +1375,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			$2,
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
-		FROM requested req
-		JOIN binaries b
-		  ON b.id = req.binary_id
+		FROM locked_binaries req
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -1404,6 +1414,12 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	releaseID = strings.TrimSpace(releaseID)
 
 	_, err := s.db.ExecContext(ctx, `
+		WITH locked_binary AS (
+			SELECT b.id
+			FROM binaries b
+			WHERE b.id = $2
+			FOR KEY SHARE
+		)
 		INSERT INTO binary_inspections (
 			stage_name,
 			binary_id,
@@ -1420,7 +1436,7 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 		)
 		SELECT
 			$1,
-			b.id,
+			lb.id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -1444,8 +1460,7 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			'{}'::jsonb,
 			$4,
 			NOW()
-		FROM binaries b
-		WHERE b.id = $2
+		FROM locked_binary lb
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
