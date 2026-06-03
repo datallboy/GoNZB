@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-05-14
+Snapshot date: 2026-06-03
 
 This doc is the current whole-system schema map for the indexer and should remain a living reference as the system evolves.
 
@@ -11,6 +11,221 @@ Use this doc before changing retention, removing columns, or compacting derived 
 3. how each hot table interacts with assemble, recovery, release, inspect, and maintenance
 
 This doc is intentionally current-state oriented. Use `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md` for the completed column-by-column audit detail and `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md` for the completed execution sequence from that sprint.
+
+## Current Policy Direction
+
+The indexer is moving toward strict stage and table ownership.
+
+The policy goal is:
+
+- each stage writes only to its canonical fact tables, its own work tables, or its own derived tables
+- downstream stages read upstream fact tables but do not write back into them to mark progress
+- queue tables and materialized summary tables are owned by a single writer stage where practical
+- runtime state and operational bookkeeping should live in dedicated stage-runtime tables, not in upstream fact rows
+
+This policy is directly tied to the current contention work. The earlier `release_family_readiness_summaries` deadlocks and `out of shared memory` failures came from multiple stages writing the same derived table and from large advisory-lock fan-out. The current preferred shape is queue fan-in plus single-stage materialization, not cross-stage write-back.
+
+## Desired Stage Ownership Model
+
+### Scrape stages
+
+Stages:
+
+- `scrape_latest`
+- `scrape_backfill`
+
+Write ownership:
+
+- `article_headers`
+- `article_header_ingest_payloads`
+
+Read ownership:
+
+- provider state
+- newsgroup bounds
+- stage runtime state
+
+Rule:
+
+- scrape owns ingest fact creation
+- no later stage should rewrite scrape facts except bounded maintenance cleanup on explicitly temporary support tables
+
+### Assemble stages
+
+Stages:
+
+- `assemble_lane_a`
+- `assemble_lane_b`
+
+Write ownership:
+
+- `binaries`
+- `binary_parts`
+- grouping and assembly evidence surfaces
+- yEnc recovery work seeding
+- release family refresh queue only, not readiness summary materialization
+
+Read ownership:
+
+- `article_headers`
+- `article_header_ingest_payloads`
+
+Rule:
+
+- assemble reads ingest facts and produces binary identity
+- assemble should not write back into `article_headers`
+- assemble should not materialize release-readiness rows directly
+
+### Recovery stage
+
+Stage:
+
+- `recover_yenc`
+
+Write ownership:
+
+- `binaries` identity refinements
+- yEnc retry/backoff state
+- release family refresh queue only
+
+Read ownership:
+
+- `article_headers`
+- `article_header_ingest_payloads`
+- `binaries`
+
+Rule:
+
+- recovery may refine canonical binary identity
+- recovery should not write to scrape-owned article facts beyond its own retry/support surfaces
+
+### Inspection stages
+
+Stages:
+
+- `inspect_discovery`
+- `inspect_par2`
+- `inspect_nfo`
+- `inspect_archive`
+- `inspect_password`
+- `inspect_media`
+
+Write ownership:
+
+- `binary_inspections`
+- inspection evidence tables such as archive entries, media streams, text evidence, par2 sets, par2 targets, password candidate surfaces
+- release inspection rollup fields on durable release catalog rows
+- archived preview assets and archive preview metadata
+- release family refresh queue only when canonical binary identity changes
+
+Read ownership:
+
+- `binaries`
+- `binary_parts`
+- `article_headers`
+- `releases`
+- archive blob artifacts
+
+Rule:
+
+- inspection reads upstream identity and archive facts
+- inspection writes its own evidence and release-facing metadata
+- inspection should not rewrite scrape facts or assemble membership facts
+
+### Release summary refresh stage
+
+Stage:
+
+- `release_summary_refresh`
+
+Write ownership:
+
+- `release_family_readiness_summaries`
+
+Read ownership:
+
+- release family refresh queue
+- `binaries`
+
+Rule:
+
+- this stage is the sole heavy materializer for `release_family_readiness_summaries`
+- other stages should enqueue dirty keys, not recompute or lock summary rows directly
+
+### Release formation stage
+
+Stage:
+
+- `release`
+
+Write ownership:
+
+- `releases`
+- durable release catalog file/detail tables
+- release-side catalog metadata
+- summary acknowledgement state only
+
+Read ownership:
+
+- `release_family_readiness_summaries`
+- `binaries`
+- release-side inspection rollups
+
+Rule:
+
+- release formation consumes readiness and produces durable release catalog state
+- it should not reach back into assemble or scrape fact tables to mutate them
+
+### Archive and purge tail
+
+Stages:
+
+- `release_generate_nzb`
+- `release_archive_nzb`
+- `release_purge_archived_sources`
+
+Write ownership:
+
+- archive blob storage
+- `release_archive_state`
+- durable archived detail/catalog tables
+- purge deletion of temporary source lineage tables
+
+Read ownership:
+
+- `releases`
+- durable release catalog file/detail tables
+- archive metadata
+
+Rule:
+
+- archive and purge operate at the release-catalog layer
+- they should not recreate pressure on ingest or assembly fact tables beyond the one-time source purge they explicitly own
+
+## Read And Locking Guidance
+
+Normal PostgreSQL reads are not the main problem.
+
+- plain `SELECT` uses MVCC and does not block ordinary `INSERT`/`UPDATE`/`DELETE` the way explicit row-locking reads do
+- contention risk comes from `UPDATE`, `DELETE`, `SELECT ... FOR UPDATE`, foreign key enforcement under heavy write concurrency, large shared-table upserts, and multi-stage write-back to the same derived rows
+
+Policy implication:
+
+- reading upstream tables is acceptable
+- cross-stage write-back into upstream fact tables or shared derived tables should be minimized or eliminated
+- if a stage needs to signal downstream work, prefer queue rows over mutating upstream facts
+
+## Known Current Deviations
+
+The system is moving toward the model above but is not fully there yet.
+
+Current notable deviations:
+
+- some inspection paths still update release-facing rollup fields after binary work has already become purge-eligible
+- release summary acknowledgement still updates `release_family_readiness_summaries`, although heavy recomputation has been isolated to `release_summary_refresh`
+- legacy support tables such as `article_header_ingest_payloads` still mix ingest support state and recovery retry state
+
+These deviations should be treated as explicit debt, not as the desired long-term model.
 
 ## Up-Front Questions And Answers
 
