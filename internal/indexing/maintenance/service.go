@@ -57,7 +57,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	if s.log != nil && out != nil {
 		s.log.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d backfilled_archive_snapshots=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d purged_inspect_workspaces=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d purged_inspect_workspaces=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -65,7 +65,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			out.YEncWorkItemsUpserted,
 			out.YEncWorkItemsRetired,
 			out.BackfilledCatalogFiles,
-			out.BackfilledArchiveSnapshots,
 			out.PurgedStageRuns,
 			out.PurgedScrapeRuns,
 			out.PurgedBinaryInspections,
@@ -84,7 +83,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		metrics["yenc_work_items_upserted"] = out.YEncWorkItemsUpserted
 		metrics["yenc_work_items_retired"] = out.YEncWorkItemsRetired
 		metrics["backfilled_catalog_files"] = out.BackfilledCatalogFiles
-		metrics["backfilled_archive_snapshots"] = out.BackfilledArchiveSnapshots
 		metrics["purged_stage_runs"] = out.PurgedStageRuns
 		metrics["purged_scrape_runs"] = out.PurgedScrapeRuns
 		metrics["purged_binary_inspections"] = out.PurgedBinaryInspections

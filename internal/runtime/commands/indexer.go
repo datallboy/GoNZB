@@ -468,12 +468,12 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d backfilled_archive_snapshots=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
 			out.AbandonedBinaryInspections,
-			out.BackfilledArchiveSnapshots,
+			out.BackfilledCatalogFiles,
 			out.PurgedStageRuns,
 			out.PurgedScrapeRuns,
 			out.PurgedBinaryInspections,

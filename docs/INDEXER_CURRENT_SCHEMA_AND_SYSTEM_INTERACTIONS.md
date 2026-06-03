@@ -155,7 +155,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. |
 | `release_newsgroups` | durable catalog support | `release` | purge deletes only if replaced by another durable source | Current release provenance/catalog support. |
 | `release_archive_state` | durable archive state | archive tail | none | Blob/archive lifecycle state. |
-| `release_archive_detail_*` tables | transitional archive detail | archive tail / maintenance backfill | none | Transitional compatibility layer while durable catalog work lands. |
+| `release_archive_detail_*` tables | frozen transitional archive detail | none for active runtime flows | none | Legacy compatibility surface; no longer part of the active detail or maintenance path. |
 | `nzb_cache` | transitional runtime/archive support | generate/archive tail | purge deletes | Transitional and should continue shrinking in importance. |
 | enrichment and override tables | durable catalog support | enrichment / override subsystem | none | Catalog-facing metadata ownership. |
 | stage runtime / run history tables | runtime/work | supervisor/runtime subsystem | none | Must not be mixed into fact rows. |
@@ -542,7 +542,8 @@ To keep purge from becoming a new contention source:
 These are accepted transitional debts, not permanent design goals.
 
 - `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
-- `release_files`, `release_archive_detail_*`, and `nzb_cache` still exist as transitional compatibility surfaces
+- `release_files` and `nzb_cache` still exist as transitional compatibility surfaces
+- `release_archive_detail_*` still exists in schema history, but active runtime writes and maintenance backfill have been removed
 - some inspection/refinement flows still reach across boundaries more than the target model intends
 
 ## Migration Path To Strict Ownership
@@ -572,6 +573,7 @@ Actions:
 - keep `releases` as the permanent catalog header
 - keep `release_catalog_files` as durable file/detail state
 - reduce reliance on `release_files` for frontend/detail reads
+- stop maintaining archive-detail snapshot tables once durable catalog reads fully replace them
 - keep enrichment and override updates pointed at durable catalog rows
 
 ### Phase 3: separate work state from fact state

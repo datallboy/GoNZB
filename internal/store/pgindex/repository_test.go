@@ -5312,6 +5312,79 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectMediaToleratesScalarArchiveEntries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("inspectmediascalar%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	newsgroupID, err := store.EnsureNewsgroup(ctx, record.GroupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-media-scalar-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+	baseKey := fmt.Sprintf("inspect-media-scalar-%d", time.Now().UnixNano())
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "media.scalar",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Media Scalar Summary Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "media.scalar.7z.001",
+		FileName:          "media.scalar.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          record.PostedAt,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "media.scalar.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_archive",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary:   map[string]any{"archive_entries": "not-an-array"},
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates with scalar archive_entries: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("did not expect archive-only media candidate when archive_entries is malformed scalar: %+v", candidate)
+		}
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectPAR2SkipsVolumesWhenManifestAlreadyHasTargets(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

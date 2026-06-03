@@ -6,7 +6,6 @@ import (
 )
 
 const articleHeaderPayloadPurgeWindowSize = 250000
-const archiveSnapshotBackfillBatchSize = 500
 const releaseCatalogFilesBackfillBatchSize = 500
 
 type IndexerMaintenanceResult struct {
@@ -16,7 +15,6 @@ type IndexerMaintenanceResult struct {
 	AbandonedBinaryInspections int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
-	BackfilledArchiveSnapshots int64
 	BackfilledCatalogFiles     int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64
@@ -57,17 +55,6 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		}
 		result.BackfilledCatalogFiles += backfilled
 		if backfilled < releaseCatalogFilesBackfillBatchSize {
-			break
-		}
-	}
-
-	for {
-		backfilled, err := s.BackfillMissingReleaseArchiveDetailSnapshots(ctx, archiveSnapshotBackfillBatchSize)
-		if err != nil {
-			return nil, err
-		}
-		result.BackfilledArchiveSnapshots += backfilled
-		if backfilled < archiveSnapshotBackfillBatchSize {
 			break
 		}
 	}

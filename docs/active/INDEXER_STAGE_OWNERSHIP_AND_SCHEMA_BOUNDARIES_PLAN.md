@@ -189,6 +189,21 @@ Validation:
 
 - transitional table removal does not reintroduce source-lineage retention requirements
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- removed active runtime writes and maintenance backfill for `release_archive_detail_*` so those tables are no longer part of the live archive/detail path
+- removed `release_catalog_files` backfill dependence on `release_archive_detail_files`; durable catalog repair now sources only from live `release_files`
+- kept `release_archive_detail_*` as frozen legacy compatibility surfaces instead of active runtime state while `release_files` and `nzb_cache` remain the smaller transitional surfaces still in use
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/maintenance ./internal/runtime/commands`
+- verified the durable catalog path remains the active public/admin detail source after removing archive-detail snapshot maintenance from runtime flows
+
 ## Immediate Backlog
 
 1. Audit any remaining direct writes to `release_family_readiness_summaries` outside the refresh stage and remove or narrow them.
@@ -217,3 +232,13 @@ Before this sprint is considered complete:
 - durable release catalog reads no longer depend on temporary source lineage for normal UI flows
 - purge delete scope is explicit, tested, and documented
 - at least one live serve-monitor pass shows no regression in release/assemble contention after the boundary changes land
+
+Final sprint sign-off:
+
+- all five chunks completed on 2026-06-03 in order
+- full validation pass completed with `go test ./...`
+- live runtime sign-off completed with `go run ./cmd/gonzb --config config.yaml serve`
+- observed runtime after the final fixes:
+  - `release_summary_refresh` completed repeatedly without deadlock or shared-memory failures
+  - `release` and `assemble_lane_a` / `assemble_lane_b` continued processing concurrently
+  - the `inspect_media` scalar `archive_entries` query failure was fixed and did not recur in the final serve-monitor window
