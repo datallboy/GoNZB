@@ -2,659 +2,646 @@
 
 Snapshot date: 2026-06-03
 
-This doc is the current whole-system schema map for the indexer and should remain a living reference as the system evolves.
+This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
-Use this doc before changing retention, removing columns, or compacting derived tables. It answers three questions up front:
+Use this doc before:
 
-1. what the current schema layers are
-2. which tables are canonical versus derived
-3. how each hot table interacts with assemble, recovery, release, inspect, and maintenance
+- adding a new stage write path
+- changing purge behavior
+- moving columns between release-side tables
+- dropping or shrinking hot tables
+- adding runtime/state bookkeeping to an existing fact table
 
-This doc is intentionally current-state oriented. Use `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md` for the completed column-by-column audit detail and `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md` for the completed execution sequence from that sprint.
+This document is intentionally current and enforceable. Older schema audits and completed storage-trim plans remain useful as historical reference, but they do not override the ownership rules here.
 
-## Current Policy Direction
+Related reference docs:
 
-The indexer is moving toward strict stage and table ownership.
+- `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
+- `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
+- `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
 
-The policy goal is:
+## How To Use This Doc
 
-- each stage writes only to its canonical fact tables, its own work tables, or its own derived tables
-- downstream stages read upstream fact tables but do not write back into them to mark progress
-- queue tables and materialized summary tables are owned by a single writer stage where practical
-- runtime state and operational bookkeeping should live in dedicated stage-runtime tables, not in upstream fact rows
+Read this doc in this order:
 
-This policy is directly tied to the current contention work. The earlier `release_family_readiness_summaries` deadlocks and `out of shared memory` failures came from multiple stages writing the same derived table and from large advisory-lock fan-out. The current preferred shape is queue fan-in plus single-stage materialization, not cross-stage write-back.
+1. Ownership rules
+2. Table ownership matrix
+3. Stage-by-stage allowed reads and writes
+4. Forbidden write-backs
+5. Purge contract
+6. Migration path
 
-## Desired Stage Ownership Model
+If a proposed code change violates the rules here, the default answer is to change the design, not to add another exception.
 
-### Scrape stages
+## Ownership Rules
 
-Stages:
+These rules are the working contract for the indexer.
 
-- `scrape_latest`
-- `scrape_backfill`
+### Rule 1: one canonical writer per table
 
-Write ownership:
+Every hot table must have one primary owning stage or subsystem.
 
-- `article_headers`
-- `article_header_ingest_payloads`
+- Other stages may read it.
+- Other stages may enqueue work derived from it.
+- Other stages should not directly mutate it unless this doc explicitly permits the exception.
 
-Read ownership:
+### Rule 2: downstream stages read upstream facts, not rewrite them
 
-- provider state
-- newsgroup bounds
-- stage runtime state
+Downstream stages should consume upstream fact tables and write only:
 
-Rule:
+- their own fact tables
+- their own queue/work tables
+- their own derived/materialized tables
+- final release-catalog tables they explicitly own
 
-- scrape owns ingest fact creation
-- no later stage should rewrite scrape facts except bounded maintenance cleanup on explicitly temporary support tables
+What we want to avoid:
 
-### Assemble stages
+- downstream stages updating upstream facts only to record progress
+- downstream stages recomputing shared derived tables inline
+- many stages touching the same row family with different lock order
 
-Stages:
+### Rule 3: shared derived tables get one heavy materializer
 
-- `assemble_lane_a`
-- `assemble_lane_b`
+If a table is a shared derived read-model, one stage owns materialization.
 
-Write ownership:
+Current example:
 
-- `binaries`
-- `binary_parts`
-- grouping and assembly evidence surfaces
-- yEnc recovery work seeding
-- release family refresh queue only, not readiness summary materialization
+- `release_summary_refresh` is the only heavy writer of `release_family_readiness_summaries`
 
-Read ownership:
+Other stages may:
 
-- `article_headers`
-- `article_header_ingest_payloads`
+- enqueue dirty keys
+- acknowledge their own work if the write is narrow and explicitly allowed
 
-Rule:
+Other stages may not:
 
-- assemble reads ingest facts and produces binary identity
-- assemble should not write back into `article_headers`
-- assemble should not materialize release-readiness rows directly
+- bulk recompute readiness summaries inline
+- lock readiness rows across large fan-out batches
 
-### Recovery stage
+### Rule 4: stage runtime bookkeeping belongs in runtime/work tables
 
-Stage:
+Operational state should live in dedicated runtime surfaces, not in upstream fact rows.
 
-- `recover_yenc`
+Examples:
 
-Write ownership:
+- stage run state
+- retry/backoff state
+- reservation rows
+- queue state
+- transient eligibility markers
 
-- `binaries` identity refinements
-- yEnc retry/backoff state
-- release family refresh queue only
+### Rule 5: purge is the only intentional downstream mutator of upstream source facts
 
-Read ownership:
+`release_purge_archived_sources` is allowed to delete upstream source rows, but only as terminal cleanup after archive eligibility is satisfied.
 
-- `article_headers`
-- `article_header_ingest_payloads`
-- `binaries`
+Purge is not a general exception for write-back. It is the cleanup owner for rows that are no longer needed by the live pipeline.
 
-Rule:
+### Rule 6: release catalog data is durable, source lineage is temporary
 
-- recovery may refine canonical binary identity
-- recovery should not write to scrape-owned article facts beyond its own retry/support surfaces
+The long-term model is:
 
-### Inspection stages
+- `releases` and durable release-catalog tables stay enrichable and queryable
+- article/binary/grouping lineage exists to build and validate releases
+- once archive/NZB durability and required inspection are complete, temporary lineage can be purged
 
-Stages:
+## Locking And Contention Guidance
 
-- `inspect_discovery`
-- `inspect_par2`
-- `inspect_nfo`
-- `inspect_archive`
-- `inspect_password`
-- `inspect_media`
+Normal PostgreSQL reads are not the main contention problem.
 
-Write ownership:
+- plain `SELECT` uses MVCC and does not conflict with normal writes the way row-locking reads do
+- `AccessShareLock` on table reads is not the same class of problem as row-level write contention
 
-- `binary_inspections`
-- inspection evidence tables such as archive entries, media streams, text evidence, par2 sets, par2 targets, password candidate surfaces
-- release inspection rollup fields on durable release catalog rows
-- archived preview assets and archive preview metadata
-- release family refresh queue only when canonical binary identity changes
+The dangerous operations are:
 
-Read ownership:
-
-- `binaries`
-- `binary_parts`
-- `article_headers`
-- `releases`
-- archive blob artifacts
-
-Rule:
-
-- inspection reads upstream identity and archive facts
-- inspection writes its own evidence and release-facing metadata
-- inspection should not rewrite scrape facts or assemble membership facts
-
-### Release summary refresh stage
-
-Stage:
-
-- `release_summary_refresh`
-
-Write ownership:
-
-- `release_family_readiness_summaries`
-
-Read ownership:
-
-- release family refresh queue
-- `binaries`
-
-Rule:
-
-- this stage is the sole heavy materializer for `release_family_readiness_summaries`
-- other stages should enqueue dirty keys, not recompute or lock summary rows directly
-
-### Release formation stage
-
-Stage:
-
-- `release`
-
-Write ownership:
-
-- `releases`
-- durable release catalog file/detail tables
-- release-side catalog metadata
-- summary acknowledgement state only
-
-Read ownership:
-
-- `release_family_readiness_summaries`
-- `binaries`
-- release-side inspection rollups
-
-Rule:
-
-- release formation consumes readiness and produces durable release catalog state
-- it should not reach back into assemble or scrape fact tables to mutate them
-
-### Archive and purge tail
-
-Stages:
-
-- `release_generate_nzb`
-- `release_archive_nzb`
-- `release_purge_archived_sources`
-
-Write ownership:
-
-- archive blob storage
-- `release_archive_state`
-- durable archived detail/catalog tables
-- purge deletion of temporary source lineage tables
-
-Read ownership:
-
-- `releases`
-- durable release catalog file/detail tables
-- archive metadata
-
-Rule:
-
-- archive and purge operate at the release-catalog layer
-- they should not recreate pressure on ingest or assembly fact tables beyond the one-time source purge they explicitly own
-
-## Read And Locking Guidance
-
-Normal PostgreSQL reads are not the main problem.
-
-- plain `SELECT` uses MVCC and does not block ordinary `INSERT`/`UPDATE`/`DELETE` the way explicit row-locking reads do
-- contention risk comes from `UPDATE`, `DELETE`, `SELECT ... FOR UPDATE`, foreign key enforcement under heavy write concurrency, large shared-table upserts, and multi-stage write-back to the same derived rows
+- `UPDATE`
+- `DELETE`
+- `INSERT ... ON CONFLICT` against shared hot rows
+- `SELECT ... FOR UPDATE`
+- `SELECT ... FOR SHARE` or `FOR KEY SHARE` when overused on hot rows
+- explicit `LOCK TABLE`
+- foreign key checks and index maintenance under heavy concurrent write load
+- cross-stage write-backs to the same derived row family
 
 Policy implication:
 
-- reading upstream tables is acceptable
-- cross-stage write-back into upstream fact tables or shared derived tables should be minimized or eliminated
-- if a stage needs to signal downstream work, prefer queue rows over mutating upstream facts
+- upstream reads are acceptable
+- shared row families should not have multiple heavy writers
+- if a stage needs to signal downstream work, prefer a queue row over mutating upstream facts
 
-## Known Current Deviations
+## Table Ownership Matrix
 
-The system is moving toward the model above but is not fully there yet.
+This matrix is the schema contract for current and near-term code changes.
 
-Current notable deviations:
+| Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
+| --- | --- | --- | --- | --- |
+| `article_headers` | canonical fact | `scrape_*` | none | Durable ingest fact row per article. |
+| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
+| `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. |
+| `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
+| `binary_grouping_evidence` | derived/audit | `assemble_*` | none | Bounded audit/evidence surface. |
+| `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned work queue. |
+| `binary_inspections` | queue/work | `inspect_*` | none | Inspection stage tracking only. |
+| `binary_archive_entries` | derived/evidence | `inspect_archive` | none | Archive evidence owned by archive inspection. |
+| `binary_media_streams` | derived/evidence | `inspect_media` | none | Media evidence owned by media inspection. |
+| `binary_text_evidence` | derived/evidence | `inspect_nfo` | none | Text evidence owned by text inspection. |
+| `binary_par2_sets` | derived/evidence | `inspect_par2` | none | PAR2 evidence owned by par2 inspection. |
+| `binary_par2_targets` | derived/evidence | `inspect_par2` | none | PAR2 target mapping owned by par2 inspection. |
+| `binary_password_candidates` and similar password evidence | derived/evidence | `inspect_password` | none | Password evidence owned by password inspection. |
+| release-family refresh queue tables | queue/work | `release_summary_refresh` | any stage may enqueue dirty keys through repository helpers | Queue fan-in is allowed; summary materialization is not. |
+| `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | `release` for narrow ack/update only where explicitly retained | Shared hot table; one heavy writer only. |
+| `releases` | durable catalog fact | `release` | `inspect_*`, enrichment, overrides, archive tail for explicit catalog/archive fields only | Permanent release catalog header. |
+| `release_catalog_files` | durable catalog fact | `release` | archive-maintenance/backfill only | Durable UI/detail file metadata. |
+| `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. |
+| `release_newsgroups` | durable catalog support | `release` | purge deletes only if replaced by another durable source | Current release provenance/catalog support. |
+| `release_archive_state` | durable archive state | archive tail | none | Blob/archive lifecycle state. |
+| `release_archive_detail_*` tables | transitional archive detail | archive tail / maintenance backfill | none | Transitional compatibility layer while durable catalog work lands. |
+| `nzb_cache` | transitional runtime/archive support | generate/archive tail | purge deletes | Transitional and should continue shrinking in importance. |
+| enrichment and override tables | durable catalog support | enrichment / override subsystem | none | Catalog-facing metadata ownership. |
+| stage runtime / run history tables | runtime/work | supervisor/runtime subsystem | none | Must not be mixed into fact rows. |
 
-- some inspection paths still update release-facing rollup fields after binary work has already become purge-eligible
-- release summary acknowledgement still updates `release_family_readiness_summaries`, although heavy recomputation has been isolated to `release_summary_refresh`
-- legacy support tables such as `article_header_ingest_payloads` still mix ingest support state and recovery retry state
+## Stage-By-Stage Allowed Reads And Writes
 
-These deviations should be treated as explicit debt, not as the desired long-term model.
+This section defines what each stage may read and write.
 
-## Up-Front Questions And Answers
+### `scrape_latest` and `scrape_backfill`
 
-### Which schema source is authoritative?
+Allowed reads:
 
-The live Docker Postgres database is the schema source of truth for this sprint.
+- provider state
+- newsgroup bounds
+- runtime/stage config
 
-`internal/store/pgindex/migrations` is the only active migration history to reconcile against.
-
-`internal/store/pgindex/migrations_archive` is historical only and must not drive current cleanup decisions.
-
-### What should be preserved even if storage is tight?
-
-Preserve canonical identity and membership surfaces first:
-
-- `article_headers`
-- `binaries`
-- `binary_parts`
-
-Preserve derived queue state only while it is still actively consumed:
-
-- `release_family_readiness_summaries`
-
-Treat audit/debug retention as optional and bounded unless code proves it is still needed:
-
-- `article_header_ingest_payloads`
-- `binary_grouping_evidence`
-- verbose JSON retained only for historical debugging
-
-### What is the current system-level storage problem?
-
-The current growth problem is not release formation. It is oversized retention in ingest and identity-audit surfaces:
-
-- `article_header_ingest_payloads` behaves like a large temporary shadow copy of ingest input
-- `binary_grouping_evidence` behaves like a universal one-row-per-binary audit blob
-- `release_family_readiness_summaries` retains far more weak-family residue than active queue state
-
-### What does “safe cleanup” mean for this sprint?
-
-Safe cleanup means:
-
-- do not remove a field until every reader and writer is identified
-- prefer stopping unnecessary writes before dropping columns
-- prefer shortening retention on derived surfaces before touching canonical identity tables
-- preserve the ability for summary refresh or recovery logic to recreate derived rows later
-
-## Current Schema Layers
-
-The live indexer schema is best understood as five layers:
-
-1. ingest capture
-2. assembly identity
-3. recovery and identity refinement
-4. release readiness and release formation
-5. inspection and evidence enrichment
-
-### Layer 1. Ingest capture
-
-Primary tables:
+Allowed writes:
 
 - `article_headers`
 - `article_header_ingest_payloads`
+- provider progress/runtime bookkeeping
 
-Purpose:
+Not allowed:
 
-- store per-article scrape facts
-- hold enough structured subject/yEnc state for assemble and yEnc recovery
+- writing `binaries`
+- writing release-side catalog tables
+- writing readiness summaries
 
-Rule:
+Rationale:
 
-- `article_headers` is canonical ingest fact storage
-- `article_header_ingest_payloads` is supporting workflow state, not a second durable source of truth
+- scrape owns ingest fact creation only
 
-### Layer 2. Assembly identity
+### `assemble_lane_a` and `assemble_lane_b`
 
-Primary tables:
+Allowed reads:
+
+- `article_headers`
+- `article_header_ingest_payloads`
+- runtime/stage config
+
+Allowed writes:
 
 - `binaries`
 - `binary_parts`
-
-Purpose:
-
-- turn article rows into canonical binary/file identity
-- attach article membership to the chosen binary row
-
-Rule:
-
-- `binaries` is the canonical current identity row
-- `binary_parts` is the canonical article-to-binary membership bridge
-
-### Layer 3. Recovery and identity refinement
-
-Primary tables:
-
-- `article_header_ingest_payloads`
-- `binaries`
 - `binary_grouping_evidence`
+- `yenc_recovery_work_items` seeding
+- release-family refresh queue enqueue only
 
-Purpose:
+Not allowed:
 
-- recover stronger file identity when subject parsing was weak
-- preserve enough audit evidence to explain why identity changed
+- mutating `article_headers`
+- bulk recomputing `release_family_readiness_summaries`
+- mutating release catalog rows to show assembly progress
 
-Rule:
+Rationale:
 
-- recovery may improve canonical identity on `binaries`
-- audit evidence should remain bounded and selective
+- assemble turns article facts into binary identity and membership
 
-### Layer 4. Release readiness and release formation
+### `recover_yenc`
 
-Primary tables:
+Allowed reads:
 
-- `release_family_readiness_summaries`
+- `article_headers`
+- `article_header_ingest_payloads`
+- `binary_parts`
+- `binaries`
+- `yenc_recovery_work_items`
+
+Allowed writes:
+
+- `yenc_recovery_work_items`
+- bounded refinement fields on `binaries`
+- merge/refinement updates on `binary_parts` where identity changes require it
+- release-family refresh queue enqueue only
+
+Not allowed:
+
+- mutating `article_headers`
+- materializing readiness summaries directly
+- writing release catalog rows to reflect recovery progress
+
+Rationale:
+
+- recovery may improve canonical binary identity, but it does not own ingest facts or release materialization
+
+### `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`
+
+Allowed reads:
+
+- `binaries`
+- `binary_parts`
+- `article_headers`
 - `releases`
-- `release_files`
+- archive blob artifacts where applicable
+- durable release catalog metadata when needed for rollups
 
-Purpose:
-
-- aggregate binary identity into release-family queue state
-- form user-visible releases from readiness candidates
-
-Rule:
-
-- `release_family_readiness_summaries` is a derived read-model and queue surface
-- `releases` and `release_files` are downstream outputs, not the source of identity
-
-### Layer 5. Inspection and evidence enrichment
-
-Primary tables:
+Allowed writes:
 
 - `binary_inspections`
-- `binary_archive_entries`
-- `binary_media_streams`
-- `binary_text_evidence`
-- `binary_par2_sets`
-- `binary_par2_targets`
+- stage-owned evidence tables
+- explicit release-facing metadata fields on `releases`
+- release-family refresh queue enqueue only when identity/readiness-affecting fields change
 
-Purpose:
+Not allowed:
 
-- extract evidence that can strengthen metadata or promote identity quality
+- mutating `article_headers`
+- mutating `binary_grouping_evidence`
+- materializing readiness summaries directly
+- writing progress flags into release rows that belong in inspection/runtime tables
 
-Rule:
+Rationale:
 
-- inspection enriches and sometimes promotes upstream identity
-- these tables are evidence surfaces, not primary identity ownership
+- inspection owns evidence extraction and release-facing metadata enrichment, not upstream source facts
 
-## Canonical Versus Derived Surfaces
+### `release_summary_refresh`
 
-### Canonical tables
+Allowed reads:
 
-These are the tables the system would rebuild around if everything else were trimmed:
+- release-family refresh queue
+- `binaries`
+- selected release-facing rollup inputs if required by readiness logic
 
-- `article_headers`
+Allowed writes:
+
+- `release_family_readiness_summaries`
+- queue claim/ack state owned by the refresh path
+
+Not allowed:
+
+- mutating `binaries`
+- mutating ingest facts
+- materializing release rows
+
+Rationale:
+
+- this stage is the sole heavy writer for the readiness read-model
+
+### `release`
+
+Allowed reads:
+
+- `release_family_readiness_summaries`
+- `binaries`
+- inspection rollups and release-facing metadata needed for catalog formation
+
+Allowed writes:
+
+- `releases`
+- `release_catalog_files`
+- `release_files`
+- `release_newsgroups`
+- narrow readiness ack/update state explicitly retained on `release_family_readiness_summaries`
+
+Not allowed:
+
+- mutating `article_headers`
+- mutating `binary_parts`
+- recomputing readiness summaries from raw binaries inline
+- writing inspection evidence tables
+
+Rationale:
+
+- release consumes readiness and writes durable catalog state
+
+### `release_generate_nzb`
+
+Allowed reads:
+
+- `releases`
+- `release_catalog_files`
+- `release_files`
+- `release_newsgroups`
+- source lineage needed to construct NZB
+- inspection completion state
+
+Allowed writes:
+
+- archive blob/object store
+- `release_archive_state`
+- transitional `nzb_cache` if still required by current implementation
+
+Not allowed:
+
+- mutating ingest/assembly fact tables to track generation progress
+- writing readiness summaries
+
+Rationale:
+
+- generate is the archive-tail start and should operate at the release layer
+
+### `release_archive_nzb`
+
+Allowed reads:
+
+- `releases`
+- `release_archive_state`
+- transitional archive/NZB support tables
+
+Allowed writes:
+
+- archive blob/object store
+- `release_archive_state`
+
+Not allowed:
+
+- mutating article/binary facts except where current transitional implementation still needs a release-layer pointer update
+
+Rationale:
+
+- legacy/transitional archive stage only
+
+### `release_purge_archived_sources`
+
+Allowed reads:
+
+- `releases`
+- `release_archive_state`
+- durable release catalog tables
+- source lineage tables that are candidates for deletion
+
+Allowed writes:
+
+- delete from temporary source lineage tables
+- delete from transitional archive support tables where allowed
+- update `release_archive_state`
+- write purge metrics/runtime bookkeeping
+
+Not allowed:
+
+- deleting durable catalog rows needed for frontend or enrichment
+- deleting rows before archive durability and required inspection gates are met
+
+Rationale:
+
+- purge is terminal cleanup, not a general-purpose downstream mutator
+
+### `indexer_maintenance`
+
+Allowed reads:
+
+- any table needed for bounded cleanup, backfill, runtime metrics, or reclaim preparation
+
+Allowed writes:
+
+- maintenance-owned cleanup tables
+- bounded cleanup deletes on temporary/support rows
+- maintenance backfills for durable catalog/archive compatibility tables where explicitly defined
+
+Not allowed:
+
+- taking over ownership of stage fact tables
+- inventing new permanent write paths outside documented maintenance responsibilities
+
+Rationale:
+
+- maintenance may clean, prune, or backfill, but it is not an alternate owner for primary pipeline data
+
+## Forbidden Write-Backs
+
+These are explicit anti-patterns for future changes.
+
+### Scrape stages may not
+
+- update `binaries`
+- update `releases`
+- mark readiness directly on `release_family_readiness_summaries`
+
+### Assemble stages may not
+
+- update `article_headers` to record assembly progress
+- update `releases` to record assembly progress
+- bulk recompute `release_family_readiness_summaries`
+
+### Recovery may not
+
+- write retry/backoff state into `article_headers`
+- recompute readiness summaries inline
+- use release rows as recovery work state
+
+### Inspection stages may not
+
+- write progress markers into `binaries` or `releases` when a stage-runtime table should own the state
+- update ingest tables to record inspection outcomes
+- directly upsert heavy readiness summary rows
+
+### Release may not
+
+- mutate ingest or assembly facts to record candidate consumption
+- rediscover family readiness from raw binaries inside the hot formation transaction
+- own inspection evidence writes
+
+### Archive stages may not
+
+- push archive lifecycle state into ingest or assembly tables
+- mutate upstream source facts except where the purge contract explicitly allows deletion
+
+### Purge may not
+
+- delete durable release catalog rows required for frontend detail, enrichment, or archive access
+- delete source lineage before the purge contract is satisfied
+
+## Purge Contract
+
+This section defines when purge is allowed and what purge owns.
+
+### Purge purpose
+
+Purge exists to free database space by removing temporary source lineage after:
+
+- release identity is already formed
+- the NZB is durably stored in blob storage
+- required inspection has completed
+- the durable release catalog can still serve frontend and enrichment use cases
+
+### Purge preconditions
+
+A release is purge-eligible only when all of the following are true:
+
+- the release is present in durable catalog tables
+- archive state says the NZB is durable and available
+- required inspection gates for archive/purge are satisfied
+- no earlier stage still depends on live source lineage for that release
+- purge state has been explicitly recorded as eligible or pending
+
+### What purge should delete
+
+Purge owns deletion of temporary source lineage and heavy build surfaces, including:
+
+- `article_headers` rows that exist only to support the purged release lineage
+- `article_header_ingest_payloads` tied only to that purged lineage
 - `binaries`
 - `binary_parts`
-
-Why:
-
-- they hold durable article facts, current binary identity, and membership relationships
-
-### Active derived tables
-
-These are derived but still directly consumed by runtime stages:
-
-- `article_header_ingest_payloads`
-- `release_family_readiness_summaries`
-
-Why:
-
-- assemble and yEnc recovery still read structured payload fields
-- release and recovery still read readiness summaries as the active queue model
-
-### Audit and debug tables or fields
-
-These are the first place to seek storage reduction:
-
 - `binary_grouping_evidence`
-- verbose JSON in `grouping_evidence_json`
-- any unnecessary transient payload columns on `article_header_ingest_payloads`
+- inspection evidence tables tied only to purged binaries
+- recovery work/support rows tied only to purged binaries
+- transitional release-source bridge tables where durable replacements now exist
 
-Why:
+Exact delete scope must continue to honor shared-lineage safety. If a row is still referenced by another non-purge-eligible release, purge must not delete it.
 
-- they exist to explain decisions, not to define the current identity itself
+### What purge must preserve
 
-## Hot Tables And Their Roles
+Purge must preserve:
 
-### `article_headers`
+- `releases`
+- `release_catalog_files`
+- durable release metadata needed for frontend detail
+- durable enrichment and override tables
+- `release_archive_state`
+- archive blob/object storage
+- any still-required provenance/catalog support tables until a durable replacement exists
 
-System role:
+### Locking expectations for purge
 
-- durable per-article scrape fact row
+Purge is allowed to issue deletes on upstream lineage because those rows are terminal.
 
-Primary writers:
+To keep purge from becoming a new contention source:
 
-- scrape ingest via `InsertArticleHeaders` in `internal/store/pgindex/repository.go`
-- assemble claim/update paths in `internal/store/pgindex/assembly_store.go`
+- purge should claim eligible releases first, then delete only claimed lineage
+- purge should delete in stable batches
+- purge should avoid mixed ownership updates on hot shared tables
+- purge should rely on release/archive eligibility state instead of rescanning or re-locking the whole pipeline
 
-Primary readers:
+## Current Known Deviations From The Target Model
 
-- assemble claim and hydration queries
-- maintenance payload cleanup joins
-- downstream joins through `binary_parts`
+These are accepted transitional debts, not permanent design goals.
 
-Why it exists:
+- `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
+- `release_family_readiness_summaries` still accepts narrow ack/update writes from `release`
+- `release_files`, `release_archive_detail_*`, and `nzb_cache` still exist as transitional compatibility surfaces
+- some inspection/refinement flows still reach across boundaries more than the target model intends
 
-- every later stage needs stable article identity and fact history
+## Migration Path To Strict Ownership
 
-Trim posture:
+The migration path should stay incremental and reviewable.
 
-- not an early drop-column target
-- only consider retention or partitioning later if ingest volume still requires it
+### Phase 1: freeze shared derived writes
 
-### `article_header_ingest_payloads`
+Goal:
 
-System role:
+- ensure `release_summary_refresh` remains the only heavy writer of `release_family_readiness_summaries`
 
-- structured ingest-side support row for assemble and yEnc recovery
+Actions:
 
-Primary writers:
+- remove any remaining multi-stage bulk summary recomputation
+- keep dirty-key queue fan-in, not direct summary materialization
+- narrow or remove release-side summary ack writes where possible
 
-- scrape ingest payload upsert in `internal/store/pgindex/repository.go`
-- yEnc retry/backoff updates in `internal/store/pgindex/assembly_store.go`
+### Phase 2: finish the durable release catalog boundary
 
-Primary readers:
+Goal:
 
-- assemble candidate hydration
-- yEnc recovery candidate selection
-- maintenance cleanup
+- make release-side frontend/detail data live in durable catalog tables from the start
 
-Why it exists:
+Actions:
 
-- subject-derived fields still matter after scrape
-- yEnc recovery still needs retry state and structured file hints
+- keep `releases` as the permanent catalog header
+- keep `release_catalog_files` as durable file/detail state
+- reduce reliance on `release_files` for frontend/detail reads
+- keep enrichment and override updates pointed at durable catalog rows
 
-Trim posture:
+### Phase 3: separate work state from fact state
 
-- keep structured hot-path fields
-- stop depending on unnecessary raw payload JSON
-- shorten assembled-row retention sharply
+Goal:
 
-### `binaries`
+- move retry/progress/runtime state out of mixed-purpose fact tables
 
-System role:
+Actions:
 
-- canonical current file/binary identity row
+- reduce mixed ownership on `article_header_ingest_payloads`
+- keep stage bookkeeping in dedicated work/runtime tables
+- remove any release or binary progress flags that exist only for stage orchestration
 
-Primary writers:
+### Phase 4: tighten purge eligibility and delete scope
 
-- assemble upsert in `internal/store/pgindex/assembly_store.go`
-- yEnc recovery promotion in `internal/store/pgindex/yenc_recovery_store.go`
-- inspection-driven enrichment in `internal/store/pgindex/inspection_store.go`
+Goal:
 
-Primary readers:
+- make purge the sole terminal cleanup owner for source lineage
 
-- readiness summary refresh
-- release selection and formation
-- inspect/admin/catalog reads
+Actions:
 
-Why it exists:
+- document exact lineage delete order
+- keep shared-lineage safety checks explicit
+- ensure purge leaves the durable release catalog fully usable
 
-- this is the current best known identity for file grouping and release formation
+### Phase 5: shrink or remove transitional tables
 
-Trim posture:
+Goal:
 
-- keep core identity fields
-- compact evidence attached to the row, not identity itself
+- reduce schema overlap once durable boundaries are fully landed
 
-### `binary_parts`
+Actions:
 
-System role:
+- shrink or remove `release_files` where durable catalog tables fully replace it
+- shrink or remove `release_archive_detail_*` compatibility tables if no longer needed
+- continue reducing `nzb_cache` dependence
 
-- canonical article membership map for each binary
+## Reviewable Execution Chunks
 
-Primary writers:
+Use these as the default code-review breakdown for this workstream.
 
-- assemble and recovery merge/update paths
+### Chunk 1: readiness-summary ownership isolation
 
-Primary readers:
+Deliverables:
 
-- yEnc recovery seed selection
-- release formation and NZB file construction
-- inspect and admin detail joins
+- one heavy writer for readiness summaries
+- queue-only dirty fan-in from other stages
+- no cross-stage bulk recomputation
 
-Why it exists:
+### Chunk 2: inspection boundary cleanup
 
-- binds article headers to the chosen binary identity
+Deliverables:
 
-Trim posture:
+- inspection writes only to inspection/evidence tables plus explicit release-facing metadata
+- no stale-binary races that require write-backs into upstream ownership domains
+- clearer separation between inspection runtime state and durable facts
 
-- preserve
-- this is structural, not optional audit retention
+### Chunk 3: durable release catalog completion
 
-### `binary_grouping_evidence`
+Deliverables:
 
-System role:
+- frontend/admin detail reads use durable catalog tables
+- enrichment continues to work after source purge
+- transitional release-source bridge usage is reduced
 
-- side-table explanation of why binary identity was chosen
+### Chunk 4: purge contract enforcement
 
-Primary writers:
+Deliverables:
 
-- assemble evidence upsert in `internal/store/pgindex/assembly_store.go`
+- purge eligibility is explicit
+- purge delete scope is documented and encoded
+- purge preserves all durable release catalog surfaces
 
-Primary readers:
+### Chunk 5: transitional surface reduction
 
-- inspect/admin detail reads
-- admin UI JSON detail views
+Deliverables:
 
-Why it exists:
+- identify which transitional tables can now shrink or be removed
+- reduce overlap between legacy archive support tables and durable catalog tables
 
-- explains grouping choices and weak/fallback identity outcomes
+## Working Rule For Code Review
 
-Trim posture:
+For any schema or repository change in this workstream, answer these questions in the PR or commit notes:
 
-- strongest oversized derived surface
-- move toward sparse and compact retention, not universal retention
+1. Which stage owns the table being changed?
+2. Is this a canonical fact table, a derived/materialized table, a queue/work table, or a durable release-catalog table?
+3. Does the change add a new cross-stage write-back?
+4. If yes, why is that exception necessary, and can it be replaced by a queue or stage-owned table?
+5. Does this make purge safer, smaller, or more explicit?
 
-### `release_family_readiness_summaries`
-
-System role:
-
-- active release queue and readiness read-model
-
-Primary writers:
-
-- summary refresh in `internal/store/pgindex/release_family_summary_store.go`
-- release processing acknowledgements in `internal/store/pgindex/release_store.go`
-
-Primary readers:
-
-- release candidate selection
-- yEnc recovery candidate discovery
-- inspect/dashboard pending metrics
-
-Why it exists:
-
-- provides a fast aggregate surface so release does not need to rediscover family quality from raw binaries
-
-Trim posture:
-
-- keep as an active read-model
-- aggressively prune non-pending residue once recovery and cleanup no longer need it
-
-## Stage Interactions
-
-### Scrape -> Assemble
-
-Flow:
-
-- scrape stores durable article facts in `article_headers`
-- scrape also stores structured ingest payload support in `article_header_ingest_payloads`
-- assemble claims unassembled headers and hydrates candidates from both tables
-
-Key interaction:
-
-- assemble already reconstructs `RawOverview` from structured fields rather than relying on stored raw JSON
-
-### Assemble -> Binary Identity
-
-Flow:
-
-- assemble groups article candidates into binaries
-- assemble writes canonical identity to `binaries`
-- assemble writes article membership to `binary_parts`
-- assemble writes summary/audit evidence to inline and side-table evidence surfaces
-
-Key interaction:
-
-- `binary_parts` links ingest facts to canonical binary identity
-
-### Binary Identity -> Recovery
-
-Flow:
-
-- weak or obfuscated readiness states feed yEnc recovery candidate selection
-- yEnc recovery selects a representative article through `binary_parts`
-- recovered header data may rewrite `binaries` identity and merge rows
-
-Key interaction:
-
-- recovery improves canonical identity on `binaries`; it should not need long-lived raw ingest blobs if structured fields are enough
-
-### Identity -> Readiness -> Release
-
-Flow:
-
-- summary refresh aggregates `binaries` into `release_family_readiness_summaries`
-- release consumes pending summary rows and forms `releases` plus `release_files`
-
-Key interaction:
-
-- `release_family_readiness_summaries` is a queue surface derived from binary identity, not a durable truth source
-
-### Inspect -> Identity Refinement
-
-Flow:
-
-- inspect stages add archive, media, text, and PAR2 evidence
-- some evidence updates `binaries` fields such as expected archive counts or classification hints
-- readiness refresh then re-evaluates family quality
-
-Key interaction:
-
-- inspect should strengthen upstream identity and readiness, not fork a second identity system
-
-## Current Cleanup Implications
-
-### Low-risk first moves
-
-- stop writing raw ingest JSON that current code can reconstruct
-- shorten retention on assembled payload rows
-- stop universal retention of side-table grouping evidence when the row is already stable and high confidence
-
-### Medium-risk follow-ups
-
-- move yEnc retry state out of bulky payload rows if short retention is still insufficient
-- drop unused columns after readers are removed and retention has cleared old data
-- add dedicated readiness pruning for non-pending weak-family residue
-
-### Things to avoid early
-
-- dropping canonical identity fields from `binaries`
-- removing membership fields from `binary_parts`
-- pruning readiness rows that are still pending or still needed by yEnc recovery targeting
-
-## Working Rule For This Sprint
-
-When deciding whether to keep or remove data, use this order:
-
-1. preserve canonical identity
-2. preserve active queue state only while it is actionable
-3. keep compact summaries where they help operations
-4. remove or shorten retention on verbose duplicate audit payloads first
+If those answers are unclear, the change is probably crossing boundaries too loosely.
