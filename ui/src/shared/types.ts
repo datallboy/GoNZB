@@ -77,13 +77,6 @@ export type PublicReleaseDetail = {
     external_year?: number
     metadata_updated_at?: string
   }
-  preview: {
-    object_key?: string
-    content_type?: string
-    source_kind?: string
-    updated_at?: string
-    url?: string
-  }
   capabilities: {
     can_send_to_downloader: boolean
   }

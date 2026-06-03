@@ -6830,13 +6830,10 @@ func TestPublicIndexerReleaseDetailIncludesPreviewMetadata(t *testing.T) {
 
 	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
 	if err != nil {
-		t.Fatalf("get public release detail with preview: %v", err)
+		t.Fatalf("get public release detail: %v", err)
 	}
 	if detail == nil {
 		t.Fatalf("expected detail for %s", releaseID)
-	}
-	if detail.Preview.ObjectKey == "" || detail.Preview.ContentType != "image/jpeg" || detail.Preview.SourceKind != "archive_image" {
-		t.Fatalf("expected preview metadata, got %+v", detail.Preview)
 	}
 }
 

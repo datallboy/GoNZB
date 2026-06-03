@@ -161,7 +161,6 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.POST("/stages/:stage/resume", indexerCtrl.ResumeStage)
 		v1Indexer.GET("/releases", indexerCtrl.ListReleases)
 		v1Indexer.GET("/releases/:id", indexerCtrl.GetRelease)
-		v1Indexer.GET("/releases/:id/preview", indexerCtrl.GetReleasePreview)
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 
