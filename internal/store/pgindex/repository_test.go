@@ -1569,31 +1569,34 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecomput
 	}
 
 	var (
-		binaryCount     int
-		readinessBucket string
-		isDirty         bool
+		summaryCount int
+		queueCount   int
 	)
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT
-			binary_count,
-			readiness_bucket,
-			updated_at > COALESCE(processed_at, updated_at) AS is_dirty
+		SELECT COUNT(*)
 		FROM release_family_readiness_summaries
 		WHERE provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'deferred-release-family'`, newsgroupID,
-	).Scan(&binaryCount, &readinessBucket, &isDirty); err != nil {
-		t.Fatalf("query deferred summary row: %v", err)
+	).Scan(&summaryCount); err != nil {
+		t.Fatalf("count deferred summary rows: %v", err)
 	}
-	if binaryCount != 0 {
-		t.Fatalf("expected deferred summary row to skip inline recompute, got binary_count=%d", binaryCount)
+	if summaryCount != 0 {
+		t.Fatalf("expected deferred summary refresh to avoid inline summary row writes, got %d rows", summaryCount)
 	}
-	if readinessBucket != releaseReadinessStaleCleanupOnly {
-		t.Fatalf("expected deferred summary row to stay in stale cleanup placeholder, got %q", readinessBucket)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-release-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count deferred summary queue rows: %v", err)
 	}
-	if !isDirty {
-		t.Fatalf("expected deferred summary row to remain dirty for later refresh")
+	if queueCount != 1 {
+		t.Fatalf("expected deferred summary refresh to enqueue one family key, got %d", queueCount)
 	}
 }
 
@@ -1677,8 +1680,8 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksOldAndNewFamiliesDirtyOnIdentity
 	}
 
 	rows, err := store.DB().QueryContext(ctx, `
-		SELECT key_kind, family_key, updated_at > COALESCE(processed_at, updated_at) AS is_dirty
-		FROM release_family_readiness_summaries
+		SELECT key_kind, family_key
+		FROM release_family_summary_refresh_queue
 		WHERE provider_id = 1
 		  AND newsgroup_id = $1
 		  AND (
@@ -1687,21 +1690,20 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksOldAndNewFamiliesDirtyOnIdentity
 		  )`, newsgroupID,
 	)
 	if err != nil {
-		t.Fatalf("query changed readiness rows: %v", err)
+		t.Fatalf("query changed refresh queue rows: %v", err)
 	}
 	defer rows.Close()
 
 	got := make(map[string]bool, 4)
 	for rows.Next() {
 		var keyKind, familyKey string
-		var isDirty bool
-		if err := rows.Scan(&keyKind, &familyKey, &isDirty); err != nil {
-			t.Fatalf("scan changed readiness row: %v", err)
+		if err := rows.Scan(&keyKind, &familyKey); err != nil {
+			t.Fatalf("scan changed refresh queue row: %v", err)
 		}
-		got[keyKind+":"+familyKey] = isDirty
+		got[keyKind+":"+familyKey] = true
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate changed readiness rows: %v", err)
+		t.Fatalf("iterate changed refresh queue rows: %v", err)
 	}
 
 	for _, key := range []string{
@@ -3300,31 +3302,34 @@ func TestRefreshBinaryStatsDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRe
 	}
 
 	var (
-		binaryCount     int
-		readinessBucket string
-		isDirty         bool
+		summaryCount int
+		queueCount   int
 	)
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT
-			binary_count,
-			readiness_bucket,
-			updated_at > COALESCE(processed_at, updated_at) AS is_dirty
+		SELECT COUNT(*)
 		FROM release_family_readiness_summaries
 		WHERE provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'deferred-refresh-family'`, newsgroupID,
-	).Scan(&binaryCount, &readinessBucket, &isDirty); err != nil {
-		t.Fatalf("query deferred refresh summary row: %v", err)
+	).Scan(&summaryCount); err != nil {
+		t.Fatalf("count deferred refresh summary rows: %v", err)
 	}
-	if binaryCount != 0 {
-		t.Fatalf("expected deferred refresh summary row to skip inline recompute, got binary_count=%d", binaryCount)
+	if summaryCount != 0 {
+		t.Fatalf("expected deferred refresh to avoid inline summary writes, got %d rows", summaryCount)
 	}
-	if readinessBucket != releaseReadinessStaleCleanupOnly {
-		t.Fatalf("expected deferred refresh summary placeholder bucket, got %q", readinessBucket)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-refresh-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count deferred refresh queue rows: %v", err)
 	}
-	if !isDirty {
-		t.Fatalf("expected deferred refresh summary row to remain dirty")
+	if queueCount != 1 {
+		t.Fatalf("expected deferred refresh to enqueue one family key, got %d", queueCount)
 	}
 }
 

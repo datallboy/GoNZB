@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"hash/fnv"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -104,52 +103,9 @@ func sortReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) {
 	})
 }
 
-func advisoryLockIDForReleaseFamilySummaryKey(key releaseFamilySummaryKey) int64 {
-	h := fnv.New64a()
-	_, _ = fmt.Fprintf(h, "%d|%d|%s|%s", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
-	return int64(h.Sum64() & 0x7fffffffffffffff)
-}
-
-func lockReleaseFamilySummaryKeys(ctx context.Context, runner sqlExecQueryer, keys []releaseFamilySummaryKey) error {
-	if runner == nil {
-		return fmt.Errorf("release family summary runner is required")
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-
-	normalized := make([]releaseFamilySummaryKey, 0, len(keys))
-	seen := make(map[releaseFamilySummaryKey]struct{}, len(keys))
-	for _, candidate := range keys {
-		key, ok := normalizeReleaseFamilySummaryKey(candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
-		if !ok {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		normalized = append(normalized, key)
-	}
-	if len(normalized) == 0 {
-		return nil
-	}
-	sortReleaseFamilySummaryKeys(normalized)
-
-	for _, key := range normalized {
-		if _, err := runner.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryLockIDForReleaseFamilySummaryKey(key)); err != nil {
-			return fmt.Errorf("lock release family summary key provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
-		}
-	}
-	return nil
-}
-
 func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFamilySummaryKey) error {
 	if tx == nil {
 		return fmt.Errorf("release family summary tx is required")
-	}
-	if err := lockReleaseFamilySummaryKeys(ctx, tx, []releaseFamilySummaryKey{key}); err != nil {
-		return err
 	}
 
 	whereClause := `
@@ -940,18 +896,6 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 	if len(summaries) == 0 {
 		return nil
 	}
-	keys := make([]releaseFamilySummaryKey, 0, len(summaries))
-	for _, row := range summaries {
-		keys = append(keys, releaseFamilySummaryKey{
-			ProviderID:  row.ProviderID,
-			NewsgroupID: row.NewsgroupID,
-			KeyKind:     row.KeyKind,
-			FamilyKey:   row.FamilyKey,
-		})
-	}
-	if err := lockReleaseFamilySummaryKeys(ctx, runner, keys); err != nil {
-		return err
-	}
 
 	for start := 0; start < len(summaries); start += releaseFamilySummaryMergeRowsMax {
 		end := start + releaseFamilySummaryMergeRowsMax
@@ -1067,9 +1011,7 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 	if len(normalized) == 0 {
 		return nil
 	}
-	if err := lockReleaseFamilySummaryKeys(ctx, runner, normalized); err != nil {
-		return err
-	}
+	sortReleaseFamilySummaryKeys(normalized)
 
 	for start := 0; start < len(normalized); start += releaseFamilyDirtyBatchSize {
 		end := start + releaseFamilyDirtyBatchSize
@@ -1077,60 +1019,6 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 			end = len(normalized)
 		}
 		batch := normalized[start:end]
-		values := make([]string, 0, len(batch))
-		args := make([]any, 0, len(batch)*5)
-		for i, key := range batch {
-			base := (i * 5) + 1
-			values = append(values, fmt.Sprintf(
-				"($%d,$%d,$%d,$%d,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$%d,0,0,TIMESTAMPTZ 'epoch',NOW())",
-				base, base+1, base+2, base+3, base+4,
-			))
-			args = append(args,
-				key.ProviderID,
-				key.NewsgroupID,
-				key.KeyKind,
-				key.FamilyKey,
-				releaseReadinessStaleCleanupOnly,
-			)
-		}
-
-		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO release_family_readiness_summaries (
-			provider_id,
-			newsgroup_id,
-			key_kind,
-			family_key,
-			source_release_key,
-			release_key,
-			release_name,
-			binary_count,
-			complete_binary_count,
-			complete_main_payload_binary_count,
-			incomplete_binary_count,
-			expected_file_count,
-			expected_archive_file_count,
-			has_expected_file_count,
-			has_expected_archive_file_count,
-			total_bytes,
-			earliest_posted_at,
-			dominant_family_kind,
-			dominant_file_name,
-			dominant_match_confidence,
-			readiness_bucket,
-			expected_file_coverage_pct,
-			archive_file_coverage_pct,
-			processed_at,
-			updated_at
-		)
-		VALUES %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-		SET processed_at = COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at),
-		    updated_at = NOW()
-		WHERE release_family_readiness_summaries.updated_at <= COALESCE(release_family_readiness_summaries.processed_at, release_family_readiness_summaries.updated_at)`,
-			strings.Join(values, ",")), args...); err != nil {
-			return fmt.Errorf("mark release family dirty batch count=%d: %w", len(batch), err)
-		}
-
 		queueValues := make([]string, 0, len(batch))
 		queueArgs := make([]any, 0, len(batch)*4)
 		for i, key := range batch {
