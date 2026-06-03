@@ -152,17 +152,5 @@ func evaluateIndexerMemoryGuard(status IndexerMemoryStatus, cfg IndexerMemoryGua
 			),
 		}
 	}
-	if cfg.MinSwapFreeBytes > 0 && status.SwapTotalBytes > 0 && status.SwapFreeBytes < cfg.MinSwapFreeBytes {
-		return supervisor.StageGateDecision{
-			Allowed: false,
-			Reason: fmt.Sprintf(
-				"host swap low: swap_free_bytes=%d threshold=%d available_bytes=%d available_percent=%.2f",
-				status.SwapFreeBytes,
-				cfg.MinSwapFreeBytes,
-				status.MemAvailableBytes,
-				status.MemAvailablePct,
-			),
-		}
-	}
 	return supervisor.StageGateDecision{Allowed: true}
 }

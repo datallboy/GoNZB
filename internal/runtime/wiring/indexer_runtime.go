@@ -109,6 +109,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	if err != nil {
 		return nil, err
 	}
+	if appCtx.DisableReleasePurgeArchivedSources {
+		runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled = false
+	}
 
 	var (
 		scrapeLatestSvc         *scrape.Service
@@ -283,7 +286,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	inspectMediaSvc := media.NewService(appCtx.PGIndexStore, workspaceManager, inspectMediaFetcher, commandRunner, appCtx.IndexerArchiveStore, appCtx.Logger, withInspectStage(runtimeCfg.Inspect, runtimeCfg.InspectMedia, stageOwner))
 	enrichPreDBSvc := predb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichPreDB)
 	enrichTMDBSvc := tmdb.NewService(appCtx.PGIndexStore, appCtx.Logger, runtimeCfg.EnrichTMDB)
-	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger)
+	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger, func(ctx context.Context) (int, error) {
+		return inspectpkg.CleanupStaleWorkspaceRoots(ctx, runtimeCfg.Inspect)
+	})
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{

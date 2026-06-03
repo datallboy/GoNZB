@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -19,12 +20,13 @@ type repository interface {
 }
 
 type Service struct {
-	repo repository
-	log  logger
+	repo             repository
+	log              logger
+	workspaceCleanup func(context.Context) (int, error)
 }
 
-func NewService(repo repository, log logger) *Service {
-	return &Service{repo: repo, log: log}
+func NewService(repo repository, log logger, workspaceCleanup func(context.Context) (int, error)) *Service {
+	return &Service{repo: repo, log: log, workspaceCleanup: workspaceCleanup}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -42,9 +44,20 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return nil, err
 	}
 	metrics := map[string]any{}
+	metrics["purged_inspect_workspaces"] = 0
+	if s.workspaceCleanup != nil {
+		cleaned, err := s.workspaceCleanup(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cleanup stale inspect workspaces: %w", err)
+		}
+		metrics["purged_inspect_workspaces"] = cleaned
+		if s.log != nil && cleaned > 0 {
+			s.log.Info("indexer maintenance: purged_inspect_workspaces=%d ttl=%s", cleaned, inspectpkg.WorkspaceStaleTTL)
+		}
+	}
 	if s.log != nil && out != nil {
 		s.log.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d backfilled_archive_snapshots=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d backfilled_archive_snapshots=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d purged_inspect_workspaces=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -60,6 +73,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			out.PurgedGroupingEvidence,
 			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
+			metrics["purged_inspect_workspaces"],
 		)
 	}
 	if out != nil {

@@ -27,7 +27,7 @@ func TestEvaluateIndexerMemoryGuardBlocksLowAvailableBytes(t *testing.T) {
 	}
 }
 
-func TestEvaluateIndexerMemoryGuardBlocksLowSwap(t *testing.T) {
+func TestEvaluateIndexerMemoryGuardAllowsLowSwapWhenMemoryHealthy(t *testing.T) {
 	decision := evaluateIndexerMemoryGuard(IndexerMemoryStatus{
 		Visible:           true,
 		MemTotalBytes:     16 * 1024,
@@ -39,11 +39,30 @@ func TestEvaluateIndexerMemoryGuardBlocksLowSwap(t *testing.T) {
 		Enabled:          true,
 		MinSwapFreeBytes: 1024,
 	})
-	if decision.Allowed {
-		t.Fatalf("expected low swap to block")
+	if !decision.Allowed {
+		t.Fatalf("expected low swap alone to be allowed, got %q", decision.Reason)
 	}
-	if !strings.Contains(decision.Reason, "swap_free_bytes") {
-		t.Fatalf("expected swap reason, got %q", decision.Reason)
+}
+
+func TestEvaluateIndexerMemoryGuardBlocksLowMemoryEvenWhenSwapIsAlsoLow(t *testing.T) {
+	decision := evaluateIndexerMemoryGuard(IndexerMemoryStatus{
+		Visible:           true,
+		MemTotalBytes:     16 * 1024,
+		MemAvailableBytes: 1024,
+		MemAvailablePct:   6.25,
+		SwapTotalBytes:    8 * 1024,
+		SwapFreeBytes:     128,
+	}, IndexerMemoryGuardConfig{
+		Enabled:             true,
+		MinAvailableBytes:   2048,
+		MinAvailablePercent: 10,
+		MinSwapFreeBytes:    1024,
+	})
+	if decision.Allowed {
+		t.Fatalf("expected low memory plus low swap to block")
+	}
+	if !strings.Contains(decision.Reason, "available_bytes") {
+		t.Fatalf("expected memory reason, got %q", decision.Reason)
 	}
 }
 

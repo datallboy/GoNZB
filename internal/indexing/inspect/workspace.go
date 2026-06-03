@@ -13,6 +13,8 @@ import (
 	"github.com/segmentio/ksuid"
 )
 
+const WorkspaceStaleTTL = 6 * time.Hour
+
 type WorkspaceManager struct {
 	opts Options
 }
@@ -40,6 +42,7 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 	if err := os.MkdirAll(stageDir, 0755); err != nil {
 		return nil, fmt.Errorf("create inspect workspace root %s: %w", stageDir, err)
 	}
+	_, _ = cleanupStaleWorkspaces(stageDir, WorkspaceStaleTTL)
 
 	dir := filepath.Join(stageDir, ksuid.New().String())
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -102,4 +105,88 @@ func (w *Workspace) Cleanup() error {
 		return nil
 	}
 	return os.RemoveAll(w.Dir)
+}
+
+func CleanupStaleWorkspaceRoots(ctx context.Context, opts Options) (int, error) {
+	cfg := DefaultOptions(opts)
+	roots := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, root := range []string{strings.TrimSpace(cfg.WorkDir), strings.TrimSpace(cfg.MemoryWorkDir)} {
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+
+	total := 0
+	for _, root := range roots {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		cleaned, err := cleanupWorkspaceRoot(root, WorkspaceStaleTTL)
+		if err != nil {
+			return total, err
+		}
+		total += cleaned
+	}
+	return total, nil
+}
+
+func cleanupWorkspaceRoot(root string, ttl time.Duration) (int, error) {
+	if strings.TrimSpace(root) == "" || ttl <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	total := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		cleaned, err := cleanupStaleWorkspaces(filepath.Join(root, entry.Name()), ttl)
+		if err != nil {
+			return total, err
+		}
+		total += cleaned
+	}
+	return total, nil
+}
+
+func cleanupStaleWorkspaces(stageDir string, ttl time.Duration) (int, error) {
+	if strings.TrimSpace(stageDir) == "" || ttl <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().Add(-ttl)
+	cleaned := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(stageDir, entry.Name()))
+		cleaned++
+	}
+	return cleaned, nil
 }

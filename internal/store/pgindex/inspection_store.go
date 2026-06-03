@@ -3127,7 +3127,7 @@ func inspectCandidateFilter(stageName string) (string, error) {
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp3' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.m4a' OR
 			(
-				abi.status = 'completed' AND (
+				COALESCE(jsonb_array_length(abi.summary_json->'archive_entries'), 0) > 0 AND (
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR

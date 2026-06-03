@@ -142,6 +142,46 @@ func TestWorkspaceManagerAutoBackendFallsBackToDiskWhenMemoryRootUnavailable(t *
 	}
 }
 
+func TestCleanupStaleWorkspaceRootsPurgesOldDirsAcrossRoots(t *testing.T) {
+	diskRoot := t.TempDir()
+	memRoot := t.TempDir()
+	oldDisk := filepath.Join(diskRoot, "inspect_archive", "old")
+	oldMem := filepath.Join(memRoot, "inspect_media", "old")
+	newDisk := filepath.Join(diskRoot, "inspect_archive", "new")
+	for _, dir := range []string{oldDisk, oldMem, newDisk} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	oldTime := time.Now().Add(-WorkspaceStaleTTL - time.Hour)
+	if err := os.Chtimes(oldDisk, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old disk: %v", err)
+	}
+	if err := os.Chtimes(oldMem, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old mem: %v", err)
+	}
+
+	cleaned, err := CleanupStaleWorkspaceRoots(context.Background(), Options{
+		WorkDir:       diskRoot,
+		MemoryWorkDir: memRoot,
+	})
+	if err != nil {
+		t.Fatalf("cleanup stale workspace roots: %v", err)
+	}
+	if cleaned != 2 {
+		t.Fatalf("expected 2 cleaned workspaces, got %d", cleaned)
+	}
+	if _, err := os.Stat(oldDisk); !os.IsNotExist(err) {
+		t.Fatalf("expected old disk workspace removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(oldMem); !os.IsNotExist(err) {
+		t.Fatalf("expected old mem workspace removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(newDisk); err != nil {
+		t.Fatalf("expected new disk workspace to remain: %v", err)
+	}
+}
+
 func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 	got := ExtractPasswordCandidates(
 		"Some.Release password:open-sesame",
