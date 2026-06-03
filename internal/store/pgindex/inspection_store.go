@@ -1691,8 +1691,14 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 	if in.PreferredPasswordID != nil && *in.PreferredPasswordID > 0 {
 		preferredPasswordID = *in.PreferredPasswordID
 	}
+	var adjustedAvailabilityValue any
+	adjustedTierValue := ""
+	if adjustedAvailability != nil {
+		adjustedAvailabilityValue = *adjustedAvailability
+		adjustedTierValue = adjustedTier
+	}
 
-	_, err = s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE releases
 		SET encrypted = COALESCE($2, encrypted),
 		    has_par2 = COALESCE($3, has_par2),
@@ -1718,9 +1724,11 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		    	WHEN jsonb_array_length($19::jsonb) > 0 THEN $19::jsonb
 		    	ELSE media_tags_json
 		    END,
-		    media_quality_score = GREATEST(media_quality_score, COALESCE($20, media_quality_score)),
-		    media_quality_tier = CASE WHEN $21 <> '' THEN $21 ELSE media_quality_tier END,
-		    metadata_updated_at = COALESCE($22, metadata_updated_at),
+		    availability_score = COALESCE($20, availability_score),
+		    availability_tier = CASE WHEN $21 <> '' THEN $21 ELSE availability_tier END,
+		    media_quality_score = GREATEST(media_quality_score, COALESCE($22, media_quality_score)),
+		    media_quality_tier = CASE WHEN $23 <> '' THEN $23 ELSE media_quality_tier END,
+		    metadata_updated_at = COALESCE($24, metadata_updated_at),
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		in.ReleaseID,
@@ -1742,6 +1750,8 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		strings.TrimSpace(in.PrimaryAudioCodec),
 		string(subtitlesJSON),
 		string(mediaTagsJSON),
+		adjustedAvailabilityValue,
+		strings.TrimSpace(adjustedTierValue),
 		nullableFloat64(in.MediaQualityScore),
 		strings.TrimSpace(in.MediaQualityTier),
 		metadataUpdated,
@@ -1749,20 +1759,8 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 	if err != nil {
 		return fmt.Errorf("apply release inspection update %s: %w", in.ReleaseID, err)
 	}
-
-	if adjustedAvailability != nil {
-		if _, err := s.db.ExecContext(ctx, `
-			UPDATE releases
-			SET availability_score = $2,
-			    availability_tier = $3,
-			    updated_at = NOW()
-			WHERE release_id = $1`,
-			in.ReleaseID,
-			*adjustedAvailability,
-			adjustedTier,
-		); err != nil {
-			return fmt.Errorf("apply availability adjustment %s: %w", in.ReleaseID, err)
-		}
+	if rows, rowsErr := res.RowsAffected(); rowsErr == nil && rows == 0 {
+		return fmt.Errorf("%w: %s", ErrReleaseNotFound, in.ReleaseID)
 	}
 
 	if err := s.applyDerivedInspectionTitleUpdate(ctx, in.ReleaseID, in.MetadataUpdatedAt); err != nil {
@@ -1857,7 +1855,7 @@ func (s *Store) loadReleaseTitleInputs(ctx context.Context, releaseID string) (s
 		releaseID,
 	).Scan(&sourceTitle, &currentTitleFrom, &currentConfidence); err != nil {
 		if err == sql.ErrNoRows {
-			return "", "", 0, nil, fmt.Errorf("release %s not found for title inputs", releaseID)
+			return "", "", 0, nil, fmt.Errorf("%w: %s", ErrReleaseNotFound, releaseID)
 		}
 		return "", "", 0, nil, fmt.Errorf("load release title inputs %s: %w", releaseID, err)
 	}

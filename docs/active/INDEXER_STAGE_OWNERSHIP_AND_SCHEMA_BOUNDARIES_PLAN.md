@@ -94,6 +94,21 @@ Validation:
 - inspect stages tolerate already-deleted binaries safely
 - inspection does not need upstream fact mutations to complete
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- tightened `ApplyReleaseInspectionUpdate` so inspection release rollups happen through one narrow `releases` update instead of multiple row writes
+- made stale-release handling consistent by returning `ErrReleaseNotFound` from the remaining title-input path used by inspection rollups
+- kept inspection runtime/progress ownership in `binary_inspections` rather than reintroducing progress flags on release or binary rows
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/inspect/archive ./internal/indexing/inspect/media ./internal/indexing/inspect/nfo ./internal/indexing/inspect/par2 ./internal/indexing/inspect/password`
+- added regression coverage that missing releases now surface as `ErrReleaseNotFound` for inspection rollup updates
+
 ### Chunk 3: durable release catalog completion
 
 Goal:
