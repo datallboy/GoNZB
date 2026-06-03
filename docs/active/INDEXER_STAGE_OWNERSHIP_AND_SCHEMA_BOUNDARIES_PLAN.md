@@ -57,6 +57,26 @@ Validation:
 - no multi-stage summary recomputation paths remain
 - release and assemble can run concurrently without reintroducing deadlock or shared-memory pressure on summary writes
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- moved release candidate ack state out of `release_family_readiness_summaries` into `release_family_readiness_acks`
+- updated release candidate selection and dashboard backlog counting to use the new ack surface
+- updated maintenance cleanup so non-pending readiness residue is pruned against ack state instead of summary-row write-back
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/release ./internal/indexing/maintenance`
+- added regression coverage that release ack now records ack state without mutating the summary row
+
+Notes:
+
+- `release_summary_refresh` remains the only heavy writer of the readiness materialization table
+- dirty-key queue fan-in remains unchanged
+
 ### Chunk 2: inspection boundary cleanup
 
 Goal:

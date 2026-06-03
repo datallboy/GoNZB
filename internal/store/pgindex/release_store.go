@@ -214,7 +214,12 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 				s.family_key,
 				s.updated_at
 			FROM release_family_readiness_summaries s
-			WHERE s.updated_at > COALESCE(s.processed_at, s.updated_at)
+			LEFT JOIN release_family_readiness_acks a
+			  ON a.provider_id = s.provider_id
+			 AND a.newsgroup_id = s.newsgroup_id
+			 AND a.key_kind = s.key_kind
+			 AND a.family_key = s.family_key
+			WHERE s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')
 			ORDER BY
 				CASE
 					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 0
@@ -431,18 +436,18 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 			   AND COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) > 1
 			   AND (MAX(b.posted_at) - MIN(b.posted_at)) <= INTERVAL '24 hours'
 			   AND MAX(b.updated_at) > COALESCE((
-					SELECT MIN(s.processed_at)
-					FROM release_family_readiness_summaries s
-					WHERE s.provider_id = b.provider_id
+					SELECT MIN(a.processed_at)
+					FROM release_family_readiness_acks a
+					WHERE a.provider_id = b.provider_id
 					  AND EXISTS (
 					  	SELECT 1
 					  	FROM binaries bx
 					  	WHERE bx.provider_id = b.provider_id
 					  	  AND bx.file_set_key = b.file_set_key
-					  	  AND bx.newsgroup_id = s.newsgroup_id
+					  	  AND bx.newsgroup_id = a.newsgroup_id
 					  	  AND (
-					  	  	(s.key_kind = 'release_family' AND s.family_key = bx.release_family_key) OR
-					  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(bx.base_stem)))
+					  	  	(a.key_kind = 'release_family' AND a.family_key = bx.release_family_key) OR
+					  	  	(a.key_kind = 'base_stem' AND a.family_key = LOWER(BTRIM(bx.base_stem)))
 					  	  )
 					  )
 				), TIMESTAMPTZ 'epoch')
@@ -1086,13 +1091,30 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 
 		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 			if _, err := db.ExecContext(ctx, `
-				UPDATE release_family_readiness_summaries s
-				SET processed_at = s.updated_at
-				FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-				WHERE s.provider_id = v.provider_id
-				  AND s.newsgroup_id = v.newsgroup_id
-				  AND s.key_kind = v.key_kind
-				  AND s.family_key = v.family_key`,
+				INSERT INTO release_family_readiness_acks (
+					provider_id,
+					newsgroup_id,
+					key_kind,
+					family_key,
+					processed_at,
+					updated_at
+				)
+				SELECT
+					s.provider_id,
+					s.newsgroup_id,
+					s.key_kind,
+					s.family_key,
+					s.updated_at,
+					NOW()
+				FROM release_family_readiness_summaries s
+				JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+				  ON s.provider_id = v.provider_id
+				 AND s.newsgroup_id = v.newsgroup_id
+				 AND s.key_kind = v.key_kind
+				 AND s.family_key = v.family_key
+				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+				SET processed_at = GREATEST(release_family_readiness_acks.processed_at, EXCLUDED.processed_at),
+				    updated_at = NOW()`,
 				args...,
 			); err != nil {
 				return err
@@ -1114,22 +1136,39 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 
 		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 			_, err := db.ExecContext(ctx, `
-				UPDATE release_family_readiness_summaries s
-				SET processed_at = s.updated_at
-				FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
-				WHERE s.provider_id = v.provider_id
-				  AND EXISTS (
+				INSERT INTO release_family_readiness_acks (
+					provider_id,
+					newsgroup_id,
+					key_kind,
+					family_key,
+					processed_at,
+					updated_at
+				)
+				SELECT
+					s.provider_id,
+					s.newsgroup_id,
+					s.key_kind,
+					s.family_key,
+					s.updated_at,
+					NOW()
+				FROM release_family_readiness_summaries s
+				JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
+				  ON s.provider_id = v.provider_id
+				WHERE EXISTS (
 				  	SELECT 1
 				  	FROM binaries b
 				  	WHERE b.provider_id = v.provider_id
 					  AND b.file_set_key = v.file_set_key
 					  AND BTRIM(b.file_set_key) <> ''
-					  AND b.newsgroup_id = s.newsgroup_id
+				  	  AND b.newsgroup_id = s.newsgroup_id
 				  	  AND (
 				  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
 				  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
 				  	  )
-				  )`,
+				  )
+				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+				SET processed_at = GREATEST(release_family_readiness_acks.processed_at, EXCLUDED.processed_at),
+				    updated_at = NOW()`,
 				args...,
 			)
 			return err

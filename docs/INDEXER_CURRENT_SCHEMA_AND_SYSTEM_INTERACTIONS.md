@@ -148,7 +148,8 @@ This matrix is the schema contract for current and near-term code changes.
 | `binary_par2_targets` | derived/evidence | `inspect_par2` | none | PAR2 target mapping owned by par2 inspection. |
 | `binary_password_candidates` and similar password evidence | derived/evidence | `inspect_password` | none | Password evidence owned by password inspection. |
 | release-family refresh queue tables | queue/work | `release_summary_refresh` | any stage may enqueue dirty keys through repository helpers | Queue fan-in is allowed; summary materialization is not. |
-| `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | `release` for narrow ack/update only where explicitly retained | Shared hot table; one heavy writer only. |
+| `release_family_readiness_acks` | queue/work | `release` | none | Release-owned ack state for consumed readiness keys. |
+| `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | none | Shared hot table; one heavy writer only. |
 | `releases` | durable catalog fact | `release` | `inspect_*`, enrichment, overrides, archive tail for explicit catalog/archive fields only | Permanent release catalog header. |
 | `release_catalog_files` | durable catalog fact | `release` | archive-maintenance/backfill only | Durable UI/detail file metadata. |
 | `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. |
@@ -306,7 +307,7 @@ Allowed writes:
 - `release_catalog_files`
 - `release_files`
 - `release_newsgroups`
-- narrow readiness ack/update state explicitly retained on `release_family_readiness_summaries`
+- `release_family_readiness_acks`
 
 Not allowed:
 
@@ -540,7 +541,7 @@ Actions:
 
 - remove any remaining multi-stage bulk summary recomputation
 - keep dirty-key queue fan-in, not direct summary materialization
-- narrow or remove release-side summary ack writes where possible
+- move release-side readiness ack state out of `release_family_readiness_summaries` and into stage-owned ack/work state
 
 ### Phase 2: finish the durable release catalog boundary
 
