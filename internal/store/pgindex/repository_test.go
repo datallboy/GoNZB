@@ -6638,6 +6638,178 @@ func TestIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
 	}
 }
 
+func TestClaimReleasePurgeCandidatesRequiresDurableCatalogAndCompletedMediaInspect(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("purgeclaim%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  777001,
+		FileName:  fmt.Sprintf("%s.mkv", token),
+		SizeBytes: 1_024,
+		FileIndex: 1,
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binaries (
+			id, provider_id, newsgroup_id, source_release_key, release_family_key, release_key,
+			family_kind, base_stem, is_auxiliary, release_name, binary_name, file_name,
+			posted_at, total_parts, observed_parts, total_bytes, match_confidence, match_status,
+			created_at, updated_at
+		) VALUES (
+			$1, 1, 1, $2, $2, $2,
+			'release_family', $2, FALSE, $2, $2, $2,
+			NOW(), 1, 1, 1024, 1.0, 'exact',
+			NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING`, int64(777001), token,
+	); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	candidates, err := store.ClaimReleasePurgeCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim purge candidates without inspection: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no purge candidates before inspect_media completion, got %+v", candidates)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, finished_at, created_at, updated_at)
+		VALUES ('inspect_media', $1, $2, 'completed', NOW(), NOW(), NOW())`,
+		int64(777001), releaseID,
+	); err != nil {
+		t.Fatalf("seed media inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_catalog_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("delete release catalog files: %v", err)
+	}
+
+	candidates, err = store.ClaimReleasePurgeCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim purge candidates without catalog files: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no purge candidates without durable catalog files, got %+v", candidates)
+	}
+}
+
+func TestPurgeArchivedReleaseSourcesPreservesSharedBinaryLineage(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("sharedpurge%d", time.Now().UnixNano())
+	releaseOne, recordOne := seedVisibilityTestRelease(t, store, token+"a", nil)
+	releaseTwo, recordTwo := seedVisibilityTestRelease(t, store, token+"b", nil)
+
+	const sharedBinaryID int64 = 888001
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binaries (
+			id, provider_id, newsgroup_id, source_release_key, release_family_key, release_key,
+			family_kind, base_stem, is_auxiliary, release_name, binary_name, file_name,
+			posted_at, total_parts, observed_parts, total_bytes, match_confidence, match_status,
+			created_at, updated_at
+		) VALUES (
+			$1, 1, 1, $2, $2, $2,
+			'release_family', $2, FALSE, $2, $2, $2,
+			NOW(), 1, 1, 4096, 1.0, 'exact',
+			NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING`, sharedBinaryID, token,
+	); err != nil {
+		t.Fatalf("seed shared binary: %v", err)
+	}
+
+	for _, item := range []struct {
+		releaseID string
+		postedAt  *time.Time
+	}{
+		{releaseID: releaseOne, postedAt: recordOne.PostedAt},
+		{releaseID: releaseTwo, postedAt: recordTwo.PostedAt},
+	} {
+		if err := store.ReplaceReleaseFiles(ctx, item.releaseID, []ReleaseFileRecord{{
+			BinaryID:  sharedBinaryID,
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 4_096,
+			FileIndex: 1,
+			PostedAt:  item.postedAt,
+		}}); err != nil {
+			t.Fatalf("replace release files %s: %v", item.releaseID, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, finished_at, created_at, updated_at)
+			VALUES ('inspect_media', $1, $2, 'completed', NOW(), NOW(), NOW())
+			ON CONFLICT DO NOTHING`, sharedBinaryID, item.releaseID,
+		); err != nil {
+			t.Fatalf("seed media inspection %s: %v", item.releaseID, err)
+		}
+	}
+
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseOne,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseOne),
+		ContentHashSHA256: fmt.Sprintf("hash-%s-a", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release one archive stored: %v", err)
+	}
+
+	result, err := store.PurgeArchivedReleaseSources(ctx, releaseOne)
+	if err != nil {
+		t.Fatalf("purge archived release one: %v", err)
+	}
+	if result.SkippedSharedBinaryRows != 1 {
+		t.Fatalf("expected 1 skipped shared binary row, got %+v", result)
+	}
+	if result.DeletedRowsByTable["binaries"] != 0 {
+		t.Fatalf("expected shared binary to be preserved, got %+v", result.DeletedRowsByTable)
+	}
+
+	var binaryCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binaries WHERE id = $1`, sharedBinaryID).Scan(&binaryCount); err != nil {
+		t.Fatalf("count shared binary: %v", err)
+	}
+	if binaryCount != 1 {
+		t.Fatalf("expected shared binary to remain, got %d", binaryCount)
+	}
+
+	var releaseTwoFiles int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_files WHERE release_id = $1`, releaseTwo).Scan(&releaseTwoFiles); err != nil {
+		t.Fatalf("count release two files: %v", err)
+	}
+	if releaseTwoFiles != 1 {
+		t.Fatalf("expected other active release to retain live file linkage, got %d", releaseTwoFiles)
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseOne)
+	if err != nil {
+		t.Fatalf("get purged release one detail: %v", err)
+	}
+	if detail == nil || len(detail.Files) != 1 {
+		t.Fatalf("expected durable purged detail for release one, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesWeakFragmentRows(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

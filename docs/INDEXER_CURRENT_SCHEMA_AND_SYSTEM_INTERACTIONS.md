@@ -479,9 +479,10 @@ Purge exists to free database space by removing temporary source lineage after:
 
 A release is purge-eligible only when all of the following are true:
 
-- the release is present in durable catalog tables
-- archive state says the NZB is durable and available
-- required inspection gates for archive/purge are satisfied
+- a `releases` row still exists for the release
+- at least one `release_catalog_files` row still exists for the release
+- archive state says the NZB is durable and available, including a non-blank archive object key
+- required inspection gates for archive/purge are satisfied, currently including a completed `inspect_media`
 - no earlier stage still depends on live source lineage for that release
 - purge state has been explicitly recorded as eligible or pending
 
@@ -499,6 +500,19 @@ Purge owns deletion of temporary source lineage and heavy build surfaces, includ
 - transitional release-source bridge tables where durable replacements now exist
 
 Exact delete scope must continue to honor shared-lineage safety. If a row is still referenced by another non-purge-eligible release, purge must not delete it.
+
+Current delete order:
+
+1. lock and validate `release_archive_state`
+2. compute purgeable lineage binaries that are not shared with another non-purged release
+3. delete binary-owned evidence/runtime rows by deleting the owning `binaries` rows
+4. delete release-scoped transitional rows:
+   - `release_files`
+   - `release_newsgroups`
+   - `nzb_cache`
+5. delete `article_header_ingest_payloads` and `article_headers` only when no surviving `binary_parts` rows still reference them
+6. delete `release_archive_lineage_*` tracking rows
+7. mark `release_archive_state.archive_status = 'purged'`
 
 ### What purge must preserve
 
@@ -528,7 +542,6 @@ To keep purge from becoming a new contention source:
 These are accepted transitional debts, not permanent design goals.
 
 - `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
-- `release_family_readiness_summaries` still accepts narrow ack/update writes from `release`
 - `release_files`, `release_archive_detail_*`, and `nzb_cache` still exist as transitional compatibility surfaces
 - some inspection/refinement flows still reach across boundaries more than the target model intends
 

@@ -158,6 +158,22 @@ Validation:
 - purge deletes only rows that are no longer needed by any non-purged release
 - purge does not break release detail, download, or enrichment behavior
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- encoded purge preflight checks directly in the repository path so purge now requires a durable archive object key, a surviving `releases` row, surviving `release_catalog_files`, and completed `inspect_media`
+- tightened purge candidate claiming to only surface releases that already satisfy the durable-catalog and completed-inspection contract
+- documented and preserved the delete order so purge remains terminal cleanup of source lineage while leaving durable catalog state intact
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/releasepurge`
+- added regression coverage that purge candidates are rejected without durable catalog files or completed `inspect_media`
+- added regression coverage that shared binary lineage is preserved for another active release while the purged release still retains durable detail state
+
 ### Chunk 5: transitional surface reduction
 
 Goal:
