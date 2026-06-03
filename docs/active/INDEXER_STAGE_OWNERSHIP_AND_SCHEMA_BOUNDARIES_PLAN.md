@@ -126,6 +126,21 @@ Validation:
 - archived and purged releases remain enrichable and viewable
 - release detail hydration does not require binary/article lineage for standard UI paths
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- moved remaining catalog/admin file detail reads to anchor on `release_catalog_files` instead of `release_files`
+- kept live binary linkage optional by resolving `release_files.binary_id` only when present for article drilldown and binary-backed detail fields
+- preserved post-purge admin/public detail hydration from durable catalog rows while allowing live article lists to collapse to empty safely after purge
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex`
+- existing purge-survival regression coverage now exercises catalog and admin file/detail reads through `release_catalog_files`
+
 ### Chunk 4: purge contract enforcement
 
 Goal:

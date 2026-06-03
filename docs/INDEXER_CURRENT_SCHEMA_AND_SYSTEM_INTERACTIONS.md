@@ -320,6 +320,11 @@ Rationale:
 
 - release consumes readiness and writes durable catalog state
 
+Current boundary note:
+
+- user-facing and admin file/detail reads should anchor on `release_catalog_files`
+- `release_files` remains a transitional live-lineage bridge for binary/article drilldown and purge-time source cleanup only
+
 ### `release_generate_nzb`
 
 Allowed reads:

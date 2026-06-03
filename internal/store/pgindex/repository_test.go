@@ -5693,10 +5693,14 @@ func TestCatalogReleaseFileReadsTolerateNullBinaryID(t *testing.T) {
 	}
 
 	var fileID int64
-	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM release_files WHERE release_id = $1 LIMIT 1`, releaseID).Scan(&fileID); err != nil {
-		t.Fatalf("lookup release file id: %v", err)
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM release_catalog_files WHERE release_id = $1 LIMIT 1`, releaseID).Scan(&fileID); err != nil {
+		t.Fatalf("lookup release catalog file id: %v", err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `UPDATE release_files SET binary_id = NULL WHERE id = $1`, fileID); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE release_files
+		SET binary_id = NULL
+		WHERE release_id = $1`, releaseID,
+	); err != nil {
 		t.Fatalf("null release file binary id: %v", err)
 	}
 
