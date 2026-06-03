@@ -3,7 +3,6 @@ package media
 import (
 	"context"
 	"fmt"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -542,7 +541,7 @@ func (s *Service) persistArchivePreview(ctx context.Context, candidate pgindex.B
 	if len(previewBytes) == 0 {
 		return nil
 	}
-	objectKey := previewObjectKey(candidate.ProviderID, candidate.ReleaseID, contentType)
+	objectKey := inspectpkg.PreviewObjectKey(candidate.ProviderID, candidate.ReleaseID, contentType)
 	if err := s.store.SaveObjectAtomically(objectKey, previewBytes); err != nil {
 		return err
 	}
@@ -588,19 +587,6 @@ func (s *Service) generatePreview(ctx context.Context, candidate pgindex.BinaryI
 		}
 	}
 	return nil, "", "", nil
-}
-
-func previewObjectKey(providerID int64, releaseID, contentType string) string {
-	ext := ".jpg"
-	switch strings.TrimSpace(contentType) {
-	case "image/png":
-		ext = ".png"
-	case "image/webp":
-		ext = ".webp"
-	case "image/gif":
-		ext = ".gif"
-	}
-	return path.Join("releases", fmt.Sprintf("%d", providerID), strings.TrimSpace(releaseID), "preview"+ext)
 }
 
 func normalizeMatch(v string) string {
