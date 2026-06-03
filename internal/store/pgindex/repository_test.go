@@ -5661,6 +5661,59 @@ func TestCompleteBinaryInspectionToleratesDeletedBinaryWithExistingRow(t *testin
 	}
 }
 
+func TestReplaceInspectionArtifactsToleratesDeletedBinary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      1,
+		SourceReleaseKey: "artifact-stale-source",
+		ReleaseFamilyKey: "artifact-stale-family",
+		ReleaseKey:       "artifact-stale-family",
+		ReleaseName:      "Artifact Stale Family",
+		BinaryKey:        "artifact-stale-binary",
+		BinaryName:       "artifact-stale-binary",
+		FileName:         "artifact-stale.mkv",
+		FileIndex:        1,
+		TotalParts:       2,
+		MatchConfidence:  0.9,
+		MatchStatus:      "identified",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("delete binary: %v", err)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_media", binaryID, []BinaryInspectionArtifactRecord{{
+		ArtifactRole: "preview",
+		ArtifactName: "screen0001.jpg",
+		ArtifactPath: "Screens/screen0001.jpg",
+		MIMEType:     "image/jpeg",
+		SourceKind:   "archive_image",
+	}}); err != nil {
+		t.Fatalf("replace binary inspection artifacts after delete: %v", err)
+	}
+
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{{
+		StreamIndex: 0,
+		StreamType:  "video",
+		CodecName:   "h264",
+	}}); err != nil {
+		t.Fatalf("replace binary media streams after delete: %v", err)
+	}
+
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{{
+		EntryName: "Screens/screen0001.jpg",
+		MediaType: "image/jpeg",
+	}}); err != nil {
+		t.Fatalf("replace binary archive entries after delete: %v", err)
+	}
+}
+
 func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
