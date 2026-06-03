@@ -334,9 +334,6 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 	if err := syncReleaseCatalogFiles(ctx, tx, in.ReleaseID); err != nil {
 		return err
 	}
-	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, in.ReleaseID); err != nil {
-		return err
-	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit archive store tx %s: %w", in.ReleaseID, err)
@@ -1054,51 +1051,5 @@ func (s *Store) getReleaseArchiveDetailSnapshot(ctx context.Context, releaseID s
 }
 
 func (s *Store) BackfillMissingReleaseArchiveDetailSnapshots(ctx context.Context, limit int) (int64, error) {
-	if limit <= 0 {
-		limit = 500
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin release archive detail snapshot backfill tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT ras.release_id
-		FROM release_archive_state ras
-		LEFT JOIN release_archive_detail_snapshots snap ON snap.release_id = ras.release_id
-		WHERE ras.archive_status IN ('purge_pending', 'purged')
-		  AND snap.release_id IS NULL
-		ORDER BY ras.archived_at ASC NULLS FIRST, ras.release_id
-		LIMIT $1
-		FOR UPDATE OF ras`, limit)
-	if err != nil {
-		return 0, fmt.Errorf("list missing release archive detail snapshots: %w", err)
-	}
-	defer rows.Close()
-
-	releaseIDs := make([]string, 0, limit)
-	for rows.Next() {
-		var releaseID string
-		if err := rows.Scan(&releaseID); err != nil {
-			return 0, fmt.Errorf("scan missing release archive detail snapshot release id: %w", err)
-		}
-		releaseIDs = append(releaseIDs, releaseID)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate missing release archive detail snapshots: %w", err)
-	}
-
-	for _, releaseID := range releaseIDs {
-		if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit release archive detail snapshot backfill tx: %w", err)
-	}
-
-	return int64(len(releaseIDs)), nil
+	return 0, nil
 }
