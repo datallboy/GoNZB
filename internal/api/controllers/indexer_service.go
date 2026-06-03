@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -358,7 +359,26 @@ func (s *runtimeIndexerService) GetReleasePreview(ctx context.Context, releaseID
 	if err != nil {
 		return nil, "", err
 	}
-	return reader, strings.TrimSpace(state.PreviewContentType), nil
+	return reader, inferPreviewContentType(strings.TrimSpace(state.PreviewContentType), state.PreviewObjectKey), nil
+}
+
+func inferPreviewContentType(contentType, objectKey string) string {
+	contentType = strings.TrimSpace(contentType)
+	if contentType != "" {
+		return contentType
+	}
+	switch strings.ToLower(strings.TrimSpace(filepath.Ext(objectKey))) {
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".jpeg", ".jpg":
+		return "image/jpeg"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.ReleaseReadyPolicy {
