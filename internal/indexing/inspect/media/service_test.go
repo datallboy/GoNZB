@@ -142,7 +142,6 @@ type fakeMediaRepository struct {
 	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	mediaStreams   []pgindex.BinaryMediaStreamRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
-	previewKey     string
 }
 
 func (f *fakeMediaRepository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
@@ -178,11 +177,6 @@ func (f *fakeMediaRepository) ReplaceBinaryMediaStreams(_ context.Context, _ int
 
 func (f *fakeMediaRepository) ApplyReleaseInspectionUpdate(_ context.Context, in pgindex.ReleaseInspectionUpdate) error {
 	f.releaseUpdates = append(f.releaseUpdates, in)
-	return nil
-}
-
-func (f *fakeMediaRepository) SetReleaseArchivePreview(_ context.Context, _ string, objectKey, _ string, _ string) error {
-	f.previewKey = objectKey
 	return nil
 }
 

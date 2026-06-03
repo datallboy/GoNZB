@@ -225,10 +225,6 @@ func (f *fakeArchiveRepository) ApplyReleaseInspectionUpdate(_ context.Context, 
 	return nil
 }
 
-func (f *fakeArchiveRepository) SetReleaseArchivePreview(context.Context, string, string, string, string) error {
-	return nil
-}
-
 func (f *fakeArchiveRepository) ListCatalogReleaseFiles(context.Context, string) ([]pgindex.CatalogReleaseFile, error) {
 	return f.files, nil
 }

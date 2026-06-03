@@ -30,12 +30,7 @@ type repository interface {
 	ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []pgindex.BinaryArchiveEntryRecord) error
 	UpsertReleasePasswordCandidate(ctx context.Context, in pgindex.ReleasePasswordCandidateRecord) (int64, error)
 	ApplyReleaseInspectionUpdate(ctx context.Context, in pgindex.ReleaseInspectionUpdate) error
-	SetReleaseArchivePreview(ctx context.Context, releaseID, objectKey, contentType, sourceKind string) error
 	inspectpkg.CatalogReader
-}
-
-type blobStore interface {
-	SaveObjectAtomically(key string, data []byte) error
 }
 
 type Service struct {
@@ -43,18 +38,16 @@ type Service struct {
 	workspace *inspectpkg.WorkspaceManager
 	fetcher   inspectpkg.ArticleFetcher
 	runner    inspectpkg.CommandRunner
-	store     blobStore
 	log       logger
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, store blobStore, log logger, opts inspectpkg.Options) *Service {
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, _ any, log logger, opts inspectpkg.Options) *Service {
 	return &Service{
 		repo:      repo,
 		workspace: workspace,
 		fetcher:   fetcher,
 		runner:    runner,
-		store:     store,
 		log:       log,
 		opts:      inspectpkg.DefaultOptions(opts),
 	}
@@ -396,12 +389,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		materializedBytes += probe.MaterializedBytes
 	}
 	if probe != nil {
-		if err := s.persistArchivePreview(ctx, candidate, probe.EntryNames, workspace.Dir, summary); err != nil && s.log != nil {
-			s.log.Warn("inspect_archive: preview persistence skipped binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" {
 		if isRecoverableArchiveInspectionError(fmt.Errorf("%s", probe.ProbeError)) {
@@ -508,52 +498,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 	return nil
-}
-
-func (s *Service) persistArchivePreview(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, archiveEntries []string, workspaceDir string, summary map[string]any) error {
-	if s.store == nil || s.repo == nil || s.fetcher == nil || s.runner == nil {
-		return nil
-	}
-	previewBytes, contentType, sourceKind, err := s.generatePreview(ctx, candidate, archiveEntries, workspaceDir)
-	if err != nil {
-		return err
-	}
-	if len(previewBytes) == 0 {
-		return nil
-	}
-	objectKey := inspectpkg.PreviewObjectKey(candidate.ProviderID, candidate.ReleaseID, contentType)
-	if err := s.store.SaveObjectAtomically(objectKey, previewBytes); err != nil {
-		return err
-	}
-	if err := s.repo.SetReleaseArchivePreview(ctx, candidate.ReleaseID, objectKey, contentType, sourceKind); err != nil {
-		return err
-	}
-	summary["preview_object_key"] = objectKey
-	summary["preview_source_kind"] = sourceKind
-	summary["preview_content_type"] = contentType
-	return nil
-}
-
-func (s *Service) generatePreview(ctx context.Context, candidate pgindex.BinaryInspectionCandidate, archiveEntries []string, workspaceDir string) ([]byte, string, string, error) {
-	imageEntry := inspectpkg.BestPreviewImageEntry(archiveEntries)
-	if imageEntry != "" {
-		data, mimeType, err := inspectpkg.MaterializeArchivePreviewImage(ctx, s.repo, s.fetcher, s.runner, candidate, imageEntry, workspaceDir, s.opts, s.log)
-		if err == nil && len(data) > 0 {
-			return data, mimeType, "archive_image", nil
-		}
-	}
-	if strings.TrimSpace(s.opts.FFmpegPath) == "" {
-		return nil, "", "", nil
-	}
-	mediaEntry := inspectpkg.BestMediaEntry(archiveEntries)
-	if mediaEntry == "" || !inspectpkg.IsVideoFile(mediaEntry) {
-		return nil, "", "", nil
-	}
-	data, err := inspectpkg.MaterializeArchiveVideoThumbnail(ctx, s.repo, s.fetcher, s.runner, candidate, mediaEntry, workspaceDir, s.opts, s.log)
-	if err == nil && len(data) > 0 {
-		return data, "image/jpeg", "ffmpeg_archive", nil
-	}
-	return nil, "", "", nil
 }
 
 func isRecoverableArchiveInspectionError(err error) bool {
