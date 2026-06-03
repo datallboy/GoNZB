@@ -13,6 +13,8 @@ type Context struct {
 	Config          *config.Config
 	Logger          *logger.Logger
 
+	DisableReleasePurgeArchivedSources bool
+
 	// High-level interfaces for services to use
 	NNTP                NNTPManager
 	Aggregator          IndexerAggregator

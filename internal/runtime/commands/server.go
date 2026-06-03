@@ -41,6 +41,10 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	if err := telemetry.ValidateStartupReadiness(startupCtx, appCtx); err != nil {
 		appCtx.Logger.Warn("%v", err)
 	}
+	if opts.DisableReleasePurgeArchivedSources {
+		appCtx.DisableReleasePurgeArchivedSources = true
+		appCtx.Logger.Info("server mode will not run release_purge_archived_sources stage")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
