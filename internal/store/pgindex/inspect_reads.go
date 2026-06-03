@@ -1143,8 +1143,13 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE updated_at > COALESCE(processed_at, updated_at)`).Scan(&count); err != nil {
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil

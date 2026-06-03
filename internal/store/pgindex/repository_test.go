@@ -1421,12 +1421,17 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE provider_id = 1
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'test-release-family'
-		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
+		  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query release summary queue state: %v", err)
 	}
@@ -2102,11 +2107,16 @@ func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(
 	var pending int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE provider_id = 1
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.provider_id = 1
 		  AND newsgroup_id IN ($1, $2)
 		  AND family_key IN ($3, $4)
-		  AND updated_at > COALESCE(processed_at, TIMESTAMPTZ 'epoch')`,
+		  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`,
 		groupAID, groupBID, familyA, familyB,
 	).Scan(&pending); err != nil {
 		t.Fatalf("count pending summaries after ack: %v", err)
@@ -2127,6 +2137,70 @@ func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
 		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
+func TestAckReleaseCandidateStoresAckWithoutMutatingSummaryRow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.ack.table.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("ack-family-%d", time.Now().UnixNano())
+	updatedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	processedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES ($1, $2, 'release_family', $3, '', '', '', 1, 1, 1, 0, 1, true, 100, NOW(), 'actionable', 100, $4, $5)`,
+		1, newsgroupID, family, updatedAt, processedAt,
+	); err != nil {
+		t.Fatalf("seed release summary row: %v", err)
+	}
+
+	if err := store.AckReleaseCandidate(ctx, 1, newsgroupID, "release_family", family); err != nil {
+		t.Fatalf("ack release candidate: %v", err)
+	}
+
+	var summaryProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT processed_at
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID, family,
+	).Scan(&summaryProcessedAt); err != nil {
+		t.Fatalf("query summary processed_at: %v", err)
+	}
+	if !summaryProcessedAt.Equal(processedAt) {
+		t.Fatalf("expected summary processed_at unchanged at %s, got %s", processedAt, summaryProcessedAt)
+	}
+
+	var ackProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT processed_at
+		FROM release_family_readiness_acks
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID, family,
+	).Scan(&ackProcessedAt); err != nil {
+		t.Fatalf("query ack processed_at: %v", err)
+	}
+	if !ackProcessedAt.Equal(updatedAt) {
+		t.Fatalf("expected ack processed_at %s, got %s", updatedAt, ackProcessedAt)
 	}
 }
 
@@ -3197,9 +3271,15 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE release_family_readiness_summaries
-		SET processed_at = updated_at
-		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'`, newsgroupID,
+		INSERT INTO release_family_readiness_acks (
+			provider_id, newsgroup_id, key_kind, family_key, processed_at, updated_at
+		)
+		SELECT provider_id, newsgroup_id, key_kind, family_key, updated_at, NOW()
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET processed_at = EXCLUDED.processed_at,
+		    updated_at = NOW()`, newsgroupID,
 	); err != nil {
 		t.Fatalf("ack summary queue row: %v", err)
 	}
@@ -3211,12 +3291,17 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE provider_id = 1
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'requeue-family'
-		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
+		  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query requeued summary family: %v", err)
 	}
@@ -3747,12 +3832,17 @@ func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `
 			SELECT COUNT(*)
-			FROM release_family_readiness_summaries
-			WHERE provider_id = 1
+			FROM release_family_readiness_summaries s
+			LEFT JOIN release_family_readiness_acks a
+			  ON a.provider_id = s.provider_id
+			 AND a.newsgroup_id = s.newsgroup_id
+			 AND a.key_kind = s.key_kind
+			 AND a.family_key = s.family_key
+			WHERE s.provider_id = 1
 			  AND newsgroup_id = $1
 			  AND key_kind = $2
 			  AND family_key = $3
-			  AND updated_at > COALESCE(processed_at, updated_at)`,
+			  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`,
 			newsgroupID,
 			row.keyKind,
 			row.familyKey,
@@ -6091,6 +6181,20 @@ func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
 		newsgroupID,
 	); err != nil {
 		t.Fatalf("insert readiness rows: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_acks (
+			provider_id, newsgroup_id, key_kind, family_key, processed_at, updated_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'drop-weak-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'keep-weak-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'drop-fragment-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'drop-stale-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'base_stem', 'drop-base-stem', NOW() - INTERVAL '7 hours', NOW())`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness acks: %v", err)
 	}
 
 	out, err := store.RunIndexerMaintenance(ctx)
