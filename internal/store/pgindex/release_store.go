@@ -1009,8 +1009,14 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 		return fmt.Errorf("release family key is required")
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-		WITH target_stems AS (
+	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin promote base-stem candidates tx: %w", err)
+		}
+		defer rollbackTx(tx)
+
+		rows, err := tx.QueryContext(ctx, `
 			SELECT DISTINCT LOWER(BTRIM(b.base_stem)) AS family_key
 			FROM binaries b
 			WHERE b.provider_id = $1
@@ -1019,23 +1025,69 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 			  AND b.expected_file_count > 1
 			  AND b.file_index > 0
 			  AND BTRIM(COALESCE(b.base_stem, '')) <> ''
-			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`,
+			providerID,
+			newsgroupID,
+			releaseFamilyKey,
 		)
-		UPDATE release_family_readiness_summaries s
-		SET updated_at = NOW()
-		FROM target_stems t
-		WHERE s.provider_id = $1
-		  AND s.newsgroup_id = $2
-		  AND s.key_kind = 'base_stem'
-		  AND s.family_key = t.family_key`,
-		providerID,
-		newsgroupID,
-		releaseFamilyKey,
-	)
-	if err != nil {
-		return fmt.Errorf("promote base-stem candidates for provider=%d group=%d family=%q: %w", providerID, newsgroupID, releaseFamilyKey, err)
-	}
-	return nil
+		if err != nil {
+			return fmt.Errorf("list promote base-stem candidates for provider=%d group=%d family=%q: %w", providerID, newsgroupID, releaseFamilyKey, err)
+		}
+		keys := make([]releaseFamilySummaryKey, 0)
+		for rows.Next() {
+			var familyKey string
+			if err := rows.Scan(&familyKey); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan promote base-stem candidate family key: %w", err)
+			}
+			keys = append(keys, releaseFamilySummaryKey{
+				ProviderID:  providerID,
+				NewsgroupID: newsgroupID,
+				KeyKind:     "base_stem",
+				FamilyKey:   familyKey,
+			})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate promote base-stem candidate family keys: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close promote base-stem candidate family keys: %w", err)
+		}
+		if err := lockReleaseFamilySummaryKeys(ctx, tx, keys); err != nil {
+			return err
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			WITH target_stems AS (
+				SELECT DISTINCT LOWER(BTRIM(b.base_stem)) AS family_key
+				FROM binaries b
+				WHERE b.provider_id = $1
+				  AND b.newsgroup_id = $2
+				  AND b.release_family_key = $3
+				  AND b.expected_file_count > 1
+				  AND b.file_index > 0
+				  AND BTRIM(COALESCE(b.base_stem, '')) <> ''
+				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+			)
+			UPDATE release_family_readiness_summaries s
+			SET updated_at = NOW()
+			FROM target_stems t
+			WHERE s.provider_id = $1
+			  AND s.newsgroup_id = $2
+			  AND s.key_kind = 'base_stem'
+			  AND s.family_key = t.family_key`,
+			providerID,
+			newsgroupID,
+			releaseFamilyKey,
+		); err != nil {
+			return fmt.Errorf("promote base-stem candidates for provider=%d group=%d family=%q: %w", providerID, newsgroupID, releaseFamilyKey, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit promote base-stem candidates tx: %w", err)
+		}
+		return nil
+	})
 }
 
 func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []ReleaseCandidateAck) error {
@@ -1052,14 +1104,29 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 	if len(regular) > 0 {
 		args := make([]any, 0, len(regular)*4)
 		values := make([]string, 0, len(regular))
+		keys := make([]releaseFamilySummaryKey, 0, len(regular))
 		for _, candidate := range regular {
 			base := len(args)
 			args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
 			values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
+			keys = append(keys, releaseFamilySummaryKey{
+				ProviderID:  candidate.ProviderID,
+				NewsgroupID: candidate.NewsgroupID,
+				KeyKind:     candidate.KeyKind,
+				FamilyKey:   candidate.FamilyKey,
+			})
 		}
 
 		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
-			_, err := db.ExecContext(ctx, `
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin ack release candidates tx: %w", err)
+			}
+			defer rollbackTx(tx)
+			if err := lockReleaseFamilySummaryKeys(ctx, tx, keys); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
 				UPDATE release_family_readiness_summaries s
 				SET processed_at = s.updated_at
 				FROM (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
@@ -1068,8 +1135,10 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 				  AND s.key_kind = v.key_kind
 				  AND s.family_key = v.family_key`,
 				args...,
-			)
-			return err
+			); err != nil {
+				return err
+			}
+			return tx.Commit()
 		}); err != nil {
 			return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
 		}

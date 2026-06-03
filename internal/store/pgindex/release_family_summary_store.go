@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -103,9 +104,52 @@ func sortReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) {
 	})
 }
 
+func advisoryLockIDForReleaseFamilySummaryKey(key releaseFamilySummaryKey) int64 {
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d|%d|%s|%s", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
+	return int64(h.Sum64() & 0x7fffffffffffffff)
+}
+
+func lockReleaseFamilySummaryKeys(ctx context.Context, runner sqlExecQueryer, keys []releaseFamilySummaryKey) error {
+	if runner == nil {
+		return fmt.Errorf("release family summary runner is required")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	normalized := make([]releaseFamilySummaryKey, 0, len(keys))
+	seen := make(map[releaseFamilySummaryKey]struct{}, len(keys))
+	for _, candidate := range keys {
+		key, ok := normalizeReleaseFamilySummaryKey(candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	sortReleaseFamilySummaryKeys(normalized)
+
+	for _, key := range normalized {
+		if _, err := runner.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryLockIDForReleaseFamilySummaryKey(key)); err != nil {
+			return fmt.Errorf("lock release family summary key provider=%d group=%d kind=%s family=%q: %w", key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey, err)
+		}
+	}
+	return nil
+}
+
 func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFamilySummaryKey) error {
 	if tx == nil {
 		return fmt.Errorf("release family summary tx is required")
+	}
+	if err := lockReleaseFamilySummaryKeys(ctx, tx, []releaseFamilySummaryKey{key}); err != nil {
+		return err
 	}
 
 	whereClause := `
@@ -896,6 +940,18 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 	if len(summaries) == 0 {
 		return nil
 	}
+	keys := make([]releaseFamilySummaryKey, 0, len(summaries))
+	for _, row := range summaries {
+		keys = append(keys, releaseFamilySummaryKey{
+			ProviderID:  row.ProviderID,
+			NewsgroupID: row.NewsgroupID,
+			KeyKind:     row.KeyKind,
+			FamilyKey:   row.FamilyKey,
+		})
+	}
+	if err := lockReleaseFamilySummaryKeys(ctx, runner, keys); err != nil {
+		return err
+	}
 
 	for start := 0; start < len(summaries); start += releaseFamilySummaryMergeRowsMax {
 		end := start + releaseFamilySummaryMergeRowsMax
@@ -1011,7 +1067,9 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 	if len(normalized) == 0 {
 		return nil
 	}
-	sortReleaseFamilySummaryKeys(normalized)
+	if err := lockReleaseFamilySummaryKeys(ctx, runner, normalized); err != nil {
+		return err
+	}
 
 	for start := 0; start < len(normalized); start += releaseFamilyDirtyBatchSize {
 		end := start + releaseFamilyDirtyBatchSize
