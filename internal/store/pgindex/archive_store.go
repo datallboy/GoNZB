@@ -9,19 +9,23 @@ import (
 )
 
 type ReleaseArchiveState struct {
-	ReleaseID         string     `json:"release_id"`
-	ArchiveStatus     string     `json:"archive_status"`
-	ArchiveStore      string     `json:"archive_store"`
-	ObjectStoreKind   string     `json:"object_store_kind"`
-	ObjectKey         string     `json:"object_key"`
-	ContentHashSHA256 string     `json:"content_hash_sha256"`
-	ObjectSizeBytes   int64      `json:"object_size_bytes"`
-	ContentEncoding   string     `json:"content_encoding"`
-	SourceModule      string     `json:"source_module"`
-	ArchivedAt        *time.Time `json:"archived_at,omitempty"`
-	PurgeEligibleAt   *time.Time `json:"purge_eligible_at,omitempty"`
-	PurgeCompletedAt  *time.Time `json:"purge_completed_at,omitempty"`
-	LastArchiveError  string     `json:"last_archive_error"`
+	ReleaseID          string     `json:"release_id"`
+	ArchiveStatus      string     `json:"archive_status"`
+	ArchiveStore       string     `json:"archive_store"`
+	ObjectStoreKind    string     `json:"object_store_kind"`
+	ObjectKey          string     `json:"object_key"`
+	ContentHashSHA256  string     `json:"content_hash_sha256"`
+	ObjectSizeBytes    int64      `json:"object_size_bytes"`
+	ContentEncoding    string     `json:"content_encoding"`
+	SourceModule       string     `json:"source_module"`
+	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
+	PurgeEligibleAt    *time.Time `json:"purge_eligible_at,omitempty"`
+	PurgeCompletedAt   *time.Time `json:"purge_completed_at,omitempty"`
+	LastArchiveError   string     `json:"last_archive_error"`
+	PreviewObjectKey   string     `json:"preview_object_key,omitempty"`
+	PreviewContentType string     `json:"preview_content_type,omitempty"`
+	PreviewSourceKind  string     `json:"preview_source_kind,omitempty"`
+	PreviewUpdatedAt   *time.Time `json:"preview_updated_at,omitempty"`
 }
 
 type ReleaseArchiveCandidate struct {
@@ -83,7 +87,11 @@ func (s *Store) GetReleaseArchiveState(ctx context.Context, releaseID string) (*
 			archived_at,
 			purge_eligible_at,
 			purge_completed_at,
-			last_archive_error
+			last_archive_error,
+			preview_object_key,
+			preview_content_type,
+			preview_source_kind,
+			preview_updated_at
 		FROM release_archive_state
 		WHERE release_id = $1`, releaseID)
 
@@ -99,7 +107,7 @@ func (s *Store) GetReleaseArchiveState(ctx context.Context, releaseID string) (*
 
 func scanReleaseArchiveState(scanner interface{ Scan(dest ...any) error }) (*ReleaseArchiveState, error) {
 	item := &ReleaseArchiveState{}
-	var archivedAt, purgeEligibleAt, purgeCompletedAt sql.NullTime
+	var archivedAt, purgeEligibleAt, purgeCompletedAt, previewUpdatedAt sql.NullTime
 	if err := scanner.Scan(
 		&item.ReleaseID,
 		&item.ArchiveStatus,
@@ -114,6 +122,10 @@ func scanReleaseArchiveState(scanner interface{ Scan(dest ...any) error }) (*Rel
 		&purgeEligibleAt,
 		&purgeCompletedAt,
 		&item.LastArchiveError,
+		&item.PreviewObjectKey,
+		&item.PreviewContentType,
+		&item.PreviewSourceKind,
+		&previewUpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -128,6 +140,10 @@ func scanReleaseArchiveState(scanner interface{ Scan(dest ...any) error }) (*Rel
 	if purgeCompletedAt.Valid {
 		t := purgeCompletedAt.Time.UTC()
 		item.PurgeCompletedAt = &t
+	}
+	if previewUpdatedAt.Valid {
+		t := previewUpdatedAt.Time.UTC()
+		item.PreviewUpdatedAt = &t
 	}
 	return item, nil
 }

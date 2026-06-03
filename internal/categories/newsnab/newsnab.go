@@ -37,6 +37,7 @@ type ReleaseAttributes struct {
 	TitleSource       string
 	PredbCategory     string
 	PredbGenre        string
+	Poster            string
 }
 
 type Resolution struct {
@@ -336,7 +337,7 @@ func CategoryIDs() []int {
 }
 
 func ResolveReleaseCategory(in ReleaseAttributes) Resolution {
-	combined := normalizeCombined(in.Title, in.SourceTitle, in.DeobfuscatedTitle, in.MatchedMediaTitle, in.PredbCategory, in.PredbGenre)
+	combined := normalizeCombined(in.Title, in.SourceTitle, in.DeobfuscatedTitle, in.MatchedMediaTitle, in.PredbCategory, in.PredbGenre, in.Poster)
 	classification := strings.ToLower(strings.TrimSpace(in.Classification))
 	externalMediaType := strings.ToLower(strings.TrimSpace(in.ExternalMediaType))
 	primaryAudioCodec := strings.ToLower(strings.TrimSpace(in.PrimaryAudioCodec))
@@ -346,7 +347,7 @@ func ResolveReleaseCategory(in ReleaseAttributes) Resolution {
 	movieStructured := in.TMDBID > 0 || externalMediaType == "movie"
 
 	switch {
-	case looksXXX(combined):
+	case classification == "xxx" || looksXXX(combined):
 		return buildResolution(resolveXXXCategory(combined, normalizedResolutionID(in.PrimaryResolution)))
 	case looksConsole(combined):
 		return buildResolution(resolveConsoleCategory(combined))

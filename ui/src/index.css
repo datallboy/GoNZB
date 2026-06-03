@@ -635,6 +635,29 @@ textarea {
   justify-content: space-between;
   gap: 1rem;
   align-items: start;
+  flex-wrap: wrap;
+}
+
+.public-detail__hero-copy {
+  flex: 1 1 320px;
+}
+
+.public-detail__preview {
+  flex: 0 1 360px;
+  min-width: 240px;
+}
+
+.public-detail__preview img,
+.public-detail__preview img {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.12);
+  object-fit: cover;
+}
+
+.public-detail__preview img {
+  aspect-ratio: 16 / 9;
 }
 
 .public-detail__scene {

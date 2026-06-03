@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -162,6 +163,30 @@ func (ctrl *IndexerController) GetRelease(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, release)
+}
+
+func (ctrl *IndexerController) GetReleasePreview(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopePublic)
+
+	releaseID := pathParamTrimmed(c, "id")
+	reader, contentType, err := ctrl.Service.GetReleasePreview(c.Request().Context(), releaseID)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	if reader == nil {
+		return jsonError(c, http.StatusNotFound, "release preview not found")
+	}
+	defer reader.Close()
+
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "image/jpeg"
+	}
+	c.Response().Header().Set(echo.HeaderContentType, contentType)
+	c.Response().Header().Set(echo.HeaderCacheControl, "public, max-age=300")
+	return c.Stream(http.StatusOK, contentType, reader)
 }
 
 func (ctrl *IndexerController) GetBinary(c *echo.Context) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ type indexerService interface {
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
 	ReinspectRelease(ctx context.Context, releaseID string) error
 	ReenrichRelease(ctx context.Context, releaseID string) error
+	GetReleasePreview(ctx context.Context, releaseID string) (io.ReadCloser, string, error)
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 }
@@ -91,6 +93,7 @@ type runtimeIndexerService struct {
 	store           app.UsenetIndexStore
 	indexer         app.UsenetIndexerService
 	settingsAdmin   app.SettingsAdmin
+	archiveStore    app.BlobStore
 	downloaderReady bool
 	log             interface {
 		Error(format string, v ...interface{})
@@ -111,6 +114,7 @@ func newIndexerService(appCtx *app.Context) indexerService {
 		store:           appCtx.PGIndexStore,
 		indexer:         appCtx.UsenetIndexer,
 		settingsAdmin:   appCtx.SettingsAdmin,
+		archiveStore:    appCtx.IndexerArchiveStore,
 		downloaderReady: appCtx.DownloaderModule != nil,
 		log:             log,
 	}
@@ -333,7 +337,28 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 		return detail, err
 	}
 	detail.Capabilities.CanSendToDownloader = s.downloaderReady
+	if strings.TrimSpace(detail.Preview.ObjectKey) != "" {
+		detail.Preview.URL = fmt.Sprintf("/api/v1/indexer/releases/%s/preview", strings.TrimSpace(releaseID))
+	}
 	return detail, nil
+}
+
+func (s *runtimeIndexerService) GetReleasePreview(ctx context.Context, releaseID string) (io.ReadCloser, string, error) {
+	if s == nil || s.store == nil || s.archiveStore == nil {
+		return nil, "", errIndexerUnavailable
+	}
+	state, err := s.store.GetReleaseArchiveState(ctx, strings.TrimSpace(releaseID))
+	if err != nil {
+		return nil, "", err
+	}
+	if state == nil || strings.TrimSpace(state.PreviewObjectKey) == "" {
+		return nil, "", nil
+	}
+	reader, err := s.archiveStore.GetObjectReader(state.PreviewObjectKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return reader, strings.TrimSpace(state.PreviewContentType), nil
 }
 
 func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.ReleaseReadyPolicy {
