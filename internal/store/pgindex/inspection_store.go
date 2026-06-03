@@ -119,6 +119,14 @@ func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspe
 	return existing, nil
 }
 
+func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (bool, error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binaries WHERE id = $1)`, binaryID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check binary existence %d: %w", binaryID, err)
+	}
+	return exists, nil
+}
+
 func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
 	releaseIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -1950,6 +1958,13 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE binary_id = $1`, binaryID); err != nil {
 		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
+	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return tx.Commit()
+	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, archiveEntryReleaseIDs(rows))
 	if err != nil {
@@ -2020,6 +2035,13 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE binary_id = $1`, binaryID); err != nil {
 		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
+	}
+	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return tx.Commit()
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, mediaStreamReleaseIDs(rows))
@@ -2312,6 +2334,13 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 		stageName,
 	); err != nil {
 		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
+	}
+	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
