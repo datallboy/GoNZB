@@ -66,6 +66,7 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 
 func hasAnySettingsPatchField(patch *settingsPatch) bool {
 	return patch != nil && (patch.Servers != nil ||
+		patch.NNTPPool != nil ||
 		patch.Indexers != nil ||
 		patch.Aggregator != nil ||
 		patch.Download != nil ||
