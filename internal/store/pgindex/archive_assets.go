@@ -83,7 +83,7 @@ func nullableTimeValue(v *time.Time) any {
 	return v.UTC()
 }
 
-func execReleaseMutationAndRefreshArchiveSnapshot(ctx context.Context, db *sql.DB, releaseID string, mutation func(tx *sql.Tx) error) error {
+func execReleaseMutationTx(ctx context.Context, db *sql.DB, mutation func(tx *sql.Tx) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin release mutation tx: %w", err)
@@ -91,9 +91,6 @@ func execReleaseMutationAndRefreshArchiveSnapshot(ctx context.Context, db *sql.D
 	defer rollbackTx(tx)
 
 	if err := mutation(tx); err != nil {
-		return err
-	}
-	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
