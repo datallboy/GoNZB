@@ -70,9 +70,6 @@ func (s *Store) RefreshReleaseArchiveDetailSnapshot(ctx context.Context, release
 	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
 		return err
 	}
-	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit release archive detail snapshot refresh tx: %w", err)
 	}
@@ -86,7 +83,7 @@ func nullableTimeValue(v *time.Time) any {
 	return v.UTC()
 }
 
-func execReleaseMutationAndRefreshArchiveSnapshot(ctx context.Context, db *sql.DB, releaseID string, mutation func(tx *sql.Tx) error) error {
+func execReleaseMutationTx(ctx context.Context, db *sql.DB, mutation func(tx *sql.Tx) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin release mutation tx: %w", err)
@@ -96,24 +93,8 @@ func execReleaseMutationAndRefreshArchiveSnapshot(ctx context.Context, db *sql.D
 	if err := mutation(tx); err != nil {
 		return err
 	}
-	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
-		return err
-	}
-	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
-		if !isReleaseArchiveStateMissing(err) {
-			return err
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit release mutation tx: %w", err)
 	}
 	return nil
-}
-
-func isReleaseArchiveStateMissing(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "upsert release archive detail snapshot") && strings.Contains(msg, "release_archive_state")
 }

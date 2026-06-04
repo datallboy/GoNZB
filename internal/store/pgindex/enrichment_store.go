@@ -836,7 +836,7 @@ func (s *Store) ApplyReleaseEnrichmentUpdate(ctx context.Context, in ReleaseEnri
 		return fmt.Errorf("release id is required")
 	}
 
-	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, in.ReleaseID, func(tx *sql.Tx) error {
+	return execReleaseMutationTx(ctx, s.db, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE releases
 			SET matched_media_title = CASE
@@ -915,7 +915,7 @@ func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpda
 		return fmt.Errorf("release id is required")
 	}
 
-	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, releaseID, func(tx *sql.Tx) error {
+	return execReleaseMutationTx(ctx, s.db, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE releases
 			SET title = CASE
