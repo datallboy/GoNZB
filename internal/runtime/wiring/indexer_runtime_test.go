@@ -1,12 +1,17 @@
 package wiring
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/infra/logger"
+	"github.com/datallboy/gonzb/internal/nntp"
 )
 
 type fakeSettingsStore struct {
@@ -253,4 +258,113 @@ func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing
 	if servers[0].ID != "downloader" || servers[0].Host != "downloader.example.com" || servers[0].Username != "downloader-user" {
 		t.Fatalf("expected downloader-scoped server selection, got %+v", servers[0])
 	}
+}
+
+func TestIndexerNNTPManagerDoesNotReuseSharedDownloaderManager(t *testing.T) {
+	indexerAddr := startTestNNTPServer(t)
+	downloaderAddr := startTestNNTPServer(t)
+
+	indexerHost, indexerPort := splitHostPort(t, indexerAddr)
+	downloaderHost, downloaderPort := splitHostPort(t, downloaderAddr)
+
+	log, err := logger.New("/dev/null", logger.LevelError, false)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	appCtx := &app.Context{
+		Logger: log,
+		Config: &config.Config{
+			Servers: []config.ServerConfig{{
+				ID:            "downloader",
+				Host:          downloaderHost,
+				Port:          downloaderPort,
+				MaxConnection: 1,
+			}},
+		},
+	}
+
+	sharedManager, err := nntp.NewManagerWithOptions(appCtx, nntp.ManagerOptions{CapacityPolicy: nntp.CapacityReturnBusy})
+	if err != nil {
+		t.Fatalf("build shared manager: %v", err)
+	}
+	defer sharedManager.Close()
+	appCtx.NNTP = sharedManager
+
+	runtimeCfg := usenetIndexerConfig{
+		ScrapeServer: &config.ServerConfig{
+			ID:            "indexer",
+			Host:          indexerHost,
+			Port:          indexerPort,
+			MaxConnection: 1,
+		},
+	}
+
+	manager, owned, err := indexerNNTPManager(appCtx, runtimeCfg)
+	if err != nil {
+		t.Fatalf("indexerNNTPManager: %v", err)
+	}
+	defer manager.Close()
+
+	if !owned {
+		t.Fatalf("expected indexer manager to be owned, got owned=%v", owned)
+	}
+	if manager == sharedManager {
+		t.Fatalf("expected dedicated indexer manager, but shared downloader manager was reused")
+	}
+}
+
+func startTestNNTPServer(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen nntp test server: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleTestNNTPConn(conn)
+		}
+	}()
+
+	return ln.Addr().String()
+}
+
+func handleTestNNTPConn(conn net.Conn) {
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "200 test server ready\r\n")
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		switch {
+		case line == "DATE\r\n":
+			_, _ = fmt.Fprintf(conn, "111 20260604120000\r\n")
+		case line == "QUIT\r\n":
+			_, _ = fmt.Fprintf(conn, "205 closing connection\r\n")
+			return
+		default:
+			_, _ = fmt.Fprintf(conn, "500 unsupported\r\n")
+		}
+	}
+}
+
+func splitHostPort(t *testing.T, addr string) (string, int) {
+	t.Helper()
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split host port %q: %v", addr, err)
+	}
+	port, err := net.LookupPort("tcp", portText)
+	if err != nil {
+		t.Fatalf("lookup port %q: %v", portText, err)
+	}
+	return host, port
 }

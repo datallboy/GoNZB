@@ -549,12 +549,6 @@ func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
 }
 
 func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*nntp.Manager, bool, error) {
-	if appCtx != nil && appCtx.NNTP != nil {
-		if manager, ok := appCtx.NNTP.(*nntp.Manager); ok {
-			return manager, false, nil
-		}
-	}
-
 	if runtimeCfg.ScrapeServer == nil {
 		return nil, false, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
 	}
