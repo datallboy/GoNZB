@@ -6,7 +6,6 @@ import (
 )
 
 const articleHeaderPayloadPurgeWindowSize = 250000
-const archiveSnapshotBackfillBatchSize = 500
 const releaseCatalogFilesBackfillBatchSize = 500
 
 type IndexerMaintenanceResult struct {
@@ -16,7 +15,6 @@ type IndexerMaintenanceResult struct {
 	AbandonedBinaryInspections int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
-	BackfilledArchiveSnapshots int64
 	BackfilledCatalogFiles     int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64
@@ -57,17 +55,6 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		}
 		result.BackfilledCatalogFiles += backfilled
 		if backfilled < releaseCatalogFilesBackfillBatchSize {
-			break
-		}
-	}
-
-	for {
-		backfilled, err := s.BackfillMissingReleaseArchiveDetailSnapshots(ctx, archiveSnapshotBackfillBatchSize)
-		if err != nil {
-			return nil, err
-		}
-		result.BackfilledArchiveSnapshots += backfilled
-		if backfilled < archiveSnapshotBackfillBatchSize {
 			break
 		}
 	}
@@ -222,8 +209,13 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 
 	if res, err := tx.ExecContext(ctx, `
 		DELETE FROM release_family_readiness_summaries s
+		USING release_family_readiness_acks a
 		WHERE s.readiness_bucket = $1
-		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND a.provider_id = s.provider_id
+		  AND a.newsgroup_id = s.newsgroup_id
+		  AND a.key_kind = s.key_kind
+		  AND a.family_key = s.family_key
+		  AND s.updated_at <= a.processed_at
 		  AND s.updated_at < NOW() - INTERVAL '6 hours'`,
 		releaseReadinessPreferBaseStem,
 	); err != nil {
@@ -236,8 +228,13 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 
 	if res, err := tx.ExecContext(ctx, `
 		DELETE FROM release_family_readiness_summaries s
+		USING release_family_readiness_acks a
 		WHERE s.readiness_bucket IN ($1, $2)
-		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND a.provider_id = s.provider_id
+		  AND a.newsgroup_id = s.newsgroup_id
+		  AND a.key_kind = s.key_kind
+		  AND a.family_key = s.family_key
+		  AND s.updated_at <= a.processed_at
 		  AND s.updated_at < NOW() - INTERVAL '24 hours'`,
 		releaseReadinessFragmentOnly,
 		releaseReadinessStaleCleanupOnly,
@@ -251,8 +248,13 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 
 	if res, err := tx.ExecContext(ctx, `
 		DELETE FROM release_family_readiness_summaries s
+		USING release_family_readiness_acks a
 		WHERE s.readiness_bucket IN ($1, $2, $3)
-		  AND s.updated_at <= COALESCE(s.processed_at, s.updated_at)
+		  AND a.provider_id = s.provider_id
+		  AND a.newsgroup_id = s.newsgroup_id
+		  AND a.key_kind = s.key_kind
+		  AND a.family_key = s.family_key
+		  AND s.updated_at <= a.processed_at
 		  AND s.updated_at < NOW() - INTERVAL '24 hours'
 		  AND NOT EXISTS (
 		  	SELECT 1
@@ -274,6 +276,19 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		return fmt.Errorf("purge old weak readiness summaries rows affected: %w", rowsErr)
 	} else {
 		result.PurgedReadinessSummaries += rows
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM release_family_readiness_acks a
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM release_family_readiness_summaries s
+			WHERE s.provider_id = a.provider_id
+			  AND s.newsgroup_id = a.newsgroup_id
+			  AND s.key_kind = a.key_kind
+			  AND s.family_key = a.family_key
+		)`); err != nil {
+		return fmt.Errorf("purge orphaned release readiness acks: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `

@@ -1143,8 +1143,13 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE updated_at > COALESCE(processed_at, updated_at)`).Scan(&count); err != nil {
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil
@@ -1853,32 +1858,36 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
-			rf.id,
-			rf.release_id,
+			cf.id,
+			cf.release_id,
 			COALESCE(r.title, ''),
 			COALESCE(r.group_name, ''),
 			COALESCE(rf.binary_id, 0),
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.subject,
-			rf.poster,
-			rf.posted_at,
-			COALESCE(b.total_parts, 0),
-			COALESCE(b.observed_parts, 0),
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.subject,
+			cf.poster,
+			cf.posted_at,
+			COALESCE(b.total_parts, cf.total_parts, 0),
+			COALESCE(b.observed_parts, cf.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
 				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
 			END,
-			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
-		FROM release_files rf
-		JOIN releases r ON r.release_id = rf.release_id
+			COALESCE(cf.article_count, 0)
+		FROM release_catalog_files cf
+		JOIN releases r ON r.release_id = cf.release_id
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
 		LEFT JOIN binaries b ON b.id = rf.binary_id
 		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
-		WHERE rf.id = $1`, fileID)
+		WHERE cf.id = $1`, fileID)
 
 	var item IndexerFileDetail
 	var postedAt sql.NullTime

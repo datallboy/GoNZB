@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-06-03
+Snapshot date: 2026-06-04
 
 This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
@@ -148,13 +148,14 @@ This matrix is the schema contract for current and near-term code changes.
 | `binary_par2_targets` | derived/evidence | `inspect_par2` | none | PAR2 target mapping owned by par2 inspection. |
 | `binary_password_candidates` and similar password evidence | derived/evidence | `inspect_password` | none | Password evidence owned by password inspection. |
 | release-family refresh queue tables | queue/work | `release_summary_refresh` | any stage may enqueue dirty keys through repository helpers | Queue fan-in is allowed; summary materialization is not. |
-| `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | `release` for narrow ack/update only where explicitly retained | Shared hot table; one heavy writer only. |
+| `release_family_readiness_acks` | queue/work | `release` | none | Release-owned ack state for consumed readiness keys. |
+| `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | none | Shared hot table; one heavy writer only. |
 | `releases` | durable catalog fact | `release` | `inspect_*`, enrichment, overrides, archive tail for explicit catalog/archive fields only | Permanent release catalog header. |
 | `release_catalog_files` | durable catalog fact | `release` | archive-maintenance/backfill only | Durable UI/detail file metadata. |
 | `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. |
 | `release_newsgroups` | durable catalog support | `release` | purge deletes only if replaced by another durable source | Current release provenance/catalog support. |
 | `release_archive_state` | durable archive state | archive tail | none | Blob/archive lifecycle state. |
-| `release_archive_detail_*` tables | transitional archive detail | archive tail / maintenance backfill | none | Transitional compatibility layer while durable catalog work lands. |
+| `release_archive_detail_*` tables | frozen transitional archive detail | none for active runtime flows | none | Legacy compatibility surface; no longer part of the active detail or maintenance path. |
 | `nzb_cache` | transitional runtime/archive support | generate/archive tail | purge deletes | Transitional and should continue shrinking in importance. |
 | enrichment and override tables | durable catalog support | enrichment / override subsystem | none | Catalog-facing metadata ownership. |
 | stage runtime / run history tables | runtime/work | supervisor/runtime subsystem | none | Must not be mixed into fact rows. |
@@ -306,7 +307,7 @@ Allowed writes:
 - `release_catalog_files`
 - `release_files`
 - `release_newsgroups`
-- narrow readiness ack/update state explicitly retained on `release_family_readiness_summaries`
+- `release_family_readiness_acks`
 
 Not allowed:
 
@@ -318,6 +319,11 @@ Not allowed:
 Rationale:
 
 - release consumes readiness and writes durable catalog state
+
+Current boundary note:
+
+- user-facing and admin file/detail reads should anchor on `release_catalog_files`
+- `release_files` remains a transitional live-lineage bridge for binary/article drilldown and purge-time source cleanup only
 
 ### `release_generate_nzb`
 
@@ -473,9 +479,10 @@ Purge exists to free database space by removing temporary source lineage after:
 
 A release is purge-eligible only when all of the following are true:
 
-- the release is present in durable catalog tables
-- archive state says the NZB is durable and available
-- required inspection gates for archive/purge are satisfied
+- a `releases` row still exists for the release
+- at least one `release_catalog_files` row still exists for the release
+- archive state says the NZB is durable and available, including a non-blank archive object key
+- required inspection gates for archive/purge are satisfied, currently including a completed `inspect_media`
 - no earlier stage still depends on live source lineage for that release
 - purge state has been explicitly recorded as eligible or pending
 
@@ -493,6 +500,19 @@ Purge owns deletion of temporary source lineage and heavy build surfaces, includ
 - transitional release-source bridge tables where durable replacements now exist
 
 Exact delete scope must continue to honor shared-lineage safety. If a row is still referenced by another non-purge-eligible release, purge must not delete it.
+
+Current delete order:
+
+1. lock and validate `release_archive_state`
+2. compute purgeable lineage binaries that are not shared with another non-purged release
+3. delete binary-owned evidence/runtime rows by deleting the owning `binaries` rows
+4. delete release-scoped transitional rows:
+   - `release_files`
+   - `release_newsgroups`
+   - `nzb_cache`
+5. delete `article_header_ingest_payloads` and `article_headers` only when no surviving `binary_parts` rows still reference them
+6. delete `release_archive_lineage_*` tracking rows
+7. mark `release_archive_state.archive_status = 'purged'`
 
 ### What purge must preserve
 
@@ -522,8 +542,10 @@ To keep purge from becoming a new contention source:
 These are accepted transitional debts, not permanent design goals.
 
 - `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
-- `release_family_readiness_summaries` still accepts narrow ack/update writes from `release`
-- `release_files`, `release_archive_detail_*`, and `nzb_cache` still exist as transitional compatibility surfaces
+- `assemble_*` still updates `article_headers` claim/lease and assembled markers instead of moving all assembly runtime bookkeeping into a separate work surface
+- `recover_yenc` and binary-recovery refinement still rewrite `release_files` and `binary_parts` when binary identity or recovered filenames change
+- `release_files` and `nzb_cache` still exist as transitional compatibility surfaces
+- `release_archive_detail_*` still exists in schema history, but active runtime writes and maintenance backfill have been removed
 - some inspection/refinement flows still reach across boundaries more than the target model intends
 
 ## Migration Path To Strict Ownership
@@ -540,7 +562,7 @@ Actions:
 
 - remove any remaining multi-stage bulk summary recomputation
 - keep dirty-key queue fan-in, not direct summary materialization
-- narrow or remove release-side summary ack writes where possible
+- move release-side readiness ack state out of `release_family_readiness_summaries` and into stage-owned ack/work state
 
 ### Phase 2: finish the durable release catalog boundary
 
@@ -553,6 +575,7 @@ Actions:
 - keep `releases` as the permanent catalog header
 - keep `release_catalog_files` as durable file/detail state
 - reduce reliance on `release_files` for frontend/detail reads
+- stop maintaining archive-detail snapshot tables once durable catalog reads fully replace them
 - keep enrichment and override updates pointed at durable catalog rows
 
 ### Phase 3: separate work state from fact state

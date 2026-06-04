@@ -59,39 +59,8 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 	if err != nil {
 		return fmt.Errorf("seed release catalog files from release files %s: %w", releaseID, err)
 	}
-	if rows, rowsErr := res.RowsAffected(); rowsErr == nil && rows > 0 {
-		return nil
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO release_catalog_files (
-			release_id,
-			file_name,
-			size_bytes,
-			file_index,
-			is_pars,
-			posted_at,
-			article_count,
-			total_parts,
-			observed_parts,
-			updated_at
-		)
-		SELECT
-			adf.release_id,
-			adf.file_name,
-			adf.size_bytes,
-			adf.file_index,
-			adf.is_pars,
-			adf.posted_at,
-			adf.article_count,
-			adf.total_parts,
-			adf.observed_parts,
-			NOW()
-		FROM release_archive_detail_files adf
-		WHERE adf.release_id = $1`,
-		releaseID,
-	); err != nil {
-		return fmt.Errorf("seed release catalog files from archive detail files %s: %w", releaseID, err)
+	if _, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return fmt.Errorf("read release catalog file sync row count %s: %w", releaseID, rowsErr)
 	}
 
 	return nil
@@ -113,10 +82,7 @@ func (s *Store) BackfillMissingReleaseCatalogFiles(ctx context.Context, limit in
 		FROM releases r
 		LEFT JOIN release_catalog_files cf ON cf.release_id = r.release_id
 		WHERE cf.release_id IS NULL
-		  AND (
-			EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
-			OR EXISTS (SELECT 1 FROM release_archive_detail_files adf WHERE adf.release_id = r.release_id)
-		  )
+		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 		ORDER BY r.created_at ASC, r.release_id
 		LIMIT $1
 		FOR UPDATE OF r`, limit)

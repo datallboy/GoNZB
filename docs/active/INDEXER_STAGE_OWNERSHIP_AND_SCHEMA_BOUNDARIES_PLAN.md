@@ -57,6 +57,26 @@ Validation:
 - no multi-stage summary recomputation paths remain
 - release and assemble can run concurrently without reintroducing deadlock or shared-memory pressure on summary writes
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- moved release candidate ack state out of `release_family_readiness_summaries` into `release_family_readiness_acks`
+- updated release candidate selection and dashboard backlog counting to use the new ack surface
+- updated maintenance cleanup so non-pending readiness residue is pruned against ack state instead of summary-row write-back
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/release ./internal/indexing/maintenance`
+- added regression coverage that release ack now records ack state without mutating the summary row
+
+Notes:
+
+- `release_summary_refresh` remains the only heavy writer of the readiness materialization table
+- dirty-key queue fan-in remains unchanged
+
 ### Chunk 2: inspection boundary cleanup
 
 Goal:
@@ -73,6 +93,21 @@ Validation:
 
 - inspect stages tolerate already-deleted binaries safely
 - inspection does not need upstream fact mutations to complete
+
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- tightened `ApplyReleaseInspectionUpdate` so inspection release rollups happen through one narrow `releases` update instead of multiple row writes
+- made stale-release handling consistent by returning `ErrReleaseNotFound` from the remaining title-input path used by inspection rollups
+- kept inspection runtime/progress ownership in `binary_inspections` rather than reintroducing progress flags on release or binary rows
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/inspect/archive ./internal/indexing/inspect/media ./internal/indexing/inspect/nfo ./internal/indexing/inspect/par2 ./internal/indexing/inspect/password`
+- added regression coverage that missing releases now surface as `ErrReleaseNotFound` for inspection rollup updates
 
 ### Chunk 3: durable release catalog completion
 
@@ -91,6 +126,21 @@ Validation:
 - archived and purged releases remain enrichable and viewable
 - release detail hydration does not require binary/article lineage for standard UI paths
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- moved remaining catalog/admin file detail reads to anchor on `release_catalog_files` instead of `release_files`
+- kept live binary linkage optional by resolving `release_files.binary_id` only when present for article drilldown and binary-backed detail fields
+- preserved post-purge admin/public detail hydration from durable catalog rows while allowing live article lists to collapse to empty safely after purge
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex`
+- existing purge-survival regression coverage now exercises catalog and admin file/detail reads through `release_catalog_files`
+
 ### Chunk 4: purge contract enforcement
 
 Goal:
@@ -108,6 +158,22 @@ Validation:
 - purge deletes only rows that are no longer needed by any non-purged release
 - purge does not break release detail, download, or enrichment behavior
 
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- encoded purge preflight checks directly in the repository path so purge now requires a durable archive object key, a surviving `releases` row, surviving `release_catalog_files`, and completed `inspect_media`
+- tightened purge candidate claiming to only surface releases that already satisfy the durable-catalog and completed-inspection contract
+- documented and preserved the delete order so purge remains terminal cleanup of source lineage while leaving durable catalog state intact
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/releasepurge`
+- added regression coverage that purge candidates are rejected without durable catalog files or completed `inspect_media`
+- added regression coverage that shared binary lineage is preserved for another active release while the purged release still retains durable detail state
+
 ### Chunk 5: transitional surface reduction
 
 Goal:
@@ -122,6 +188,21 @@ Expected changes:
 Validation:
 
 - transitional table removal does not reintroduce source-lineage retention requirements
+
+Status:
+
+- completed on 2026-06-03
+
+Implementation sign-off:
+
+- removed active runtime writes and maintenance backfill for `release_archive_detail_*` so those tables are no longer part of the live archive/detail path
+- removed `release_catalog_files` backfill dependence on `release_archive_detail_files`; durable catalog repair now sources only from live `release_files`
+- kept `release_archive_detail_*` as frozen legacy compatibility surfaces instead of active runtime state while `release_files` and `nzb_cache` remain the smaller transitional surfaces still in use
+
+Validation sign-off:
+
+- `go test ./internal/store/pgindex ./internal/indexing/maintenance ./internal/runtime/commands`
+- verified the durable catalog path remains the active public/admin detail source after removing archive-detail snapshot maintenance from runtime flows
 
 ## Immediate Backlog
 
@@ -151,3 +232,13 @@ Before this sprint is considered complete:
 - durable release catalog reads no longer depend on temporary source lineage for normal UI flows
 - purge delete scope is explicit, tested, and documented
 - at least one live serve-monitor pass shows no regression in release/assemble contention after the boundary changes land
+
+Final sprint sign-off:
+
+- all five chunks completed on 2026-06-03 in order
+- full validation pass completed with `go test ./...`
+- live runtime sign-off completed with `go run ./cmd/gonzb --config config.yaml serve`
+- observed runtime after the final fixes:
+  - `release_summary_refresh` completed repeatedly without deadlock or shared-memory failures
+  - `release` and `assemble_lane_a` / `assemble_lane_b` continued processing concurrently
+  - the `inspect_media` scalar `archive_entries` query failure was fixed and did not recur in the final serve-monitor window

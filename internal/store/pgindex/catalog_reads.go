@@ -132,18 +132,27 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			id,
-			binary_id,
-			file_name,
-			subject,
-			poster,
-			posted_at,
-			size_bytes,
-			is_pars,
-			file_index
-		FROM release_files
-		WHERE release_id = $1
-		ORDER BY file_index, id`, releaseID)
+			cf.id,
+			COALESCE(rf.binary_id, 0),
+			cf.file_name,
+			cf.subject,
+			cf.poster,
+			cf.posted_at,
+			cf.size_bytes,
+			cf.is_pars,
+			cf.file_index
+		FROM release_catalog_files cf
+		LEFT JOIN LATERAL (
+			SELECT binary_id
+			FROM release_files rf
+			WHERE rf.release_id = cf.release_id
+			  AND rf.file_index = cf.file_index
+			  AND rf.file_name = cf.file_name
+			ORDER BY rf.id
+			LIMIT 1
+		) rf ON TRUE
+		WHERE cf.release_id = $1
+		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release files %s: %w", releaseID, err)
 	}
@@ -243,10 +252,14 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 			ah.message_id,
 			ah.bytes,
 			bp.part_number
-		FROM release_files rf
+		FROM release_catalog_files cf
+		JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
 		JOIN binary_parts bp ON bp.binary_id = rf.binary_id
 		JOIN article_headers ah ON ah.id = bp.article_header_id
-		WHERE rf.id = $1
+		WHERE cf.id = $1
 		ORDER BY bp.part_number`, releaseFileID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release file articles %d: %w", releaseFileID, err)
@@ -271,9 +284,15 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 
 	var binaryID sql.NullInt64
 	err = s.db.QueryRowContext(ctx, `
-		SELECT binary_id
-		FROM release_files
-		WHERE id = $1`, releaseFileID,
+		SELECT rf.binary_id
+		FROM release_catalog_files cf
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
+		WHERE cf.id = $1
+		ORDER BY rf.id
+		LIMIT 1`, releaseFileID,
 	).Scan(&binaryID)
 	if err == sql.ErrNoRows {
 		return out, nil

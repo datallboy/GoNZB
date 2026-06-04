@@ -28,7 +28,7 @@ func (s *Store) UpsertReleaseOverride(ctx context.Context, in ReleaseOverrideRec
 	if err != nil {
 		return fmt.Errorf("marshal release override tags: %w", err)
 	}
-	return execReleaseMutationAndRefreshArchiveSnapshot(ctx, s.db, strings.TrimSpace(in.ReleaseID), func(tx *sql.Tx) error {
+	return execReleaseMutationTx(ctx, s.db, func(tx *sql.Tx) error {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO release_overrides (
 				release_id,
