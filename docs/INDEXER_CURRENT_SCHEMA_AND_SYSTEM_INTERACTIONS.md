@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-06-03
+Snapshot date: 2026-06-04
 
 This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
@@ -542,6 +542,8 @@ To keep purge from becoming a new contention source:
 These are accepted transitional debts, not permanent design goals.
 
 - `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
+- `assemble_*` still updates `article_headers` claim/lease and assembled markers instead of moving all assembly runtime bookkeeping into a separate work surface
+- `recover_yenc` and binary-recovery refinement still rewrite `release_files` and `binary_parts` when binary identity or recovered filenames change
 - `release_files` and `nzb_cache` still exist as transitional compatibility surfaces
 - `release_archive_detail_*` still exists in schema history, but active runtime writes and maintenance backfill have been removed
 - some inspection/refinement flows still reach across boundaries more than the target model intends
