@@ -9,17 +9,17 @@ import (
 )
 
 const yencRecoveryWorkItemSeedLimit = 5000
+const yencRecoverySubjectFileNamePredicate = `
+			  AND (
+			  	p.subject_file_name = '' OR (
+			  		LOWER(BTRIM(p.subject_file_name)) LIKE '%.bin' AND
+			  		regexp_replace(LOWER(BTRIM(p.subject_file_name)), '\.bin$', '') ~ '^[a-z0-9]{12,}$'
+			  	)
+			  )`
 
 func (s *Store) ensureYEncRecoveryWorkItemsSeed(ctx context.Context, limit int) error {
 	if limit <= 0 {
 		limit = yencRecoveryWorkItemSeedLimit
-	}
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM yenc_recovery_work_items`).Scan(&count); err != nil {
-		return fmt.Errorf("count yenc recovery work items: %w", err)
-	}
-	if count > 0 {
-		return nil
 	}
 	_, _, err := s.BackfillYEncRecoveryWorkItems(ctx, limit)
 	return err
@@ -31,9 +31,14 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH candidate_binaries AS (
+		WITH eligible_binaries AS (
 			SELECT
-				b.id AS binary_id
+				b.id AS binary_id,
+				b.updated_at,
+				ROW_NUMBER() OVER (
+					PARTITION BY b.provider_id, b.newsgroup_id
+					ORDER BY b.updated_at DESC, b.id
+				) AS group_rank
 			FROM binaries b
 			JOIN release_family_readiness_summaries s
 			  ON s.provider_id = b.provider_id
@@ -51,7 +56,11 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 			  	OR wi.updated_at < b.updated_at
 			  	OR wi.status <> 'ready'
 			  )
-			ORDER BY b.updated_at DESC, b.id
+		),
+		candidate_binaries AS (
+			SELECT binary_id
+			FROM eligible_binaries
+			ORDER BY group_rank, updated_at DESC, binary_id
 			LIMIT $1
 		)
 		SELECT binary_id
@@ -163,7 +172,7 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND b.is_main_payload = TRUE
 			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
-			  AND p.subject_file_name = ''
+`+yencRecoverySubjectFileNamePredicate+`
 		),
 		upserted AS (
 			INSERT INTO yenc_recovery_work_items (
@@ -249,7 +258,7 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND b.is_main_payload = TRUE
 			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
-			  AND p.subject_file_name = ''
+`+yencRecoverySubjectFileNamePredicate+`
 		),
 		retire_candidates AS (
 			SELECT

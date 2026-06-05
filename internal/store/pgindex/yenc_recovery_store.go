@@ -25,43 +25,80 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
+		WITH ready_items AS (
+			SELECT
+				wi.binary_id,
+				ah.id,
+				ah.provider_id,
+				ah.newsgroup_id,
+				ng.group_name,
+				ah.article_number,
+				ah.message_id,
+				COALESCE(p.subject, '') AS subject,
+				COALESCE(p.poster, '') AS poster,
+				ah.date_utc,
+				ah.bytes,
+				ah.lines,
+				COALESCE(p.xref, '') AS xref,
+				COALESCE(p.subject_file_name, '') AS subject_file_name,
+				COALESCE(p.subject_file_index, 0) AS subject_file_index,
+				COALESCE(p.subject_file_total, 0) AS subject_file_total,
+				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
+				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+				COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
+				p.yenc_recovery_retry_after,
+				wi.current_binary_key,
+				wi.current_release_family_key,
+				wi.current_base_stem,
+				wi.current_readiness_bucket,
+				wi.structured_identity_binary_matched,
+				wi.priority_rank,
+				wi.updated_at,
+				ROW_NUMBER() OVER (
+					PARTITION BY ah.provider_id, ah.newsgroup_id, wi.priority_rank
+					ORDER BY wi.updated_at DESC, wi.binary_id
+				) AS group_rank
+			FROM yenc_recovery_work_items wi
+			JOIN article_headers ah ON ah.id = wi.article_header_id
+			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+			WHERE wi.status = 'ready'
+			  AND wi.ready_at <= NOW()
+		)
 		SELECT
-			wi.binary_id,
-			ah.id,
-			ah.provider_id,
-			ah.newsgroup_id,
-			ng.group_name,
-			ah.article_number,
-			ah.message_id,
-			COALESCE(p.subject, ''),
-			COALESCE(p.poster, ''),
-			ah.date_utc,
-			ah.bytes,
-			ah.lines,
-			COALESCE(p.xref, ''),
-			COALESCE(p.subject_file_name, ''),
-			COALESCE(p.subject_file_index, 0),
-			COALESCE(p.subject_file_total, 0),
-			COALESCE(p.yenc_part_number, 0),
-			COALESCE(p.yenc_total_parts, 0),
-			COALESCE(p.yenc_file_size, 0),
-			COALESCE(p.yenc_recovery_missing_count, 0),
-			p.yenc_recovery_retry_after,
-			wi.current_binary_key,
-			wi.current_release_family_key,
-			wi.current_base_stem,
-			wi.current_readiness_bucket,
-			wi.structured_identity_binary_matched
-		FROM yenc_recovery_work_items wi
-		JOIN article_headers ah ON ah.id = wi.article_header_id
-		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		WHERE wi.status = 'ready'
-		  AND wi.ready_at <= NOW()
+			binary_id,
+			id,
+			provider_id,
+			newsgroup_id,
+			group_name,
+			article_number,
+			message_id,
+			subject,
+			poster,
+			date_utc,
+			bytes,
+			lines,
+			xref,
+			subject_file_name,
+			subject_file_index,
+			subject_file_total,
+			yenc_part_number,
+			yenc_total_parts,
+			yenc_file_size,
+			yenc_recovery_missing_count,
+			yenc_recovery_retry_after,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched
+		FROM ready_items
 		ORDER BY
-			wi.priority_rank,
-			wi.updated_at DESC,
-			wi.binary_id
+			priority_rank,
+			group_rank,
+			updated_at DESC,
+			binary_id
 		LIMIT $1`,
 		limit,
 	)

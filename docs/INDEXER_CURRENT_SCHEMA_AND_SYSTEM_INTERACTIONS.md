@@ -19,6 +19,7 @@ Related reference docs:
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 - `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
+- `docs/active/INDEXER_SCRAPE_NEWSGROUP_MANAGEMENT_SPRINT.md`
 
 ## How To Use This Doc
 
@@ -89,6 +90,14 @@ Examples:
 - reservation rows
 - queue state
 - transient eligibility markers
+
+Scrape/newsgroup control state follows the same rule.
+
+- explicit scrape groups are runtime settings state
+- wildcard rules are runtime settings state
+- provider group inventory is discovery state owned by the scrape configuration subsystem, not by scrape ingest tables
+- materialized wildcard groups are runtime-derived control state owned by scrape configuration, not raw provider inventory
+- `indexing.newsgroups` and `indexing.backfill_until_date_by_group` are compatibility mirrors of effective scrape state during transition
 
 ### Rule 5: purge is the only intentional downstream mutator of upstream source facts
 
@@ -169,6 +178,7 @@ This section defines what each stage may read and write.
 Allowed reads:
 
 - provider state
+- provider group inventory and effective scrape-group control state
 - newsgroup bounds
 - runtime/stage config
 
@@ -187,6 +197,39 @@ Not allowed:
 Rationale:
 
 - scrape owns ingest fact creation only
+- wildcard evaluation and provider inventory do not bypass effective scrape-group selection
+
+## Scrape Configuration Ownership
+
+The scrape configuration subsystem owns four distinct state classes:
+
+1. explicit configured groups
+2. wildcard rules
+3. provider-discovered group inventory
+4. materialized effective wildcard groups
+
+Ownership rules:
+
+- provider inventory is discovery data only and must not directly imply scrape selection
+- wildcard rules are global across configured indexer providers
+- wildcard refresh is manual through explicit scan/rescan plus preview/apply
+- scrape stages consume only the effective group list derived from explicit groups plus enabled materialized groups
+- saving zero effective groups is valid; scrape stages should idle rather than force persistence failure
+
+## Cross-Group Release And File Rules
+
+Cross-group release formation is intentionally asymmetric:
+
+- one logical release may accumulate provenance from multiple groups
+- `release_newsgroups` should retain all contributing groups for that release
+- release/catalog duplication should be suppressed when identity is strong enough
+- release/file-set availability may union across groups
+- one file payload’s article membership must remain bound to one newsgroup
+
+Downloader-safety invariant:
+
+- NZB generation must emit the newsgroup that belongs to that file payload’s binary provenance
+- article sets for a single file must not mix articles from different newsgroups even when the surrounding release is multi-group
 
 ### `assemble_lane_a` and `assemble_lane_b`
 
@@ -240,6 +283,7 @@ Not allowed:
 Rationale:
 
 - recovery may improve canonical binary identity, but it does not own ingest facts or release materialization
+- recovery work selection should stay bounded and group-fair; queue seeding and candidate claims should not let one large newsgroup backlog starve all other eligible groups indefinitely
 
 ### `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`
 
