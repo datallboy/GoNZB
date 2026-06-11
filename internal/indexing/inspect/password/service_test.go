@@ -276,6 +276,10 @@ func (f *fakeRepository) ListBinaryInspectionCandidates(context.Context, string,
 	return f.binaryCandidates, nil
 }
 
+func (f *fakeRepository) ListBinaryInspectionCandidatesWithOptions(context.Context, string, int, pgindex.BinaryInspectionCandidateOptions) ([]pgindex.BinaryInspectionCandidate, error) {
+	return f.binaryCandidates, nil
+}
+
 func (f *fakeRepository) ListPasswordVerificationCandidates(context.Context, int) ([]pgindex.PasswordVerificationCandidate, error) {
 	return f.passwordCandidates, nil
 }

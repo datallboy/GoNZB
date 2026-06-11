@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -131,10 +132,80 @@ func normalizeBinaryIdentity(in *BinaryRecord) {
 	if in == nil {
 		return
 	}
-	in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
 	in.SourceReleaseKey = firstNonBlank(in.SourceReleaseKey, in.ReleaseFamilyKey, in.ReleaseKey)
+	if shouldDeferPromotableBinaryIdentity(in) {
+		in.ReleaseFamilyKey = ""
+		in.FileSetKey = ""
+		in.BaseStem = ""
+	} else {
+		in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+	}
 	// Keep legacy release_key as a compatibility mirror of release_family_key during cutover.
 	in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+}
+
+func shouldDeferPromotableBinaryIdentity(in *BinaryRecord) bool {
+	if in == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(in.FamilyKind)) {
+	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
+	default:
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(in.IdentityStrength)) {
+	case "weak", "provisional":
+	default:
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(in.SubjectSetKind), "readable_title") {
+		return false
+	}
+	return !hasPromotableBinaryFileIdentity(in.FileName)
+}
+
+func hasPromotableBinaryFileIdentity(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" {
+		return false
+	}
+	if strings.HasSuffix(lower, ".rar") || strings.HasSuffix(lower, ".par2") {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(lower))
+	if len(ext) == 4 && strings.HasPrefix(ext, ".r") && isNumericASCII(ext[2:]) {
+		return true
+	}
+	if isSplitArchivePart(lower) {
+		return true
+	}
+	switch ext {
+	case ".mkv", ".mp4", ".avi", ".ts", ".mp3", ".flac", ".m4a", ".zip", ".7z":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSplitArchivePart(fileName string) bool {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if len(ext) != 4 || ext[0] != '.' || !isNumericASCII(ext[1:]) {
+		return false
+	}
+	baseExt := strings.ToLower(filepath.Ext(strings.TrimSuffix(fileName, ext)))
+	return baseExt == ".7z" || baseExt == ".zip"
+}
+
+func isNumericASCII(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]AssemblyCandidate, error) {
@@ -928,6 +999,33 @@ func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID 
 	if err != nil {
 		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
 	}
+	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
+}
+
+func (s *Store) RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error {
+	if articleHeaderID <= 0 {
+		return fmt.Errorf("article header id is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads
+		SET yenc_recovery_missing_count = article_header_ingest_payloads.yenc_recovery_missing_count + 1,
+		    yenc_recovery_last_missing_at = NOW(),
+		    yenc_recovery_retry_after = NOW() + CASE
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '15 minutes'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '1 hour'
+		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '6 hours'
+		    	ELSE INTERVAL '24 hours'
+		    END
+		WHERE article_header_id = $1`, articleHeaderID,
+	)
+	if err != nil {
+		return fmt.Errorf("record yenc recovery noop for article header %d: %w", articleHeaderID, err)
+	}
+	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
+}
+
+func (s *Store) syncYEncRecoveryWorkItemRetryState(ctx context.Context, articleHeaderID int64) error {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE yenc_recovery_work_items
 		SET status = 'ready',

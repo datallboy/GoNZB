@@ -67,14 +67,20 @@ type IndexerBackfillProgress struct {
 }
 
 type IndexerStageThroughputWindow struct {
-	WindowHours      int     `json:"window_hours"`
-	CompletedRuns    int     `json:"completed_runs"`
-	FailedRuns       int     `json:"failed_runs"`
-	ItemsProcessed   int64   `json:"items_processed"`
-	ItemsPerSecond   float64 `json:"items_per_second"`
-	ItemsPerMinute   float64 `json:"items_per_minute"`
-	ItemsPerHour     float64 `json:"items_per_hour"`
-	AvgRunDurationMS float64 `json:"avg_run_duration_ms"`
+	WindowHours        int     `json:"window_hours"`
+	CompletedRuns      int     `json:"completed_runs"`
+	FailedRuns         int     `json:"failed_runs"`
+	ItemsProcessed     int64   `json:"items_processed"`
+	ItemsPerSecond     float64 `json:"items_per_second"`
+	ItemsPerMinute     float64 `json:"items_per_minute"`
+	ItemsPerHour       float64 `json:"items_per_hour"`
+	AvgRunDurationMS   float64 `json:"avg_run_duration_ms"`
+	AvgWorkersUsed     float64 `json:"avg_workers_used,omitempty"`
+	MaxWorkersUsed     int     `json:"max_workers_used,omitempty"`
+	AvgGroupsScheduled float64 `json:"avg_groups_scheduled,omitempty"`
+	MaxGroupsScheduled int     `json:"max_groups_scheduled,omitempty"`
+	AvgRangesFetched   float64 `json:"avg_ranges_fetched,omitempty"`
+	MaxRangesFetched   int     `json:"max_ranges_fetched,omitempty"`
 }
 
 type IndexerStageThroughputItem struct {
@@ -90,66 +96,67 @@ type IndexerStageThroughput struct {
 }
 
 type IndexerReleaseSummary struct {
-	ReleaseID               string     `json:"release_id"`
-	GUID                    string     `json:"guid"`
-	ProviderID              int64      `json:"provider_id"`
-	ReleaseKey              string     `json:"release_key"`
-	GroupName               string     `json:"group_name"`
-	Title                   string     `json:"title"`
-	SourceTitle             string     `json:"source_title"`
-	DeobfuscatedTitle       string     `json:"deobfuscated_title"`
-	MatchedMediaTitle       string     `json:"matched_media_title"`
-	OriginalMediaTitle      string     `json:"original_media_title"`
-	TMDBID                  int64      `json:"tmdb_id"`
-	TVDBID                  int64      `json:"tvdb_id"`
-	ExternalMediaType       string     `json:"external_media_type"`
-	ExternalYear            int        `json:"external_year"`
-	SeasonNumber            int        `json:"season_number"`
-	EpisodeNumber           int        `json:"episode_number"`
-	SeasonEpisodeSource     string     `json:"season_episode_source"`
-	SeasonEpisodeConfidence float64    `json:"season_episode_confidence"`
-	TitleSource             string     `json:"title_source"`
-	TitleConfidence         float64    `json:"title_confidence"`
-	CategoryID              int        `json:"category_id"`
-	Category                string     `json:"category"`
-	Classification          string     `json:"classification"`
-	Poster                  string     `json:"poster"`
-	SizeBytes               int64      `json:"size_bytes"`
-	PostedAt                *time.Time `json:"posted_at,omitempty"`
-	FileCount               int        `json:"file_count"`
-	ExpectedFileCount       int        `json:"expected_file_count"`
-	ParFileCount            int        `json:"par_file_count"`
-	CompletionPct           float64    `json:"completion_pct"`
-	MatchConfidence         float64    `json:"match_confidence"`
-	IdentityStatus          string     `json:"identity_status"`
-	Passworded              bool       `json:"passworded"`
-	PasswordedKnown         bool       `json:"passworded_known"`
-	PasswordedUnknown       bool       `json:"passworded_unknown"`
-	PasswordState           string     `json:"password_state"`
-	PreferredPasswordID     int64      `json:"preferred_password_id"`
-	Encrypted               bool       `json:"encrypted"`
-	HasPAR2                 bool       `json:"has_par2"`
-	HasNFO                  bool       `json:"has_nfo"`
-	ArchiveCount            int        `json:"archive_count"`
-	VideoCount              int        `json:"video_count"`
-	AudioCount              int        `json:"audio_count"`
-	SamplePresent           bool       `json:"sample_present"`
-	AvailabilityScore       float64    `json:"availability_score"`
-	AvailabilityTier        string     `json:"availability_tier"`
-	MediaQualityScore       float64    `json:"media_quality_score"`
-	MediaQualityTier        string     `json:"media_quality_tier"`
-	IdentityConfidenceScore float64    `json:"identity_confidence_score"`
-	RuntimeSeconds          int        `json:"runtime_seconds"`
-	PrimaryResolution       string     `json:"primary_resolution"`
-	PrimaryVideoCodec       string     `json:"primary_video_codec"`
-	PrimaryAudioCodec       string     `json:"primary_audio_codec"`
-	SubtitleLanguages       []string   `json:"subtitle_languages"`
-	MediaTags               []string   `json:"media_tags"`
-	MetadataUpdatedAt       *time.Time `json:"metadata_updated_at,omitempty"`
-	NZBGenerationStatus     string     `json:"nzb_generation_status"`
-	Hidden                  bool       `json:"hidden"`
-	PublicVisible           bool       `json:"public_visible"`
-	PasswordCandidateCount  int        `json:"password_candidate_count"`
+	ReleaseID                string     `json:"release_id"`
+	GUID                     string     `json:"guid"`
+	ProviderID               int64      `json:"provider_id"`
+	ReleaseKey               string     `json:"release_key"`
+	GroupName                string     `json:"group_name"`
+	Title                    string     `json:"title"`
+	SourceTitle              string     `json:"source_title"`
+	DeobfuscatedTitle        string     `json:"deobfuscated_title"`
+	MatchedMediaTitle        string     `json:"matched_media_title"`
+	OriginalMediaTitle       string     `json:"original_media_title"`
+	TMDBID                   int64      `json:"tmdb_id"`
+	TVDBID                   int64      `json:"tvdb_id"`
+	ExternalMediaType        string     `json:"external_media_type"`
+	ExternalYear             int        `json:"external_year"`
+	SeasonNumber             int        `json:"season_number"`
+	EpisodeNumber            int        `json:"episode_number"`
+	SeasonEpisodeSource      string     `json:"season_episode_source"`
+	SeasonEpisodeConfidence  float64    `json:"season_episode_confidence"`
+	TitleSource              string     `json:"title_source"`
+	TitleConfidence          float64    `json:"title_confidence"`
+	CategoryID               int        `json:"category_id"`
+	Category                 string     `json:"category"`
+	Classification           string     `json:"classification"`
+	Poster                   string     `json:"poster"`
+	SizeBytes                int64      `json:"size_bytes"`
+	PostedAt                 *time.Time `json:"posted_at,omitempty"`
+	FileCount                int        `json:"file_count"`
+	ExpectedFileCount        int        `json:"expected_file_count"`
+	ExpectedArchiveFileCount int        `json:"expected_archive_file_count"`
+	ParFileCount             int        `json:"par_file_count"`
+	CompletionPct            float64    `json:"completion_pct"`
+	MatchConfidence          float64    `json:"match_confidence"`
+	IdentityStatus           string     `json:"identity_status"`
+	Passworded               bool       `json:"passworded"`
+	PasswordedKnown          bool       `json:"passworded_known"`
+	PasswordedUnknown        bool       `json:"passworded_unknown"`
+	PasswordState            string     `json:"password_state"`
+	PreferredPasswordID      int64      `json:"preferred_password_id"`
+	Encrypted                bool       `json:"encrypted"`
+	HasPAR2                  bool       `json:"has_par2"`
+	HasNFO                   bool       `json:"has_nfo"`
+	ArchiveCount             int        `json:"archive_count"`
+	VideoCount               int        `json:"video_count"`
+	AudioCount               int        `json:"audio_count"`
+	SamplePresent            bool       `json:"sample_present"`
+	AvailabilityScore        float64    `json:"availability_score"`
+	AvailabilityTier         string     `json:"availability_tier"`
+	MediaQualityScore        float64    `json:"media_quality_score"`
+	MediaQualityTier         string     `json:"media_quality_tier"`
+	IdentityConfidenceScore  float64    `json:"identity_confidence_score"`
+	RuntimeSeconds           int        `json:"runtime_seconds"`
+	PrimaryResolution        string     `json:"primary_resolution"`
+	PrimaryVideoCodec        string     `json:"primary_video_codec"`
+	PrimaryAudioCodec        string     `json:"primary_audio_codec"`
+	SubtitleLanguages        []string   `json:"subtitle_languages"`
+	MediaTags                []string   `json:"media_tags"`
+	MetadataUpdatedAt        *time.Time `json:"metadata_updated_at,omitempty"`
+	NZBGenerationStatus      string     `json:"nzb_generation_status"`
+	Hidden                   bool       `json:"hidden"`
+	PublicVisible            bool       `json:"public_visible"`
+	PasswordCandidateCount   int        `json:"password_candidate_count"`
 }
 
 type AdminIndexerReleaseListParams struct {
@@ -298,6 +305,7 @@ type IndexerReleaseDetail struct {
 	Release            IndexerReleaseSummary             `json:"release"`
 	Newsgroups         []string                          `json:"newsgroups"`
 	Files              []IndexerReleaseFileSummary       `json:"files"`
+	Diagnostics        ReleaseDetailDiagnostics          `json:"diagnostics"`
 	PasswordCandidates []IndexerPasswordCandidateSummary `json:"password_candidates"`
 	Inspections        []IndexerInspectionSummary        `json:"inspections"`
 	PredbMatches       []IndexerPredbMatchSummary        `json:"predb_matches"`
@@ -457,8 +465,8 @@ const dashboardStatRefreshTimeout = 20 * time.Second
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "unassembled_headers",
-		Label:       "Assemble Backlog",
-		Description: "Planner-estimated article headers still waiting for assemble processing.",
+		Label:       "Unassembled Header Inventory",
+		Description: "Planner-estimated article headers not yet assembled. This is broad upstream inventory, not the current claimable assemble queue.",
 		Exact:       false,
 	},
 	{
@@ -470,7 +478,7 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_release_candidate_families",
 		Label:       "Release Backlog",
-		Description: "Dirty release families still waiting for release processing.",
+		Description: "Exact count of ready release candidates still waiting for release processing.",
 		Exact:       true,
 	},
 	{
@@ -506,7 +514,7 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_yenc_recovery_binaries",
 		Label:       "yEnc Recovery Backlog",
-		Description: "Bounded count of binaries that recover_yenc can inspect now. Values at the cap mean there may be more recoverable work behind the current snapshot.",
+		Description: "Bounded count of joinable yEnc recovery candidates that recover_yenc can inspect now. Values at the cap mean more joinable work may exist behind the current snapshot.",
 		Exact:       false,
 		Limit:       dashboardBacklogEstimateLimit,
 	},
@@ -754,10 +762,16 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 }
 
 type stageThroughputAccumulator struct {
-	completedRuns   int
-	failedRuns      int
-	itemsProcessed  int64
-	totalDurationMS float64
+	completedRuns        int
+	failedRuns           int
+	itemsProcessed       int64
+	totalDurationMS      float64
+	totalWorkersUsed     int64
+	maxWorkersUsed       int
+	totalGroupsScheduled int64
+	maxGroupsScheduled   int
+	totalRangesFetched   int64
+	maxRangesFetched     int
 }
 
 func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThroughput, error) {
@@ -818,6 +832,20 @@ func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThr
 				if durationMS > 0 {
 					acc.totalDurationMS += durationMS
 				}
+				if scrapeMetrics, ok := stageThroughputScrapeMetrics(stageName, metricsRaw); ok {
+					acc.totalWorkersUsed += int64(scrapeMetrics.workersUsed)
+					if scrapeMetrics.workersUsed > acc.maxWorkersUsed {
+						acc.maxWorkersUsed = scrapeMetrics.workersUsed
+					}
+					acc.totalGroupsScheduled += int64(scrapeMetrics.groupsScheduled)
+					if scrapeMetrics.groupsScheduled > acc.maxGroupsScheduled {
+						acc.maxGroupsScheduled = scrapeMetrics.groupsScheduled
+					}
+					acc.totalRangesFetched += int64(scrapeMetrics.rangesFetched)
+					if scrapeMetrics.rangesFetched > acc.maxRangesFetched {
+						acc.maxRangesFetched = scrapeMetrics.rangesFetched
+					}
+				}
 			case "failed":
 				acc.failedRuns++
 			}
@@ -843,6 +871,21 @@ func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThr
 				window.ItemsPerMinute = window.ItemsPerSecond * 60.0
 				window.ItemsPerHour = window.ItemsPerMinute * 60.0
 				window.AvgRunDurationMS = acc.totalDurationMS / float64(maxInt(acc.completedRuns, 1))
+			}
+			if def.StageName == "scrape_latest" || def.StageName == "scrape_backfill" {
+				completedRuns := float64(maxInt(acc.completedRuns, 1))
+				if acc.totalWorkersUsed > 0 {
+					window.AvgWorkersUsed = float64(acc.totalWorkersUsed) / completedRuns
+					window.MaxWorkersUsed = acc.maxWorkersUsed
+				}
+				if acc.totalGroupsScheduled > 0 {
+					window.AvgGroupsScheduled = float64(acc.totalGroupsScheduled) / completedRuns
+					window.MaxGroupsScheduled = acc.maxGroupsScheduled
+				}
+				if acc.totalRangesFetched > 0 {
+					window.AvgRangesFetched = float64(acc.totalRangesFetched) / completedRuns
+					window.MaxRangesFetched = acc.maxRangesFetched
+				}
 			}
 			windowsOut = append(windowsOut, window)
 		}
@@ -874,6 +917,36 @@ func stageThroughputMetricValue(stageName string, metricsRaw []byte) int64 {
 		}
 	}
 	return 0
+}
+
+type scrapeThroughputMetrics struct {
+	workersUsed     int
+	groupsScheduled int
+	rangesFetched   int
+}
+
+func stageThroughputScrapeMetrics(stageName string, metricsRaw []byte) (scrapeThroughputMetrics, bool) {
+	if stageName != "scrape_latest" && stageName != "scrape_backfill" {
+		return scrapeThroughputMetrics{}, false
+	}
+	if len(metricsRaw) == 0 {
+		return scrapeThroughputMetrics{}, false
+	}
+	var metrics map[string]any
+	if err := json.Unmarshal(metricsRaw, &metrics); err != nil {
+		return scrapeThroughputMetrics{}, false
+	}
+	var out scrapeThroughputMetrics
+	if value, ok := metricInt64(metrics["workers_used"]); ok && value > 0 {
+		out.workersUsed = int(value)
+	}
+	if value, ok := metricInt64(metrics["groups_scheduled"]); ok && value > 0 {
+		out.groupsScheduled = int(value)
+	}
+	if value, ok := metricInt64(metrics["ranges_fetched"]); ok && value > 0 {
+		out.rangesFetched = int(value)
+	}
+	return out, out.workersUsed > 0 || out.groupsScheduled > 0 || out.rangesFetched > 0
 }
 
 func stageThroughputMetricKeys(stageName string) []string {
@@ -1143,29 +1216,37 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries s
-		LEFT JOIN release_family_readiness_acks a
-		  ON a.provider_id = s.provider_id
-		 AND a.newsgroup_id = s.newsgroup_id
-		 AND a.key_kind = s.key_kind
-		 AND a.family_key = s.family_key
-		WHERE s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`).Scan(&count); err != nil {
+		FROM release_ready_candidates c
+		LEFT JOIN release_ready_candidate_acks a
+		  ON a.provider_id = c.provider_id
+		 AND a.newsgroup_id = c.newsgroup_id
+		 AND a.key_kind = c.key_kind
+		 AND a.family_key = c.family_key
+		WHERE c.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil
 }
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	if err := s.ensureYEncRecoveryWorkItemsSeed(ctx, yencRecoveryWorkItemSeedLimit); err != nil {
-		return 0, fmt.Errorf("seed yenc recovery work items: %w", err)
+	count, err := s.countReadyYEncRecoveryCandidates(ctx, int(dashboardBacklogEstimateLimit))
+	if err != nil {
+		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
+	return int64(count), nil
+}
+
+func (s *Store) CountClaimableAssembleBacklog(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM yenc_recovery_work_items
-		WHERE status = 'ready'
-		  AND ready_at <= NOW()`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
+		FROM article_headers
+		WHERE assembled_at IS NULL
+		  AND (
+			assembly_claimed_until IS NULL
+			OR assembly_claimed_until < NOW()
+		  )`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count claimable assemble backlog: %w", err)
 	}
 	return count, nil
 }
@@ -1184,43 +1265,114 @@ func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM binaries b
-		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = 'inspect_par2'
-			AND bi.binary_id = b.id
-		WHERE b.observed_parts > 0
-		  AND (
-			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
-			COALESCE(b.recovered_kind, '') = 'par2' OR
-			COALESCE(b.recovered_extension, '') = '.par2'
-		  )
-		  AND (
-			bi.id IS NULL OR
-			bi.status = 'failed' OR
-			(
-				bi.status = 'running' AND
-				bi.inspection_claimed_until IS NOT NULL AND
+		WITH candidate_rows AS (
+			SELECT
+				b.id,
+				b.updated_at AS source_updated_at,
+				COALESCE(bi.status, '') AS current_status,
+				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
+					THEN regexp_replace(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')),
+						'\.vol[0-9]+(?:\+| )[0-9]+\.par2$',
+						'.par2'
+					)
+					ELSE LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''))
+				END AS par2_set_name,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
+					THEN 1
+					ELSE 0
+				END AS volume_rank,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+					THEN COALESCE(NULLIF(substring(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''))
+						FROM '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+					), ''), '0')::integer
+					ELSE 0
+				END AS volume_number,
+				EXISTS (
+					SELECT 1
+					FROM binary_par2_targets bpt
+					WHERE bpt.binary_id = b.id
+				) AS has_targets,
+				(
+					bi.id IS NULL OR
+					bi.status = 'failed' OR
+					(
+						bi.status = 'running' AND
+						bi.inspection_claimed_until IS NOT NULL AND
+						bi.inspection_claimed_until < NOW()
+					) OR
+					b.updated_at > bi.updated_at
+				) AS needs_rerun
+			FROM binaries b
+			LEFT JOIN binary_inspections bi
+				ON bi.stage_name = 'inspect_par2'
+				AND bi.binary_id = b.id
+			WHERE b.observed_parts > 0
+			  AND (
+				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
+				COALESCE(b.recovered_kind, '') = 'par2' OR
+				COALESCE(b.recovered_extension, '') = '.par2'
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
 				bi.inspection_claimed_until < NOW()
-			) OR
-			b.updated_at > bi.updated_at OR
-			NOT EXISTS (
-				SELECT 1
-				FROM binary_par2_targets bpt
-				WHERE bpt.binary_id = b.id
+			  )
+		),
+		set_state AS (
+			SELECT
+				par2_set_name,
+				BOOL_OR(volume_rank = 0) AS has_manifest,
+				BOOL_OR(has_targets) AS has_any_targets,
+				BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun,
+				BOOL_OR(
+					current_status = 'completed' AND
+					CASE
+						WHEN COALESCE(current_summary_json->>'target_count', '') ~ '^[0-9]+$'
+						THEN (current_summary_json->>'target_count')::integer = 0
+						ELSE FALSE
+					END
+				) AS has_completed_zero_targets
+			FROM candidate_rows
+			GROUP BY par2_set_name
+		),
+		eligible_rows AS (
+			SELECT cr.*
+			FROM candidate_rows cr
+			JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
+			WHERE (
+				cr.needs_rerun OR
+				(
+					NOT ss.has_any_targets AND
+					NOT ss.has_completed_zero_targets
+				)
 			)
-		  )
-		  AND (
-			bi.inspection_claimed_until IS NULL OR
-			bi.inspection_claimed_until < NOW()
-		  )`).Scan(&count); err != nil {
+			  AND (
+				NOT ss.has_manifest OR
+				cr.volume_rank = 0 OR
+				(
+					NOT ss.manifest_needs_rerun AND
+					NOT ss.has_any_targets
+				)
+			  )
+		)
+		SELECT COUNT(*)
+		FROM (
+			SELECT DISTINCT ON (par2_set_name) par2_set_name
+			FROM eligible_rows
+			ORDER BY par2_set_name, volume_rank, volume_number, source_updated_at DESC, id DESC
+		) chosen`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending inspect_par2 backlog: %w", err)
 	}
 	return count, nil
 }
 
 func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
-	filter, err := inspectCandidateFilter("inspect_media")
+	filter, err := inspectCandidateFilter("inspect_media", false)
 	if err != nil {
 		return 0, err
 	}
@@ -1468,6 +1620,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.posted_at,
 			r.file_count,
 			r.expected_file_count,
+			r.expected_archive_file_count,
 			r.par_file_count,
 			r.completion_pct,
 			r.match_confidence,
@@ -1576,6 +1729,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.posted_at,
 			r.file_count,
 			r.expected_file_count,
+			r.expected_archive_file_count,
 			r.par_file_count,
 			r.completion_pct,
 			r.match_confidence,
@@ -1718,6 +1872,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		Release:            release,
 		Newsgroups:         newsgroups,
 		Files:              files,
+		Diagnostics:        buildReleaseDetailDiagnostics(release, files),
 		PasswordCandidates: passwordCandidates,
 		Inspections:        inspections,
 		PredbMatches:       predbMatches,
@@ -1983,6 +2138,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&postedAt,
 		&item.FileCount,
 		&item.ExpectedFileCount,
+		&item.ExpectedArchiveFileCount,
 		&item.ParFileCount,
 		&item.CompletionPct,
 		&item.MatchConfidence,

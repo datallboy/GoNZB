@@ -1476,6 +1476,85 @@ func TestRunOnceDoesNotDrainSummaryRefreshQueue(t *testing.T) {
 	}
 }
 
+func TestRunOnceAutoReformsExistingCandidates(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount: 0,
+		existingCandidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			KeyKind:     pgindex.ReleaseCandidateKeyKindReleaseFamily,
+			ReleaseKey:  "existing source key",
+			ReleaseName: "Existing.Release.2026",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"existing source key": {{
+				BinaryID:        1,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "existing source key",
+				ReleaseName:     "Existing.Release.2026",
+				FileName:        "Existing.Release.2026.part1.rar",
+				BaseStem:        "existing release 2026",
+				Poster:          "poster-a",
+				TotalParts:      20,
+				ObservedParts:   20,
+				TotalBytes:      1_500_000_000,
+				MatchConfidence: 0.95,
+				IsMainPayload:   true,
+				FileIndex:       1,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, AutoReformBatchSize: 5, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with auto reform: %v", err)
+	}
+
+	if repo.listReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected normal release candidate selection, got %d", repo.listReleaseCandidatesCalls)
+	}
+	if repo.listExistingReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected one existing-candidate auto reform query, got %d", repo.listExistingReleaseCandidatesCalls)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release to be formed from auto reform, got %d", len(repo.upsertedReleases))
+	}
+	if got := metrics["auto_reform_candidates"]; got != 1 {
+		t.Fatalf("expected auto_reform_candidates=1, got %#v", got)
+	}
+}
+
+func TestRunOnceSkipsAutoReformWhenSummaryBacklogExists(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount: 10,
+		existingCandidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			KeyKind:     pgindex.ReleaseCandidateKeyKindReleaseFamily,
+			ReleaseKey:  "existing source key",
+			ReleaseName: "Existing.Release.2026",
+		}},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, AutoReformBatchSize: 5, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with backlog: %v", err)
+	}
+
+	if repo.listExistingReleaseCandidatesCalls != 0 {
+		t.Fatalf("expected no existing-candidate auto reform query while summary backlog exists, got %d", repo.listExistingReleaseCandidatesCalls)
+	}
+	if got := metrics["auto_reform_candidates"]; got != 0 {
+		t.Fatalf("expected auto_reform_candidates=0, got %#v", got)
+	}
+}
+
 func TestRunOnceSkipsLowConfidenceReleaseBelowThreshold(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
@@ -1613,6 +1692,54 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	}
 	if got.AvailabilityScore == got.CompletionPct {
 		t.Fatalf("expected availability score to differ from completion pct, got %.2f", got.AvailabilityScore)
+	}
+}
+
+func TestRunOnceDeletesAuxiliaryOnlySiblingReleasesForPrimaryBaseStem(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "main source key",
+			ReleaseName: "Example.Release.2026",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"main source key": {{
+				BinaryID:        1,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "main source key",
+				ReleaseName:     "Example.Release.2026",
+				FileName:        "Example.Release.2026.part1.rar",
+				BaseStem:        "example release 2026",
+				Poster:          "poster-a",
+				TotalParts:      20,
+				ObservedParts:   20,
+				TotalBytes:      1_500_000_000,
+				MatchConfidence: 0.95,
+				IsMainPayload:   true,
+				FileIndex:       1,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.deletedAuxiliarySiblingCalls) != 1 {
+		t.Fatalf("expected one auxiliary sibling cleanup call, got %d", len(repo.deletedAuxiliarySiblingCalls))
+	}
+	got := repo.deletedAuxiliarySiblingCalls[0]
+	if got.providerID != 1 || got.newsgroupID != 2 || got.baseStem != "example release 2026" {
+		t.Fatalf("unexpected auxiliary sibling cleanup call: %+v", got)
+	}
+	if len(got.keepReleaseIDs) != 1 || got.keepReleaseIDs[0] != "rel-1" {
+		t.Fatalf("expected kept release id rel-1, got %+v", got.keepReleaseIDs)
 	}
 }
 
@@ -2225,6 +2352,7 @@ type fakeReleaseRepository struct {
 	listBinariesCalls                  int
 	listTitleCandidatesCalls           int
 	deletedStaleCalls                  []staleDeleteCall
+	deletedAuxiliarySiblingCalls       []auxiliarySiblingDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
 }
@@ -2254,6 +2382,13 @@ type staleDeleteCall struct {
 	keyKind        string
 	releaseKey     string
 	keepGroupNames []string
+}
+
+type auxiliarySiblingDeleteCall struct {
+	providerID     int64
+	newsgroupID    int64
+	baseStem       string
+	keepReleaseIDs []string
 }
 
 type ackedReleaseCandidate struct {
@@ -2347,6 +2482,16 @@ func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Contex
 	return nil
 }
 
+func (f *fakeReleaseRepository) DeleteAuxiliaryOnlySiblingReleases(_ context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error {
+	f.deletedAuxiliarySiblingCalls = append(f.deletedAuxiliarySiblingCalls, auxiliarySiblingDeleteCall{
+		providerID:     providerID,
+		newsgroupID:    newsgroupID,
+		baseStem:       baseStem,
+		keepReleaseIDs: append([]string(nil), keepReleaseIDs...),
+	})
+	return nil
+}
+
 func (f *fakeReleaseRepository) ReplaceReleaseFiles(context.Context, string, []pgindex.ReleaseFileRecord) error {
 	f.replaceFileCalls++
 	return nil
@@ -2360,6 +2505,10 @@ func (f *fakeReleaseRepository) ReplaceReleaseNewsgroups(_ context.Context, _ st
 
 func (f *fakeReleaseRepository) UpsertNZBCache(context.Context, string, string, string, string) error {
 	f.nzbCalls++
+	return nil
+}
+
+func (f *fakeReleaseRepository) ReopenArchivedReleaseForRegeneration(context.Context, string) error {
 	return nil
 }
 

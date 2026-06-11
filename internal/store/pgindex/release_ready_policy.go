@@ -6,20 +6,38 @@ import (
 )
 
 type ReleaseReadyPolicy struct {
-	MinMatchConfidence float64
-	MinCompletionPct   float64
-	MinIdentityStatus  string
-	RequireInspection  bool
-	RequireEnrichment  bool
+	MinMatchConfidence                   float64
+	MinCompletionPct                     float64
+	MinIdentityStatus                    string
+	RequireInspection                    bool
+	RequireEnrichment                    bool
+	RequirePayloadComplete               bool
+	RequireExpectedFileCountComplete     bool
+	RequirePAR2                          bool
+	RequireNFO                           bool
+	RequireSFV                           bool
+	RetainUntilExpectedFileCountComplete bool
+	RetainRequirePAR2                    bool
+	RetainRequireNFO                     bool
+	RetainRequireSFV                     bool
 }
 
 func DefaultReleaseReadyPolicy() ReleaseReadyPolicy {
 	return ReleaseReadyPolicy{
-		MinMatchConfidence: 0.55,
-		MinCompletionPct:   100,
-		MinIdentityStatus:  "probable",
-		RequireInspection:  false,
-		RequireEnrichment:  false,
+		MinMatchConfidence:                   0.55,
+		MinCompletionPct:                     100,
+		MinIdentityStatus:                    "probable",
+		RequireInspection:                    false,
+		RequireEnrichment:                    false,
+		RequirePayloadComplete:               true,
+		RequireExpectedFileCountComplete:     false,
+		RequirePAR2:                          false,
+		RequireNFO:                           false,
+		RequireSFV:                           false,
+		RetainUntilExpectedFileCountComplete: false,
+		RetainRequirePAR2:                    false,
+		RetainRequireNFO:                     false,
+		RetainRequireSFV:                     false,
 	}
 }
 
@@ -39,6 +57,15 @@ func NormalizeReleaseReadyPolicy(in ReleaseReadyPolicy) ReleaseReadyPolicy {
 	}
 	out.RequireInspection = in.RequireInspection
 	out.RequireEnrichment = in.RequireEnrichment
+	out.RequirePayloadComplete = in.RequirePayloadComplete
+	out.RequireExpectedFileCountComplete = in.RequireExpectedFileCountComplete
+	out.RequirePAR2 = in.RequirePAR2
+	out.RequireNFO = in.RequireNFO
+	out.RequireSFV = in.RequireSFV
+	out.RetainUntilExpectedFileCountComplete = in.RetainUntilExpectedFileCountComplete
+	out.RetainRequirePAR2 = in.RetainRequirePAR2
+	out.RetainRequireNFO = in.RetainRequireNFO
+	out.RetainRequireSFV = in.RetainRequireSFV
 	return out
 }
 
@@ -81,6 +108,44 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 			alias, alias, alias, alias,
 		))
 	}
+	if policy.RequirePayloadComplete {
+		clauses = append(clauses, payloadCompleteClause(alias))
+	}
+	if policy.RequireExpectedFileCountComplete {
+		clauses = append(clauses, expectedFileCountCompleteClause(alias))
+	}
+	if policy.RequirePAR2 {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(%s.has_par2, FALSE) = TRUE", alias))
+	}
+	if policy.RequireNFO {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(%s.has_nfo, FALSE) = TRUE", alias))
+	}
+	if policy.RequireSFV {
+		clauses = append(clauses, hasSFVClause(alias))
+	}
 
 	return strings.Join(clauses, "\n\t\tAND ")
+}
+
+func payloadCompleteClause(alias string) string {
+	return fmt.Sprintf(`(
+		COALESCE(%[1]s.expected_archive_file_count, 0) <= 0
+		OR GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= COALESCE(%[1]s.expected_archive_file_count, 0)
+	)`, alias)
+}
+
+func expectedFileCountCompleteClause(alias string) string {
+	return fmt.Sprintf(`(
+		COALESCE(%[1]s.expected_file_count, 0) <= 0
+		OR COALESCE(%[1]s.file_count, 0) >= COALESCE(%[1]s.expected_file_count, 0)
+	)`, alias)
+}
+
+func hasSFVClause(alias string) string {
+	return fmt.Sprintf(`EXISTS (
+		SELECT 1
+		FROM release_catalog_files cf
+		WHERE cf.release_id = %s.release_id
+		  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%%.sfv'
+	)`, alias)
 }

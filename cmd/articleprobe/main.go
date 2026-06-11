@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -585,7 +586,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
-	if cfg == nil || len(cfg.Servers) > 0 || strings.TrimSpace(cfg.Store.SQLitePath) == "" {
+	if cfg == nil || strings.TrimSpace(cfg.Store.SQLitePath) == "" {
 		return cfg, nil
 	}
 	store, err := settingsstore.NewStore(cfg.Store.SQLitePath)
@@ -594,7 +595,26 @@ func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
 	}
 	defer store.Close()
 
-	return store.LoadEffectiveSettings(context.Background(), cfg)
+	runtime, err := store.GetRuntimeSettings(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("load runtime settings: %w", err)
+	}
+
+	effective := settingsstore.ApplyToConfig(cfg, runtime)
+	if effective == nil {
+		return nil, fmt.Errorf("effective config is nil")
+	}
+
+	// articleprobe is an indexer-side BODY/HEAD tool; prefer the indexer NNTP pool
+	// even when the compatibility/shared server list is present but incomplete.
+	if servers := app.IndexerNNTPServers(runtime); len(servers) > 0 {
+		effective.Servers = app.ToConfigServers(servers)
+	}
+
+	if err := effective.ValidateEffective(); err != nil {
+		return nil, fmt.Errorf("validate effective config: %w", err)
+	}
+	return effective, nil
 }
 
 func fatalIf(err error) {

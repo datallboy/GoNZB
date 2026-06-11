@@ -534,7 +534,10 @@ func TestMatchClassifiesNumericPrefixAsWeakSubjectSet(t *testing.T) {
 	if got.ReleaseKey != "80894690 n yuo" {
 		t.Fatalf("expected release key to preserve set token, got %q", got.ReleaseKey)
 	}
-	if got.FileSetKey != "80894690 n yuo files 4" {
-		t.Fatalf("expected file set key to include expected files, got %q", got.FileSetKey)
+	if got.ReleaseFamilyKey != "" {
+		t.Fatalf("expected promotable release family identity to be deferred, got %q", got.ReleaseFamilyKey)
+	}
+	if got.FileSetKey != "" {
+		t.Fatalf("expected promotable file set identity to be deferred, got %q", got.FileSetKey)
 	}
 }

@@ -24,6 +24,13 @@ func IsArchiveFile(fileName string) bool {
 	return strings.HasSuffix(lower, ".rar") ||
 		strings.HasSuffix(lower, ".zip") ||
 		strings.HasSuffix(lower, ".7z") ||
+		strings.HasSuffix(lower, ".tar") ||
+		strings.HasSuffix(lower, ".tgz") ||
+		strings.HasSuffix(lower, ".tar.gz") ||
+		strings.HasSuffix(lower, ".tar.xz") ||
+		strings.HasSuffix(lower, ".txz") ||
+		strings.HasSuffix(lower, ".tar.zst") ||
+		strings.HasSuffix(lower, ".tzst") ||
 		splitSevenZipRE.MatchString(lower) ||
 		splitZipRE.MatchString(lower) ||
 		rarPartRE.MatchString(lower)
@@ -38,7 +45,16 @@ func IsArchiveRepresentative(fileName string) bool {
 		return true
 	case rarPartRE.MatchString(lower):
 		return false
-	case strings.HasSuffix(lower, ".7z"), strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".rar"):
+	case strings.HasSuffix(lower, ".7z"),
+		strings.HasSuffix(lower, ".zip"),
+		strings.HasSuffix(lower, ".rar"),
+		strings.HasSuffix(lower, ".tar"),
+		strings.HasSuffix(lower, ".tgz"),
+		strings.HasSuffix(lower, ".tar.gz"),
+		strings.HasSuffix(lower, ".tar.xz"),
+		strings.HasSuffix(lower, ".txz"),
+		strings.HasSuffix(lower, ".tar.zst"),
+		strings.HasSuffix(lower, ".tzst"):
 		return true
 	default:
 		return false
