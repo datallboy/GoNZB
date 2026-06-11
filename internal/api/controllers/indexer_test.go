@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -391,6 +392,86 @@ func TestIndexerAdminControllerGetNNTPStats(t *testing.T) {
 	}
 }
 
+func TestIndexerAdminControllerStreamOverview(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/stream", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{
+		Service: &stubIndexerService{
+			nntpStats: &app.NNTPRuntimeStats{
+				Scope:    "indexer",
+				Policy:   "shared",
+				Capacity: 40,
+				Active:   6,
+			},
+			throughput: &pgindex.IndexerStageThroughput{
+				Items: []pgindex.IndexerStageThroughputItem{{
+					StageName: "scrape_latest",
+					Label:     "Scrape Latest",
+					ItemLabel: "headers",
+					Windows: []pgindex.IndexerStageThroughputWindow{{
+						WindowHours:      1,
+						CompletedRuns:    3,
+						ItemsProcessed:   12000,
+						ItemsPerSecond:   100,
+						AvgWorkersUsed:   8,
+						MaxWorkersUsed:   8,
+						MaxRangesFetched: 8,
+					}},
+				}},
+				Count: 1,
+			},
+		},
+	}
+
+	cancelledCtx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(cancelledCtx)
+	c.SetRequest(req)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ctrl.StreamOverview(c)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		body := rec.Body.String()
+		if strings.Contains(body, "event: overview") && strings.Contains(body, `"policy":"shared"`) {
+			cancel()
+			err := <-done
+			if err != nil {
+				t.Fatalf("StreamOverview returned error: %v", err)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d", rec.Code)
+			}
+			if got := rec.Header().Get(echo.HeaderContentType); got != "text/event-stream" {
+				t.Fatalf("expected content type text/event-stream, got %q", got)
+			}
+			if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+				t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+			}
+			return
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("StreamOverview returned error before emitting event: %v", err)
+			}
+			t.Fatalf("StreamOverview exited before emitting event")
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for overview stream event; body=%q", rec.Body.String())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/overview/throughput", nil)
@@ -405,10 +486,16 @@ func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
 					Label:     "Assemble",
 					ItemLabel: "headers",
 					Windows: []pgindex.IndexerStageThroughputWindow{{
-						WindowHours:    1,
-						CompletedRuns:  2,
-						ItemsProcessed: 20000,
-						ItemsPerSecond: 500,
+						WindowHours:        1,
+						CompletedRuns:      2,
+						ItemsProcessed:     20000,
+						ItemsPerSecond:     500,
+						AvgWorkersUsed:     8,
+						MaxWorkersUsed:     12,
+						AvgGroupsScheduled: 10,
+						MaxGroupsScheduled: 16,
+						AvgRangesFetched:   10,
+						MaxRangesFetched:   16,
 					}},
 				}},
 				Count: 1,
@@ -426,7 +513,7 @@ func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
 		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{`"count":1`, `"stage_name":"assemble"`, `"items_per_second":500`} {
+	for _, needle := range []string{`"count":1`, `"stage_name":"assemble"`, `"items_per_second":500`, `"max_workers_used":12`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
@@ -814,4 +901,73 @@ func TestIndexerControllerGetFileMarksResponseAsInternalDebug(t *testing.T) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
 	}
+}
+
+func TestRuntimeIndexerServiceNNTPStatsUsesCurrentRuntimeIndexer(t *testing.T) {
+	appCtx := &app.Context{}
+	service := newIndexerService(appCtx)
+
+	first := &testRuntimeIndexerService{stats: &app.NNTPRuntimeStats{Scope: "indexer", Active: 1}}
+	second := &testRuntimeIndexerService{stats: &app.NNTPRuntimeStats{Scope: "indexer", Active: 7}}
+	appCtx.UsenetIndexer = first
+
+	stats, err := service.NNTPStats(context.Background())
+	if err != nil {
+		t.Fatalf("NNTPStats first call error = %v", err)
+	}
+	if stats == nil || stats.Active != 1 {
+		t.Fatalf("expected first runtime stats active=1, got %+v", stats)
+	}
+
+	appCtx.UsenetIndexer = second
+	stats, err = service.NNTPStats(context.Background())
+	if err != nil {
+		t.Fatalf("NNTPStats second call error = %v", err)
+	}
+	if stats == nil || stats.Active != 7 {
+		t.Fatalf("expected refreshed runtime stats active=7, got %+v", stats)
+	}
+}
+
+type testRuntimeIndexerService struct {
+	stats *app.NNTPRuntimeStats
+}
+
+func (t *testRuntimeIndexerService) ScrapeOnce(context.Context) error                { return nil }
+func (t *testRuntimeIndexerService) ScrapeLatestOnce(context.Context) error          { return nil }
+func (t *testRuntimeIndexerService) ScrapeBackfillOnce(context.Context) error        { return nil }
+func (t *testRuntimeIndexerService) AssembleOnce(context.Context) error              { return nil }
+func (t *testRuntimeIndexerService) AssembleLaneAOnce(context.Context) error         { return nil }
+func (t *testRuntimeIndexerService) AssembleLaneBOnce(context.Context) error         { return nil }
+func (t *testRuntimeIndexerService) RecoverYEncOnce(context.Context) error           { return nil }
+func (t *testRuntimeIndexerService) ReleaseSummaryRefreshOnce(context.Context) error { return nil }
+func (t *testRuntimeIndexerService) ReleaseOnce(context.Context) error               { return nil }
+func (t *testRuntimeIndexerService) ReleaseGenerateNZBOnce(context.Context) error    { return nil }
+func (t *testRuntimeIndexerService) ReleaseArchiveNZBOnce(context.Context) error     { return nil }
+func (t *testRuntimeIndexerService) ReleasePurgeArchivedSourcesOnce(context.Context) error {
+	return nil
+}
+func (t *testRuntimeIndexerService) ReformReleasesOnce(context.Context) error   { return nil }
+func (t *testRuntimeIndexerService) InspectOnce(context.Context) error          { return nil }
+func (t *testRuntimeIndexerService) InspectDiscoveryOnce(context.Context) error { return nil }
+func (t *testRuntimeIndexerService) InspectPAR2Once(context.Context) error      { return nil }
+func (t *testRuntimeIndexerService) InspectNFOOnce(context.Context) error       { return nil }
+func (t *testRuntimeIndexerService) InspectArchiveOnce(context.Context) error   { return nil }
+func (t *testRuntimeIndexerService) InspectPasswordOnce(context.Context) error  { return nil }
+func (t *testRuntimeIndexerService) InspectMediaOnce(context.Context) error     { return nil }
+func (t *testRuntimeIndexerService) EnrichPredbOnce(context.Context) error      { return nil }
+func (t *testRuntimeIndexerService) EnrichPredbSceneNameRecoveryOnce(context.Context) error {
+	return nil
+}
+func (t *testRuntimeIndexerService) EnrichPredbMetadataFallbackOnce(context.Context) error {
+	return nil
+}
+func (t *testRuntimeIndexerService) EnrichPredbSyncFeedOnce(context.Context) error     { return nil }
+func (t *testRuntimeIndexerService) EnrichPredbSyncBackfillOnce(context.Context) error { return nil }
+func (t *testRuntimeIndexerService) EnrichTMDBOnce(context.Context) error              { return nil }
+func (t *testRuntimeIndexerService) RunStageOnce(context.Context, string) error        { return nil }
+func (t *testRuntimeIndexerService) RunPipelineOnce(context.Context) error             { return nil }
+func (t *testRuntimeIndexerService) Start(context.Context, time.Duration) error        { return nil }
+func (t *testRuntimeIndexerService) NNTPStats(context.Context) (*app.NNTPRuntimeStats, error) {
+	return t.stats, nil
 }

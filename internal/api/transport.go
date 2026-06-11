@@ -9,6 +9,7 @@ import (
 
 const (
 	defaultJSONBodyLimit      int64 = 1 << 20  // 1 MiB
+	adminJSONBodyLimit        int64 = 32 << 20 // 32 MiB
 	defaultMultipartBodyLimit int64 = 64 << 20 // 64 MiB
 )
 

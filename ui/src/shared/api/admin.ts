@@ -1,8 +1,9 @@
-import { apiRequest } from './http'
+import { apiRequest, apiURL } from './http'
 import type {
   IndexerBackfillProgress,
   IndexerDashboardStats,
   IndexerNNTPStats,
+  IndexerOverviewStreamSnapshot,
   IndexerStageThroughput,
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
@@ -10,6 +11,7 @@ import type {
   AdminRunDetailResponse,
   AdminRunListParams,
   AdminRunsResponse,
+  AdminScrapeConfigResponse,
   AdminStageConfigPatch,
   AdminStagesResponse,
   IndexerOverview,
@@ -38,6 +40,35 @@ export function getAdminStageThroughput() {
 
 export function getAdminNNTPStats() {
   return apiRequest<IndexerNNTPStats>('/api/v1/admin/indexer/overview/nntp')
+}
+
+export function openAdminOverviewStream(onMessage: (snapshot: IndexerOverviewStreamSnapshot) => void) {
+  const source = new EventSource(apiURL('/api/v1/admin/indexer/overview/stream'), { withCredentials: true })
+  source.addEventListener('overview', (event) => {
+    const message = event as MessageEvent<string>
+    onMessage(JSON.parse(message.data) as IndexerOverviewStreamSnapshot)
+  })
+  return source
+}
+
+export function getAdminScrapeConfig() {
+  return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape')
+}
+
+export function updateAdminScrapeConfig(body: Record<string, unknown>) {
+  return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape', { method: 'PUT', body })
+}
+
+export function scanAdminScrapeProviders() {
+  return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape/actions/scan', { method: 'POST' })
+}
+
+export function previewAdminScrapeWildcards() {
+  return apiRequest<{ items: AdminScrapeConfigResponse['preview_groups']; count: number }>('/api/v1/admin/indexer/scrape/preview')
+}
+
+export function applyAdminScrapeWildcards() {
+  return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape/actions/apply', { method: 'POST' })
 }
 
 export async function getAdminStages() {

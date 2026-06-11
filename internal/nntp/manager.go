@@ -258,6 +258,13 @@ func (c *ManagerClient) GroupStats(ctx context.Context, group string) (GroupStat
 	return c.manager.groupStatsForScope(ctx, c.scope, c.policy, group)
 }
 
+func (c *ManagerClient) ListGroups(ctx context.Context, pattern string) ([]GroupListing, error) {
+	if c == nil || c.manager == nil {
+		return nil, fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.listGroupsForScope(ctx, c.scope, c.policy, pattern)
+}
+
 func (c *ManagerClient) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
@@ -280,6 +287,52 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 	scopeStats := m.scopeStats("downloader")
 	scopeStats.fetches.Add(1)
 	return m.fetch(ctx, "downloader", CapacityReturnBusy, seg, groups)
+}
+
+func (m *Manager) listGroupsForScope(ctx context.Context, scope string, policy CapacityPolicy, pattern string) ([]GroupListing, error) {
+	scopeStats := m.scopeStats(scope)
+	scopeStats.groupStats.Add(1)
+	m.stats.groupStats.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, mp := range m.providers {
+		acquired, err := m.acquire(ctx, scope, mp)
+		if err != nil {
+			return nil, err
+		}
+		if !acquired {
+			continue
+		}
+
+		groups, err := mp.Provider.ListGroups(ctx, pattern)
+		m.releaseForScope(scope, mp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return groups, nil
+	}
+	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
+		return nil, lastErr
+	}
+	if policy == CapacityWaitQueue {
+		mp, err := m.waitForProvider(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		result, err := mp.Provider.ListGroups(ctx, pattern)
+		m.releaseForScope(scope, mp)
+		if err != nil {
+			m.recordOperationError(scope, err)
+		}
+		return result, err
+	}
+	m.stats.busyReturns.Add(1)
+	return nil, ErrProviderBusy
 }
 
 func (m *Manager) FetchMessage(ctx context.Context, msgID string, groups []string) (io.Reader, error) {

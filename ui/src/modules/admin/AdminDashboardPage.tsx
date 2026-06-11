@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, openAdminOverviewStream, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerOverviewStreamSnapshot, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -40,6 +40,10 @@ function formatDuration(ms: number) {
   }
   const minutes = seconds / 60
   return `${formatRate(minutes)}m`
+}
+
+function isScrapeThroughputWindow(window: IndexerStageThroughput['items'][number]['windows'][number]) {
+  return (window.max_workers_used ?? 0) > 0 || (window.max_groups_scheduled ?? 0) > 0 || (window.max_ranges_fetched ?? 0) > 0
 }
 
 function statFreshness(stat: IndexerDashboardStat) {
@@ -151,145 +155,168 @@ export function AdminDashboardPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-  let cancelled = false
+    let cancelled = false
+    let streamConnected = false
+    let source: EventSource | null = null
 
-  function loadNNTPStats(showLoading = false) {
-    if (showLoading) {
-      setNNTPLoading(true)
+    function applyStreamSnapshot(snapshot: IndexerOverviewStreamSnapshot) {
+      if (cancelled) {
+        return
+      }
+      if (snapshot.nntp) {
+        setNNTPStats(snapshot.nntp)
+        setNNTPError(null)
+        setNNTPLoading(false)
+      }
+      if (snapshot.throughput) {
+        setThroughput(snapshot.throughput)
+        setThroughputError(null)
+        setThroughputLoading(false)
+      }
     }
 
-    void getAdminNNTPStats()
-      .then((value) => {
-        if (!cancelled) {
-          setNNTPStats(value)
-          setNNTPError(null)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setNNTPError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load NNTP stats'
-          )
-        }
-      })
-      .finally(() => {
-        if (showLoading && !cancelled) {
-          setNNTPLoading(false)
-        }
-      })
-  }
+    function loadNNTPStats(showLoading = false) {
+      if (streamConnected) {
+        return
+      }
+      if (showLoading) {
+        setNNTPLoading(true)
+      }
 
-  void getAdminOverview()
-    .then((value) => {
-      if (!cancelled) {
-        setOverview(value)
-      }
-    })
-    .catch((err) => {
-      if (!cancelled) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Failed to load overview'
-        )
-      }
-    })
-    .finally(() => {
-      if (!cancelled) {
-        setOverviewLoading(false)
-      }
-    })
-
-  const timer = window.setTimeout(() => {
-    if (cancelled) {
-      return
+      void getAdminNNTPStats()
+        .then((value) => {
+          if (!cancelled) {
+            setNNTPStats(value)
+            setNNTPError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setNNTPError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load NNTP stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (showLoading && !cancelled) {
+            setNNTPLoading(false)
+          }
+        })
     }
 
-    setStatsLoading(true)
-    void getAdminDashboardStats()
+    void getAdminOverview()
       .then((value) => {
         if (!cancelled) {
-          setStats(value)
+          setOverview(value)
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setStatsError(
+          setError(
             err instanceof Error
               ? err.message
-              : 'Failed to load dashboard stats'
+              : 'Failed to load overview'
           )
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setStatsLoading(false)
+          setOverviewLoading(false)
         }
       })
 
-    setThroughputLoading(true)
-    void getAdminStageThroughput()
-      .then((value) => {
-        if (!cancelled) {
-          setThroughput(value)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setThroughputError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load stage throughput'
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setThroughputLoading(false)
-        }
-      })
+    const timer = window.setTimeout(() => {
+      if (cancelled) {
+        return
+      }
 
-    // Initial NNTP load with spinner
-    loadNNTPStats(true)
+      setStatsLoading(true)
+      void getAdminDashboardStats()
+        .then((value) => {
+          if (!cancelled) {
+            setStats(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStatsError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load dashboard stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStatsLoading(false)
+          }
+        })
 
-    setBackfillLoading(true)
-    void getAdminBackfillProgress()
-      .then((value) => {
-        if (!cancelled) {
-          setBackfill(value)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setBackfillError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load backfill progress'
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBackfillLoading(false)
-        }
-      })
-  }, 0)
+      setThroughputLoading(true)
+      void getAdminStageThroughput()
+        .then((value) => {
+          if (!cancelled && !streamConnected) {
+            setThroughput(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && !streamConnected) {
+            setThroughputError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load stage throughput'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled && !streamConnected) {
+            setThroughputLoading(false)
+          }
+        })
 
-  // Silent NNTP auto-refresh every second
-  const nntpInterval = window.setInterval(() => {
-    if (!cancelled) {
-      loadNNTPStats(false)
+      loadNNTPStats(true)
+
+      setBackfillLoading(true)
+      void getAdminBackfillProgress()
+        .then((value) => {
+          if (!cancelled) {
+            setBackfill(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setBackfillError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load backfill progress'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setBackfillLoading(false)
+          }
+        })
+
+      source = openAdminOverviewStream((snapshot) => {
+        streamConnected = true
+        applyStreamSnapshot(snapshot)
+      })
+      source.onerror = () => {
+        if (!cancelled && !streamConnected) {
+          setNNTPError('Live dashboard stream disconnected; falling back to snapshots.')
+        }
+      }
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      source?.close()
     }
-  }, 1000)
-
-  return () => {
-    cancelled = true
-    window.clearTimeout(timer)
-    window.clearInterval(nntpInterval)
-  }
-}, [])
+  }, [])
 
   function refreshStats() {
     setStatsLoading(true)
@@ -541,6 +568,21 @@ export function AdminDashboardPage() {
                         <strong>{window.items_processed.toLocaleString()}</strong> {item.item_label}
                       </div>
                       <div className="muted-copy">{formatRate(window.items_per_second)}/sec</div>
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Workers avg {formatRate(window.avg_workers_used ?? 0)} · max {(window.max_workers_used ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Groups avg {formatRate(window.avg_groups_scheduled ?? 0)} · max {(window.max_groups_scheduled ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Ranges avg {formatRate(window.avg_ranges_fetched ?? 0)} · max {(window.max_ranges_fetched ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
                       <div className="muted-copy">{window.completed_runs} completed · {window.failed_runs} failed</div>
                       <div className="muted-copy">Avg run {formatDuration(window.avg_run_duration_ms)}</div>
                     </td>

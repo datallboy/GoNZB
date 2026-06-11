@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -23,6 +24,10 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		Indexing: &IndexingRuntimeSettings{
 			Newsgroups:                  []string{},
 			BackfillUntilDateByGroup:    map[string]string{},
+			ExplicitGroups:              []IndexingScrapeGroupRuntimeSettings{},
+			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
+			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
+			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
 			ScrapeLatest:                defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
 			Assemble:                    defaultAssembleStage(false, 10, 5000, 1),
@@ -35,7 +40,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
 			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
 			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
 			InspectDiscovery:            defaultStage(false, 10, 100, 0),
@@ -105,10 +110,14 @@ func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int
 
 func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 	return IndexingReleaseRuntimeSettings{
-		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, MinConfidence: 0.55,
+		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, AutoReformBatchSize: 25, MinConfidence: 0.55,
 		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
 		PublicMinMatchConfidence: 0.55, PublicMinCompletionPct: 100, PublicMinIdentityStatus: "probable",
 		PublicRequireInspection: false, PublicRequireEnrichment: false,
+		PublicRequirePayloadComplete: true, PublicRequireExpectedFileCountComplete: false,
+		PublicRequirePAR2: false, PublicRequireNFO: false, PublicRequireSFV: false,
+		RetainUntilExpectedFileCountComplete: false, RetainRequirePAR2: false, RetainRequireNFO: false, RetainRequireSFV: false,
+		ReopenArchivedNZBOnReleaseChange: false,
 	}
 }
 
@@ -190,10 +199,14 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out := IndexingRuntimeSettings{
 		Newsgroups:               append([]string(nil), cfg.Newsgroups...),
 		BackfillUntilDateByGroup: cloneStringMap(cfg.BackfillUntilDateByGroup),
+		ExplicitGroups:           legacyExplicitGroupsFromConfig(cfg.Newsgroups, cfg.BackfillUntilDateByGroup),
+		WildcardRules:            []IndexingWildcardRuleRuntimeSettings{},
+		ProviderGroupInventory:   []IndexingProviderGroupInventoryRuntimeSettings{},
+		MaterializedGroups:       []IndexingMaterializedGroupRuntimeSettings{},
 	}
 
-	out.ScrapeLatest = indexStageRuntimeFromConfig(cfg.ScrapeLatest, true, 10, 5000)
-	out.ScrapeBackfill = indexStageRuntimeFromConfig(cfg.ScrapeBackfill, true, 10, 5000)
+	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
+	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
 	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
 	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
 	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
@@ -206,6 +219,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		Enabled:                    boolValue(cfg.Release.Enabled, true),
 		IntervalMinutes:            float64Value(cfg.Release.IntervalMinutes, 10),
 		BatchSize:                  intValue(cfg.Release.BatchSize, 1000),
+		AutoReformBatchSize:        intValue(cfg.Release.AutoReformBatchSize, 25),
 		BackoffSeconds:             intValue(cfg.Release.BackoffSeconds, 0),
 		MinConfidence:              float64Value(cfg.Release.MinConfidence, 0.55),
 		MinCompletionPct:           float64Value(cfg.Release.MinCompletionPct, 0),
@@ -216,6 +230,16 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		PublicMinIdentityStatus:                         firstNonEmpty(cfg.Release.PublicMinIdentityStatus, "probable"),
 		PublicRequireInspection:                         boolValue(cfg.Release.PublicRequireInspection, false),
 		PublicRequireEnrichment:                         boolValue(cfg.Release.PublicRequireEnrichment, false),
+		PublicRequirePayloadComplete:                    boolValue(cfg.Release.PublicRequirePayloadComplete, true),
+		PublicRequireExpectedFileCountComplete:          boolValue(cfg.Release.PublicRequireExpectedFileCountComplete, false),
+		PublicRequirePAR2:                               boolValue(cfg.Release.PublicRequirePAR2, false),
+		PublicRequireNFO:                                boolValue(cfg.Release.PublicRequireNFO, false),
+		PublicRequireSFV:                                boolValue(cfg.Release.PublicRequireSFV, false),
+		RetainUntilExpectedFileCountComplete:            boolValue(cfg.Release.RetainUntilExpectedFileCountComplete, false),
+		RetainRequirePAR2:                               boolValue(cfg.Release.RetainRequirePAR2, false),
+		RetainRequireNFO:                                boolValue(cfg.Release.RetainRequireNFO, false),
+		RetainRequireSFV:                                boolValue(cfg.Release.RetainRequireSFV, false),
+		ReopenArchivedNZBOnReleaseChange:                boolValue(cfg.Release.ReopenArchivedNZBOnReleaseChange, false),
 	}
 	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
@@ -226,20 +250,21 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		ArticleBucketSize:           int64Value(cfg.Match.ArticleBucketSize, 5000),
 	}
 	out.Inspect = IndexingInspectRuntimeSettings{
-		WorkDir:          firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
-		WorkspaceBackend: firstNonEmpty(cfg.Inspect.WorkspaceBackend, "auto"),
-		MemoryWorkDir:    firstNonEmpty(cfg.Inspect.MemoryWorkDir, "/dev/shm/gonzb-inspect"),
-		MaxBytes:         firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
-		MinBinaryBytes:   cfg.Inspect.MinBinaryBytes,
-		MaxBinaryBytes:   cfg.Inspect.MaxBinaryBytes,
-		BlockedMagicHex:  append([]string(nil), cfg.Inspect.BlockedMagicHex...),
-		MaxArchiveDepth:  firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
-		ToolTimeoutSecs:  firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
-		FFmpegPath:       firstNonEmpty(cfg.Inspect.FFmpegPath, "ffmpeg"),
-		FFProbePath:      firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
-		SevenZipPath:     firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
-		UnrarPath:        firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
-		PAR2Path:         firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
+		WorkDir:                  firstNonEmpty(cfg.Inspect.WorkDir, "/store/indexer/inspect"),
+		WorkspaceBackend:         firstNonEmpty(cfg.Inspect.WorkspaceBackend, "auto"),
+		MemoryWorkDir:            firstNonEmpty(cfg.Inspect.MemoryWorkDir, "/dev/shm/gonzb-inspect"),
+		MaxBytes:                 firstNonZeroInt64(cfg.Inspect.MaxBytes, 2*1024*1024*1024),
+		MinBinaryBytes:           cfg.Inspect.MinBinaryBytes,
+		MaxBinaryBytes:           cfg.Inspect.MaxBinaryBytes,
+		RequireExpectedFileCount: cfg.Inspect.RequireExpectedFileCount,
+		BlockedMagicHex:          append([]string(nil), cfg.Inspect.BlockedMagicHex...),
+		MaxArchiveDepth:          firstNonZeroInt(cfg.Inspect.MaxArchiveDepth, 3),
+		ToolTimeoutSecs:          firstNonZeroInt(cfg.Inspect.ToolTimeoutSecs, 30),
+		FFmpegPath:               firstNonEmpty(cfg.Inspect.FFmpegPath, "ffmpeg"),
+		FFProbePath:              firstNonEmpty(cfg.Inspect.FFProbePath, "ffprobe"),
+		SevenZipPath:             firstNonEmpty(cfg.Inspect.SevenZipPath, "7z"),
+		UnrarPath:                firstNonEmpty(cfg.Inspect.UnrarPath, "unrar"),
+		PAR2Path:                 firstNonEmpty(cfg.Inspect.PAR2Path, "par2"),
 	}
 	out.StorageGuard = IndexingStorageGuardRuntimeSettings{
 		Enabled:        boolValue(cfg.StorageGuard.Enabled, true),
@@ -285,6 +310,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		TVDBBaseURL:        firstNonEmpty(cfg.EnrichTMDB.TVDBBaseURL, "https://api4.thetvdb.com/v4"),
 	}
 
+	normalizeIndexingScrapeConfig(&out)
 	return out
 }
 
@@ -347,13 +373,11 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 	if runtime.Indexing != nil {
 		indexing := cloneIndexing(runtime.Indexing)
-		if indexing.Newsgroups != nil {
-			effective.Indexing.Newsgroups = append([]string(nil), indexing.Newsgroups...)
-		}
-		effective.Indexing.BackfillUntilDateByGroup = cloneStringMap(indexing.BackfillUntilDateByGroup)
+		effective.Indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
+		effective.Indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
 
-		effective.Indexing.ScrapeLatest = toStageConfigNoConcurrency(indexing.ScrapeLatest)
-		effective.Indexing.ScrapeBackfill = toStageConfigNoConcurrency(indexing.ScrapeBackfill)
+		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
+		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
 		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
 		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
 		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
@@ -363,6 +387,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			Enabled:                    boolPtr(indexing.Release.Enabled),
 			IntervalMinutes:            float64Ptr(indexing.Release.IntervalMinutes),
 			BatchSize:                  intPtr(indexing.Release.BatchSize),
+			AutoReformBatchSize:        intPtr(indexing.Release.AutoReformBatchSize),
 			BackoffSeconds:             intPtr(indexing.Release.BackoffSeconds),
 			MinConfidence:              float64Ptr(indexing.Release.MinConfidence),
 			MinCompletionPct:           float64Ptr(indexing.Release.MinCompletionPct),
@@ -373,6 +398,16 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			PublicMinIdentityStatus:                         indexing.Release.PublicMinIdentityStatus,
 			PublicRequireInspection:                         boolPtr(indexing.Release.PublicRequireInspection),
 			PublicRequireEnrichment:                         boolPtr(indexing.Release.PublicRequireEnrichment),
+			PublicRequirePayloadComplete:                    boolPtr(indexing.Release.PublicRequirePayloadComplete),
+			PublicRequireExpectedFileCountComplete:          boolPtr(indexing.Release.PublicRequireExpectedFileCountComplete),
+			PublicRequirePAR2:                               boolPtr(indexing.Release.PublicRequirePAR2),
+			PublicRequireNFO:                                boolPtr(indexing.Release.PublicRequireNFO),
+			PublicRequireSFV:                                boolPtr(indexing.Release.PublicRequireSFV),
+			RetainUntilExpectedFileCountComplete:            boolPtr(indexing.Release.RetainUntilExpectedFileCountComplete),
+			RetainRequirePAR2:                               boolPtr(indexing.Release.RetainRequirePAR2),
+			RetainRequireNFO:                                boolPtr(indexing.Release.RetainRequireNFO),
+			RetainRequireSFV:                                boolPtr(indexing.Release.RetainRequireSFV),
+			ReopenArchivedNZBOnReleaseChange:                boolPtr(indexing.Release.ReopenArchivedNZBOnReleaseChange),
 		}
 		effective.Indexing.ReleaseGenerateNZB = toStageConfigNoConcurrency(indexing.ReleaseGenerateNZB)
 		effective.Indexing.ReleaseArchiveNZB = toStageConfigNoConcurrency(indexing.ReleaseArchiveNZB)
@@ -383,20 +418,21 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			ArticleBucketSize:           int64Ptr(indexing.Match.ArticleBucketSize),
 		}
 		effective.Indexing.Inspect = config.IndexingInspectConfig{
-			WorkDir:          indexing.Inspect.WorkDir,
-			WorkspaceBackend: indexing.Inspect.WorkspaceBackend,
-			MemoryWorkDir:    indexing.Inspect.MemoryWorkDir,
-			MaxBytes:         indexing.Inspect.MaxBytes,
-			MinBinaryBytes:   indexing.Inspect.MinBinaryBytes,
-			MaxBinaryBytes:   indexing.Inspect.MaxBinaryBytes,
-			BlockedMagicHex:  append([]string(nil), indexing.Inspect.BlockedMagicHex...),
-			MaxArchiveDepth:  indexing.Inspect.MaxArchiveDepth,
-			ToolTimeoutSecs:  indexing.Inspect.ToolTimeoutSecs,
-			FFmpegPath:       indexing.Inspect.FFmpegPath,
-			FFProbePath:      indexing.Inspect.FFProbePath,
-			SevenZipPath:     indexing.Inspect.SevenZipPath,
-			UnrarPath:        indexing.Inspect.UnrarPath,
-			PAR2Path:         indexing.Inspect.PAR2Path,
+			WorkDir:                  indexing.Inspect.WorkDir,
+			WorkspaceBackend:         indexing.Inspect.WorkspaceBackend,
+			MemoryWorkDir:            indexing.Inspect.MemoryWorkDir,
+			MaxBytes:                 indexing.Inspect.MaxBytes,
+			MinBinaryBytes:           indexing.Inspect.MinBinaryBytes,
+			MaxBinaryBytes:           indexing.Inspect.MaxBinaryBytes,
+			RequireExpectedFileCount: indexing.Inspect.RequireExpectedFileCount,
+			BlockedMagicHex:          append([]string(nil), indexing.Inspect.BlockedMagicHex...),
+			MaxArchiveDepth:          indexing.Inspect.MaxArchiveDepth,
+			ToolTimeoutSecs:          indexing.Inspect.ToolTimeoutSecs,
+			FFmpegPath:               indexing.Inspect.FFmpegPath,
+			FFProbePath:              indexing.Inspect.FFProbePath,
+			SevenZipPath:             indexing.Inspect.SevenZipPath,
+			UnrarPath:                indexing.Inspect.UnrarPath,
+			PAR2Path:                 indexing.Inspect.PAR2Path,
 		}
 		effective.Indexing.StorageGuard = config.IndexingStorageGuardConfig{
 			Enabled:        boolPtr(indexing.StorageGuard.Enabled),
@@ -672,8 +708,6 @@ func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
 	if in == nil || in.Indexing == nil {
 		return
 	}
-	in.Indexing.ScrapeLatest.Concurrency = 0
-	in.Indexing.ScrapeBackfill.Concurrency = 0
 	in.Indexing.InspectDiscovery.Concurrency = 0
 	in.Indexing.InspectNFO.Concurrency = 0
 	in.Indexing.InspectPassword.Concurrency = 0
@@ -776,6 +810,10 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	out := &IndexingRuntimeSettings{
 		Newsgroups:                  append([]string(nil), in.Newsgroups...),
 		BackfillUntilDateByGroup:    cloneStringMap(in.BackfillUntilDateByGroup),
+		ExplicitGroups:              cloneExplicitGroups(in.ExplicitGroups),
+		WildcardRules:               cloneWildcardRules(in.WildcardRules),
+		ProviderGroupInventory:      cloneProviderGroupInventory(in.ProviderGroupInventory),
+		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
 		ScrapeLatest:                in.ScrapeLatest,
 		ScrapeBackfill:              in.ScrapeBackfill,
 		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 5000, 1), in.Assemble),
@@ -800,6 +838,200 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		EnrichPreDB:                 in.EnrichPreDB,
 		EnrichTMDB:                  in.EnrichTMDB,
 	}
+	normalizeIndexingScrapeConfig(out)
+	return out
+}
+
+func legacyExplicitGroupsFromConfig(newsgroups []string, cutoffs map[string]string) []IndexingScrapeGroupRuntimeSettings {
+	seen := map[string]struct{}{}
+	out := make([]IndexingScrapeGroupRuntimeSettings, 0, len(newsgroups)+len(cutoffs))
+	for _, raw := range newsgroups {
+		group := strings.TrimSpace(raw)
+		if group == "" {
+			continue
+		}
+		key := strings.ToLower(group)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, IndexingScrapeGroupRuntimeSettings{
+			GroupName:         group,
+			Enabled:           true,
+			BackfillUntilDate: strings.TrimSpace(cutoffs[group]),
+			Source:            "explicit",
+		})
+	}
+	for rawGroup, rawDate := range cutoffs {
+		group := strings.TrimSpace(rawGroup)
+		if group == "" {
+			continue
+		}
+		key := strings.ToLower(group)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, IndexingScrapeGroupRuntimeSettings{
+			GroupName:         group,
+			Enabled:           true,
+			BackfillUntilDate: strings.TrimSpace(rawDate),
+			Source:            "explicit",
+		})
+	}
+	return out
+}
+
+func EffectiveScrapeGroups(indexing *IndexingRuntimeSettings) []IndexingScrapeGroupRuntimeSettings {
+	if indexing == nil {
+		return nil
+	}
+	out := make([]IndexingScrapeGroupRuntimeSettings, 0, len(indexing.ExplicitGroups)+len(indexing.MaterializedGroups))
+	seen := make(map[string]int, len(indexing.ExplicitGroups)+len(indexing.MaterializedGroups))
+	appendGroup := func(groupName, until, source string, enabled bool) {
+		group := strings.TrimSpace(groupName)
+		if group == "" {
+			return
+		}
+		source = strings.TrimSpace(source)
+		if source == "" {
+			source = "explicit"
+		}
+		key := strings.ToLower(group)
+		if idx, ok := seen[key]; ok {
+			if until != "" {
+				out[idx].BackfillUntilDate = until
+			}
+			out[idx].Enabled = out[idx].Enabled || enabled
+			if out[idx].Source == "wildcard" && source == "explicit" {
+				out[idx].Source = source
+			}
+			return
+		}
+		seen[key] = len(out)
+		out = append(out, IndexingScrapeGroupRuntimeSettings{
+			GroupName:         group,
+			Enabled:           enabled,
+			BackfillUntilDate: strings.TrimSpace(until),
+			Source:            source,
+		})
+	}
+	for _, item := range indexing.ExplicitGroups {
+		appendGroup(item.GroupName, item.BackfillUntilDate, firstNonEmpty(item.Source, "explicit"), item.Enabled)
+	}
+	for _, item := range indexing.MaterializedGroups {
+		appendGroup(item.GroupName, item.BackfillUntilDate, "wildcard", item.Enabled)
+	}
+	return out
+}
+
+func EffectiveNewsgroupNames(indexing *IndexingRuntimeSettings) []string {
+	effective := EffectiveScrapeGroups(indexing)
+	out := make([]string, 0, len(effective))
+	for _, item := range effective {
+		if !item.Enabled {
+			continue
+		}
+		out = append(out, item.GroupName)
+	}
+	return out
+}
+
+func EffectiveBackfillUntilDateByGroup(indexing *IndexingRuntimeSettings) map[string]string {
+	effective := EffectiveScrapeGroups(indexing)
+	if len(effective) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(effective))
+	for _, item := range effective {
+		if !item.Enabled {
+			continue
+		}
+		if until := strings.TrimSpace(item.BackfillUntilDate); until != "" {
+			out[item.GroupName] = until
+		}
+	}
+	return out
+}
+
+func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
+	if indexing == nil {
+		return
+	}
+	if indexing.ExplicitGroups == nil &&
+		indexing.WildcardRules == nil &&
+		indexing.ProviderGroupInventory == nil &&
+		indexing.MaterializedGroups == nil &&
+		(len(indexing.Newsgroups) > 0 || len(indexing.BackfillUntilDateByGroup) > 0) {
+		indexing.ExplicitGroups = legacyExplicitGroupsFromConfig(indexing.Newsgroups, indexing.BackfillUntilDateByGroup)
+	}
+	for i := range indexing.ExplicitGroups {
+		indexing.ExplicitGroups[i].GroupName = strings.TrimSpace(indexing.ExplicitGroups[i].GroupName)
+		indexing.ExplicitGroups[i].BackfillUntilDate = strings.TrimSpace(indexing.ExplicitGroups[i].BackfillUntilDate)
+		indexing.ExplicitGroups[i].Source = firstNonEmpty(indexing.ExplicitGroups[i].Source, "explicit")
+	}
+	for i := range indexing.WildcardRules {
+		indexing.WildcardRules[i].ID = strings.TrimSpace(indexing.WildcardRules[i].ID)
+		indexing.WildcardRules[i].Pattern = strings.TrimSpace(indexing.WildcardRules[i].Pattern)
+	}
+	for i := range indexing.ProviderGroupInventory {
+		indexing.ProviderGroupInventory[i].ProviderID = strings.TrimSpace(indexing.ProviderGroupInventory[i].ProviderID)
+		indexing.ProviderGroupInventory[i].ProviderName = strings.TrimSpace(indexing.ProviderGroupInventory[i].ProviderName)
+		indexing.ProviderGroupInventory[i].GroupName = strings.TrimSpace(indexing.ProviderGroupInventory[i].GroupName)
+		indexing.ProviderGroupInventory[i].Status = firstNonEmpty(indexing.ProviderGroupInventory[i].Status, "y")
+		indexing.ProviderGroupInventory[i].ScannedAt = strings.TrimSpace(indexing.ProviderGroupInventory[i].ScannedAt)
+	}
+	for i := range indexing.MaterializedGroups {
+		indexing.MaterializedGroups[i].GroupName = strings.TrimSpace(indexing.MaterializedGroups[i].GroupName)
+		indexing.MaterializedGroups[i].BackfillUntilDate = strings.TrimSpace(indexing.MaterializedGroups[i].BackfillUntilDate)
+		indexing.MaterializedGroups[i].ProviderIDs = slices.Compact(indexing.MaterializedGroups[i].ProviderIDs)
+		indexing.MaterializedGroups[i].RuleIDs = slices.Compact(indexing.MaterializedGroups[i].RuleIDs)
+	}
+	indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
+	indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
+}
+
+func cloneMaterializedGroups(in []IndexingMaterializedGroupRuntimeSettings) []IndexingMaterializedGroupRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingMaterializedGroupRuntimeSettings, 0, len(in))
+	for _, item := range in {
+		out = append(out, IndexingMaterializedGroupRuntimeSettings{
+			GroupName:         item.GroupName,
+			Enabled:           item.Enabled,
+			BackfillUntilDate: item.BackfillUntilDate,
+			ProviderIDs:       append([]string(nil), item.ProviderIDs...),
+			RuleIDs:           append([]string(nil), item.RuleIDs...),
+		})
+	}
+	return out
+}
+
+func cloneExplicitGroups(in []IndexingScrapeGroupRuntimeSettings) []IndexingScrapeGroupRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingScrapeGroupRuntimeSettings, 0, len(in))
+	out = append(out, in...)
+	return out
+}
+
+func cloneWildcardRules(in []IndexingWildcardRuleRuntimeSettings) []IndexingWildcardRuleRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingWildcardRuleRuntimeSettings, 0, len(in))
+	out = append(out, in...)
+	return out
+}
+
+func cloneProviderGroupInventory(in []IndexingProviderGroupInventoryRuntimeSettings) []IndexingProviderGroupInventoryRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingProviderGroupInventoryRuntimeSettings, 0, len(in))
+	out = append(out, in...)
 	return out
 }
 

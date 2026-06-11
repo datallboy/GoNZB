@@ -88,8 +88,8 @@ type indexerAdminReleaseView struct {
 }
 
 type runtimeIndexerService struct {
+	appCtx          *app.Context
 	store           app.UsenetIndexStore
-	indexer         app.UsenetIndexerService
 	settingsAdmin   app.SettingsAdmin
 	archiveStore    app.BlobStore
 	downloaderReady bool
@@ -109,8 +109,8 @@ func newIndexerService(appCtx *app.Context) indexerService {
 		log = appCtx.Logger
 	}
 	return &runtimeIndexerService{
+		appCtx:          appCtx,
 		store:           appCtx.PGIndexStore,
-		indexer:         appCtx.UsenetIndexer,
 		settingsAdmin:   appCtx.SettingsAdmin,
 		archiveStore:    appCtx.IndexerArchiveStore,
 		downloaderReady: appCtx.DownloaderModule != nil,
@@ -154,10 +154,11 @@ func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.I
 }
 
 func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
-	if s == nil || s.indexer == nil {
+	indexer := s.currentIndexer()
+	if s == nil || indexer == nil {
 		return nil, errIndexerUnavailable
 	}
-	return s.indexer.NNTPStats(ctx)
+	return indexer.NNTPStats(ctx)
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
@@ -240,7 +241,8 @@ func (s *runtimeIndexerService) GetRun(ctx context.Context, runID int64) (*pgind
 }
 
 func (s *runtimeIndexerService) RunStage(ctx context.Context, stageName string) error {
-	if s == nil || s.indexer == nil {
+	indexer := s.currentIndexer()
+	if s == nil || indexer == nil {
 		return errIndexerUnavailable
 	}
 
@@ -250,7 +252,7 @@ func (s *runtimeIndexerService) RunStage(ctx context.Context, stageName string) 
 	}
 
 	go func(stage string) {
-		if err := s.indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
+		if err := indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
 			s.log.Error("indexer api stage run failed stage=%s err=%v", stage, err)
 		}
 	}(string(stage))
@@ -349,11 +351,20 @@ func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.
 	}
 	release := runtime.Indexing.Release
 	return pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
-		MinMatchConfidence: release.PublicMinMatchConfidence,
-		MinCompletionPct:   release.PublicMinCompletionPct,
-		MinIdentityStatus:  release.PublicMinIdentityStatus,
-		RequireInspection:  release.PublicRequireInspection,
-		RequireEnrichment:  release.PublicRequireEnrichment,
+		MinMatchConfidence:                   release.PublicMinMatchConfidence,
+		MinCompletionPct:                     release.PublicMinCompletionPct,
+		MinIdentityStatus:                    release.PublicMinIdentityStatus,
+		RequireInspection:                    release.PublicRequireInspection,
+		RequireEnrichment:                    release.PublicRequireEnrichment,
+		RequirePayloadComplete:               release.PublicRequirePayloadComplete,
+		RequireExpectedFileCountComplete:     release.PublicRequireExpectedFileCountComplete,
+		RequirePAR2:                          release.PublicRequirePAR2,
+		RequireNFO:                           release.PublicRequireNFO,
+		RequireSFV:                           release.PublicRequireSFV,
+		RetainUntilExpectedFileCountComplete: release.RetainUntilExpectedFileCountComplete,
+		RetainRequirePAR2:                    release.RetainRequirePAR2,
+		RetainRequireNFO:                     release.RetainRequireNFO,
+		RetainRequireSFV:                     release.RetainRequireSFV,
 	})
 }
 
@@ -434,7 +445,7 @@ func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, relea
 }
 
 func (s *runtimeIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
-	if s == nil || s.store == nil || s.indexer == nil {
+	if s == nil || s.store == nil || s.currentIndexer() == nil {
 		return errIndexerUnavailable
 	}
 	releaseID = strings.TrimSpace(releaseID)
@@ -462,7 +473,7 @@ func (s *runtimeIndexerService) ReinspectRelease(ctx context.Context, releaseID 
 }
 
 func (s *runtimeIndexerService) ReenrichRelease(ctx context.Context, releaseID string) error {
-	if s == nil || s.store == nil || s.indexer == nil {
+	if s == nil || s.store == nil || s.currentIndexer() == nil {
 		return errIndexerUnavailable
 	}
 	releaseID = strings.TrimSpace(releaseID)
@@ -514,11 +525,22 @@ func (s *runtimeIndexerService) getStage(ctx context.Context, stageName string) 
 }
 
 func (s *runtimeIndexerService) runStageSequence(reason string, stages []string) {
+	indexer := s.currentIndexer()
+	if indexer == nil {
+		return
+	}
 	for _, stage := range stages {
-		if err := s.indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
+		if err := indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
 			s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
 		}
 	}
+}
+
+func (s *runtimeIndexerService) currentIndexer() app.UsenetIndexerService {
+	if s == nil || s.appCtx == nil {
+		return nil
+	}
+	return s.appCtx.UsenetIndexer
 }
 
 func overlayStageState(view *indexerStageView, state pgindex.IndexerStageState, ok bool) {

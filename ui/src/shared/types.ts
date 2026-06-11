@@ -156,6 +156,12 @@ export type IndexerStageThroughputWindow = {
   items_per_minute: number
   items_per_hour: number
   avg_run_duration_ms: number
+  avg_workers_used?: number
+  max_workers_used?: number
+  avg_groups_scheduled?: number
+  max_groups_scheduled?: number
+  avg_ranges_fetched?: number
+  max_ranges_fetched?: number
 }
 
 export type IndexerStageThroughputItem = {
@@ -225,6 +231,11 @@ export type IndexerNNTPStats = {
   modules?: NNTPModuleRuntimeStats
   providers: IndexerNNTPProviderStats[]
   scopes: IndexerNNTPScopeStats[]
+}
+
+export type IndexerOverviewStreamSnapshot = {
+  nntp?: IndexerNNTPStats | null
+  throughput?: IndexerStageThroughput | null
 }
 
 export type NNTPModuleRuntimeStats = {
@@ -473,6 +484,7 @@ export type AdminReleaseRecord = {
   posted_at?: string
   file_count: number
   expected_file_count: number
+  expected_archive_file_count: number
   par_file_count: number
   completion_pct: number
   match_confidence: number
@@ -659,6 +671,14 @@ export type AdminReleaseDetailResponse = {
     release: AdminReleaseRecord
     newsgroups: string[]
     files: AdminReleaseFileSummary[]
+    diagnostics: {
+      payload_complete: boolean
+      expected_file_count_complete: boolean
+      missing_expected_file_count: number
+      has_par2_manifest: boolean
+      has_sfv: boolean
+      readiness_note: string
+    }
     password_candidates: AdminPasswordCandidate[]
     inspections: AdminInspectionSummary[]
     predb_matches: AdminPredbMatch[]
@@ -728,9 +748,50 @@ export type TokenCreateResponse = {
   secret: string
 }
 
+export type ScrapeExplicitGroup = {
+  group_name: string
+  enabled: boolean
+  backfill_until_date?: string
+  source?: string
+}
+
+export type ScrapeWildcardRule = {
+  id: string
+  pattern: string
+  enabled: boolean
+}
+
+export type ScrapeProviderInventoryItem = {
+  provider_id: string
+  provider_name: string
+  group_name: string
+  high: number
+  low: number
+  status: string
+  scanned_at?: string
+}
+
+export type ScrapeMaterializedGroup = {
+  group_name: string
+  enabled: boolean
+  backfill_until_date?: string
+  provider_ids: string[]
+  rule_ids: string[]
+}
+
+export type ScrapePreviewGroup = {
+  group_name: string
+  provider_ids: string[]
+  rule_ids: string[]
+}
+
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
   backfill_until_date_by_group: Record<string, string>
+  explicit_groups?: ScrapeExplicitGroup[]
+  wildcard_rules?: ScrapeWildcardRule[]
+  provider_group_inventory?: ScrapeProviderInventoryItem[]
+  materialized_groups?: ScrapeMaterializedGroup[]
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
@@ -742,6 +803,7 @@ export type IndexingRuntimeSettings = {
   release_archive_nzb: AdminStageConfigPatch
   release_purge_archived_sources: AdminStageConfigPatch
   release: AdminStageConfigPatch & {
+    auto_reform_batch_size: number
     min_confidence: number
     min_completion_pct: number
     min_expected_file_coverage_pct: number
@@ -751,6 +813,16 @@ export type IndexingRuntimeSettings = {
     public_min_identity_status: string
     public_require_inspection: boolean
     public_require_enrichment: boolean
+    public_require_payload_complete: boolean
+    public_require_expected_file_count_complete: boolean
+    public_require_par2: boolean
+    public_require_nfo: boolean
+    public_require_sfv: boolean
+    retain_until_expected_file_count_complete: boolean
+    retain_require_par2: boolean
+    retain_require_nfo: boolean
+    retain_require_sfv: boolean
+    reopen_archived_nzb_on_release_change: boolean
   }
   match: {
     high_confidence_threshold: number
@@ -764,6 +836,7 @@ export type IndexingRuntimeSettings = {
     max_bytes: number
     min_binary_bytes: number
     max_binary_bytes: number
+    require_expected_file_count: boolean
     blocked_magic_hex: string[]
     max_archive_depth: number
     tool_timeout_seconds: number
@@ -879,6 +952,15 @@ export type RuntimeSettings = {
   indexing?: IndexingRuntimeSettings
   arr_integrations?: ArrIntegrationRuntimeSettings[]
   revision?: number
+}
+
+export type AdminScrapeConfigResponse = {
+  explicit_groups: ScrapeExplicitGroup[]
+  wildcard_rules: ScrapeWildcardRule[]
+  provider_group_inventory: ScrapeProviderInventoryItem[]
+  materialized_groups: ScrapeMaterializedGroup[]
+  effective_groups: ScrapeExplicitGroup[]
+  preview_groups: ScrapePreviewGroup[]
 }
 
 export type ModuleCapability = {

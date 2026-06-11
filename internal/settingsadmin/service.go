@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -173,9 +174,6 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		if len(app.IndexerNNTPServers(runtime)) == 0 {
 			issues = append(issues, "indexing stages require at least one NNTP server in servers")
 		}
-		if runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
-			issues = append(issues, "indexing stages require at least one newsgroup in indexing.newsgroups")
-		}
 	}
 	if len(issues) > 0 {
 		return fmt.Errorf("runtime settings validation failed: %s", strings.Join(issues, "; "))
@@ -292,6 +290,31 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	for i, group := range indexing.Newsgroups {
 		if strings.TrimSpace(group) == "" {
 			issues = append(issues, fmt.Sprintf("indexing.newsgroups[%d] is required", i))
+		}
+	}
+	for i, group := range indexing.ExplicitGroups {
+		if strings.TrimSpace(group.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.explicit_groups[%d].group_name is required", i))
+		}
+		if group.BackfillUntilDate != "" {
+			if _, err := time.Parse("2006-01-02", group.BackfillUntilDate); err != nil {
+				issues = append(issues, fmt.Sprintf("indexing.explicit_groups[%d].backfill_until_date must be YYYY-MM-DD", i))
+			}
+		}
+	}
+	for i, rule := range indexing.WildcardRules {
+		if strings.TrimSpace(rule.Pattern) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.wildcard_rules[%d].pattern is required", i))
+		}
+	}
+	for i, group := range indexing.MaterializedGroups {
+		if strings.TrimSpace(group.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.materialized_groups[%d].group_name is required", i))
+		}
+		if group.BackfillUntilDate != "" {
+			if _, err := time.Parse("2006-01-02", group.BackfillUntilDate); err != nil {
+				issues = append(issues, fmt.Sprintf("indexing.materialized_groups[%d].backfill_until_date must be YYYY-MM-DD", i))
+			}
 		}
 	}
 	for group, until := range indexing.BackfillUntilDateByGroup {
@@ -419,11 +442,6 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		downloaderConfigured(current) {
 		return fmt.Errorf("removing NNTP servers while downloader runtime is configured requires a restart")
 	}
-	if base != nil && base.Modules.UsenetIndexer.Enabled &&
-		len(app.IndexerNNTPServers(next)) < len(app.IndexerNNTPServers(current)) &&
-		anyIndexerStageEnabled(current.Indexing) {
-		return fmt.Errorf("removing NNTP servers while indexer stages are enabled requires a restart")
-	}
 	if base != nil && base.Modules.Aggregator.Enabled &&
 		len(next.Indexers) < len(current.Indexers) &&
 		aggregatorConfigured(current) {
@@ -433,10 +451,6 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		len(next.ArrIntegrations) < len(current.ArrIntegrations) &&
 		downloaderConfigured(current) {
 		return fmt.Errorf("removing ARR integrations while downloader runtime is configured requires a restart")
-	}
-	if anyIndexerStageEnabled(current.Indexing) && current.Indexing != nil && next.Indexing != nil &&
-		len(next.Indexing.Newsgroups) < len(current.Indexing.Newsgroups) {
-		return fmt.Errorf("removing indexer newsgroups while indexer stages are enabled requires a restart")
 	}
 	return nil
 }
@@ -517,7 +531,7 @@ func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) [
 }
 
 func indexerConfigured(runtime *app.RuntimeSettings) bool {
-	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(runtime.Indexing.Newsgroups) > 0
+	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(app.EffectiveNewsgroupNames(runtime.Indexing)) > 0
 }
 
 func indexerRequirements(runtime *app.RuntimeSettings) []string {
@@ -525,8 +539,8 @@ func indexerRequirements(runtime *app.RuntimeSettings) []string {
 	if runtime == nil || len(app.IndexerNNTPServers(runtime)) == 0 {
 		reqs = append(reqs, "configure at least one NNTP server")
 	}
-	if runtime == nil || runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
-		reqs = append(reqs, "configure at least one newsgroup")
+	if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
+		reqs = append(reqs, "configure at least one scrape group")
 	}
 	return reqs
 }

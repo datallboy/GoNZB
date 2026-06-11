@@ -48,7 +48,9 @@ type usenetIndexerConfig struct {
 	ReleaseMinConfidence                            float64
 	ReleaseMinCompletion                            float64
 	ReleaseMinExpectedFileCoveragePct               float64
+	ReleaseAutoReformBatchSize                      int
 	RequireExpectedFileCountForContextualObfuscated bool
+	ReopenArchivedNZBOnReleaseChange                bool
 	Match                                           match.Options
 	Inspect                                         inspectpkg.Options
 	EnrichPreDB                                     predb.Options
@@ -132,11 +134,32 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		}
 	)
 
-	if len(runtimeCfg.Newsgroups) > 0 {
-		if runtimeCfg.ScrapeServer == nil {
-			return nil, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
-		}
+	scrapeLatestSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			Newsgroups:               runtimeCfg.Newsgroups,
+			BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
+			Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
+			MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+		},
+	)
+	scrapeBackfillSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			Newsgroups:               runtimeCfg.Newsgroups,
+			BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
+			Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
+			MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+		},
+	)
 
+	if runtimeCfg.ScrapeServer != nil {
 		manager, ownedManager, err := indexerNNTPManager(appCtx, runtimeCfg)
 		if err != nil {
 			return nil, err
@@ -147,27 +170,33 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleLaneBClient := indexerNNTPClient(manager, "assemble_lane_b")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
-		scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
-		scrapeLatestSvc = scrape.NewService(
-			appCtx.PGIndexStore,
-			scrapeAdapter,
-			appCtx.Logger,
-			scrape.Options{
-				Newsgroups:               runtimeCfg.Newsgroups,
-				BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
-				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
-			},
-		)
-		scrapeBackfillSvc = scrape.NewService(
-			appCtx.PGIndexStore,
-			scrapeAdapter,
-			appCtx.Logger,
-			scrape.Options{
-				Newsgroups:               runtimeCfg.Newsgroups,
-				BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
-				BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
-			},
-		)
+		if len(runtimeCfg.Newsgroups) > 0 {
+			scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
+			scrapeLatestSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					Newsgroups:               runtimeCfg.Newsgroups,
+					BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
+					Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
+					MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+				},
+			)
+			scrapeBackfillSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					Newsgroups:               runtimeCfg.Newsgroups,
+					BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
+					Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
+					MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+				},
+			)
+		}
 		if ownedManager {
 			scrapeProvider = manager
 		}
@@ -251,8 +280,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			ReleaseMinConfidence:                               runtimeCfg.ReleaseMinConfidence,
 			ReleaseMinCompletion:                               runtimeCfg.ReleaseMinCompletion,
 			ReleaseMinExpectedFileCoveragePct:                  runtimeCfg.ReleaseMinExpectedFileCoveragePct,
+			AutoReformBatchSize:                                runtimeCfg.ReleaseAutoReformBatchSize,
 			RequireExpectedFileCountForContextualObfuscated:    runtimeCfg.RequireExpectedFileCountForContextualObfuscated,
 			RequireExpectedFileCountForContextualObfuscatedSet: true,
+			ReopenArchivedNZBOnReleaseChange:                   runtimeCfg.ReopenArchivedNZBOnReleaseChange,
 		},
 	)
 	archiveResolver := resolver.NewUsenetIndexResolver(appCtx.PGIndexStore, appCtx.IndexerArchiveStore)
@@ -274,7 +305,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	)
 	releasePurgeSvc := releasepurge.NewService(
 		appCtx.PGIndexStore,
-		releasepurge.Options{BatchSize: runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize},
+		releasepurge.Options{BatchSize: runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize, Policy: runtimeCfg.ReleaseReadyPolicy},
 	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
@@ -294,9 +325,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:        supervisor.StageScrapeLatest,
 			Interval:    runtimeCfg.ScrapeLatest.Interval,
-			Enabled:     scrapeLatestSvc != nil && runtimeCfg.ScrapeLatest.Enabled,
+			Enabled:     runtimeCfg.ScrapeLatest.Enabled,
 			BatchSize:   runtimeCfg.ScrapeLatest.BatchSize,
-			Concurrency: 1,
+			Concurrency: runtimeCfg.ScrapeLatest.Concurrency,
 			Backoff:     runtimeCfg.ScrapeLatest.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeLatestSvc.RunLatestOnceWithMetrics(ctx))
@@ -305,9 +336,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:        supervisor.StageScrapeBackfill,
 			Interval:    runtimeCfg.ScrapeBackfill.Interval,
-			Enabled:     scrapeBackfillSvc != nil && runtimeCfg.ScrapeBackfill.Enabled,
+			Enabled:     runtimeCfg.ScrapeBackfill.Enabled,
 			BatchSize:   runtimeCfg.ScrapeBackfill.BatchSize,
-			Concurrency: 1,
+			Concurrency: runtimeCfg.ScrapeBackfill.Concurrency,
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
@@ -512,9 +543,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}),
 		},
 	}, supervisor.Options{
-		Tracker:   appCtx.PGIndexStore,
-		Owner:     stageOwner,
-		StageGate: newIndexerStageResourceGuard(appCtx.PGIndexStore, runtimeCfg.StorageGuard, runtimeCfg.MemoryGuard),
+		Tracker: appCtx.PGIndexStore,
+		Owner:   stageOwner,
+		StageGate: chainStageGates(
+			newIndexerPrerequisiteGate(appCtx),
+			newIndexerStageResourceGuard(appCtx.PGIndexStore, runtimeCfg.StorageGuard, runtimeCfg.MemoryGuard),
+		),
 	})
 
 	service := indexing.NewService(supervisorSvc, indexing.Options{
@@ -618,28 +652,31 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ReleaseMinConfidence:                            indexingCfg.Release.MinConfidence,
 		ReleaseMinCompletion:                            indexingCfg.Release.MinCompletionPct,
 		ReleaseMinExpectedFileCoveragePct:               indexingCfg.Release.MinExpectedFileCoveragePct,
+		ReleaseAutoReformBatchSize:                      indexingCfg.Release.AutoReformBatchSize,
 		RequireExpectedFileCountForContextualObfuscated: indexingCfg.Release.RequireExpectedFileCountForContextualObfuscated,
+		ReopenArchivedNZBOnReleaseChange:                indexingCfg.Release.ReopenArchivedNZBOnReleaseChange,
 		Match: match.Options{
 			HighConfidenceThreshold:     indexingCfg.Match.HighConfidenceThreshold,
 			ProbableConfidenceThreshold: indexingCfg.Match.ProbableConfidenceThreshold,
 			ArticleBucketSize:           indexingCfg.Match.ArticleBucketSize,
 		},
 		Inspect: inspectpkg.DefaultOptions(inspectpkg.Options{
-			WorkDir:            indexingCfg.Inspect.WorkDir,
-			WorkspaceBackend:   indexingCfg.Inspect.WorkspaceBackend,
-			MemoryWorkDir:      indexingCfg.Inspect.MemoryWorkDir,
-			MaxBytes:           indexingCfg.Inspect.MaxBytes,
-			MinBinaryBytes:     indexingCfg.Inspect.MinBinaryBytes,
-			MaxBinaryBytes:     indexingCfg.Inspect.MaxBinaryBytes,
-			BlockedMagicHex:    append([]string(nil), indexingCfg.Inspect.BlockedMagicHex...),
-			MaxArchiveDepth:    indexingCfg.Inspect.MaxArchiveDepth,
-			ToolTimeout:        time.Duration(indexingCfg.Inspect.ToolTimeoutSecs) * time.Second,
-			FFmpegPath:         indexingCfg.Inspect.FFmpegPath,
-			FFProbePath:        indexingCfg.Inspect.FFProbePath,
-			SevenZipPath:       indexingCfg.Inspect.SevenZipPath,
-			UnrarPath:          indexingCfg.Inspect.UnrarPath,
-			PAR2Path:           indexingCfg.Inspect.PAR2Path,
-			CandidateBatchSize: 100,
+			WorkDir:                  indexingCfg.Inspect.WorkDir,
+			WorkspaceBackend:         indexingCfg.Inspect.WorkspaceBackend,
+			MemoryWorkDir:            indexingCfg.Inspect.MemoryWorkDir,
+			MaxBytes:                 indexingCfg.Inspect.MaxBytes,
+			MinBinaryBytes:           indexingCfg.Inspect.MinBinaryBytes,
+			MaxBinaryBytes:           indexingCfg.Inspect.MaxBinaryBytes,
+			RequireExpectedFileCount: indexingCfg.Inspect.RequireExpectedFileCount,
+			BlockedMagicHex:          append([]string(nil), indexingCfg.Inspect.BlockedMagicHex...),
+			MaxArchiveDepth:          indexingCfg.Inspect.MaxArchiveDepth,
+			ToolTimeout:              time.Duration(indexingCfg.Inspect.ToolTimeoutSecs) * time.Second,
+			FFmpegPath:               indexingCfg.Inspect.FFmpegPath,
+			FFProbePath:              indexingCfg.Inspect.FFProbePath,
+			SevenZipPath:             indexingCfg.Inspect.SevenZipPath,
+			UnrarPath:                indexingCfg.Inspect.UnrarPath,
+			PAR2Path:                 indexingCfg.Inspect.PAR2Path,
+			CandidateBatchSize:       100,
 		}),
 		EnrichTMDB: tmdb.DefaultOptions(tmdb.Options{
 			Limit:           indexingCfg.EnrichTMDB.BatchSize,
@@ -678,11 +715,20 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
 		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
-			MinMatchConfidence: indexingCfg.Release.PublicMinMatchConfidence,
-			MinCompletionPct:   indexingCfg.Release.PublicMinCompletionPct,
-			MinIdentityStatus:  indexingCfg.Release.PublicMinIdentityStatus,
-			RequireInspection:  indexingCfg.Release.PublicRequireInspection,
-			RequireEnrichment:  indexingCfg.Release.PublicRequireEnrichment,
+			MinMatchConfidence:                   indexingCfg.Release.PublicMinMatchConfidence,
+			MinCompletionPct:                     indexingCfg.Release.PublicMinCompletionPct,
+			MinIdentityStatus:                    indexingCfg.Release.PublicMinIdentityStatus,
+			RequireInspection:                    indexingCfg.Release.PublicRequireInspection,
+			RequireEnrichment:                    indexingCfg.Release.PublicRequireEnrichment,
+			RequirePayloadComplete:               indexingCfg.Release.PublicRequirePayloadComplete,
+			RequireExpectedFileCountComplete:     indexingCfg.Release.PublicRequireExpectedFileCountComplete,
+			RequirePAR2:                          indexingCfg.Release.PublicRequirePAR2,
+			RequireNFO:                           indexingCfg.Release.PublicRequireNFO,
+			RequireSFV:                           indexingCfg.Release.PublicRequireSFV,
+			RetainUntilExpectedFileCountComplete: indexingCfg.Release.RetainUntilExpectedFileCountComplete,
+			RetainRequirePAR2:                    indexingCfg.Release.RetainRequirePAR2,
+			RetainRequireNFO:                     indexingCfg.Release.RetainRequireNFO,
+			RetainRequireSFV:                     indexingCfg.Release.RetainRequireSFV,
 		}),
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,

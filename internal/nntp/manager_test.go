@@ -317,6 +317,12 @@ func (p *blockingProvider) GroupStats(context.Context, string) (GroupStats, erro
 	return GroupStats{Low: 1, High: 1}, nil
 }
 
+func (p *blockingProvider) ListGroups(context.Context, string) ([]GroupListing, error) {
+	p.enter()
+	defer p.leave()
+	return []GroupListing{{Group: "alt.binaries.test", High: 1, Low: 1, Status: "y"}}, nil
+}
+
 func (p *blockingProvider) XOver(context.Context, string, int64, int64) ([]OverviewHeader, error) {
 	p.enter()
 	defer p.leave()

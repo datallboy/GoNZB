@@ -1,11 +1,23 @@
 package controllers
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
+
+const indexerOverviewStreamInterval = 250 * time.Millisecond
+
+type indexerOverviewStreamSnapshot struct {
+	NNTPStats       *app.NNTPRuntimeStats           `json:"nntp"`
+	StageThroughput *pgindex.IndexerStageThroughput `json:"throughput"`
+}
 
 type IndexerAdminController struct {
 	Service indexerService
@@ -91,6 +103,78 @@ func (ctrl *IndexerAdminController) GetNNTPStats(c *echo.Context) error {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, stats)
+}
+
+func (ctrl *IndexerAdminController) StreamOverview(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	rw := c.Response()
+	rc := http.NewResponseController(rw)
+	rw.Header().Set(echo.HeaderContentType, "text/event-stream")
+	rw.Header().Set(echo.HeaderCacheControl, "no-cache")
+	rw.Header().Set(echo.HeaderConnection, "keep-alive")
+	rw.Header().Set("X-Accel-Buffering", "no")
+
+	if _, err := fmt.Fprintf(rw, "retry: 3000\n\n"); err != nil {
+		return err
+	}
+	if err := rc.Flush(); err != nil {
+		return nil
+	}
+
+	if err := ctrl.writeOverviewStreamEvent(c, rw, rc); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(indexerOverviewStreamInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.Request().Context().Done():
+			return nil
+		case <-ticker.C:
+			if err := ctrl.writeOverviewStreamEvent(c, rw, rc); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (ctrl *IndexerAdminController) writeOverviewStreamEvent(c *echo.Context, rw http.ResponseWriter, rc *http.ResponseController) error {
+	snapshot, err := ctrl.overviewStreamSnapshot(c.Request().Context())
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(rw, "event: overview\ndata: %s\n\n", string(data)); err != nil {
+		return err
+	}
+	if err := rc.Flush(); err != nil {
+		return nil
+	}
+	return nil
+}
+
+func (ctrl *IndexerAdminController) overviewStreamSnapshot(ctx context.Context) (*indexerOverviewStreamSnapshot, error) {
+	nntp, err := ctrl.Service.NNTPStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	throughput, err := ctrl.Service.StageThroughput(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &indexerOverviewStreamSnapshot{
+		NNTPStats:       nntp,
+		StageThroughput: throughput,
+	}, nil
 }
 
 func (ctrl *IndexerAdminController) ListStages(c *echo.Context) error {
