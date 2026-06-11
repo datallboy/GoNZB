@@ -252,6 +252,182 @@ This matrix is the schema contract for current and near-term code changes.
 
 This section defines what each stage may read and write.
 
+## Stage DBO Audit Map
+
+This section is the living audit companion to the ownership matrix. It does not replace the detailed implementation audit, but it does name the primary hot DBO/store entry points and the expected execution profile for each stage.
+
+Use this section when:
+
+- auditing a stage’s query paths
+- deciding whether a query belongs in bootstrap, build/regroup, or steady state
+- checking whether a stage is operating through queue/runtime state versus direct fact-table mutation
+
+### Scrape audit map
+
+Primary hot DBO/store paths:
+
+- `InsertArticleHeaders`
+- scrape checkpoint update helpers in `repository.go`
+- `UpsertBackfillCheckpoint`
+- `CheckCriticalIndexerIntegrity`
+
+Execution profile:
+
+- bootstrap-safe
+- not allowed to overlap with the hotter regroup/materialization stages by default
+
+Audit focus:
+
+- `INSERT ... ON CONFLICT` pressure on `article_headers`
+- support-table writes into `article_header_ingest_payloads`
+- poster dimension writes
+- duplicate-resolution and follow-up reads
+- checkpoint write frequency and lock scope
+
+### Assemble audit map
+
+Primary hot DBO/store paths:
+
+- `UpsertBinaries`
+- `UpsertBinaryParts`
+- binary refresh/update helpers in `assembly_store.go`
+- release-refresh queue enqueue helpers called from assemble
+
+Execution profile:
+
+- build/regroup
+- unsafe to overlap with scrape by default until the full ingest/assembly contention story is proven safe
+
+Audit focus:
+
+- header selection/claim path
+- binary upsert chunking and conflict behavior
+- `binary_parts` write amplification
+- lane A versus lane B selector/query differences
+- downstream dirty-key enqueue behavior
+
+### Recover yEnc audit map
+
+Primary hot DBO/store paths:
+
+- `BackfillYEncRecoveryWorkItems`
+- `ListYEncRecoveryCandidates`
+- recovery result persistence helpers in `yenc_recovery_store.go`
+
+Execution profile:
+
+- build/regroup
+- may overlap with assemble and release refresh only where the work-queue and refinement paths are shown to be safe
+
+Audit focus:
+
+- queue-first versus seed/backfill selection
+- stale/noop/backoff behavior
+- joins against transient support tables
+- refinement writes into `binaries` / `binary_parts`
+- downstream dirty-key enqueue behavior
+
+### Release summary refresh audit map
+
+Primary hot DBO/store paths:
+
+- `RefreshQueuedReleaseFamilySummaries`
+- `RefreshQueuedReleaseFamilySummariesWithMetrics`
+- Phase A and Phase B helpers in `release_family_summary_store.go`
+
+Execution profile:
+
+- build/regroup
+- may overlap with `release` only through the documented queue/materialized boundaries
+- should defer or coordinate with maintenance cleanup on the same derived tables
+
+Audit focus:
+
+- queue claim/dequeue shape
+- Phase A aggregate/dominant-row queries
+- Phase B ready-candidate materialization
+- recovered-file-set follow-up work
+- cleanup and maintenance interaction
+
+### Release audit map
+
+Primary hot DBO/store paths:
+
+- `ListReleaseCandidates`
+- `ListBinariesForReleaseCandidate`
+- `UpsertRelease`
+- `ReplaceReleaseFiles`
+- `ReplaceReleaseNewsgroups`
+
+Execution profile:
+
+- build/regroup, then steady-state-safe once upstream readiness production is stable
+
+Audit focus:
+
+- ready-candidate selection versus persistence split
+- release file/newsgroup replacement transaction scope
+- cross-newsgroup release behavior
+- release-ready ack and candidate consumption behavior
+
+### Inspect audit map
+
+Primary hot DBO/store paths:
+
+- `ListBinaryInspectionCandidates`
+- `ListBinaryInspectionCandidatesWithOptions`
+- `ClaimBinaryInspectionCandidates`
+- stage-specific evidence upsert/update helpers in `inspection_store.go`
+
+Execution profile:
+
+- steady state after release formation is healthy
+
+Audit focus:
+
+- candidate listing and claim shape
+- owned evidence tables per inspect stage
+- whether any inspect path still mutates upstream fact state unnecessarily
+- reservation/runtime-state isolation
+
+### Archive / purge audit map
+
+Primary hot DBO/store paths:
+
+- `MarkReleaseArchiveStored`
+- `MarkReleaseArchiveFailed`
+- `PurgeArchivedReleaseSources`
+
+Execution profile:
+
+- steady state only after release formation and inspection/archive prerequisites are healthy
+
+Audit focus:
+
+- durable archive state writes
+- transitional `nzb_cache` dependence
+- purge eligibility gating
+- delete order and shared-lineage safety
+
+### Maintenance / runtime audit map
+
+Primary hot DBO/store paths:
+
+- maintenance cleanup queries in `maintenance_store.go`
+- integrity tooling in `integrity_store.go`
+- stats/dashboard query surfaces in `inspect_reads.go` and related read models
+
+Execution profile:
+
+- steady state, but some maintenance cleanup should defer while higher-priority rebuild/backlog work is active
+
+Audit focus:
+
+- cleanup overlap with release summary refresh
+- integrity preflight coverage
+- misleading queue/stat surfaces
+- runtime policy and scheduler support queries
+
 ### `scrape_latest` and `scrape_backfill`
 
 Allowed reads:
@@ -277,6 +453,13 @@ Rationale:
 
 - scrape owns ingest fact creation only
 - wildcard evaluation and provider inventory do not bypass effective scrape-group selection
+
+Primary DBO entry points:
+
+- `InsertArticleHeaders`
+- scrape checkpoint update helpers in `repository.go`
+- `UpsertBackfillCheckpoint`
+- `CheckCriticalIndexerIntegrity`
 
 ## Scrape Configuration Ownership
 
@@ -336,6 +519,12 @@ Rationale:
 
 - assemble turns article facts into binary identity and membership
 
+Primary DBO entry points:
+
+- `UpsertBinaries`
+- `UpsertBinaryParts`
+- binary refresh/update helpers in `assembly_store.go`
+
 ### `recover_yenc`
 
 Allowed reads:
@@ -363,6 +552,12 @@ Rationale:
 
 - recovery may improve canonical binary identity, but it does not own ingest facts or release materialization
 - recovery work selection should stay bounded and group-fair; queue seeding and candidate claims should not let one large newsgroup backlog starve all other eligible groups indefinitely
+
+Primary DBO entry points:
+
+- `BackfillYEncRecoveryWorkItems`
+- `ListYEncRecoveryCandidates`
+- recovery result persistence helpers in `yenc_recovery_store.go`
 
 ### `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`
 
@@ -393,6 +588,13 @@ Rationale:
 
 - inspection owns evidence extraction and release-facing metadata enrichment, not upstream source facts
 
+Primary DBO entry points:
+
+- `ListBinaryInspectionCandidates`
+- `ListBinaryInspectionCandidatesWithOptions`
+- `ClaimBinaryInspectionCandidates`
+- stage-specific evidence upsert/update helpers in `inspection_store.go`
+
 ### `release_summary_refresh`
 
 Allowed reads:
@@ -415,6 +617,12 @@ Not allowed:
 Rationale:
 
 - this stage is the sole heavy writer for the readiness read-model
+
+Primary DBO entry points:
+
+- `RefreshQueuedReleaseFamilySummaries`
+- `RefreshQueuedReleaseFamilySummariesWithMetrics`
+- Phase A and Phase B helpers in `release_family_summary_store.go`
 
 ### `release`
 
@@ -448,6 +656,14 @@ Current boundary note:
 - user-facing and admin file/detail reads should anchor on `release_catalog_files`
 - `release_files` remains a transitional live-lineage bridge for binary/article drilldown and purge-time source cleanup only
 
+Primary DBO entry points:
+
+- `ListReleaseCandidates`
+- `ListBinariesForReleaseCandidate`
+- `UpsertRelease`
+- `ReplaceReleaseFiles`
+- `ReplaceReleaseNewsgroups`
+
 ### `release_generate_nzb`
 
 Allowed reads:
@@ -474,6 +690,10 @@ Rationale:
 
 - generate is the archive-tail start and should operate at the release layer
 
+Primary DBO entry points:
+
+- NZB generation reads and archive-state writes in the release/archive store surfaces
+
 ### `release_archive_nzb`
 
 Allowed reads:
@@ -494,6 +714,11 @@ Not allowed:
 Rationale:
 
 - legacy/transitional archive stage only
+
+Primary DBO entry points:
+
+- `MarkReleaseArchiveStored`
+- `MarkReleaseArchiveFailed`
 
 ### `release_purge_archived_sources`
 
@@ -520,6 +745,10 @@ Rationale:
 
 - purge is terminal cleanup, not a general-purpose downstream mutator
 
+Primary DBO entry points:
+
+- `PurgeArchivedReleaseSources`
+
 ### `indexer_maintenance`
 
 Allowed reads:
@@ -540,6 +769,12 @@ Not allowed:
 Rationale:
 
 - maintenance may clean, prune, or backfill, but it is not an alternate owner for primary pipeline data
+
+Primary DBO entry points:
+
+- maintenance cleanup queries in `maintenance_store.go`
+- integrity checks and reindex helpers in `integrity_store.go`
+- operational stats read models used by admin/dashboard flows
 
 ## Forbidden Write-Backs
 
