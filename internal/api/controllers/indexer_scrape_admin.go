@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,7 +29,7 @@ func (ctrl *IndexerScrapeAdminController) GetConfig(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
-	return c.JSON(http.StatusOK, buildScrapeAdminResponse(runtime))
+	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, runtime))
 }
 
 func (ctrl *IndexerScrapeAdminController) UpdateConfig(c *echo.Context) error {
@@ -56,7 +57,7 @@ func (ctrl *IndexerScrapeAdminController) UpdateConfig(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
-	return c.JSON(http.StatusOK, buildScrapeAdminResponse(updated))
+	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, updated))
 }
 
 func (ctrl *IndexerScrapeAdminController) ScanProviders(c *echo.Context) error {
@@ -77,7 +78,7 @@ func (ctrl *IndexerScrapeAdminController) ScanProviders(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
-	return c.JSON(http.StatusOK, buildScrapeAdminResponse(updated))
+	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, updated))
 }
 
 func (ctrl *IndexerScrapeAdminController) PreviewWildcardGroups(c *echo.Context) error {
@@ -108,7 +109,7 @@ func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) e
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
-	return c.JSON(http.StatusOK, buildScrapeAdminResponse(updated))
+	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, updated))
 }
 
 type scrapeAdminConfigPatch struct {
@@ -156,7 +157,16 @@ func scanProviderInventory(ctx context.Context, appCtx *app.Context, runtime *ap
 	return out, nil
 }
 
-func buildScrapeAdminResponse(runtime *app.RuntimeSettings) map[string]any {
+type scrapeCrosspostPopularityItem struct {
+	GroupName                string     `json:"group_name"`
+	ObservedArticleCount     int64      `json:"observed_article_count"`
+	DistinctMessageCount     int64      `json:"distinct_message_count"`
+	DistinctSourceGroupCount int64      `json:"distinct_source_group_count"`
+	EffectiveGroup           bool       `json:"effective_group"`
+	LastSeenAt               *time.Time `json:"last_seen_at,omitempty"`
+}
+
+func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime *app.RuntimeSettings) map[string]any {
 	if runtime == nil {
 		runtime = app.DefaultRuntimeSettings()
 	}
@@ -165,6 +175,7 @@ func buildScrapeAdminResponse(runtime *app.RuntimeSettings) map[string]any {
 		indexing = app.DefaultRuntimeSettings().Indexing
 	}
 	preview := previewWildcardGroups(indexing)
+	crossposts := loadCrosspostPopularity(ctx, appCtx, indexing)
 	return map[string]any{
 		"explicit_groups":          ensureExplicitGroups(indexing.ExplicitGroups),
 		"wildcard_rules":           ensureWildcardRules(indexing.WildcardRules),
@@ -172,7 +183,40 @@ func buildScrapeAdminResponse(runtime *app.RuntimeSettings) map[string]any {
 		"materialized_groups":      ensureMaterializedGroups(indexing.MaterializedGroups),
 		"effective_groups":         ensureExplicitGroups(app.EffectiveScrapeGroups(indexing)),
 		"preview_groups":           ensurePreviewGroups(preview),
+		"crosspost_popularity":     crossposts,
 	}
+}
+
+func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings) []scrapeCrosspostPopularityItem {
+	if appCtx == nil || appCtx.PGIndexStore == nil {
+		return []scrapeCrosspostPopularityItem{}
+	}
+	items, err := appCtx.PGIndexStore.GetIndexerCrosspostNewsgroupPopularity(ctx, 100)
+	if err != nil {
+		return []scrapeCrosspostPopularityItem{}
+	}
+	effectiveNames := make([]string, 0)
+	if indexing != nil {
+		for _, group := range app.EffectiveScrapeGroups(indexing) {
+			name := strings.TrimSpace(strings.ToLower(group.GroupName))
+			if name == "" || slices.Contains(effectiveNames, name) {
+				continue
+			}
+			effectiveNames = append(effectiveNames, name)
+		}
+	}
+	out := make([]scrapeCrosspostPopularityItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, scrapeCrosspostPopularityItem{
+			GroupName:                item.GroupName,
+			ObservedArticleCount:     item.ObservedArticleCount,
+			DistinctMessageCount:     item.DistinctMessageCount,
+			DistinctSourceGroupCount: item.DistinctSourceGroupCount,
+			EffectiveGroup:           slices.Contains(effectiveNames, strings.ToLower(strings.TrimSpace(item.GroupName))),
+			LastSeenAt:               item.LastSeenAt,
+		})
+	}
+	return out
 }
 
 func previewWildcardGroups(indexing *app.IndexingRuntimeSettings) []scrapePreviewItem {

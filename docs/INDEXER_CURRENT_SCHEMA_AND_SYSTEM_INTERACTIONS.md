@@ -276,6 +276,7 @@ This matrix is the schema contract for current and near-term code changes.
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
+| `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
@@ -533,6 +534,7 @@ Current audit note:
 - the scrape metric/log field `articles_inserted` currently reflects resolved/processed headers through the ingest path, not guaranteed newly unique `article_headers` rows
 - `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
 - `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
+- `scrape_*` now also materializes `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
 
 ## Scrape Configuration Ownership
 
@@ -560,6 +562,7 @@ Cross-group release formation is intentionally asymmetric:
 - release/catalog duplication should be suppressed when identity is strong enough
 - release/file-set availability may union across groups
 - one file payload’s article membership must remain bound to one newsgroup
+- `article_header_crosspost_groups` may retain additional observed cross-post groups for discovery/reporting, but those observations must not rewrite binary/file provenance
 
 Downloader-safety invariant:
 

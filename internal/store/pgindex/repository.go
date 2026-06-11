@@ -985,6 +985,9 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		if err := upsertArticleHeaderPayloadsBatch(ctx, tx, payloadRows); err != nil {
 			return inserted, err
 		}
+		if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs); err != nil {
+			return inserted, err
+		}
 
 		inserted += int64(len(batch))
 	}
