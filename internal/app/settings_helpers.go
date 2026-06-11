@@ -603,10 +603,11 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 
 func DefaultNNTPPoolRuntimeSettings() *NNTPPoolRuntimeSettings {
 	return &NNTPPoolRuntimeSettings{
-		IdleBorrowEnabled:        true,
-		IndexerMaxPercent:        80,
-		DownloaderReservePercent: 20,
-		DemandWindowSeconds:      30,
+		IdleBorrowEnabled:         true,
+		IndexerMaxPercent:         80,
+		IndexerStageTargetPercent: 90,
+		DownloaderReservePercent:  20,
+		DemandWindowSeconds:       30,
 	}
 }
 
@@ -775,6 +776,9 @@ func mergeNNTPPoolRuntimeSettings(base, override *NNTPPoolRuntimeSettings) *NNTP
 	out.IdleBorrowEnabled = override.IdleBorrowEnabled
 	if override.IndexerMaxPercent > 0 {
 		out.IndexerMaxPercent = clampPercent(override.IndexerMaxPercent)
+	}
+	if override.IndexerStageTargetPercent > 0 {
+		out.IndexerStageTargetPercent = clampPercent(override.IndexerStageTargetPercent)
 	}
 	if override.DownloaderReservePercent > 0 {
 		out.DownloaderReservePercent = clampPercent(override.DownloaderReservePercent)

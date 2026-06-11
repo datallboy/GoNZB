@@ -324,6 +324,31 @@ func TestApplyToConfigPreservesReleaseReadinessPolicies(t *testing.T) {
 	}
 }
 
+func TestDefaultNNTPPoolRuntimeSettingsIncludesIndexerStageTargetPercent(t *testing.T) {
+	runtime := DefaultNNTPPoolRuntimeSettings()
+	if runtime == nil {
+		t.Fatal("expected default nntp pool settings")
+	}
+	if runtime.IndexerStageTargetPercent != 90 {
+		t.Fatalf("expected default indexer stage target percent 90, got %+v", runtime)
+	}
+}
+
+func TestApplyPatchPreservesNNTPStageTargetPercent(t *testing.T) {
+	current := DefaultRuntimeSettings()
+	current.NNTPPool.IndexerStageTargetPercent = 85
+
+	next := ApplyPatch(current, &RuntimeSettingsPatch{
+		NNTPPool: &NNTPPoolRuntimeSettings{
+			IndexerStageTargetPercent: 95,
+		},
+	})
+
+	if next.NNTPPool == nil || next.NNTPPool.IndexerStageTargetPercent != 95 {
+		t.Fatalf("expected nntp stage target percent 95, got %+v", next.NNTPPool)
+	}
+}
+
 func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 	redacted := RedactedCopy(&RuntimeSettings{
 		Indexing: &IndexingRuntimeSettings{
