@@ -21,6 +21,7 @@ const emptyState: AdminScrapeConfigResponse = {
   materialized_groups: [],
   effective_groups: [],
   preview_groups: [],
+  crosspost_popularity: [],
 }
 
 function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | null): AdminScrapeConfigResponse {
@@ -31,6 +32,7 @@ function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | nu
     materialized_groups: input?.materialized_groups ?? [],
     effective_groups: input?.effective_groups ?? [],
     preview_groups: input?.preview_groups ?? [],
+    crosspost_popularity: input?.crosspost_popularity ?? [],
   }
 }
 
@@ -206,6 +208,41 @@ export function AdminScrapePage() {
           </button>
         </div>
         <p className="muted-copy">{data.provider_group_inventory.length} discovered provider/group rows.</p>
+      </div>
+
+      <div className="module-settings-group stack">
+        <div className="button-row">
+          <h2 className="section-title">Cross-post popularity</h2>
+        </div>
+        <p className="muted-copy">
+          {data.crosspost_popularity.length} groups observed from cross-post telemetry. Candidate rows are groups not currently in the effective scrape set.
+        </p>
+        <div className="table-shell">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Status</th>
+                <th>Distinct messages</th>
+                <th>Observed articles</th>
+                <th>Source groups</th>
+                <th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.crosspost_popularity.map((item) => (
+                <tr key={`crosspost-${item.group_name}`}>
+                  <td>{item.group_name}</td>
+                  <td>{item.effective_group ? 'already scraped' : 'candidate'}</td>
+                  <td>{item.distinct_message_count.toLocaleString()}</td>
+                  <td>{item.observed_article_count.toLocaleString()}</td>
+                  <td>{item.distinct_source_group_count.toLocaleString()}</td>
+                  <td>{item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : 'unknown'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="module-settings-group stack">

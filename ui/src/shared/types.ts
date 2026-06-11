@@ -785,6 +785,15 @@ export type ScrapePreviewGroup = {
   rule_ids: string[]
 }
 
+export type ScrapeCrosspostPopularityItem = {
+  group_name: string
+  observed_article_count: number
+  distinct_message_count: number
+  distinct_source_group_count: number
+  effective_group: boolean
+  last_seen_at?: string
+}
+
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
   backfill_until_date_by_group: Record<string, string>
@@ -960,6 +969,7 @@ export type AdminScrapeConfigResponse = {
   materialized_groups: ScrapeMaterializedGroup[]
   effective_groups: ScrapeExplicitGroup[]
   preview_groups: ScrapePreviewGroup[]
+  crosspost_popularity: ScrapeCrosspostPopularityItem[]
 }
 
 export type ModuleCapability = {

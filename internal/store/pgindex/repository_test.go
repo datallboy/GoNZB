@@ -2570,6 +2570,75 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	}
 }
 
+func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	sourceA := fmt.Sprintf("alt.test.crosspost.sourcea.%d", time.Now().UnixNano())
+	sourceB := fmt.Sprintf("alt.test.crosspost.sourceb.%d", time.Now().UnixNano())
+	sourceAID, err := store.EnsureNewsgroup(ctx, sourceA)
+	if err != nil {
+		t.Fatalf("ensure source A: %v", err)
+	}
+	sourceBID, err := store.EnsureNewsgroup(ctx, sourceB)
+	if err != nil {
+		t.Fatalf("ensure source B: %v", err)
+	}
+
+	if _, err := store.InsertArticleHeaders(ctx, 1, sourceAID, []ArticleHeader{{
+		ArticleNumber: 101,
+		MessageID:     "<crosspost-1@test>",
+		Subject:       "Crosspost One",
+		Poster:        "poster@test",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:101 alt.popular.target:201 alt.extra.target:301 alt.popular.target:201", sourceA),
+	}}); err != nil {
+		t.Fatalf("insert source A headers: %v", err)
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, sourceBID, []ArticleHeader{{
+		ArticleNumber: 102,
+		MessageID:     "<crosspost-1@test>",
+		Subject:       "Crosspost One Copy",
+		Poster:        "poster@test",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:102 alt.popular.target:202 alt.extra.target:302", sourceB),
+	}}); err != nil {
+		t.Fatalf("insert source B headers: %v", err)
+	}
+
+	items, err := store.GetIndexerCrosspostNewsgroupPopularity(ctx, 20)
+	if err != nil {
+		t.Fatalf("get crosspost popularity: %v", err)
+	}
+	byGroup := make(map[string]IndexerCrosspostPopularityItem, len(items))
+	for _, item := range items {
+		byGroup[item.GroupName] = item
+	}
+
+	popular, ok := byGroup["alt.popular.target"]
+	if !ok {
+		t.Fatalf("expected alt.popular.target in popularity report, got %+v", items)
+	}
+	if popular.ObservedArticleCount != 2 {
+		t.Fatalf("expected observed article count 2, got %+v", popular)
+	}
+	if popular.DistinctMessageCount != 1 {
+		t.Fatalf("expected distinct message count 1, got %+v", popular)
+	}
+	if popular.DistinctSourceGroupCount != 2 {
+		t.Fatalf("expected distinct source group count 2, got %+v", popular)
+	}
+	if popular.LastSeenAt == nil {
+		t.Fatalf("expected last_seen_at for %+v", popular)
+	}
+
+	extra, ok := byGroup["alt.extra.target"]
+	if !ok {
+		t.Fatalf("expected alt.extra.target in popularity report, got %+v", items)
+	}
+	if extra.ObservedArticleCount != 2 || extra.DistinctMessageCount != 1 || extra.DistinctSourceGroupCount != 2 {
+		t.Fatalf("unexpected extra-target aggregation: %+v", extra)
+	}
+}
+
 func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
