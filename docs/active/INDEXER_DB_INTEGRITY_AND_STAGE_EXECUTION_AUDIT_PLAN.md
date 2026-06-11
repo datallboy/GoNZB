@@ -147,9 +147,10 @@ Additional landed admission gates:
   - paused when `release_ready_candidates` backlog is already above threshold and `release` is enabled
   - resumes only after ready backlog drops below the lower resume threshold
 - inspect family
-  - light lanes remain eligible under backlog pressure:
-    - `inspect_discovery`
-    - `inspect_par2`
+- light lanes remain eligible under backlog pressure:
+  - `inspect_discovery`
+  - `inspect_par2`
+  - `inspect_discovery` is now pre-release capable and may inspect standalone opaque binaries with no `release_id`
   - heavier lanes are paused while core pipeline backlog is hot:
     - `inspect_nfo`
     - `inspect_archive`

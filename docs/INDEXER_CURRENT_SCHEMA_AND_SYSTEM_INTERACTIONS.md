@@ -232,6 +232,7 @@ Current landed behavior:
   - `inspect_password`
   - `inspect_media`
 - `inspect_discovery` and `inspect_par2` remain eligible under supervisor even while that core backlog is hot
+- `inspect_discovery` is no longer strictly release-backed; it may claim standalone opaque binaries before release formation and fall back to binary-only materialization when `release_id` is blank
 - NNTP-bound stage admission also uses live local saturation:
   - `inspect_par2` yields first
   - `scrape_backfill` yields next
