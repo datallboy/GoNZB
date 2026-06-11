@@ -8960,7 +8960,7 @@ func TestPublicIndexerReleaseVisibilityRequiresReadyReleaseHeuristics(t *testing
 	}
 }
 
-func TestPublicIndexerReleaseVisibilityHidesUncategorizedRelease(t *testing.T) {
+func TestPublicIndexerReleaseVisibilityAllowsUncategorizedReleaseWhenOtherwiseReady(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -8974,16 +8974,19 @@ func TestPublicIndexerReleaseVisibilityHidesUncategorizedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list public uncategorized releases: %v", err)
 	}
-	if total != 0 || len(items) != 0 {
-		t.Fatalf("expected uncategorized release to be hidden, got total=%d items=%d", total, len(items))
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected uncategorized release to be visible, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ReleaseID != releaseID {
+		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
 	}
 
 	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
 	if err != nil {
 		t.Fatalf("get public uncategorized detail: %v", err)
 	}
-	if detail != nil {
-		t.Fatalf("expected uncategorized detail to be hidden, got %+v", detail)
+	if detail == nil {
+		t.Fatalf("expected uncategorized detail to be visible")
 	}
 }
 
