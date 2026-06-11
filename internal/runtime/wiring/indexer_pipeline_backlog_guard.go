@@ -149,7 +149,7 @@ func (g *cachedPipelineBacklogGuard) evaluate(ctx context.Context, runtime *app.
 	coreHot := pipelineCoreBacklogHot(runtime.Indexing, assembleBacklog, yencBacklog, int64(refreshQueue), pendingReleaseCandidates, coreHigh)
 	if g.inspectBlocked {
 		if pipelineCoreBacklogHot(runtime.Indexing, assembleBacklog, yencBacklog, int64(refreshQueue), pendingReleaseCandidates, coreLow) {
-			for _, stageName := range inspectStageNames() {
+			for _, stageName := range deferredInspectStageNames() {
 				results[stageName] = supervisor.StageGateDecision{
 					Allowed: false,
 					Reason:  fmt.Sprintf("inspect paused for core pipeline catch-up: assemble=%d yenc=%d refresh_queue=%d ready_candidates=%d resume_threshold=%d", assembleBacklog, yencBacklog, refreshQueue, pendingReleaseCandidates, coreLow),
@@ -160,7 +160,7 @@ func (g *cachedPipelineBacklogGuard) evaluate(ctx context.Context, runtime *app.
 		}
 	} else if coreHot {
 		g.inspectBlocked = true
-		for _, stageName := range inspectStageNames() {
+		for _, stageName := range deferredInspectStageNames() {
 			results[stageName] = supervisor.StageGateDecision{
 				Allowed: false,
 				Reason:  fmt.Sprintf("inspect paused for core pipeline catch-up: assemble=%d yenc=%d refresh_queue=%d ready_candidates=%d high_water=%d", assembleBacklog, yencBacklog, refreshQueue, pendingReleaseCandidates, coreHigh),
@@ -191,6 +191,15 @@ func inspectStageNames() []supervisor.StageName {
 	return []supervisor.StageName{
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
+		supervisor.StageInspectNFO,
+		supervisor.StageInspectArchive,
+		supervisor.StageInspectPassword,
+		supervisor.StageInspectMedia,
+	}
+}
+
+func deferredInspectStageNames() []supervisor.StageName {
+	return []supervisor.StageName{
 		supervisor.StageInspectNFO,
 		supervisor.StageInspectArchive,
 		supervisor.StageInspectPassword,
