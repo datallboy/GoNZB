@@ -931,6 +931,7 @@ func TestRuntimeIndexerServiceNNTPStatsUsesCurrentRuntimeIndexer(t *testing.T) {
 
 type testSnapshotReader struct {
 	snapshot *pgindex.NNTPRuntimeSnapshot
+	items    []pgindex.NNTPRuntimeSnapshot
 	err      error
 }
 
@@ -938,11 +939,15 @@ func (t testSnapshotReader) GetLatestNNTPSnapshot(context.Context, string) (*pgi
 	return t.snapshot, t.err
 }
 
+func (t testSnapshotReader) ListRecentNNTPSnapshots(context.Context, string, time.Time) ([]pgindex.NNTPRuntimeSnapshot, error) {
+	return t.items, t.err
+}
+
 func TestRuntimeIndexerServiceNNTPStatsPrefersSharedSnapshot(t *testing.T) {
 	appCtx := &app.Context{}
 	service := &runtimeIndexerService{
 		appCtx:        appCtx,
-		nntpSnapshots: testSnapshotReader{snapshot: &pgindex.NNTPRuntimeSnapshot{Payload: json.RawMessage(`{"scope":"indexer","active":9}`)}},
+		nntpSnapshots: testSnapshotReader{items: []pgindex.NNTPRuntimeSnapshot{{Payload: json.RawMessage(`{"scope":"indexer","active":9}`)}}},
 	}
 	appCtx.UsenetIndexer = &testRuntimeIndexerService{stats: &app.NNTPRuntimeStats{Scope: "indexer", Active: 2}}
 
@@ -952,6 +957,31 @@ func TestRuntimeIndexerServiceNNTPStatsPrefersSharedSnapshot(t *testing.T) {
 	}
 	if stats == nil || stats.Active != 9 {
 		t.Fatalf("expected shared snapshot active=9, got %+v", stats)
+	}
+}
+
+func TestRuntimeIndexerServiceNNTPStatsAggregatesRecentSnapshots(t *testing.T) {
+	appCtx := &app.Context{}
+	service := &runtimeIndexerService{
+		appCtx: appCtx,
+		nntpSnapshots: testSnapshotReader{items: []pgindex.NNTPRuntimeSnapshot{
+			{Payload: json.RawMessage(`{"scope":"indexer","policy":"wait_queue","capacity":40,"active":4,"providers":[{"id":"primary","label":"news","capacity":40,"active":4}],"scopes":[{"scope":"scrape","active":3}]}`)},
+			{Payload: json.RawMessage(`{"scope":"indexer","policy":"wait_queue","capacity":40,"active":6,"providers":[{"id":"primary","label":"news","capacity":40,"active":6}],"scopes":[{"scope":"recover_yenc","active":2}]}`)},
+		}},
+	}
+
+	stats, err := service.NNTPStats(context.Background())
+	if err != nil {
+		t.Fatalf("NNTPStats returned error: %v", err)
+	}
+	if stats == nil || stats.Active != 10 || stats.Capacity != 80 {
+		t.Fatalf("expected aggregated stats active=10 capacity=80, got %+v", stats)
+	}
+	if len(stats.Providers) != 1 || stats.Providers[0].Active != 10 {
+		t.Fatalf("expected merged provider stats, got %+v", stats.Providers)
+	}
+	if len(stats.Scopes) != 2 {
+		t.Fatalf("expected merged scope stats, got %+v", stats.Scopes)
 	}
 }
 
