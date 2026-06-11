@@ -215,7 +215,7 @@ export function AdminScrapePage() {
           <h2 className="section-title">Cross-post popularity</h2>
         </div>
         <p className="muted-copy">
-          {data.crosspost_popularity.length} groups observed from cross-post telemetry. Candidate rows are groups not currently in the effective scrape set.
+          {data.crosspost_popularity.length} groups observed from cross-post telemetry in the last 30 days. Candidate rows are groups not currently in the effective scrape set.
         </p>
         <div className="table-shell">
           <table className="data-table">
