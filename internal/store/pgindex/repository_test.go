@@ -9074,6 +9074,41 @@ func TestPublicIndexerReleaseVisibilitySuppressesUnreadableMiscRows(t *testing.T
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesProbableOpaquePartRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("probableopaque%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "etaXMJOIXr7TY6ZRru6mio0bN part3"
+		in.SourceTitle = in.Title
+		in.SearchTitle = strings.ToLower(in.Title)
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+		in.Classification = "archive"
+		in.IdentityStatus = "probable"
+		in.MatchConfidence = 0.898
+		in.HasPAR2 = false
+		in.HasNFO = false
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: "etaXMJOIXr7TY6ZRru6mio0bN", Limit: 50})
+	if err != nil {
+		t.Fatalf("list public probable opaque releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected probable opaque part release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public probable opaque detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected probable opaque detail to be hidden, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

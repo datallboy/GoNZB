@@ -92,6 +92,7 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 			COALESCE(%[1]s.search_title, '') ~* '(^|[^a-z0-9])(seed|test)([^a-z0-9]|$)'
 			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
 		)`, alias),
+		probableWeakTitleClause(alias),
 		"COALESCE(ro.hidden, FALSE) = FALSE",
 	}
 
@@ -124,6 +125,18 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 	}
 
 	return strings.Join(clauses, "\n\t\tAND ")
+}
+
+func probableWeakTitleClause(alias string) string {
+	effectiveTitle := fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, '')))", alias)
+	return fmt.Sprintf(`NOT (
+		COALESCE(%[1]s.identity_status, '') = 'probable'
+		AND COALESCE(%[1]s.category_id, 8010) = 8010
+		AND (
+			%[2]s ~ '(^|\\s)(part|vol)\\d+([+._-]\\d+)?$'
+			OR %[2]s ~ '^[a-z0-9]{12,}(\\s+(part|vol)\\d+([+._-]\\d+)?)?$'
+		)
+	)`, alias, effectiveTitle)
 }
 
 func payloadCompleteClause(alias string) string {
