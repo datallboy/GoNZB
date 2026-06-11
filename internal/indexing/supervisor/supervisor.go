@@ -108,6 +108,15 @@ type Supervisor struct {
 	leaseDuration     time.Duration
 	heartbeatInterval time.Duration
 	stageGate         StageGateFunc
+	blockedMu         sync.Mutex
+	blockedLogs       map[StageName]blockedStageLogState
+}
+
+const blockedStageLogInterval = 60 * time.Second
+
+type blockedStageLogState struct {
+	Reason string
+	At     time.Time
 }
 
 func New(log logger, stages []Stage, options ...Options) *Supervisor {
@@ -147,6 +156,7 @@ func New(log logger, stages []Stage, options ...Options) *Supervisor {
 		leaseDuration:     opts.LeaseDuration,
 		heartbeatInterval: opts.HeartbeatInterval,
 		stageGate:         opts.StageGate,
+		blockedLogs:       make(map[StageName]blockedStageLogState),
 	}
 }
 
@@ -261,11 +271,12 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 			return err
 		}
 		if !decision.Allowed {
-			if s.log != nil {
+			if s.log != nil && s.shouldLogBlockedStage(stage.Name, decision.Reason) {
 				s.log.Warn("index stage blocked stage=%s trigger=%s reason=%s", stage.Name, trigger, decision.Reason)
 			}
 			return nil
 		}
+		s.clearBlockedStageLog(stage.Name)
 	}
 
 	if s.tracker == nil {
@@ -341,6 +352,28 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 	}
 
 	return nil
+}
+
+func (s *Supervisor) shouldLogBlockedStage(name StageName, reason string) bool {
+	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
+
+	now := time.Now()
+	prev, ok := s.blockedLogs[name]
+	if !ok || prev.Reason != reason || now.Sub(prev.At) >= blockedStageLogInterval {
+		s.blockedLogs[name] = blockedStageLogState{
+			Reason: reason,
+			At:     now,
+		}
+		return true
+	}
+	return false
+}
+
+func (s *Supervisor) clearBlockedStageLog(name StageName) {
+	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
+	delete(s.blockedLogs, name)
 }
 
 func (s *Supervisor) heartbeatStageRun(ctx context.Context, runID int64, errCh chan<- error) {
