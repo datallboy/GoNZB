@@ -600,6 +600,12 @@ Primary DBO entry points:
 - `ListYEncRecoveryCandidates`
 - recovery result persistence helpers in `yenc_recovery_store.go`
 
+Current audit note:
+
+- `recover_yenc` is queue-first and only seeds/backfills on hot-queue shortfall
+- seed/backfill is branch-prioritized rather than one monolithic selector
+- retry/backoff state still lives partly in `article_header_ingest_payloads`, which remains a transitional boundary debt
+
 ### `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`
 
 Allowed reads:
@@ -636,6 +642,11 @@ Primary DBO entry points:
 - `ClaimBinaryInspectionCandidates`
 - stage-specific evidence upsert/update helpers in `inspection_store.go`
 
+Current audit note:
+
+- inspect stages are acceptably isolated behind `binary_inspections` plus stage-owned evidence tables
+- they remain downstream/steady-state stages and should stay disabled during bootstrap and regroup
+
 ### `release_summary_refresh`
 
 Allowed reads:
@@ -664,6 +675,12 @@ Primary DBO entry points:
 - `RefreshQueuedReleaseFamilySummaries`
 - `RefreshQueuedReleaseFamilySummariesWithMetrics`
 - Phase A and Phase B helpers in `release_family_summary_store.go`
+
+Current audit note:
+
+- refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
+- dequeue is hot/cold prioritized
+- maintenance must defer readiness cleanup while refresh backlog exists
 
 ### `release`
 
@@ -704,6 +721,11 @@ Primary DBO entry points:
 - `UpsertRelease`
 - `ReplaceReleaseFiles`
 - `ReplaceReleaseNewsgroups`
+
+Current audit note:
+
+- release is ready-candidate-driven and no longer uses fragment-only families as a normal queue
+- cross-newsgroup release provenance is already supported through `release_newsgroups`, while per-file article lineage remains tied to file/binary provenance
 
 ### `release_generate_nzb`
 
@@ -817,6 +839,11 @@ Primary DBO entry points:
 - integrity checks and reindex helpers in `integrity_store.go`
 - operational stats read models used by admin/dashboard flows
 
+Current audit note:
+
+- maintenance still bundles yEnc work-item backfill, catalog-file backfill, and bounded cleanup
+- the key hardening already in place is that readiness cleanup defers while refresh backlog exists
+
 ## Forbidden Write-Backs
 
 These are explicit anti-patterns for future changes.
@@ -829,7 +856,7 @@ These are explicit anti-patterns for future changes.
 
 ### Assemble stages may not
 
-- update `article_headers` to record assembly progress
+- expand `article_headers` writeback beyond the bounded transitional claim/progress fields (`assembly_claimed_by`, `assembly_claimed_until`, `assembled_at`)
 - update `releases` to record assembly progress
 - bulk recompute `release_family_readiness_summaries`
 

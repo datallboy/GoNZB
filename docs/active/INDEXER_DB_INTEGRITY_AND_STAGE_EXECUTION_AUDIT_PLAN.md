@@ -235,6 +235,174 @@ Hot-path inefficiencies found:
 - add finer claim-selection metrics if assemble is re-enabled and becomes hot again
 - decide whether the unused progress-binary helper functions should be removed or revived explicitly before stable release
 
+## Pass 3 Findings: Recover yEnc
+
+Status: service/store/query audit completed; no new hot-path code change was required in this pass.
+
+### Service-layer findings
+
+- `recover_yenc` is now firmly queue-first:
+  - `ListYEncRecoveryCandidates`
+  - fetch BODY prefix
+  - parse yEnc header
+  - rematch and persist identity
+- service concurrency is bounded and isolated to NNTP BODY work; database fan-out happens in queue selection and persistence, not in service worker orchestration
+- metrics are good enough to separate:
+  - candidate selection
+  - fetch
+  - parse
+  - match
+  - write
+  - not-found/noop backoff writes
+
+### Store / DBO findings
+
+Hot recover-owned store paths confirmed:
+
+- `ListYEncRecoveryCandidates`
+- `BackfillYEncRecoveryWorkItems`
+- `syncYEncRecoveryWorkItemsForBinariesInTx`
+- `ApplyYEncHeaderRecovery`
+- `RecordYEncRecoveryNotFound`
+- `RecordYEncRecoveryNoop`
+
+Observed queue/query behavior:
+
+- candidate listing is hot-queue-first and only seeds on shortfall
+- stale ready rows are retired before candidate selection
+- seed/backfill is branch-based, not one giant inferential selector:
+  - high-value multipart / expected-file-count binaries
+  - blank-family weak/provisional binaries
+  - summary-backed weak/recover-pending families
+- queue rows carry enough current identity/readiness state to prioritize without forcing the full old selector shape
+
+Schema / overlap findings:
+
+- `recover_yenc` still reads `article_header_ingest_payloads` opportunistically for subject/yEnc hints and retry state
+- payload rows are no longer required for the queue to remain useful, but the retry/backoff state is still mixed into that support table
+- overlap with assemble is acceptable only because:
+  - assemble owns binary formation
+  - recover owns recovery queue state
+  - both only communicate downstream through bounded binary refinement and dirty-key enqueue
+- overlap with `release_summary_refresh` is acceptable when refresh only consumes dirty summary keys and ready candidates, not live per-binary recovery state
+
+Remaining recover-specific follow-up:
+
+- decide whether retry/backoff state should remain in `article_header_ingest_payloads` for `0.8` or move to fully recovery-owned work state later
+- decide whether the three-branch seed path is sufficient long-term or whether a dedicated recoverable-backlog materialization surface is still warranted after the rest of the audit
+
+## Pass 4 Findings: Release Summary Refresh
+
+Status: primary audit completed; prior code changes already addressed the hot issues in this pass.
+
+### Service-layer findings
+
+- `release_summary_refresh` is now clearly two-phase:
+  - Phase A summary recompute
+  - Phase B ready-candidate and recovered-file-set materialization
+- service metrics now expose:
+  - dequeue
+  - summary aggregation
+  - aggregate subquery
+  - dominant-row subquery
+  - ready sync
+  - recovered-file-set sync
+  - hot vs cold batch counts
+
+### Store / DBO findings
+
+- hot dequeue is branch-prioritized:
+  - missing-summary / actionable / fragment-first
+  - weak-single residue last
+- Phase A no longer uses the old window-heavy family summary shape
+  - grouped aggregate and dominant-row selection are separated
+- Phase B no longer forces the same long transaction as Phase A
+- ready-candidate materialization is batched
+
+Schema / overlap findings:
+
+- `release_summary_refresh` remains the only heavy writer of:
+  - `release_family_readiness_summaries`
+  - `release_ready_candidates`
+- other stages may enqueue dirty keys only
+- maintenance cleanup must defer while refresh backlog exists; code already reflects this
+
+Remaining refresh-specific follow-up:
+
+- verify on the rebuilt DB whether Phase A remains the dominant cost once assemble/recover start producing real backlog
+- if it does, the next likely optimization is workload shaping by family fanout/cardinality, not schema growth
+
+## Pass 5 Findings: Release
+
+Status: audit completed; no new code change required in this pass.
+
+### Service / store findings
+
+- `release` is now cleanly ready-candidate-driven:
+  - it consumes `release_ready_candidates`
+  - it acks `release_ready_candidate_acks`
+  - it no longer churns fragment-only families directly
+- persistence is split correctly:
+  - candidate selection
+  - binary/title reads
+  - release snapshot/catalog persistence
+
+Cross-newsgroup behavior confirmed:
+
+- release catalog formation already supports one logical release spanning multiple contributing newsgroups
+- `release_newsgroups` stores all contributing groups
+- per-file article lineage remains tied to the source file/binary provenance, not merged across groups arbitrarily
+
+Remaining release-specific follow-up:
+
+- revalidate cross-group recovered-file-set formation on the rebuilt DB after enough yEnc and assemble backlog exists
+
+## Pass 6 Findings: Inspect Stages
+
+Status: audit completed at ownership/query-boundary level; no code change required in this pass.
+
+Findings:
+
+- inspect stages are reasonably isolated behind:
+  - `binary_inspections`
+  - stage-owned evidence tables
+- inspect stages may write release-facing metadata/evidence, but they are not primary owners of binary identity
+- current boundary is acceptable for `0.8` provided inspect remains downstream of stable release formation and is not enabled during bootstrap/regroup
+
+Remaining inspect-specific follow-up:
+
+- if inspection becomes hot again, split candidate selection and reservation timing further in metrics before changing schema or ownership
+
+## Pass 7 Findings: Archive / NZB / Purge Tail
+
+Status: audit completed at ownership/query-boundary level; no code change required in this pass.
+
+Findings:
+
+- archive/NZB/purge remains downstream and terminal by design
+- purge is still the only intentional downstream mutator of upstream lineage
+- current transitional surfaces (`release_files`, `nzb_cache`) remain acceptable for `0.8` as compatibility surfaces, not new architectural direction
+
+## Pass 8 Findings: Maintenance / Runtime / Admin
+
+Status: audit completed; no new code change required in this pass.
+
+Findings:
+
+- maintenance still performs broad operational support work:
+  - stale run cleanup
+  - yEnc work-item backfill
+  - catalog-file backfill
+  - payload / grouping-evidence / readiness cleanup
+- the important hardening already landed:
+  - readiness cleanup defers when refresh backlog exists
+  - integrity checks exist for critical ingest indexes
+- dashboard backlog surfaces needed prior correction because several were inventory approximations, not true queues; those corrections have already been made in earlier passes
+
+Remaining maintenance-specific follow-up:
+
+- consider whether `RunIndexerMaintenance` should eventually split yEnc seeding from metadata cleanup when steady-state profiles are reintroduced
+
 ## Audit Execution Order
 
 Audit stages in this exact order:
