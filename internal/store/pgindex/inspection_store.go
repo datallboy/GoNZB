@@ -15,6 +15,7 @@ import (
 )
 
 const inspectionReplaceInsertBatchSize = 200
+const par2CoverageUpdateChunkSize = 15000
 
 var (
 	par2CoverageSplitArchiveRE = regexp.MustCompile(`(?i)\.(?:7z|zip)\.0*(\d+)$`)
@@ -754,14 +755,18 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 }
 
 func (s *Store) ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
-	return s.listBinaryInspectionCandidates(ctx, s.db, stageName, limit)
+	return s.listBinaryInspectionCandidates(ctx, s.db, stageName, limit, BinaryInspectionCandidateOptions{})
+}
+
+func (s *Store) ListBinaryInspectionCandidatesWithOptions(ctx context.Context, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
+	return s.listBinaryInspectionCandidates(ctx, s.db, stageName, limit, opts)
 }
 
 type binaryInspectionQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int) ([]BinaryInspectionCandidate, error) {
+func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
 	stageName = strings.TrimSpace(stageName)
 	if stageName == "" {
 		return nil, fmt.Errorf("stage name is required")
@@ -770,7 +775,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 		limit = 100
 	}
 
-	filter, err := inspectCandidateFilter(stageName)
+	filter, err := inspectCandidateFilter(stageName, opts.RequireExpectedFileCount)
 	if err != nil {
 		return nil, err
 	}
@@ -782,7 +787,27 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
 	if stageName == "inspect_archive" {
 		errorRerunPredicate += `
-			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'`
+			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
+			OR (
+				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END = 0 AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+					)
+				)
+			)`
 	}
 	filteredPredicate := `
 		  AND NOT EXISTS (
@@ -883,7 +908,15 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					par2_set_name,
 					BOOL_OR(volume_rank = 0) AS has_manifest,
 					BOOL_OR(has_targets) AS has_any_targets,
-					BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun
+					BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun,
+					BOOL_OR(
+						current_status = 'completed' AND
+						CASE
+							WHEN COALESCE(current_summary_json->>'target_count', '') ~ '^[0-9]+$'
+							THEN (current_summary_json->>'target_count')::integer = 0
+							ELSE FALSE
+						END
+					) AS has_completed_zero_targets
 				FROM candidate_rows
 				GROUP BY par2_set_name
 			),
@@ -894,7 +927,10 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
 				WHERE (
 					cr.needs_rerun OR
-					NOT ss.has_any_targets
+					(
+						NOT ss.has_any_targets AND
+						NOT ss.has_completed_zero_targets
+					)
 				)
 				  AND (
 					NOT ss.has_manifest OR
@@ -1274,7 +1310,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if req.LeaseDuration <= 0 {
 		req.LeaseDuration = 15 * time.Minute
 	}
-	if _, err := inspectCandidateFilter(req.StageName); err != nil {
+	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
 
@@ -1288,7 +1324,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		return nil, fmt.Errorf("lock binary inspection claim %s: %w", req.StageName, err)
 	}
 
-	candidates, err := s.listBinaryInspectionCandidates(ctx, tx, req.StageName, req.Limit)
+	candidates, err := s.listBinaryInspectionCandidates(ctx, tx, req.StageName, req.Limit, req.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -2637,8 +2673,11 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 			return result, fmt.Errorf("lookup par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 
-		updateArgs := []any{len(targets), binaryID}
-		updateValues := make([]string, 0, len(batchTargets))
+		updateRows := make([]struct {
+			id        int64
+			fileIndex int
+			fileName  string
+		}, 0, len(batchTargets))
 		for selectRows.Next() {
 			var (
 				id                      int64
@@ -2669,65 +2708,87 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 				stringMapValue(evidence, "par2_target_coverage_source") == "inspect_par2" {
 				continue
 			}
-			base := len(updateArgs)
-			updateArgs = append(updateArgs, id, target.fileIndex, target.fileName)
-			updateValues = append(updateValues, fmt.Sprintf("($%d::bigint,$%d::integer,$%d::text)", base+1, base+2, base+3))
+			updateRows = append(updateRows, struct {
+				id        int64
+				fileIndex int
+				fileName  string
+			}{
+				id:        id,
+				fileIndex: target.fileIndex,
+				fileName:  target.fileName,
+			})
 		}
 		if err := selectRows.Close(); err != nil {
 			return result, fmt.Errorf("iterate par2 target coverage lookup batch %d-%d: %w", start, end, err)
 		}
-		if len(updateValues) == 0 {
+		if len(updateRows) == 0 {
 			continue
 		}
 
-		rows, err := tx.QueryContext(ctx, `
-			WITH update_values(id, file_index, file_name) AS (
-				VALUES `+strings.Join(updateValues, ",")+`
+		for updateStart := 0; updateStart < len(updateRows); updateStart += par2CoverageUpdateChunkSize {
+			updateEnd := updateStart + par2CoverageUpdateChunkSize
+			if updateEnd > len(updateRows) {
+				updateEnd = len(updateRows)
+			}
+			updateBatch := updateRows[updateStart:updateEnd]
+
+			updateArgs := []any{len(targets), binaryID}
+			updateValues := make([]string, 0, len(updateBatch))
+			for _, row := range updateBatch {
+				base := len(updateArgs)
+				updateArgs = append(updateArgs, row.id, row.fileIndex, row.fileName)
+				updateValues = append(updateValues, fmt.Sprintf("($%d::bigint,$%d::integer,$%d::text)", base+1, base+2, base+3))
+			}
+
+			rows, err := tx.QueryContext(ctx, `
+				WITH update_values(id, file_index, file_name) AS (
+					VALUES `+strings.Join(updateValues, ",")+`
+				)
+				UPDATE binaries b
+				SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $1::integer),
+				    file_index = CASE
+				    	WHEN b.file_index <= 0 AND uv.file_index > 0 THEN uv.file_index
+				    	ELSE b.file_index
+				    END,
+				    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
+				    	'par2_archive_file_count', $1::integer,
+				    	'par2_target_file_name', uv.file_name,
+				    	'par2_source_binary_id', $2::bigint,
+				    	'par2_target_coverage_source', 'inspect_par2'
+				    ),
+				    updated_at = NOW()
+				FROM update_values uv
+				WHERE b.id = uv.id
+				RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
+				updateArgs...,
 			)
-			UPDATE binaries b
-			SET expected_archive_file_count = GREATEST(b.expected_archive_file_count, $1::integer),
-			    file_index = CASE
-			    	WHEN b.file_index <= 0 AND uv.file_index > 0 THEN uv.file_index
-			    	ELSE b.file_index
-			    END,
-			    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
-			    	'par2_archive_file_count', $1::integer,
-			    	'par2_target_file_name', uv.file_name,
-			    	'par2_source_binary_id', $2::bigint,
-			    	'par2_target_coverage_source', 'inspect_par2'
-			    ),
-			    updated_at = NOW()
-			FROM update_values uv
-			WHERE b.id = uv.id
-			RETURNING b.id, b.release_family_key, b.base_stem, b.expected_file_count, b.expected_archive_file_count`,
-			updateArgs...,
-		)
-		if err != nil {
-			return result, fmt.Errorf("apply par2 target coverage batch %d-%d: %w", start, end, err)
-		}
-		for rows.Next() {
-			var updatedID int64
-			var releaseFamilyKey, baseStem string
-			var expectedFileCount int
-			var expectedArchiveFileCount int
-			if err := rows.Scan(&updatedID, &releaseFamilyKey, &baseStem, &expectedFileCount, &expectedArchiveFileCount); err != nil {
-				rows.Close()
-				return result, fmt.Errorf("scan par2 target coverage batch %d-%d: %w", start, end, err)
+			if err != nil {
+				return result, fmt.Errorf("apply par2 target coverage batch %d-%d update chunk %d-%d: %w", start, end, updateStart, updateEnd, err)
 			}
-			if _, ok := updatedIDs[updatedID]; !ok {
-				updatedIDs[updatedID] = struct{}{}
-				result.UpdatedBinaryCount++
+			for rows.Next() {
+				var updatedID int64
+				var releaseFamilyKey, baseStem string
+				var expectedFileCount int
+				var expectedArchiveFileCount int
+				if err := rows.Scan(&updatedID, &releaseFamilyKey, &baseStem, &expectedFileCount, &expectedArchiveFileCount); err != nil {
+					rows.Close()
+					return result, fmt.Errorf("scan par2 target coverage batch %d-%d update chunk %d-%d: %w", start, end, updateStart, updateEnd, err)
+				}
+				if _, ok := updatedIDs[updatedID]; !ok {
+					updatedIDs[updatedID] = struct{}{}
+					result.UpdatedBinaryCount++
+				}
+				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "release_family", releaseFamilyKey)
+				if expectedFileCount > 1 {
+					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "base_stem", baseStem)
+				}
+				if expectedArchiveFileCount > 1 {
+					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "base_stem", baseStem)
+				}
 			}
-			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "release_family", releaseFamilyKey)
-			if expectedFileCount > 1 {
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "base_stem", baseStem)
+			if err := rows.Close(); err != nil {
+				return result, fmt.Errorf("iterate par2 target coverage batch %d-%d update chunk %d-%d: %w", start, end, updateStart, updateEnd, err)
 			}
-			if expectedArchiveFileCount > 1 {
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, seed.providerID, seed.newsgroupID, "base_stem", baseStem)
-			}
-		}
-		if err := rows.Close(); err != nil {
-			return result, fmt.Errorf("iterate par2 target coverage batch %d-%d: %w", start, end, err)
 		}
 	}
 
@@ -3065,7 +3126,11 @@ func isRecoverableInspectionError(msg string) bool {
 		strings.Contains(msg, "network is unreachable")
 }
 
-func inspectCandidateFilter(stageName string) (string, error) {
+func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (string, error) {
+	expectedFileCountGate := "TRUE"
+	if requireExpectedFileCount {
+		expectedFileCountGate = "(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count)"
+	}
 	switch stageName {
 	case "inspect_discovery":
 		return `r.completion_pct >= 100 AND
@@ -3085,7 +3150,7 @@ func inspectCandidateFilter(stageName string) (string, error) {
 		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
 	case "inspect_archive":
 		return `r.completion_pct >= 100 AND
-		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		` + expectedFileCountGate + ` AND
 		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
@@ -3103,7 +3168,7 @@ func inspectCandidateFilter(stageName string) (string, error) {
 	case "inspect_password":
 		return `r.encrypted = TRUE AND
 		r.completion_pct >= 100 AND
-		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		` + expectedFileCountGate + ` AND
 		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
@@ -3115,7 +3180,7 @@ func inspectCandidateFilter(stageName string) (string, error) {
 		)`, nil
 	case "inspect_media":
 		return `r.completion_pct >= 100 AND
-		(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count) AND
+		` + expectedFileCountGate + ` AND
 		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mkv' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp4' OR

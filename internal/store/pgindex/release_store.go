@@ -193,459 +193,55 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 	if limit <= 0 {
 		limit = 1000
 	}
-	if opts.MinExpectedFileCoveragePct < 0 {
-		opts.MinExpectedFileCoveragePct = 0
-	}
-	if opts.MinExpectedFileCoveragePct > 100 {
-		opts.MinExpectedFileCoveragePct = 100
-	}
+	_ = opts
 
-	query := fmt.Sprintf(`
-		WITH limits AS (
-			SELECT
-				$1::integer AS total_limit,
-				LEAST(GREATEST($1::integer * 100, $1::integer * 10), 20000) AS queue_window_limit
-		),
-		queue_window AS (
-			SELECT
-				s.provider_id,
-				s.newsgroup_id,
-				s.key_kind,
-				s.family_key,
-				s.updated_at
-			FROM release_family_readiness_summaries s
-			LEFT JOIN release_family_readiness_acks a
-			  ON a.provider_id = s.provider_id
-			 AND a.newsgroup_id = s.newsgroup_id
-			 AND a.key_kind = s.key_kind
-			 AND a.family_key = s.family_key
-			WHERE s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')
-			ORDER BY
-				CASE
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 0
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
-					 AND (
-					 	(COALESCE(s.has_expected_file_count, FALSE) OR COALESCE(s.has_expected_archive_file_count, FALSE))
-					 	AND (
-					 		CASE
-					 			WHEN COALESCE(s.expected_archive_file_count, 0) > 0 THEN COALESCE(s.archive_file_coverage_pct, 0)
-					 			ELSE COALESCE(s.expected_file_coverage_pct, 0)
-					 		END
-					 	) >= $2
-					 ) THEN 1
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 2
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 3
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s' THEN 4
-					ELSE 5
-				END ASC,
-				CASE
-					WHEN COALESCE(s.expected_archive_file_count, 0) > 0 THEN COALESCE(s.archive_file_coverage_pct, 0)
-					ELSE COALESCE(s.expected_file_coverage_pct, 0)
-				END DESC,
-				COALESCE(s.complete_main_payload_binary_count, 0) DESC,
-				COALESCE(s.complete_binary_count, 0) DESC,
-				CASE
-					WHEN COALESCE(s.has_expected_file_count, FALSE) OR COALESCE(s.has_expected_archive_file_count, FALSE) THEN 1
-					ELSE 0
-				END DESC,
-				CASE
-					WHEN s.key_kind = 'base_stem' THEN 0
-					ELSE 1
-				END ASC,
-				s.updated_at ASC,
-				s.family_key ASC
-			LIMIT (SELECT queue_window_limit FROM limits)
-		),
-		candidate_summaries AS (
-			SELECT
-				q.provider_id,
-				q.newsgroup_id,
-				q.key_kind,
-				q.family_key,
-				q.updated_at,
-				COALESCE(s.source_release_key, '') AS source_release_key,
-				COALESCE(s.release_key, '') AS release_key,
-				COALESCE(s.release_name, '') AS release_name,
-				s.earliest_posted_at AS posted_at,
-				COALESCE(s.binary_count, 0) AS binary_count,
-				COALESCE(s.total_bytes, 0)::BIGINT AS total_bytes,
-				COALESCE(s.expected_file_count, 0) AS expected_file_count,
-				COALESCE(s.expected_archive_file_count, 0) AS expected_archive_file_count,
-				COALESCE(s.has_expected_file_count, FALSE) AS has_expected_file_count,
-				COALESCE(s.has_expected_archive_file_count, FALSE) AS has_expected_archive_file_count,
-				COALESCE(s.complete_binary_count, 0) AS complete_binary_count,
-				COALESCE(s.complete_main_payload_binary_count, 0) AS complete_main_payload_binary_count,
-				COALESCE(s.expected_file_coverage_pct, 0)::DOUBLE PRECISION AS expected_file_coverage_pct,
-				COALESCE(s.archive_file_coverage_pct, 0)::DOUBLE PRECISION AS archive_file_coverage_pct,
-				CASE
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
-					 AND q.key_kind = 'release_family'
-					 AND COALESCE(s.binary_count, 0) = 1
-					 AND COALESCE(s.complete_main_payload_binary_count, 0) = 1
-					 AND COALESCE(s.expected_file_count, 0) <= 0
-					 AND COALESCE(s.expected_archive_file_count, 0) <= 0
-					 AND (
-					 	LOWER(COALESCE(NULLIF(s.dominant_family_kind, ''), dominant.family_kind, '')) = 'contextual_obfuscated'
-						OR LOWER(COALESCE(NULLIF(s.dominant_file_name, ''), dominant.file_name, '')) ~ '\\.(bin|r[0-9]+|part[0-9]+|vol[0-9]+\\+[0-9]+)$'
-					 	OR COALESCE(NULLIF(s.dominant_match_confidence, 0), dominant.match_confidence, 0) < 0.85
-					 ) THEN '%s'
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
-					 AND q.key_kind = 'release_family'
-					 AND REGEXP_REPLACE(
-					 	REPLACE(REPLACE(REPLACE(LOWER(BTRIM(COALESCE(NULLIF(s.release_name, ''), q.family_key))), '_', ' '), '.', ' '), '-', ' '),
-					 	'[[:space:]]+',
-					 	' ',
-					 	'g'
-					 ) ~ '^[0-9]{5,}[[:space:]]+[a-z]([[:space:]]+[a-z]{2,4})?$'
-					 AND NOT COALESCE(shape.has_usable_file_identity, FALSE)
-					 THEN '%s'
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
-					 AND q.key_kind = 'release_family'
-					 AND COALESCE(shape.all_contextual, FALSE)
-					 AND COALESCE(shape.max_expected_any_file_count, 0) > 1
-					 AND COALESCE(shape.indexed_file_count, 0) >= 2
-					 AND COALESCE(shape.base_stem_file_count, 0) = COALESCE(shape.distinct_base_stem_count, 0)
-					 AND COALESCE(shape.distinct_base_stem_count, 0) >= GREATEST(COALESCE(shape.max_expected_any_file_count, 0), 8)
-					 AND COALESCE(s.binary_count, 0) >= GREATEST(COALESCE(shape.max_expected_any_file_count, 0) * 3, 24)
-					 THEN '%s'
-					WHEN COALESCE(s.readiness_bucket, '%s') = '%s'
-					 AND q.key_kind = 'release_family'
-					 AND COALESCE(shape.all_contextual, FALSE)
-					 AND COALESCE(shape.max_expected_any_file_count, 0) > 1
-					 AND COALESCE(shape.indexed_file_count, 0) >= 2
-					 AND COALESCE(shape.base_stem_file_count, 0) >= 2
-					 AND COALESCE(shape.distinct_base_stem_count, 0) < COALESCE(shape.base_stem_file_count, 0)
-					 THEN '%s'
-					ELSE COALESCE(s.readiness_bucket, '%s')
-				END AS readiness_bucket
-			FROM queue_window q
-			LEFT JOIN release_family_readiness_summaries s
-			  ON s.provider_id = q.provider_id
-			 AND s.newsgroup_id = q.newsgroup_id
-			 AND s.key_kind = q.key_kind
-			 AND s.family_key = q.family_key
-			LEFT JOIN LATERAL (
-				SELECT
-					COALESCE(b.family_kind, '') AS family_kind,
-					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS file_name,
-					COALESCE(b.match_confidence, 0)::DOUBLE PRECISION AS match_confidence
-				FROM binaries b
-				WHERE q.key_kind = 'release_family'
-				  AND b.provider_id = q.provider_id
-				  AND b.newsgroup_id = q.newsgroup_id
-				  AND b.release_family_key = q.family_key
-				ORDER BY
-					CASE
-						WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
-						ELSE 1
-					END ASC,
-					CASE
-						WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
-						ELSE 1
-					END ASC,
-					b.observed_parts DESC,
-					b.total_bytes DESC,
-					b.match_confidence DESC,
-					b.id ASC
-				LIMIT 1
-			) dominant ON TRUE
-			LEFT JOIN LATERAL (
-				SELECT
-					COALESCE(BOOL_AND(LOWER(COALESCE(b.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
-					COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0)::INTEGER AS max_expected_any_file_count,
-					COUNT(*) FILTER (WHERE b.file_index > 0) AS indexed_file_count,
-					COUNT(*) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS base_stem_file_count,
-					COUNT(DISTINCT LOWER(BTRIM(COALESCE(b.base_stem, '')))) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '') AS distinct_base_stem_count,
-					COALESCE(BOOL_OR(
-						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~
-						'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
-					), FALSE) AS has_usable_file_identity
-				FROM binaries b
-				WHERE q.key_kind = 'release_family'
-				  AND b.provider_id = q.provider_id
-				  AND b.newsgroup_id = q.newsgroup_id
-				  AND b.release_family_key = q.family_key
-				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-			) shape ON TRUE
-		),
-		recovered_file_set_candidates AS (
-			SELECT
-				b.provider_id,
-				0::BIGINT AS newsgroup_id,
-				'recovered_file_set'::text AS key_kind,
-				b.file_set_key AS family_key,
-				MAX(b.updated_at) AS updated_at,
-				COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), b.file_set_key) AS source_release_key,
-				b.file_set_key AS release_key,
-				COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), b.file_set_key) AS release_name,
-				MIN(b.posted_at) AS posted_at,
-				COUNT(*)::INTEGER AS binary_count,
-				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
-				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-				COUNT(*) FILTER (
-					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
-				)::INTEGER AS complete_binary_count,
-				COUNT(*) FILTER (
-					WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-					  AND b.total_parts > 0
-					  AND b.observed_parts = b.total_parts
-				)::INTEGER AS complete_main_payload_binary_count,
-				CASE
-					WHEN COALESCE(MAX(b.expected_file_count), 0) > 0 THEN
-						LEAST(
-							100::DOUBLE PRECISION,
-							(COUNT(*) FILTER (
-								WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-								  AND b.total_parts > 0
-								  AND b.observed_parts = b.total_parts
-							)::DOUBLE PRECISION / MAX(b.expected_file_count)::DOUBLE PRECISION) * 100
-						)
-					ELSE 0::DOUBLE PRECISION
-				END AS expected_file_coverage_pct,
-				CASE
-					WHEN COALESCE(MAX(b.expected_archive_file_count), 0) > 0 THEN
-						LEAST(
-							100::DOUBLE PRECISION,
-							(COUNT(*) FILTER (
-								WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-								  AND b.total_parts > 0
-								  AND b.observed_parts = b.total_parts
-							)::DOUBLE PRECISION / MAX(b.expected_archive_file_count)::DOUBLE PRECISION) * 100
-						)
-					ELSE 0::DOUBLE PRECISION
-				END AS archive_file_coverage_pct,
-				(COALESCE(MAX(b.expected_file_count), 0) > 0) AS has_expected_file_count,
-				(COALESCE(MAX(b.expected_archive_file_count), 0) > 0) AS has_expected_archive_file_count,
-				CASE
-					WHEN COUNT(*) FILTER (
-						WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-						  AND b.total_parts > 0
-						  AND b.observed_parts = b.total_parts
-					) > 0 THEN 'actionable'
-					WHEN COUNT(*) > 0 THEN 'fragment_only'
-					ELSE 'stale_cleanup_only'
-				END AS readiness_bucket
-			FROM binaries b
-			WHERE COALESCE(b.recovered_source, '') = 'yenc_header'
-			  AND BTRIM(b.file_set_key) <> ''
-			  AND b.posted_at IS NOT NULL
-			GROUP BY b.provider_id, b.file_set_key
-			HAVING COUNT(DISTINCT b.newsgroup_id) > 1
-			   AND COUNT(*) FILTER (WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)) >= 2
-			   AND COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) > 1
-			   AND (MAX(b.posted_at) - MIN(b.posted_at)) <= INTERVAL '24 hours'
-			   AND MAX(b.updated_at) > COALESCE((
-					SELECT MIN(a.processed_at)
-					FROM release_family_readiness_acks a
-					WHERE a.provider_id = b.provider_id
-					  AND EXISTS (
-					  	SELECT 1
-					  	FROM binaries bx
-					  	WHERE bx.provider_id = b.provider_id
-					  	  AND bx.file_set_key = b.file_set_key
-					  	  AND bx.newsgroup_id = a.newsgroup_id
-					  	  AND (
-					  	  	(a.key_kind = 'release_family' AND a.family_key = bx.release_family_key) OR
-					  	  	(a.key_kind = 'base_stem' AND a.family_key = LOWER(BTRIM(bx.base_stem)))
-					  	  )
-					  )
-				), TIMESTAMPTZ 'epoch')
-		),
-		combined_queue AS (
-			SELECT
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key,
-				updated_at,
-				source_release_key,
-				release_key,
-				release_name,
-				posted_at,
-				binary_count,
-				total_bytes,
-				expected_file_count,
-				expected_archive_file_count,
-				complete_binary_count,
-				complete_main_payload_binary_count,
-				expected_file_coverage_pct,
-				archive_file_coverage_pct,
-				has_expected_file_count,
-				has_expected_archive_file_count,
-				readiness_bucket
-			FROM candidate_summaries
-			UNION ALL
-			SELECT
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key,
-				updated_at,
-				source_release_key,
-				release_key,
-				release_name,
-				posted_at,
-				binary_count,
-				total_bytes,
-				expected_file_count,
-				expected_archive_file_count,
-				complete_binary_count,
-				complete_main_payload_binary_count,
-				expected_file_coverage_pct,
-				archive_file_coverage_pct,
-				has_expected_file_count,
-				has_expected_archive_file_count,
-				readiness_bucket
-			FROM recovered_file_set_candidates
-		),
-		next_queue AS (
-			SELECT
-				provider_id,
-				newsgroup_id,
-				key_kind,
-				family_key,
-				updated_at,
-				source_release_key,
-				release_key,
-				release_name,
-				posted_at,
-				binary_count,
-				total_bytes,
-				expected_file_count,
-				expected_archive_file_count,
-				complete_binary_count,
-				complete_main_payload_binary_count,
-				expected_file_coverage_pct,
-				archive_file_coverage_pct,
-				has_expected_file_count,
-				has_expected_archive_file_count,
-				readiness_bucket
-			FROM combined_queue
-			ORDER BY
-				CASE
-					WHEN readiness_bucket = '%s' THEN 0
-					WHEN readiness_bucket = '%s'
-					 AND (
-					 	(NOT has_expected_file_count AND NOT has_expected_archive_file_count)
-					 	OR (expected_file_count <= 0 AND expected_archive_file_count <= 0)
-					 	OR CASE
-					 		WHEN expected_archive_file_count > 0 THEN archive_file_coverage_pct >= $2
-					 		ELSE expected_file_coverage_pct >= $2
-					 	END
-					 ) THEN 1
-					WHEN readiness_bucket = '%s' THEN 2
-					WHEN readiness_bucket = '%s' THEN 3
-					WHEN readiness_bucket = '%s' THEN 4
-					ELSE 5
-				END ASC,
-				CASE
-					WHEN expected_archive_file_count > 0 THEN archive_file_coverage_pct
-					ELSE expected_file_coverage_pct
-				END DESC,
-				complete_main_payload_binary_count DESC,
-				complete_binary_count DESC,
-				CASE
-					WHEN has_expected_file_count OR has_expected_archive_file_count THEN 1
-					ELSE 0
-				END DESC,
-				CASE
-					WHEN key_kind = 'recovered_file_set' THEN 0
-					WHEN key_kind = 'base_stem' THEN 1
-					ELSE 2
-				END ASC,
-				updated_at ASC,
-				family_key ASC
-			LIMIT (SELECT total_limit FROM limits)
-		)
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			q.provider_id,
-			q.newsgroup_id,
-			q.key_kind,
-			q.source_release_key,
-			q.family_key,
-			q.release_key,
-			q.release_name,
-			q.posted_at,
-			q.binary_count,
-			q.complete_binary_count,
-			q.complete_main_payload_binary_count,
-			q.expected_file_count,
-			q.expected_archive_file_count,
-			q.expected_file_coverage_pct,
-			q.archive_file_coverage_pct,
-			q.readiness_bucket,
-			q.total_bytes
-		FROM next_queue q
-			ORDER BY
-				CASE
-					WHEN q.readiness_bucket = '%s' THEN 0
-					WHEN q.readiness_bucket = '%s'
-					 AND (
-					 	(NOT q.has_expected_file_count AND NOT q.has_expected_archive_file_count)
-					 	OR (q.expected_file_count <= 0 AND q.expected_archive_file_count <= 0)
-					 	OR CASE
-					 		WHEN q.expected_archive_file_count > 0 THEN q.archive_file_coverage_pct >= $2
-					 		ELSE q.expected_file_coverage_pct >= $2
-					 	END
-					 ) THEN 1
-					WHEN q.readiness_bucket = '%s' THEN 2
-					WHEN q.readiness_bucket = '%s' THEN 3
-					WHEN q.readiness_bucket = '%s' THEN 4
-					ELSE 5
-				END ASC,
-				CASE
-					WHEN q.expected_archive_file_count > 0 THEN q.archive_file_coverage_pct
-					ELSE q.expected_file_coverage_pct
-				END DESC,
-				q.complete_main_payload_binary_count DESC,
-			q.complete_binary_count DESC,
+			c.provider_id,
+			c.newsgroup_id,
+			c.key_kind,
+			c.source_release_key,
+			c.family_key,
+			c.release_key,
+			c.release_name,
+			c.earliest_posted_at AS posted_at,
+			c.binary_count,
+			c.complete_binary_count,
+			c.complete_main_payload_binary_count,
+			c.expected_file_count,
+			c.expected_archive_file_count,
+			c.expected_file_coverage_pct,
+			c.archive_file_coverage_pct,
+			c.ready_reason AS readiness_bucket,
+			c.total_bytes
+		FROM release_ready_candidates c
+		LEFT JOIN release_ready_candidate_acks a
+		  ON a.provider_id = c.provider_id
+		 AND a.newsgroup_id = c.newsgroup_id
+		 AND a.key_kind = c.key_kind
+		 AND a.family_key = c.family_key
+		WHERE c.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')
+		ORDER BY
 			CASE
-				WHEN q.has_expected_file_count OR q.has_expected_archive_file_count THEN 1
+				WHEN c.expected_archive_file_count > 0 THEN c.archive_file_coverage_pct
+				ELSE c.expected_file_coverage_pct
+			END DESC,
+			c.complete_main_payload_binary_count DESC,
+			c.complete_binary_count DESC,
+			CASE
+				WHEN c.has_expected_file_count OR c.has_expected_archive_file_count THEN 1
 				ELSE 0
 			END DESC,
 			CASE
-				WHEN q.key_kind = 'recovered_file_set' THEN 0
-				WHEN q.key_kind = 'base_stem' THEN 1
+				WHEN c.key_kind = 'recovered_file_set' THEN 0
+				WHEN c.key_kind = 'base_stem' THEN 1
 				ELSE 2
 			END ASC,
-			q.updated_at ASC,
-			q.family_key ASC`,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessFragmentOnly,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessWeakSingle,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessOvergrouped,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessWeakSingle,
-		releaseReadinessActionable,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessFragmentOnly,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessOvergrouped,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessPreferBaseStem,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessWeakSingle,
-		releaseReadinessOvergrouped,
-		releaseReadinessPreferBaseStem,
-		releaseReadinessStaleCleanupOnly,
-		releaseReadinessActionable,
-		releaseReadinessWeakSingle,
-		releaseReadinessOvergrouped,
-		releaseReadinessPreferBaseStem,
+			c.updated_at ASC,
+			c.family_key ASC
+		LIMIT $1`,
+		limit,
 	)
-	rows, err := s.db.QueryContext(ctx, query, limit, opts.MinExpectedFileCoveragePct)
 	if err != nil {
 		return nil, fmt.Errorf("list release candidates: %w", err)
 	}
@@ -1070,111 +666,44 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 }
 
 func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []ReleaseCandidateAck) error {
-	regular := make([]ReleaseCandidateAck, 0, len(candidates))
-	recovered := make([]ReleaseCandidateAck, 0, len(candidates))
+	args := make([]any, 0, len(candidates)*4)
+	values := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.KeyKind == ReleaseCandidateKeyKindRecoveredFileSet {
-			recovered = append(recovered, candidate)
-			continue
-		}
-		regular = append(regular, candidate)
+		base := len(args)
+		args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
 	}
-
-	if len(regular) > 0 {
-		args := make([]any, 0, len(regular)*4)
-		values := make([]string, 0, len(regular))
-		for _, candidate := range regular {
-			base := len(args)
-			args = append(args, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
-			values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base+1, base+2, base+3, base+4))
-		}
-
-		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
-			if _, err := db.ExecContext(ctx, `
-				INSERT INTO release_family_readiness_acks (
-					provider_id,
-					newsgroup_id,
-					key_kind,
-					family_key,
-					processed_at,
-					updated_at
-				)
-				SELECT
-					s.provider_id,
-					s.newsgroup_id,
-					s.key_kind,
-					s.family_key,
-					s.updated_at,
-					NOW()
-				FROM release_family_readiness_summaries s
-				JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
-				  ON s.provider_id = v.provider_id
-				 AND s.newsgroup_id = v.newsgroup_id
-				 AND s.key_kind = v.key_kind
-				 AND s.family_key = v.family_key
-				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-				SET processed_at = GREATEST(release_family_readiness_acks.processed_at, EXCLUDED.processed_at),
-				    updated_at = NOW()`,
-				args...,
-			); err != nil {
-				return err
-			}
-			return nil
-		}); err != nil {
-			return fmt.Errorf("ack %d release candidates: %w", len(candidates), err)
-		}
-	}
-
-	if len(recovered) > 0 {
-		args := make([]any, 0, len(recovered)*2)
-		values := make([]string, 0, len(recovered))
-		for _, candidate := range recovered {
-			base := len(args)
-			args = append(args, candidate.ProviderID, candidate.FamilyKey)
-			values = append(values, fmt.Sprintf("($%d::bigint,$%d::text)", base+1, base+2))
-		}
-
-		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
-			_, err := db.ExecContext(ctx, `
-				INSERT INTO release_family_readiness_acks (
-					provider_id,
-					newsgroup_id,
-					key_kind,
-					family_key,
-					processed_at,
-					updated_at
-				)
-				SELECT
-					s.provider_id,
-					s.newsgroup_id,
-					s.key_kind,
-					s.family_key,
-					s.updated_at,
-					NOW()
-				FROM release_family_readiness_summaries s
-				JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, file_set_key)
-				  ON s.provider_id = v.provider_id
-				WHERE EXISTS (
-				  	SELECT 1
-				  	FROM binaries b
-				  	WHERE b.provider_id = v.provider_id
-					  AND b.file_set_key = v.file_set_key
-					  AND BTRIM(b.file_set_key) <> ''
-				  	  AND b.newsgroup_id = s.newsgroup_id
-				  	  AND (
-				  	  	(s.key_kind = 'release_family' AND s.family_key = b.release_family_key) OR
-				  	  	(s.key_kind = 'base_stem' AND s.family_key = LOWER(BTRIM(b.base_stem)))
-				  	  )
-				  )
-				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
-				SET processed_at = GREATEST(release_family_readiness_acks.processed_at, EXCLUDED.processed_at),
-				    updated_at = NOW()`,
-				args...,
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO release_ready_candidate_acks (
+				provider_id,
+				newsgroup_id,
+				key_kind,
+				family_key,
+				processed_at,
+				updated_at
 			)
-			return err
-		}); err != nil {
-			return fmt.Errorf("ack %d recovered-file-set release candidates: %w", len(recovered), err)
-		}
+			SELECT
+				c.provider_id,
+				c.newsgroup_id,
+				c.key_kind,
+				c.family_key,
+				c.updated_at,
+				NOW()
+			FROM release_ready_candidates c
+			JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
+			  ON c.provider_id = v.provider_id
+			 AND c.newsgroup_id = v.newsgroup_id
+			 AND c.key_kind = v.key_kind
+			 AND c.family_key = v.family_key
+			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			SET processed_at = GREATEST(release_ready_candidate_acks.processed_at, EXCLUDED.processed_at),
+			    updated_at = NOW()`,
+			args...,
+		)
+		return err
+	}); err != nil {
+		return fmt.Errorf("ack %d release ready candidates: %w", len(candidates), err)
 	}
 	return nil
 }
@@ -1567,6 +1096,55 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 		return fmt.Errorf("delete stale releases for provider=%d release_family_key=%q keep=%v: %w", providerID, releaseFamilyKey, keep, err)
 	}
 
+	return nil
+}
+
+func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error {
+	if providerID <= 0 {
+		return fmt.Errorf("provider id is required")
+	}
+	if newsgroupID <= 0 {
+		return fmt.Errorf("newsgroup id is required")
+	}
+	baseStem = strings.ToLower(strings.TrimSpace(baseStem))
+	if baseStem == "" {
+		return fmt.Errorf("base stem is required")
+	}
+
+	args := make([]any, 0, len(keepReleaseIDs)+3)
+	args = append(args, providerID, newsgroupID, baseStem)
+	query := `
+		DELETE FROM releases r
+		WHERE r.provider_id = $1
+		  AND EXISTS (
+		  	SELECT 1
+		  	FROM release_files rf
+		  	JOIN binaries b ON b.id = rf.binary_id
+		  	WHERE rf.release_id = r.release_id
+		  	  AND b.provider_id = $1
+		  	  AND b.newsgroup_id = $2
+		  	  AND LOWER(BTRIM(COALESCE(b.base_stem, ''))) = $3
+		  )
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM release_files rf
+		  	JOIN binaries b ON b.id = rf.binary_id
+		  	WHERE rf.release_id = r.release_id
+		  	  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+		  )`
+	if len(keepReleaseIDs) > 0 {
+		placeholders := make([]string, 0, len(keepReleaseIDs))
+		for i, releaseID := range keepReleaseIDs {
+			args = append(args, strings.TrimSpace(releaseID))
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+4))
+		}
+		query += `
+		  AND r.release_id NOT IN (` + strings.Join(placeholders, ",") + `)`
+	}
+
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("delete auxiliary-only sibling releases for provider=%d group=%d base_stem=%q: %w", providerID, newsgroupID, baseStem, err)
+	}
 	return nil
 }
 

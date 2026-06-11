@@ -7,23 +7,144 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
+
+const yencRecoverySeedScanLowYieldThreshold = 25
 
 func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	seedLimit := limit * 20
-	if seedLimit < limit {
-		seedLimit = limit
-	}
-	if seedLimit > yencRecoveryWorkItemSeedLimit {
-		seedLimit = yencRecoveryWorkItemSeedLimit
-	}
-	if err := s.ensureYEncRecoveryWorkItemsSeed(ctx, seedLimit); err != nil {
+
+	if _, err := s.retireStaleReadyYEncRecoveryWorkItems(ctx); err != nil {
 		return nil, err
 	}
 
+	readyCount, err := s.countReadyYEncRecoveryCandidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if readyCount > yencRecoverySeedScanLowYieldThreshold {
+		s.clearYEncRecoverySeedScanBackoff()
+	}
+	if readyCount < limit {
+		if readyCount <= yencRecoverySeedScanLowYieldThreshold && s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
+			return s.listReadyYEncRecoveryCandidates(ctx, limit)
+		}
+		shortfall := limit - readyCount
+		seedLimit := shortfall * 4
+		if seedLimit < shortfall {
+			seedLimit = shortfall
+		}
+		if seedLimit < limit {
+			seedLimit = limit
+		}
+		if seedLimit > yencRecoveryWorkItemSeedLimit {
+			seedLimit = yencRecoveryWorkItemSeedLimit
+		}
+		upserted, _, err := s.BackfillYEncRecoveryWorkItems(ctx, seedLimit)
+		if err != nil {
+			return nil, err
+		}
+		s.recordYEncRecoverySeedScanResult(time.Now(), readyCount, upserted)
+	}
+
+	return s.listReadyYEncRecoveryCandidates(ctx, limit)
+}
+
+func (s *Store) shouldBackoffYEncRecoverySeedScan(now time.Time) bool {
+	s.yencSeedScanMu.Lock()
+	defer s.yencSeedScanMu.Unlock()
+	return !s.yencSeedScanBackoffUntil.IsZero() && now.Before(s.yencSeedScanBackoffUntil)
+}
+
+func (s *Store) clearYEncRecoverySeedScanBackoff() {
+	s.yencSeedScanMu.Lock()
+	defer s.yencSeedScanMu.Unlock()
+	s.yencSeedScanConsecutiveEmpty = 0
+	s.yencSeedScanBackoffUntil = time.Time{}
+}
+
+func (s *Store) recordYEncRecoverySeedScanResult(now time.Time, priorReadyCount int, upserted int64) {
+	s.yencSeedScanMu.Lock()
+	defer s.yencSeedScanMu.Unlock()
+
+	if priorReadyCount > yencRecoverySeedScanLowYieldThreshold || upserted > yencRecoverySeedScanLowYieldThreshold {
+		s.yencSeedScanConsecutiveEmpty = 0
+		s.yencSeedScanBackoffUntil = time.Time{}
+		return
+	}
+
+	s.yencSeedScanConsecutiveEmpty++
+	var backoff time.Duration
+	switch s.yencSeedScanConsecutiveEmpty {
+	case 1:
+		backoff = 1 * time.Minute
+	case 2:
+		backoff = 5 * time.Minute
+	default:
+		backoff = 15 * time.Minute
+	}
+	s.yencSeedScanBackoffUntil = now.Add(backoff)
+}
+
+func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int64, error) {
+	var retired int64
+	if err := s.db.QueryRowContext(ctx, `
+		WITH stale AS (
+			SELECT wi.binary_id
+			FROM yenc_recovery_work_items wi
+			LEFT JOIN article_headers ah ON ah.id = wi.article_header_id
+			LEFT JOIN newsgroups ng ON ng.id = wi.newsgroup_id
+			WHERE wi.status = 'ready'
+			  AND (
+			  	ah.id IS NULL OR
+			  	ng.id IS NULL OR
+			  	BTRIM(COALESCE(wi.message_id, '')) = ''
+			  )
+		),
+		retired AS (
+			UPDATE yenc_recovery_work_items wi
+			SET status = 'stale',
+			    updated_at = NOW()
+			FROM stale s
+			WHERE wi.binary_id = s.binary_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM retired`,
+	).Scan(&retired); err != nil {
+		return 0, fmt.Errorf("retire stale ready yenc recovery work items: %w", err)
+	}
+	return retired, nil
+}
+
+func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT wi.binary_id
+			FROM yenc_recovery_work_items wi
+			JOIN article_headers ah ON ah.id = wi.article_header_id
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+			WHERE wi.status = 'ready'
+			  AND wi.ready_at <= NOW()
+			  AND BTRIM(COALESCE(ah.message_id, '')) <> ''
+			LIMIT $1
+		) ready`,
+		limit,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count ready yenc recovery candidates: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		WITH ready_items AS (
 			SELECT
@@ -34,17 +155,25 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 				ng.group_name,
 				ah.article_number,
 				ah.message_id,
-				COALESCE(p.subject, '') AS subject,
+				COALESCE(NULLIF(p.subject, ''), NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), NULLIF(b.release_name, ''), '') AS subject,
 				COALESCE(p.poster, '') AS poster,
 				ah.date_utc,
 				ah.bytes,
 				ah.lines,
 				COALESCE(p.xref, '') AS xref,
-				COALESCE(p.subject_file_name, '') AS subject_file_name,
-				COALESCE(p.subject_file_index, 0) AS subject_file_index,
-				COALESCE(p.subject_file_total, 0) AS subject_file_total,
+				COALESCE(NULLIF(p.subject_file_name, ''), NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS subject_file_name,
+				CASE
+					WHEN COALESCE(p.subject_file_index, 0) > 0 THEN p.subject_file_index
+					WHEN COALESCE(b.file_index, 0) > 0 THEN b.file_index
+					ELSE 0
+				END AS subject_file_index,
+				GREATEST(
+					COALESCE(p.subject_file_total, 0),
+					COALESCE(b.expected_file_count, 0),
+					COALESCE(b.expected_archive_file_count, 0)
+				) AS subject_file_total,
 				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
+				GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(b.total_parts, 0)) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 				COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
 				p.yenc_recovery_retry_after,
@@ -60,11 +189,13 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 					ORDER BY wi.updated_at DESC, wi.binary_id
 				) AS group_rank
 			FROM yenc_recovery_work_items wi
+			JOIN binaries b ON b.id = wi.binary_id
 			JOIN article_headers ah ON ah.id = wi.article_header_id
-			JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 			WHERE wi.status = 'ready'
 			  AND wi.ready_at <= NOW()
+			  AND BTRIM(COALESCE(ah.message_id, '')) <> ''
 		)
 		SELECT
 			binary_id,
@@ -220,7 +351,9 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE article_header_ingest_payloads
-			SET yenc_recovery_retry_after = NULL
+			SET yenc_recovery_missing_count = 0,
+			    yenc_recovery_last_missing_at = NULL,
+			    yenc_recovery_retry_after = NULL
 			WHERE article_header_id = $1`,
 			in.ArticleHeaderID,
 		); err != nil {

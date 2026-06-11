@@ -4,16 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-const expectedSchemaVersion = 35
+const expectedSchemaVersion = 38
 
 type Store struct {
 	db *sql.DB
+
+	yencSeedScanMu               sync.Mutex
+	yencSeedScanBackoffUntil     time.Time
+	yencSeedScanConsecutiveEmpty int
 }
 
 // NewStore now opens PostgreSQL by DSN and runs migrations.

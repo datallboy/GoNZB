@@ -27,16 +27,23 @@ type repository interface {
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
 	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error
+	DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
+	ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 }
 
+type summaryRefreshMetricsProvider interface {
+	RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Context, limit int) (pgindex.ReleaseSummaryRefreshMetrics, error)
+}
+
 type Options struct {
 	BatchSize                                          int
+	AutoReformBatchSize                                int
 	SummaryRefreshBatchSize                            int
 	SummaryRefreshMaxBatches                           int
 	SummaryRefreshCandidateBacklogLimit                int
@@ -45,6 +52,7 @@ type Options struct {
 	ReleaseMinExpectedFileCoveragePct                  float64
 	RequireExpectedFileCountForContextualObfuscated    bool
 	RequireExpectedFileCountForContextualObfuscatedSet bool
+	ReopenArchivedNZBOnReleaseChange                   bool
 }
 
 type Service struct {
@@ -131,12 +139,46 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 	refreshedSummaries := 0
 	refreshDuration := time.Duration(0)
 	summaryRefreshBatches := 0
+	dequeueDuration := time.Duration(0)
+	summaryAggregationDuration := time.Duration(0)
+	summaryAggregateDuration := time.Duration(0)
+	summaryDominantDuration := time.Duration(0)
+	readySyncDuration := time.Duration(0)
+	recoveredFileSetDuration := time.Duration(0)
+	phaseADuration := time.Duration(0)
+	phaseBDuration := time.Duration(0)
+	hotBatches := 0
+	coldBatches := 0
 
 	for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
 		refreshStart := time.Now()
-		refreshedBatch, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
-		if batchErr != nil {
-			return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
+		refreshedBatch := 0
+		if metricsRepo, ok := s.repo.(summaryRefreshMetricsProvider); ok {
+			refreshMetrics, batchErr := metricsRepo.RefreshQueuedReleaseFamilySummariesWithMetrics(ctx, s.opts.SummaryRefreshBatchSize)
+			if batchErr != nil {
+				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
+			}
+			refreshedBatch = refreshMetrics.Refreshed
+			dequeueDuration += refreshMetrics.DequeueDuration
+			summaryAggregationDuration += refreshMetrics.SummaryRefreshDuration
+			summaryAggregateDuration += refreshMetrics.SummaryAggregateDuration
+			summaryDominantDuration += refreshMetrics.SummaryDominantDuration
+			readySyncDuration += refreshMetrics.ReadyCandidateSyncDuration
+			recoveredFileSetDuration += refreshMetrics.RecoveredFileSetSyncDuration
+			phaseADuration += refreshMetrics.PhaseADuration
+			phaseBDuration += refreshMetrics.PhaseBDuration
+			switch refreshMetrics.Mode {
+			case "hot":
+				hotBatches++
+			case "cold":
+				coldBatches++
+			}
+		} else {
+			batchCount, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+			if batchErr != nil {
+				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
+			}
+			refreshedBatch = batchCount
 		}
 		batchDuration := time.Since(refreshStart)
 		refreshDuration += batchDuration
@@ -164,14 +206,32 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		"summary_refresh_batches":                 summaryRefreshBatches,
 		"summary_refresh_count":                   refreshedSummaries,
 		"summary_refresh_duration_ms":             durationMillis(refreshDuration),
+		"summary_refresh_dequeue_duration_ms":     durationMillis(dequeueDuration),
+		"summary_refresh_summary_duration_ms":     durationMillis(summaryAggregationDuration),
+		"summary_refresh_ready_sync_duration_ms":  durationMillis(readySyncDuration),
+		"summary_refresh_file_set_duration_ms":    durationMillis(recoveredFileSetDuration),
+		"summary_refresh_aggregate_duration_ms":   durationMillis(summaryAggregateDuration),
+		"summary_refresh_dominant_duration_ms":    durationMillis(summaryDominantDuration),
+		"summary_refresh_phase_a_duration_ms":     durationMillis(phaseADuration),
+		"summary_refresh_phase_b_duration_ms":     durationMillis(phaseBDuration),
+		"summary_refresh_hot_batches":             hotBatches,
+		"summary_refresh_cold_batches":            coldBatches,
 	}
 	s.log.Info(
-		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f",
+		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f dequeue_duration_ms=%.2f summary_duration_ms=%.2f aggregate_duration_ms=%.2f dominant_duration_ms=%.2f ready_sync_duration_ms=%.2f recovered_file_set_duration_ms=%.2f hot_batches=%d cold_batches=%d",
 		initialSummaryBacklog,
 		remainingSummaryBacklog,
 		refreshedSummaries,
 		summaryRefreshBatches,
 		durationMillis(refreshDuration),
+		durationMillis(dequeueDuration),
+		durationMillis(summaryAggregationDuration),
+		durationMillis(summaryAggregateDuration),
+		durationMillis(summaryDominantDuration),
+		durationMillis(readySyncDuration),
+		durationMillis(recoveredFileSetDuration),
+		hotBatches,
+		coldBatches,
 	)
 	return metrics, nil
 }
@@ -228,6 +288,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	metrics := map[string]any{
 		"reform":                                  reform,
 		"batch_size":                              s.opts.BatchSize,
+		"auto_reform_batch_size":                  s.opts.AutoReformBatchSize,
 		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
 		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
 		"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
@@ -252,12 +313,23 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		"fragment_only_families":                  0,
 	}
 	if !reform {
+		autoReformCandidates := 0
+		if s.opts.AutoReformBatchSize > 0 && initialSummaryBacklog == 0 && len(candidates) < s.opts.BatchSize {
+			start := time.Now()
+			existing, existingErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.AutoReformBatchSize, 0)
+			timings.candidateList += time.Since(start)
+			if existingErr != nil {
+				return nil, fmt.Errorf("list existing release candidates for auto reform: %w", existingErr)
+			}
+			candidates, autoReformCandidates = mergeAutoReformCandidates(candidates, existing)
+		}
 		metrics["summary_refresh_initial_count"] = initialSummaryBacklog
 		metrics["summary_refresh_remaining_count"] = remainingSummaryBacklog
 		metrics["summary_refresh_batches"] = summaryRefreshBatches
 		metrics["summary_refresh_count"] = refreshedSummaries
 		metrics["summary_refresh_duration_ms"] = durationMillis(refreshDuration)
 		metrics["refresh_only_due_to_summary_backlog"] = false
+		metrics["auto_reform_candidates"] = autoReformCandidates
 	}
 	if len(candidates) == 0 {
 		if reform {
@@ -667,13 +739,23 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 		newsgroupIDs := newsgroupIDsForCluster(cluster.Binaries)
 		start = time.Now()
-		_, err = s.repo.PersistReleaseSnapshot(ctx, record, files, newsgroupIDs)
+		persistedReleaseID, err := s.repo.PersistReleaseSnapshot(ctx, record, files, newsgroupIDs)
 		if timings != nil {
 			elapsed := time.Since(start)
 			timings.upsertRelease += elapsed
 		}
 		if err != nil {
 			return outcome, fmt.Errorf("persist release snapshot %s: %w", record.GroupName, err)
+		}
+		if s.opts.ReopenArchivedNZBOnReleaseChange {
+			if err := s.repo.ReopenArchivedReleaseForRegeneration(ctx, persistedReleaseID); err != nil {
+				return outcome, fmt.Errorf("reopen archived release %s for regeneration: %w", record.GroupName, err)
+			}
+		}
+		if baseStem := clusterPrimaryBaseStem(cluster.Binaries); baseStem != "" && candidate.NewsgroupID > 0 {
+			if err := s.repo.DeleteAuxiliaryOnlySiblingReleases(ctx, candidate.ProviderID, candidate.NewsgroupID, baseStem, []string{persistedReleaseID}); err != nil {
+				return outcome, fmt.Errorf("delete auxiliary-only sibling releases for %s: %w", record.GroupName, err)
+			}
 		}
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)
@@ -720,6 +802,57 @@ func buildDeferredReleaseAck(candidate pgindex.ReleaseCandidate, familyKey strin
 		KeyKind:     candidate.KeyKind,
 		FamilyKey:   familyKey,
 	}
+}
+
+func mergeAutoReformCandidates(current, existing []pgindex.ReleaseCandidate) ([]pgindex.ReleaseCandidate, int) {
+	if len(existing) == 0 {
+		return current, 0
+	}
+	type candidateKey struct {
+		providerID  int64
+		newsgroupID int64
+		keyKind     string
+		familyKey   string
+	}
+	seen := make(map[candidateKey]struct{}, len(current)+len(existing))
+	for _, candidate := range current {
+		seen[candidateKey{
+			providerID:  candidate.ProviderID,
+			newsgroupID: candidate.NewsgroupID,
+			keyKind:     strings.TrimSpace(candidate.KeyKind),
+			familyKey:   candidateFamilyKey(candidate),
+		}] = struct{}{}
+	}
+	added := 0
+	for _, candidate := range existing {
+		key := candidateKey{
+			providerID:  candidate.ProviderID,
+			newsgroupID: candidate.NewsgroupID,
+			keyKind:     strings.TrimSpace(candidate.KeyKind),
+			familyKey:   candidateFamilyKey(candidate),
+		}
+		if key.familyKey == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		current = append(current, candidate)
+		added++
+	}
+	return current, added
+}
+
+func clusterPrimaryBaseStem(binaries []pgindex.BinarySummary) string {
+	main := dominantMainPayloadBinary(binaries)
+	if main == nil {
+		return ""
+	}
+	if value := strings.ToLower(strings.TrimSpace(main.BaseStem)); value != "" {
+		return value
+	}
+	return normalizeStem(pickFileName(*main))
 }
 
 func (s *Service) flushDeferredAcks(ctx context.Context, candidates []pgindex.ReleaseCandidateAck, timings *releaseTimings) error {

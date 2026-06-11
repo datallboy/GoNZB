@@ -26,6 +26,7 @@ type repository interface {
 	ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]pgindex.YEncRecoveryCandidate, error)
 	ApplyYEncHeaderRecovery(ctx context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error)
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
+	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
 }
 
 type bodyPrefixFetcher interface {
@@ -282,6 +283,11 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		return nil, "parse_failure", timings, nil
 	}
 	if strings.TrimSpace(header.FileName) == "" {
+		started = time.Now()
+		if markErr := s.repo.RecordYEncRecoveryNoop(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+			s.log.Warn("recover_yenc: failed to persist noop backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+		}
+		timings.NotFoundWrite = time.Since(started)
 		return nil, "noop", timings, nil
 	}
 
@@ -311,6 +317,11 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	})
 	timings.Match = time.Since(started)
 	if strings.TrimSpace(matched.FileName) == "" || strings.HasSuffix(strings.ToLower(matched.FileName), ".bin") {
+		started = time.Now()
+		if markErr := s.repo.RecordYEncRecoveryNoop(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+			s.log.Warn("recover_yenc: failed to persist noop backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+		}
+		timings.NotFoundWrite = time.Since(started)
 		return nil, "noop", timings, nil
 	}
 

@@ -64,6 +64,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		Limit:         s.opts.CandidateBatchSize,
 		Owner:         s.opts.ClaimOwner + ":" + stageName,
 		LeaseDuration: s.opts.ClaimLease,
+		Options: pgindex.BinaryInspectionCandidateOptions{
+			RequireExpectedFileCount: s.opts.RequireExpectedFileCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim inspect_media candidates: %w", err)

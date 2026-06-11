@@ -348,8 +348,15 @@ func (s *matchState) finalize(opts Options) Result {
 	if explicitFileName == "" && s.fileIndex > 0 && s.expectedFileCount > 0 {
 		fileKey = normalizeKey("file " + strconv.Itoa(s.fileIndex) + " of " + strconv.Itoa(s.expectedFileCount))
 	}
-	fileSetKey := s.fileSetKey(releaseFamilyKey, subjectSetToken)
+	fileSetKey := ""
 	identityStrength, identityReason := identityClassification(familyKind, subjectSetKind, baseStem, explicitFileName, s.confidence)
+	if shouldDeferPromotableFamilyIdentity(familyKind, subjectSetKind, explicitFileName, identityStrength) {
+		releaseFamilyKey = ""
+		fileSetKey = ""
+		baseStem = ""
+	} else {
+		fileSetKey = s.fileSetKey(releaseFamilyKey, subjectSetToken)
+	}
 
 	status := "low_confidence"
 	if s.confidence >= opts.HighConfidenceThreshold {
@@ -400,7 +407,7 @@ func (s *matchState) finalize(opts Options) Result {
 		IsAuxiliary:       isAuxiliary,
 		IsMainPayload:     isMainPayload,
 		ReleaseName:       releaseName,
-		ReleaseKey:        releaseFamilyKey,
+		ReleaseKey:        firstNonEmpty(releaseFamilyKey, sourceReleaseKey),
 		BinaryName:        fileName,
 		BinaryKey:         sourceReleaseKey + "::" + fileKey,
 		FileName:          fileName,
@@ -412,6 +419,46 @@ func (s *matchState) finalize(opts Options) Result {
 		MatchConfidence:   clampConfidence(s.confidence),
 		MatchStatus:       status,
 		GroupingEvidence:  s.evidence,
+	}
+}
+
+func shouldDeferPromotableFamilyIdentity(familyKind, subjectSetKind, explicitFileName, identityStrength string) bool {
+	switch familyKind {
+	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
+	default:
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(identityStrength)) {
+	case "weak", "provisional":
+	default:
+		return false
+	}
+	if subjectSetKind == "readable_title" {
+		return false
+	}
+	return !hasPromotableFileIdentity(explicitFileName)
+}
+
+func hasPromotableFileIdentity(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" {
+		return false
+	}
+	switch {
+	case splitArchiveRE.MatchString(lower):
+		return true
+	case rarFamilyRE.MatchString(lower):
+		return true
+	case strings.HasSuffix(lower, ".rar"):
+		return true
+	case parFileRE.MatchString(lower):
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(lower)) {
+	case ".mkv", ".mp4", ".avi", ".ts", ".mp3", ".flac", ".m4a", ".zip", ".7z":
+		return true
+	default:
+		return false
 	}
 }
 

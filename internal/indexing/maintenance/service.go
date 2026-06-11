@@ -57,7 +57,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	if s.log != nil && out != nil {
 		s.log.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d purged_inspect_workspaces=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d skipped_readiness_cleanup=%t refresh_queue_backlog=%d purged_inspect_workspaces=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -72,6 +72,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			out.PurgedGroupingEvidence,
 			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
+			out.SkippedReadinessCleanup,
+			out.RefreshQueueBacklog,
 			metrics["purged_inspect_workspaces"],
 		)
 	}
@@ -90,6 +92,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		metrics["purged_grouping_evidence"] = out.PurgedGroupingEvidence
 		metrics["purged_readiness_summaries"] = out.PurgedReadinessSummaries
 		metrics["purged_orphan_releases"] = out.PurgedOrphanReleases
+		metrics["skipped_readiness_cleanup"] = out.SkippedReadinessCleanup
+		metrics["refresh_queue_backlog"] = out.RefreshQueueBacklog
 	}
 	return metrics, nil
 }

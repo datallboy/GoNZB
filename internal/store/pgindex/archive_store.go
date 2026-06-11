@@ -367,9 +367,52 @@ func (s *Store) MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText
 	return nil
 }
 
-func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]ReleasePurgeCandidate, error) {
+func (s *Store) ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE release_archive_state
+		SET archive_status = 'active',
+		    object_key = '',
+		    content_hash_sha256 = '',
+		    object_size_bytes = 0,
+		    purge_eligible_at = NULL,
+		    purge_completed_at = NULL,
+		    last_archive_error = '',
+		    updated_at = NOW()
+		WHERE release_id = $1
+		  AND archive_status IN ('archived', 'purge_pending', 'purged', 'archive_failed', 'archive_pending')`,
+		releaseID,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen archived release %s for regeneration: %w", releaseID, err)
+	}
+	return nil
+}
+
+func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy ReleaseReadyPolicy) ([]ReleasePurgeCandidate, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	policy = NormalizeReleaseReadyPolicy(policy)
+	retainClauses := []string{}
+	if policy.RetainUntilExpectedFileCountComplete {
+		retainClauses = append(retainClauses, expectedFileCountCompleteClause("r"))
+	}
+	if policy.RetainRequirePAR2 {
+		retainClauses = append(retainClauses, "COALESCE(r.has_par2, FALSE) = TRUE")
+	}
+	if policy.RetainRequireNFO {
+		retainClauses = append(retainClauses, "COALESCE(r.has_nfo, FALSE) = TRUE")
+	}
+	if policy.RetainRequireSFV {
+		retainClauses = append(retainClauses, hasSFVClause("r"))
+	}
+	retainPredicate := "TRUE"
+	if len(retainClauses) > 0 {
+		retainPredicate = strings.Join(retainClauses, "\n\t\t  AND ")
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT release_id, object_key
@@ -380,6 +423,7 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]R
 			SELECT 1
 			FROM releases r
 			WHERE r.release_id = release_archive_state.release_id
+			  AND `+retainPredicate+`
 		  )
 		  AND EXISTS (
 			SELECT 1

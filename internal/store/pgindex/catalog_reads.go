@@ -14,6 +14,7 @@ import (
 type CatalogReleaseFile struct {
 	ID        int64
 	BinaryID  int64
+	GroupName string
 	FileName  string
 	Subject   string
 	Poster    string
@@ -134,6 +135,7 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 		SELECT
 			cf.id,
 			COALESCE(rf.binary_id, 0),
+			COALESCE(ng.group_name, ''),
 			cf.file_name,
 			cf.subject,
 			cf.poster,
@@ -151,6 +153,8 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 			ORDER BY rf.id
 			LIMIT 1
 		) rf ON TRUE
+		LEFT JOIN binaries b ON b.id = rf.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = b.newsgroup_id
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
@@ -167,6 +171,7 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 		if err := rows.Scan(
 			&item.ID,
 			&binaryID,
+			&item.GroupName,
 			&item.FileName,
 			&item.Subject,
 			&item.Poster,
@@ -205,6 +210,7 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 		SELECT
 			0::BIGINT AS id,
 			b.id AS binary_id,
+			COALESCE(ng.group_name, '') AS group_name,
 			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS file_name,
 			COALESCE(NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), b.release_name) AS subject,
 			COALESCE(p.poster_name, '') AS poster,
@@ -213,6 +219,7 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
 			b.file_index
 		FROM binaries b
+		LEFT JOIN newsgroups ng ON ng.id = b.newsgroup_id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		WHERE b.id = $1`, binaryID)
 
@@ -221,6 +228,7 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 	if err := row.Scan(
 		&item.ID,
 		&item.BinaryID,
+		&item.GroupName,
 		&item.FileName,
 		&item.Subject,
 		&item.Poster,

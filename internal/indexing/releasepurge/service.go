@@ -8,12 +8,13 @@ import (
 )
 
 type repository interface {
-	ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]pgindex.ReleasePurgeCandidate, error)
+	ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error)
 	PurgeArchivedReleaseSources(ctx context.Context, releaseID string) (*pgindex.ReleasePurgeResult, error)
 }
 
 type Options struct {
 	BatchSize int
+	Policy    pgindex.ReleaseReadyPolicy
 }
 
 type Service struct {
@@ -25,6 +26,7 @@ func NewService(repo repository, opts Options) *Service {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 50
 	}
+	opts.Policy = pgindex.NormalizeReleaseReadyPolicy(opts.Policy)
 	return &Service{repo: repo, opts: opts}
 }
 
@@ -38,7 +40,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return nil, fmt.Errorf("purge repo is required")
 	}
 
-	candidates, err := s.repo.ClaimReleasePurgeCandidates(ctx, s.opts.BatchSize)
+	candidates, err := s.repo.ClaimReleasePurgeCandidates(ctx, s.opts.BatchSize, s.opts.Policy)
 	if err != nil {
 		return nil, err
 	}

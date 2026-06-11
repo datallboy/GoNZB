@@ -23,6 +23,8 @@ type IndexerMaintenanceResult struct {
 	PurgedGroupingEvidence     int64
 	PurgedReadinessSummaries   int64
 	PurgedOrphanReleases       int64
+	SkippedReadinessCleanup    bool
+	RefreshQueueBacklog        int64
 }
 
 func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceResult, error) {
@@ -207,6 +209,51 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		return fmt.Errorf("purge old stable grouping evidence rows affected: %w", err)
 	}
 
+	var refreshQueueBacklog int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue`).Scan(&refreshQueueBacklog); err != nil {
+		return fmt.Errorf("count queued release family summaries before derived cleanup: %w", err)
+	}
+	result.RefreshQueueBacklog = refreshQueueBacklog
+	if refreshQueueBacklog > 0 {
+		result.SkippedReadinessCleanup = true
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM release_ready_candidate_acks a
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_ready_candidates c
+				WHERE c.provider_id = a.provider_id
+				  AND c.newsgroup_id = a.newsgroup_id
+				  AND c.key_kind = a.key_kind
+				  AND c.family_key = a.family_key
+			)`); err != nil {
+			return fmt.Errorf("purge orphaned release ready candidate acks while readiness cleanup deferred: %w", err)
+		}
+		if res, err := tx.ExecContext(ctx, `
+			DELETE FROM releases r
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_catalog_files cf
+				WHERE cf.release_id = r.release_id
+			)
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM release_archive_state ras
+				WHERE ras.release_id = r.release_id
+				  AND ras.archive_status IN ('purge_pending', 'purged')
+			)`); err != nil {
+			return fmt.Errorf("purge orphan releases while readiness cleanup deferred: %w", err)
+		} else if result.PurgedOrphanReleases, err = res.RowsAffected(); err != nil {
+			return fmt.Errorf("purge orphan releases while readiness cleanup deferred rows affected: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit indexer maintenance derived tx with deferred readiness cleanup: %w", err)
+		}
+		return nil
+	}
+
 	if res, err := tx.ExecContext(ctx, `
 		DELETE FROM release_family_readiness_summaries s
 		USING release_family_readiness_acks a
@@ -289,6 +336,48 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 			  AND s.family_key = a.family_key
 		)`); err != nil {
 		return fmt.Errorf("purge orphaned release readiness acks: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM release_ready_candidates c
+		WHERE (
+			c.key_kind = 'recovered_file_set'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM release_recovered_file_set_candidates r
+				WHERE r.provider_id = c.provider_id
+				  AND r.representative_newsgroup_id = c.newsgroup_id
+				  AND r.file_set_key = c.family_key
+				  AND COALESCE(r.readiness_bucket, '') = $1
+			)
+		) OR (
+			c.key_kind <> 'recovered_file_set'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM release_family_readiness_summaries s
+				WHERE s.provider_id = c.provider_id
+				  AND s.newsgroup_id = c.newsgroup_id
+				  AND s.key_kind = c.key_kind
+				  AND s.family_key = c.family_key
+				  AND COALESCE(s.readiness_bucket, '') = $1
+			)
+		)`,
+		releaseReadinessActionable,
+	); err != nil {
+		return fmt.Errorf("purge stale release ready candidates: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM release_ready_candidate_acks a
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM release_ready_candidates c
+			WHERE c.provider_id = a.provider_id
+			  AND c.newsgroup_id = a.newsgroup_id
+			  AND c.key_kind = a.key_kind
+			  AND c.family_key = a.family_key
+		)`); err != nil {
+		return fmt.Errorf("purge orphaned release ready candidate acks: %w", err)
 	}
 
 	if res, err := tx.ExecContext(ctx, `
