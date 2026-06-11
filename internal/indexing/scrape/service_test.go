@@ -160,6 +160,45 @@ func TestRunLatestAdvancesSingleBatchPerRun(t *testing.T) {
 	}
 }
 
+func TestRunLatestSanitizesEmbeddedNULsBeforeRepoInsert(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 1},
+		headers: []OverviewHeader{{
+			ArticleNumber: 1,
+			MessageID:     "<bad\x00msg@test>",
+			Subject:       "bad\x00subject",
+			Poster:        "bad\x00poster@test",
+			DateUTC:       &now,
+			Xref:          "xref\x00value",
+			RawOverview: map[string]any{
+				"Subject": "bad\x00subject",
+			},
+		}},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 1 {
+		t.Fatalf("expected 1 inserted header, got %d", len(repo.insertedHeaders))
+	}
+	header := repo.insertedHeaders[0]
+	for _, value := range []string{header.MessageID, header.Subject, header.Poster, header.Xref} {
+		if strings.ContainsRune(value, '\x00') {
+			t.Fatalf("expected NUL stripped from %q", value)
+		}
+	}
+	if subject, _ := header.RawOverview["Subject"].(string); strings.ContainsRune(subject, '\x00') {
+		t.Fatalf("expected NUL stripped from raw overview subject %q", subject)
+	}
+}
+
 func TestRunLatestRotatesAcrossGroupsByRunBudget(t *testing.T) {
 	repo := &fakeScrapeRepo{}
 	var mu sync.Mutex
