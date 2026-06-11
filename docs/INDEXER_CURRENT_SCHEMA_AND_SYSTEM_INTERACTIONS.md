@@ -535,6 +535,7 @@ Current audit note:
 - `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
 - `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
 - `scrape_*` now also materializes `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
+- scrape integrity preflight is cached in-process for a short TTL; the critical index check remains required, but it is no longer rerun before every single scrape pass
 
 ## Scrape Configuration Ownership
 
@@ -552,6 +553,7 @@ Ownership rules:
 - wildcard refresh is manual through explicit scan/rescan plus preview/apply
 - scrape stages consume only the effective group list derived from explicit groups plus enabled materialized groups
 - saving zero effective groups is valid; scrape stages should idle rather than force persistence failure
+- historical cross-post telemetry backfill is a manual maintenance command, not part of normal scrape startup or steady-state execution
 
 ## Cross-Group Release And File Rules
 

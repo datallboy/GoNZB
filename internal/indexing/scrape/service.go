@@ -77,6 +77,12 @@ type Service struct {
 	opts           Options
 	mu             sync.Mutex
 	nextGroupIndex int
+
+	integrityMu           sync.Mutex
+	integrityCheckedAt    time.Time
+	integrityCachedValid  bool
+	integrityCached       *pgindex.IndexerIntegrityReport
+	integrityPreflightTTL time.Duration
 }
 
 type runMetrics struct {
@@ -122,10 +128,11 @@ func NewService(repo repository, p provider, log logger, opts Options) *Service 
 	}
 
 	return &Service{
-		repo:     repo,
-		provider: p,
-		log:      log,
-		opts:     opts,
+		repo:                  repo,
+		provider:              p,
+		log:                   log,
+		opts:                  opts,
+		integrityPreflightTTL: 5 * time.Minute,
 	}
 }
 
@@ -164,7 +171,7 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	if s.repo == nil {
 		return nil, fmt.Errorf("scrape repo is required")
 	}
-	report, err := s.repo.CheckCriticalIndexerIntegrity(ctx, false)
+	report, err := s.checkCriticalIndexerIntegrity(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("check critical ingest index integrity: %w", err)
 	}
@@ -218,6 +225,24 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	}
 
 	return metrics.toMap(), runErr
+}
+
+func (s *Service) checkCriticalIndexerIntegrity(ctx context.Context) (*pgindex.IndexerIntegrityReport, error) {
+	s.integrityMu.Lock()
+	defer s.integrityMu.Unlock()
+
+	if s.integrityCachedValid && s.integrityPreflightTTL > 0 && !s.integrityCheckedAt.IsZero() && time.Since(s.integrityCheckedAt) < s.integrityPreflightTTL {
+		return s.integrityCached, nil
+	}
+
+	report, err := s.repo.CheckCriticalIndexerIntegrity(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	s.integrityCached = report
+	s.integrityCachedValid = true
+	s.integrityCheckedAt = time.Now()
+	return report, nil
 }
 
 func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, groups []string, metrics *runMetrics) error {

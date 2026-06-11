@@ -241,6 +241,8 @@ Observed write/query shape:
 - scrape now also records cross-post discovery telemetry from observed `Xref` memberships into `article_header_crosspost_groups`
 - that telemetry is intended for operator review and candidate-group reporting only; it is not part of canonical binary/file lineage or NZB provenance
 - the first admin popularity report is intentionally bounded to a recent rolling window so it does not devolve into an all-time aggregate over the full telemetry table
+- scrape integrity preflight is now cached briefly in-process so critical-index safety remains in place without re-running `amcheck` before every single scrape pass
+- historical cross-post seeding is handled by a manual batched maintenance command, not by automatic replay during scrape startup
 - checkpoint state is centralized in `scrape_checkpoints`
 - header ingest is a transactional batch that does:
   - poster dimension ensure

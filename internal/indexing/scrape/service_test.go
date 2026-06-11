@@ -306,12 +306,38 @@ func TestRunLatestUsesConcurrentWorkersWithinBudget(t *testing.T) {
 	}
 }
 
+func TestRunLatestCachesIntegrityPreflight(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 1},
+		headers: []OverviewHeader{{
+			ArticleNumber: 1,
+			MessageID:     "<msg@test>",
+		}},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("first RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("second RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if repo.integrityCalls != 1 {
+		t.Fatalf("expected 1 integrity preflight call, got %d", repo.integrityCalls)
+	}
+}
+
 type fakeScrapeRepo struct {
 	backfillCheckpoint        int64
 	latestCheckpoint          int64
 	insertedHeaders           []pgindex.ArticleHeader
 	integrityReport           *pgindex.IndexerIntegrityReport
 	integrityErr              error
+	integrityCalls            int
 	cutoffReached             bool
 	backfillCheckpointUpdated bool
 	latestCheckpointUpdated   bool
@@ -328,6 +354,7 @@ func (f *fakeScrapeRepo) EnsureProvider(context.Context, string, string) (int64,
 }
 
 func (f *fakeScrapeRepo) CheckCriticalIndexerIntegrity(context.Context, bool) (*pgindex.IndexerIntegrityReport, error) {
+	f.integrityCalls++
 	return f.integrityReport, f.integrityErr
 }
 
