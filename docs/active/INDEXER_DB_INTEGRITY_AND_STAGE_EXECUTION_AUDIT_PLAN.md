@@ -133,6 +133,108 @@ Measured query-shape issue found during Pass 1:
 - rerun the fresh scrape bootstrap on the patched binary and confirm the live insert path no longer spends time in the old `OR`-join shape
 - decide whether stale `scrape_runs` cleanup should remain maintenance-only or whether scrape startup should adopt a more direct stale-run handoff
 
+## Pass 2 Findings: Assemble
+
+Status: primary service/store/query audit completed; a small hot-path cleanup has been landed.
+
+### Service-layer findings
+
+- `assemble` runs in two service modes:
+  - concurrent `RunOnceWithMetrics` that claims one batch and fans out work to in-process workers
+  - single-worker `runOnceWithMetricsSingle` that performs the actual binary/part/stat refresh flow
+- service policy already does the right thing for release-summary ownership:
+  - `UpsertBinaries` is called with `WithDeferredReleaseFamilySummaryRefresh`
+  - `RefreshBinaryStatsBatch` is also called with `WithDeferredReleaseFamilySummaryRefresh`
+  - so normal assemble service execution only enqueues dirty release-family keys; it does not inline heavy summary recomputation
+- current metrics are strong on binary upsert and refresh timings, but they still collapse claim selection into one coarse `candidate_selection_duration_ms`
+  - the audit could not isolate claim/dequeue time from hydration time from service metrics alone
+
+### Store / DBO findings
+
+Hot assemble-owned store paths confirmed:
+
+- `ClaimUnassembledArticleHeaders`
+- `listPriorityAssemblyHeaderIDs`
+- `listRecentUnassembledHeaderIDs`
+- `hydrateAssemblyCandidates`
+- `EnsurePoster`
+- `UpsertBinaries`
+- `UpsertBinaryParts`
+- `RefreshBinaryStatsBatch`
+
+Observed lane behavior:
+
+- lane A is a structured-completion path:
+  - it scans a recent unassembled header window
+  - joins into `article_header_ingest_payloads`
+  - tries to match those subject file names against existing incomplete binaries by normalized filename
+  - it prefers continuing partially observed binaries that already have structured file identity
+- lane B is a recent backlog path:
+  - it scans recent unassembled headers
+  - optionally excludes structured-progress matches
+  - it is the catch-all feed for general subject matching and new binary formation
+- two helper functions remain unused in current code:
+  - `listPriorityAssemblyBinaries`
+  - `listPendingHeadersForProgressBinaries`
+  - these appear to be inactive/dead helper debt, not part of the active service path
+
+Measured live query-shape findings on the fresh scrape backlog:
+
+- lane B recent-header selection is cheap:
+  - `article_headers_pkey` backward scan
+  - `LIMIT 1000/5000`
+  - about `0.6 ms`
+- lane A structured-priority selection is more complex but acceptable at current scale:
+  - recent pending scan over 5000 headers
+  - 5000 payload lookups via `article_header_ingest_payloads_pkey`
+  - lateral binary lookup via `idx_binaries_normalized_file_identity`
+  - about `29.7 ms` on the fresh DB, returning zero rows because no binaries existed yet
+- hydration of 1000 claimed headers is acceptable:
+  - 1000 point lookups into `article_headers`, `article_header_ingest_payloads`, `newsgroups`, and `posters`
+  - about `8.7 ms`
+- claim/update itself is not free, even on point IDs:
+  - claiming 1000 rows took about `26.2 ms`
+  - most of that cost is the write itself, not candidate lookup
+
+Hot-path inefficiencies found:
+
+- `EnsurePoster` was doing `ON CONFLICT DO UPDATE` even for existing poster rows
+  - this rewrote an existing poster row every time assemble had to resolve a cache miss locally
+  - fix landed:
+    - switch to `INSERT ... DO NOTHING RETURNING` plus indexed fallback read
+- `RefreshBinaryStatsBatch` was rereading `article_headers` twice per `binary_parts` row through correlated subqueries
+  - fix landed:
+    - join `article_headers` once inside the materialized part/header intermediate
+
+### Schema / overlap findings
+
+- assemble still has the most important current ownership exception in the system:
+  - it updates `article_headers.assembly_claimed_by`
+  - it updates `article_headers.assembly_claimed_until`
+  - it sets `article_headers.assembled_at`
+- this means scrape/assemble overlap is not just “operationally discouraged”; it is structurally high-risk:
+  - both stages write `article_headers`
+  - both stages can write or depend on `posters`
+  - scrape should stay isolated from assemble during bootstrap and heavy regroup work
+- claim selection is serialized globally with:
+  - `pg_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`
+  - this prevents concurrent claim races across lane workers/processes, but it also means claim throughput has a hard serialized gate
+- the store still permits inline `refreshReleaseFamilySummary()` behavior if callers do not set the defer flag
+  - the normal service path is safe today
+  - but the store surface still encodes a cross-boundary fallback behavior that should stay under review
+
+### Changes landed from Pass 2
+
+- `EnsurePoster` no longer rewrites an existing `posters` row on every conflict
+- `RefreshBinaryStatsBatch` no longer rereads `article_headers` twice per part row when computing aggregate binary stats
+
+### Remaining assemble-specific follow-up
+
+- decide whether the inline `refreshReleaseFamilySummary()` fallback in the store should be removed entirely so assemble can only enqueue dirty summary keys
+- decide whether `article_headers` claim/progress bookkeeping should remain a bounded transitional exception for `0.8` or be moved behind a dedicated assemble work surface first
+- add finer claim-selection metrics if assemble is re-enabled and becomes hot again
+- decide whether the unused progress-binary helper functions should be removed or revived explicitly before stable release
+
 ## Audit Execution Order
 
 Audit stages in this exact order:

@@ -1082,11 +1082,19 @@ func (s *Store) EnsurePoster(ctx context.Context, posterName string) (int64, err
 
 	var id int64
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO posters (poster_name)
-		VALUES ($1)
-		ON CONFLICT (poster_name) DO UPDATE
-		SET poster_name = EXCLUDED.poster_name
-		RETURNING id`,
+		WITH inserted AS (
+			INSERT INTO posters (poster_name)
+			VALUES ($1)
+			ON CONFLICT (poster_name) DO NOTHING
+			RETURNING id
+		)
+		SELECT id
+		FROM inserted
+		UNION ALL
+		SELECT p.id
+		FROM posters p
+		WHERE p.poster_name = $1
+		LIMIT 1`,
 		posterName,
 	).Scan(&id)
 	if err != nil {
@@ -2531,17 +2539,10 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			SELECT
 				p.binary_id,
 				p.segment_bytes,
-				(
-					SELECT ah.article_number
-					FROM article_headers ah
-					WHERE ah.id = p.article_header_id
-				) AS article_number,
-				(
-					SELECT ah.date_utc
-					FROM article_headers ah
-					WHERE ah.id = p.article_header_id
-				) AS date_utc
+				ah.article_number,
+				ah.date_utc
 			FROM part_rows p
+			JOIN article_headers ah ON ah.id = p.article_header_id
 		),
 		agg AS (
 			SELECT

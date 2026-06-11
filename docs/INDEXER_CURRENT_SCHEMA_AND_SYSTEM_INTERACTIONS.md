@@ -222,7 +222,7 @@ This matrix is the schema contract for current and near-term code changes.
 
 | Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
 | --- | --- | --- | --- | --- |
-| `article_headers` | canonical fact | `scrape_*` | none | Durable ingest fact row per article. |
+| `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
@@ -291,6 +291,8 @@ Audit focus:
 
 Primary hot DBO/store paths:
 
+- `ClaimUnassembledArticleHeaders`
+- lane selectors in `assembly_store.go`
 - `UpsertBinaries`
 - `UpsertBinaryParts`
 - binary refresh/update helpers in `assembly_store.go`
@@ -304,10 +306,12 @@ Execution profile:
 Audit focus:
 
 - header selection/claim path
+- global advisory-lock claim serialization
 - binary upsert chunking and conflict behavior
 - `binary_parts` write amplification
 - lane A versus lane B selector/query differences
 - downstream dirty-key enqueue behavior
+- transitional `article_headers` write-back and shared `posters` writes
 
 ### Recover yEnc audit map
 
@@ -525,10 +529,13 @@ Allowed writes:
 - `binary_grouping_evidence`
 - `yenc_recovery_work_items` seeding
 - release-family refresh queue enqueue only
+- transitional bounded write-back to `article_headers` for:
+  - `assembly_claimed_by`
+  - `assembly_claimed_until`
+  - `assembled_at`
 
 Not allowed:
 
-- mutating `article_headers`
 - bulk recomputing `release_family_readiness_summaries`
 - mutating release catalog rows to show assembly progress
 
@@ -538,9 +545,26 @@ Rationale:
 
 Primary DBO entry points:
 
+- `ClaimUnassembledArticleHeaders`
+- `listPriorityAssemblyHeaderIDs`
+- `listRecentUnassembledHeaderIDs`
+- `hydrateAssemblyCandidates`
+- `EnsurePoster`
 - `UpsertBinaries`
 - `UpsertBinaryParts`
 - binary refresh/update helpers in `assembly_store.go`
+
+Current audit note:
+
+- lane A is a structured-completion selector that tries to feed incomplete binaries with matching normalized file identity
+- lane B is the recent general backlog selector and can exclude structured-progress matches
+- current service usage defers release-summary recomputation and only enqueues dirty family keys
+- the store still supports inline release-summary recomputation when callers do not set the defer flag
+- two helper functions in `assembly_store.go` are currently unused by the active assemble service:
+  - `listPriorityAssemblyBinaries`
+  - `listPendingHeadersForProgressBinaries`
+- `EnsurePoster` must avoid `ON CONFLICT DO UPDATE` row rewrites for existing posters
+- `RefreshBinaryStatsBatch` should join `article_headers` once when aggregating part/header stats, not reread it through repeated correlated subselects
 
 ### `recover_yenc`
 
