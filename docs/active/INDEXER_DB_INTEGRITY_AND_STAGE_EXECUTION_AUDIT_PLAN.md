@@ -140,6 +140,35 @@ Current threshold shape:
 
 The gate uses `EstimateUnassembledArticleHeaders()` first and falls back to exact count only when the estimate is zero.
 
+Additional landed admission gates:
+
+- `release_summary_refresh`
+  - paused when `release_ready_candidates` backlog is already above threshold and `release` is enabled
+  - resumes only after ready backlog drops below the lower resume threshold
+- inspect family
+  - `inspect_discovery`
+  - `inspect_par2`
+  - `inspect_nfo`
+  - `inspect_archive`
+  - `inspect_password`
+  - `inspect_media`
+  - these are paused while core pipeline backlog is hot:
+    - claimable assemble backlog
+    - yEnc hot backlog
+    - release summary refresh queue
+    - ready release candidates
+
+### Deliberately deferred
+
+Dynamic worker/concurrency tuning is still deferred.
+
+For now:
+
+- stage concurrency remains operator-configured
+- the smart executor only decides stage admission
+- CPU/DB-heavy stages keep manual concurrency control
+- NNTP-driven stages may eventually gain utilization-target tuning, but that is not part of the current landed behavior
+
 ## Pass 1 Findings: Scrape
 
 Status: in progress, but the primary scrape-stage write path has now been reviewed enough to lock the first findings.

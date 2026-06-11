@@ -225,6 +225,13 @@ Current landed behavior:
 - a backlog-aware scrape gate now sits in that chain
 - scheduled `scrape_*` is suppressed when assemble is enabled and unassembled-header backlog exceeds a hysteresis threshold
 - manual scrape runs still bypass the gate
+- `release_summary_refresh` is suppressed when ready release backlog is already deep enough for `release` to catch up
+- inspect stages are suppressed while core assemble/yEnc/refresh/release backlog is hot
+
+Current non-goal:
+
+- automatic per-stage concurrency tuning is not yet implemented
+- stage admission is dynamic; worker counts remain runtime-configured
 
 ### Integrity guardrail
 
