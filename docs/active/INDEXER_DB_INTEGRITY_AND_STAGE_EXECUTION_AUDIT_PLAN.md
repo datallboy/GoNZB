@@ -123,6 +123,23 @@ Current change direction:
 
 This is required because standalone `indexer ...` CLI runs and `serve --no-indexer-supervisor` do not share an in-memory manager with the dashboard process.
 
+### Landed first gate
+
+The first smart-executor behavior is now implemented:
+
+- scheduled `scrape_latest` and `scrape_backfill` are blocked when:
+  - at least one assemble stage is enabled, and
+  - unassembled `article_headers` backlog is above the high-water threshold
+- scrape resumes only after backlog drops below a lower resume threshold
+- manual scrape runs still bypass this gate
+
+Current threshold shape:
+
+- `high_water = max(50000, 20 * enabled_assemble_batch_capacity)`
+- `resume_threshold = max(10000, high_water / 2)`
+
+The gate uses `EstimateUnassembledArticleHeaders()` first and falls back to exact count only when the estimate is zero.
+
 ## Pass 1 Findings: Scrape
 
 Status: in progress, but the primary scrape-stage write path has now been reviewed enough to lock the first findings.

@@ -220,6 +220,12 @@ Expected first-class signals:
 
 The smart executor should plug into the existing stage-gate chain alongside prerequisite, storage, and memory guards.
 
+Current landed behavior:
+
+- a backlog-aware scrape gate now sits in that chain
+- scheduled `scrape_*` is suppressed when assemble is enabled and unassembled-header backlog exceeds a hysteresis threshold
+- manual scrape runs still bypass the gate
+
 ### Integrity guardrail
 
 Before scrape writes to `article_headers`, critical ingest indexes must pass the current integrity preflight.
