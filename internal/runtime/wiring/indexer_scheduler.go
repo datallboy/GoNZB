@@ -25,11 +25,6 @@ func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context)
 	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
 }
 
-// Long-running assemble mode restart loop lives outside cmd/main.
-func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
-	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
-}
-
 func RunIndexerAssembleLaneAScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneA)
 }

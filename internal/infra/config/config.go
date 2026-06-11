@@ -90,7 +90,6 @@ type IndexingConfig struct {
 	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
 	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
 	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
 	AssembleLaneA               IndexingStageConfig        `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
 	AssembleLaneB               IndexingStageConfig        `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
 	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
@@ -286,12 +285,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.enabled", false)
-	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
-	v.SetDefault("indexing.assemble.batch_size", 5000)
-	v.SetDefault("indexing.assemble.concurrency", 1)
-	v.SetDefault("indexing.assemble.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
 	v.SetDefault("indexing.assemble_lane_a.binary_upsert_db_chunk_size", 250)
 	v.SetDefault("indexing.assemble_lane_b.binary_upsert_db_chunk_size", 250)
 	v.SetDefault("indexing.release.enabled", false)
@@ -469,9 +462,6 @@ func (c *Config) validate() error {
 		}
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_backfill", c.Indexing.ScrapeBackfill); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {

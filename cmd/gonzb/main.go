@@ -100,10 +100,7 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 
 var indexerAssembleCmd = &cobra.Command{
 	Use:   "assemble",
-	Short: "Assemble binaries and parts continuously; use --once for a single pass",
-	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerAssemble(assembleOnce)
-	},
+	Short: "Assemble binaries using the split lane executors",
 }
 
 var indexerAssembleLaneACmd = &cobra.Command{
@@ -354,7 +351,6 @@ func init() {
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
 
-	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
 	indexerAssembleLaneACmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane A assemble pass and exit instead of continuous mode")
 	indexerAssembleLaneBCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane B assemble pass and exit instead of continuous mode")
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")

@@ -47,15 +47,15 @@ func TestRunStagesOnceHonorsRequestedOrder(t *testing.T) {
 
 	svc := New(nil, []Stage{
 		{Name: StageScrapeLatest, Interval: time.Second, Enabled: true, Runner: record(StageScrapeLatest)},
-		{Name: StageAssemble, Interval: time.Second, Enabled: true, Runner: record(StageAssemble)},
+		{Name: StageAssembleLaneA, Interval: time.Second, Enabled: true, Runner: record(StageAssembleLaneA)},
 		{Name: StageRelease, Interval: time.Second, Enabled: true, Runner: record(StageRelease)},
 	})
 
-	if err := svc.RunStagesOnce(context.Background(), StageRelease, StageScrapeLatest, StageAssemble); err != nil {
+	if err := svc.RunStagesOnce(context.Background(), StageRelease, StageScrapeLatest, StageAssembleLaneA); err != nil {
 		t.Fatalf("run stages once: %v", err)
 	}
 
-	want := []StageName{StageRelease, StageScrapeLatest, StageAssemble}
+	want := []StageName{StageRelease, StageScrapeLatest, StageAssembleLaneA}
 	if len(order) != len(want) {
 		t.Fatalf("expected %d stage calls, got %d (%v)", len(want), len(order), order)
 	}
@@ -71,7 +71,7 @@ func TestRunSelectedRunsStageOnStartupAndInterval(t *testing.T) {
 
 	svc := New(nil, []Stage{
 		{
-			Name:     StageAssemble,
+			Name:     StageAssembleLaneA,
 			Interval: 10 * time.Millisecond,
 			Enabled:  true,
 			Runner: RunnerFunc(func(context.Context) error {
@@ -86,7 +86,7 @@ func TestRunSelectedRunsStageOnStartupAndInterval(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- svc.RunSelected(ctx, StageAssemble)
+		done <- svc.RunSelected(ctx, StageAssembleLaneA)
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -220,13 +220,13 @@ func TestRunStageOncePersistsMetricsFromResultRunner(t *testing.T) {
 	tracker := &fakeTracker{
 		claimResult: &pgindex.IndexerStageClaimResult{
 			Claimed: true,
-			Run:     &pgindex.IndexerStageRun{ID: 51, StageName: string(StageAssemble)},
+			Run:     &pgindex.IndexerStageRun{ID: 51, StageName: string(StageAssembleLaneA)},
 		},
 	}
 
 	svc := New(nil, []Stage{
 		{
-			Name:     StageAssemble,
+			Name:     StageAssembleLaneA,
 			Interval: time.Second,
 			Enabled:  true,
 			Runner: ResultRunnerFunc(func(context.Context) (json.RawMessage, error) {
@@ -235,7 +235,7 @@ func TestRunStageOncePersistsMetricsFromResultRunner(t *testing.T) {
 		},
 	}, Options{Tracker: tracker, Owner: "test-owner"})
 
-	if err := svc.RunStageOnce(context.Background(), StageAssemble); err != nil {
+	if err := svc.RunStageOnce(context.Background(), StageAssembleLaneA); err != nil {
 		t.Fatalf("run stage once: %v", err)
 	}
 	if string(tracker.lastFinish.MetricsJSON) != `{"processed_headers":12}` {

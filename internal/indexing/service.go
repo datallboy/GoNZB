@@ -91,7 +91,8 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
 		supervisor.StageScrapeLatest,
-		supervisor.StageAssemble,
+		supervisor.StageAssembleLaneA,
+		supervisor.StageAssembleLaneB,
 		supervisor.StageReleaseSummaryRefresh,
 		supervisor.StageRelease,
 		supervisor.StageReleaseGenerateNZB,
@@ -125,10 +126,6 @@ func (s *Service) ReformReleasesOnce(ctx context.Context) error {
 		return fmt.Errorf("release reform service is not configured")
 	}
 	return s.releaseReform(ctx)
-}
-
-func (s *Service) AssembleOnce(ctx context.Context) error {
-	return s.runStageOnce(ctx, supervisor.StageAssemble)
 }
 
 func (s *Service) AssembleLaneAOnce(ctx context.Context) error {

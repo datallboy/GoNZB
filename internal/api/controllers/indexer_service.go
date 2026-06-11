@@ -866,8 +866,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ScrapeLatest, true
 	case string(supervisor.StageScrapeBackfill):
 		return runtime.Indexing.ScrapeBackfill, true
-	case string(supervisor.StageAssemble):
-		return runtime.Indexing.Assemble, true
 	case string(supervisor.StageAssembleLaneA):
 		return runtime.Indexing.AssembleLaneA, true
 	case string(supervisor.StageAssembleLaneB):
@@ -930,7 +928,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 var allIndexerStages = []string{
 	string(supervisor.StageScrapeLatest),
 	string(supervisor.StageScrapeBackfill),
-	string(supervisor.StageAssemble),
 	string(supervisor.StageAssembleLaneA),
 	string(supervisor.StageAssembleLaneB),
 	string(supervisor.StageRecoverYEnc),
@@ -976,8 +973,6 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ScrapeLatest, patch)
 	case string(supervisor.StageScrapeBackfill):
 		applyStagePatch(&indexing.ScrapeBackfill, patch)
-	case string(supervisor.StageAssemble):
-		applyStagePatch(&indexing.Assemble, patch)
 	case string(supervisor.StageAssembleLaneA):
 		applyStagePatch(&indexing.AssembleLaneA, patch)
 	case string(supervisor.StageAssembleLaneB):
@@ -1020,7 +1015,7 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 
 func stageSupportsConcurrency(stageName string) bool {
 	switch stageName {
-	case string(supervisor.StageAssemble), string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectPAR2), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
+	case string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectPAR2), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
 		return true
 	default:
 		return false
