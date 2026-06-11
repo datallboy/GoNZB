@@ -100,6 +100,16 @@ Observed write/query shape:
   - resolve-by-ordinal of inserted vs existing rows
 - this is materially better than the old per-row re-probe shape, but it still means the “inserted” return value is really “processed/resolved” count
 
+Measured query-shape issue found during Pass 1:
+
+- the old `existing_candidates` join used:
+  - `ah.article_number = r.article_number OR ah.message_id = r.message_id`
+- on live data, that shape caused a full `article_headers` seq scan and filtered tens of millions of join combinations in the sample plan
+- both unique indexes existed, but the `OR` join shape prevented the planner from using them effectively
+- fix applied:
+  - split article-number and message-id matching into separate branches
+  - preserve the existing resolution precedence while making both lookups index-friendly
+
 ### Schema / overlap findings
 
 - scrape owns more than `article_headers` and `article_header_ingest_payloads`; the audit and schema doc must explicitly include:
@@ -108,16 +118,20 @@ Observed write/query shape:
   - `posters` as a shared support dimension currently written during scrape ingest
 - scrape remains bootstrap-safe and should stay isolated from assemble/recovery/refresh by default
 - scrape-only overlap (`latest` + `backfill`) is currently validated as safe on the fresh DB
+- `scrape_runs` is provider-scoped run history only; it does not encode latest-vs-backfill mode itself, so operational tooling must not treat it as the sole source of truth for stage-kind reporting
 
 ### Changes landed from Pass 1
 
 - service-layer scrape sanitizer now strips embedded NUL bytes too, not just the repository-layer sanitizer
 - added service regression coverage proving NULs are removed before scrape hands headers to the repo
+- `InsertArticleHeaders` duplicate resolution now uses split article-number and message-id branches so both unique indexes remain usable under load
 
 ### Remaining scrape-specific follow-up
 
 - decide whether `articles_inserted` should be renamed or supplemented with a more truthful metric name before stable release
 - decide whether poster resolution should remain part of scrape ingest or be reduced further during a later hot-path pass
+- rerun the fresh scrape bootstrap on the patched binary and confirm the live insert path no longer spends time in the old `OR`-join shape
+- decide whether stale `scrape_runs` cleanup should remain maintenance-only or whether scrape startup should adopt a more direct stale-run handoff
 
 ## Audit Execution Order
 

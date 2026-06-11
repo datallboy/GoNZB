@@ -475,6 +475,8 @@ Primary DBO entry points:
 Current audit note:
 
 - the scrape metric/log field `articles_inserted` currently reflects resolved/processed headers through the ingest path, not guaranteed newly unique `article_headers` rows
+- `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
+- `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
 
 ## Scrape Configuration Ownership
 
