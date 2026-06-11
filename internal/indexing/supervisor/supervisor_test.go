@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -174,6 +175,70 @@ func TestRunStageOnceSkipsWhenStageGateBlocks(t *testing.T) {
 	}
 }
 
+func TestRunStageOnceSuppressesRepeatedBlockedWarnings(t *testing.T) {
+	log := &fakeSupervisorLogger{}
+	svc := New(log, []Stage{
+		{
+			Name:     StageScrapeLatest,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			return StageGateDecision{Allowed: false, Reason: "same reason"}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("first run stage once: %v", err)
+	}
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("second run stage once: %v", err)
+	}
+	if got := log.warnCountContaining("index stage blocked"); got != 1 {
+		t.Fatalf("expected 1 blocked warning, got %d (%v)", got, log.warns)
+	}
+}
+
+func TestRunStageOnceLogsBlockedWarningWhenReasonChanges(t *testing.T) {
+	log := &fakeSupervisorLogger{}
+	reasons := []string{"reason one", "reason two"}
+	var idx int
+	svc := New(log, []Stage{
+		{
+			Name:     StageScrapeLatest,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			reason := reasons[idx]
+			if idx < len(reasons)-1 {
+				idx++
+			}
+			return StageGateDecision{Allowed: false, Reason: reason}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("first run stage once: %v", err)
+	}
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("second run stage once: %v", err)
+	}
+	if got := log.warnCountContaining("index stage blocked"); got != 2 {
+		t.Fatalf("expected 2 blocked warnings after reason change, got %d (%v)", got, log.warns)
+	}
+}
+
 func TestRunStageOnceCompletesTrackedRun(t *testing.T) {
 	tracker := &fakeTracker{
 		claimResult: &pgindex.IndexerStageClaimResult{
@@ -288,6 +353,33 @@ type fakeTracker struct {
 	completes   int
 	fails       int
 	lastFinish  pgindex.IndexerStageFinishRequest
+}
+
+type fakeSupervisorLogger struct {
+	mu    sync.Mutex
+	warns []string
+}
+
+func (f *fakeSupervisorLogger) Debug(string, ...interface{}) {}
+func (f *fakeSupervisorLogger) Info(string, ...interface{})  {}
+func (f *fakeSupervisorLogger) Error(string, ...interface{}) {}
+
+func (f *fakeSupervisorLogger) Warn(format string, v ...interface{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.warns = append(f.warns, fmt.Sprintf(format, v...))
+}
+
+func (f *fakeSupervisorLogger) warnCountContaining(fragment string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, entry := range f.warns {
+		if strings.Contains(entry, fragment) {
+			count++
+		}
+	}
+	return count
 }
 
 func (f *fakeTracker) ClaimIndexerStage(context.Context, pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error) {
