@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -88,8 +89,11 @@ type indexerAdminReleaseView struct {
 }
 
 type runtimeIndexerService struct {
-	appCtx          *app.Context
-	store           app.UsenetIndexStore
+	appCtx        *app.Context
+	store         app.UsenetIndexStore
+	nntpSnapshots interface {
+		GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+	}
 	settingsAdmin   app.SettingsAdmin
 	archiveStore    app.BlobStore
 	downloaderReady bool
@@ -111,6 +115,7 @@ func newIndexerService(appCtx *app.Context) indexerService {
 	return &runtimeIndexerService{
 		appCtx:          appCtx,
 		store:           appCtx.PGIndexStore,
+		nntpSnapshots:   snapshotReaderFromStore(appCtx.PGIndexStore),
 		settingsAdmin:   appCtx.SettingsAdmin,
 		archiveStore:    appCtx.IndexerArchiveStore,
 		downloaderReady: appCtx.DownloaderModule != nil,
@@ -154,11 +159,40 @@ func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.I
 }
 
 func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	if s != nil && s.nntpSnapshots != nil {
+		snapshot, err := s.nntpSnapshots.GetLatestNNTPSnapshot(ctx, "indexer")
+		if err != nil {
+			if s.log != nil {
+				s.log.Error("load shared nntp runtime snapshot: %v", err)
+			}
+		} else if snapshot != nil && len(snapshot.Payload) > 0 {
+			var stats app.NNTPRuntimeStats
+			if err := json.Unmarshal(snapshot.Payload, &stats); err != nil {
+				if s.log != nil {
+					s.log.Error("decode shared nntp runtime snapshot: %v", err)
+				}
+			} else {
+				return &stats, nil
+			}
+		}
+	}
 	indexer := s.currentIndexer()
 	if s == nil || indexer == nil {
 		return nil, errIndexerUnavailable
 	}
 	return indexer.NNTPStats(ctx)
+}
+
+func snapshotReaderFromStore(store app.UsenetIndexStore) interface {
+	GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+} {
+	if store == nil {
+		return nil
+	}
+	reader, _ := store.(interface {
+		GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+	})
+	return reader
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

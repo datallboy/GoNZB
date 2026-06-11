@@ -39,6 +39,7 @@ type usenetIndexerRuntime struct {
 	service        app.UsenetIndexerService
 	supervisor     *supervisor.Supervisor
 	scrapeProvider io.Closer
+	nntpStats      func() app.NNTPRuntimeStats
 }
 
 type usenetIndexerConfig struct {
@@ -567,6 +568,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		service:        service,
 		supervisor:     supervisorSvc,
 		scrapeProvider: scrapeProvider,
+		nntpStats:      nntpStats,
 	}, nil
 }
 

@@ -180,6 +180,11 @@ func startIndexerStageRuntime(parent context.Context, appCtx *app.Context, state
 	childCtx, childCancel := context.WithCancel(parent)
 	state.cancel = childCancel
 	state.closer = rt.scrapeProvider
+	if store, ok := appCtx.PGIndexStore.(nntpSnapshotStore); ok {
+		if telemetry := startIndexerNNTPSnapshotPublisher(childCtx, appCtx.Logger, store, state.owner, rt.nntpStats); telemetry != nil {
+			state.closer = multiCloser(state.closer, telemetry)
+		}
+	}
 
 	go func() {
 		if err := rt.supervisor.RunSelected(childCtx, stages...); err != nil && childCtx.Err() == nil {
