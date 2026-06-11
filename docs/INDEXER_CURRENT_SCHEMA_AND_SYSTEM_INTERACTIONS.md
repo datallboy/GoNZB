@@ -224,6 +224,9 @@ This matrix is the schema contract for current and near-term code changes.
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | none | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
+| `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
+| `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
+| `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
 | `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | derived/audit | `assemble_*` | none | Bounded audit/evidence surface. |
@@ -456,10 +459,22 @@ Rationale:
 
 Primary DBO entry points:
 
+- `StartScrapeRun`
+- `FinishScrapeRun`
+- `GetLatestCheckpoint`
+- `UpsertLatestCheckpoint`
+- `GetBackfillCheckpoint`
+- `GetBackfillCheckpointState`
+- `HasBackfillCutoffReachedForGroup`
+- `SetBackfillCheckpointState`
 - `InsertArticleHeaders`
 - scrape checkpoint update helpers in `repository.go`
 - `UpsertBackfillCheckpoint`
 - `CheckCriticalIndexerIntegrity`
+
+Current audit note:
+
+- the scrape metric/log field `articles_inserted` currently reflects resolved/processed headers through the ingest path, not guaranteed newly unique `article_headers` rows
 
 ## Scrape Configuration Ownership
 

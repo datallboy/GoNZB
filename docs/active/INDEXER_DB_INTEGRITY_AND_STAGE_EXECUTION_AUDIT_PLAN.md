@@ -58,6 +58,67 @@ Operational guidance until the next phase:
 - keep building header backlog with CLI scrape-only commands first
 - do not enable assemble/recover/release stages until the scrape-only bootstrap has accumulated a meaningful backlog and remains stable over a longer soak window
 
+## Pass 1 Findings: Scrape
+
+Status: in progress, but the primary scrape-stage write path has now been reviewed enough to lock the first findings.
+
+### Service-layer findings
+
+- `scrape` is intentionally two-mode:
+  - `RunLatestOnceWithMetrics`
+  - `RunBackfillOnceWithMetrics`
+- both modes share the same provider validation, integrity preflight, run tracking, and concurrency/rotation scheduler
+- group fairness is currently provided by `reserveRunGroups`, which rotates groups across runs based on `MaxBatches`
+- current stage metrics are useful for throughput and fairness, but `articles_inserted` is operationally misleading: it reflects headers accepted into the insert path, not guaranteed newly unique `article_headers` rows
+
+### Store / DBO findings
+
+Hot scrape-owned store paths confirmed:
+
+- `StartScrapeRun`
+- `FinishScrapeRun`
+- `GetLatestCheckpoint`
+- `UpsertLatestCheckpoint`
+- `GetBackfillCheckpoint`
+- `GetBackfillCheckpointState`
+- `HasBackfillCutoffReachedForGroup`
+- `SetBackfillCheckpointState`
+- `UpsertBackfillCheckpoint`
+- `InsertArticleHeaders`
+
+Observed write/query shape:
+
+- scrape run tracking is a simple insert/update lifecycle in `scrape_runs`
+- checkpoint state is centralized in `scrape_checkpoints`
+- header ingest is a transactional batch that does:
+  - poster dimension ensure
+  - `article_headers` insert/resolve
+  - payload upsert into `article_header_ingest_payloads`
+- duplicate resolution in `InsertArticleHeaders` is handled batch-wise through:
+  - existing candidate lookup
+  - `INSERT ... ON CONFLICT DO NOTHING`
+  - resolve-by-ordinal of inserted vs existing rows
+- this is materially better than the old per-row re-probe shape, but it still means the “inserted” return value is really “processed/resolved” count
+
+### Schema / overlap findings
+
+- scrape owns more than `article_headers` and `article_header_ingest_payloads`; the audit and schema doc must explicitly include:
+  - `scrape_runs`
+  - `scrape_checkpoints`
+  - `posters` as a shared support dimension currently written during scrape ingest
+- scrape remains bootstrap-safe and should stay isolated from assemble/recovery/refresh by default
+- scrape-only overlap (`latest` + `backfill`) is currently validated as safe on the fresh DB
+
+### Changes landed from Pass 1
+
+- service-layer scrape sanitizer now strips embedded NUL bytes too, not just the repository-layer sanitizer
+- added service regression coverage proving NULs are removed before scrape hands headers to the repo
+
+### Remaining scrape-specific follow-up
+
+- decide whether `articles_inserted` should be renamed or supplemented with a more truthful metric name before stable release
+- decide whether poster resolution should remain part of scrape ingest or be reduced further during a later hot-path pass
+
 ## Audit Execution Order
 
 Audit stages in this exact order:
