@@ -482,6 +482,25 @@ func (r *Runner) ExecuteIndexerPurgeHeaderPayloads() {
 	appCtx.Logger.Info("indexer maintenance purge-header-payloads: purged_header_payloads=%d", purged)
 }
 
+func (r *Runner) ExecuteIndexerBackfillCrosspostGroups(batchSize, maxBatches int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer cross-post backfill requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.BackfillIndexerCrosspostGroups(ctx, batchSize, maxBatches)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance backfill-crosspost-groups failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance backfill-crosspost-groups: batches=%d source_headers=%d rows_upserted=%d last_article_id=%d",
+			out.BatchesProcessed,
+			out.SourceHeaders,
+			out.RowsUpserted,
+			out.LastArticleID,
+		)
+	}
+}
+
 func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
 	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
 	defer cleanup()

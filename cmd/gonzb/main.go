@@ -27,9 +27,11 @@ var (
 	inspectOnce     bool
 	enrichOnce      bool
 
-	indexerReclaimFull              bool
-	indexerReclaimCheck             bool
-	indexerIntegrityEnsureExtension bool
+	indexerReclaimFull                 bool
+	indexerReclaimCheck                bool
+	indexerIntegrityEnsureExtension    bool
+	indexerCrosspostBackfillBatchSize  int
+	indexerCrosspostBackfillMaxBatches int
 )
 
 var rootCmd = &cobra.Command{
@@ -215,6 +217,14 @@ var indexerMaintenancePurgeHeaderPayloadsCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenanceBackfillCrosspostGroupsCmd = &cobra.Command{
+	Use:   "backfill-crosspost-groups",
+	Short: "Backfill cross-post telemetry from existing article_header_ingest_payloads xref rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerBackfillCrosspostGroups(indexerCrosspostBackfillBatchSize, indexerCrosspostBackfillMaxBatches)
+	},
+}
+
 var indexerReclaimStorageCmd = &cobra.Command{
 	Use:   "reclaim-storage [table...]",
 	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
@@ -377,6 +387,8 @@ func init() {
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimCheck, "check", false, "Report current bytes for the allowlisted reclaim tables without running VACUUM")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
 	indexerMaintenanceCheckIntegrityCmd.Flags().BoolVar(&indexerIntegrityEnsureExtension, "ensure-extension", false, "Install the amcheck extension before running the integrity check")
+	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillBatchSize, "batch-size", 5000, "Number of article headers to process per batch")
+	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -397,6 +409,7 @@ func init() {
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceCheckIntegrityCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceReindexCriticalCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenancePurgeHeaderPayloadsCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceBackfillCrosspostGroupsCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)

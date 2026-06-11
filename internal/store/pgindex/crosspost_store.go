@@ -9,16 +9,23 @@ import (
 )
 
 type xrefGroupRef struct {
-	GroupName      string
-	ArticleNumber  int64
+	GroupName     string
+	ArticleNumber int64
 }
 
 type IndexerCrosspostPopularityItem struct {
-	GroupName                 string     `json:"group_name"`
-	ObservedArticleCount      int64      `json:"observed_article_count"`
-	DistinctMessageCount      int64      `json:"distinct_message_count"`
-	DistinctSourceGroupCount  int64      `json:"distinct_source_group_count"`
-	LastSeenAt                *time.Time `json:"last_seen_at,omitempty"`
+	GroupName                string     `json:"group_name"`
+	ObservedArticleCount     int64      `json:"observed_article_count"`
+	DistinctMessageCount     int64      `json:"distinct_message_count"`
+	DistinctSourceGroupCount int64      `json:"distinct_source_group_count"`
+	LastSeenAt               *time.Time `json:"last_seen_at,omitempty"`
+}
+
+type IndexerCrosspostBackfillResult struct {
+	BatchesProcessed int   `json:"batches_processed"`
+	SourceHeaders    int64 `json:"source_headers"`
+	RowsUpserted     int64 `json:"rows_upserted"`
+	LastArticleID    int64 `json:"last_article_id"`
 }
 
 func parseXrefGroupRefs(xref string) []xrefGroupRef {
@@ -87,10 +94,10 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		return nil
 	}
 	type row struct {
-		articleHeaderID      int64
-		messageID            string
-		observedGroupName    string
-		observedArticleNum   int64
+		articleHeaderID    int64
+		messageID          string
+		observedGroupName  string
+		observedArticleNum int64
 	}
 	rows := make([]row, 0, len(batch)*2)
 	seen := make(map[string]struct{}, len(batch)*2)
@@ -208,4 +215,105 @@ func (s *Store) GetIndexerCrosspostNewsgroupPopularity(ctx context.Context, limi
 		return nil, fmt.Errorf("iterate indexer crosspost popularity: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*IndexerCrosspostBackfillResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 5000
+	}
+	if maxBatches <= 0 {
+		maxBatches = 1
+	}
+
+	out := &IndexerCrosspostBackfillResult{}
+	var cursor int64
+	for range maxBatches {
+		headers, upserted, lastID, err := s.backfillIndexerCrosspostGroupsBatch(ctx, cursor, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		if headers == 0 {
+			break
+		}
+		out.BatchesProcessed++
+		out.SourceHeaders += headers
+		out.RowsUpserted += upserted
+		out.LastArticleID = lastID
+		cursor = lastID
+	}
+	return out, nil
+}
+
+func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterArticleID int64, batchSize int) (int64, int64, int64, error) {
+	var headers, rows, lastID int64
+	if err := s.db.QueryRowContext(ctx, `
+		WITH batch AS (
+			SELECT
+				ah.id AS article_header_id,
+				ah.provider_id,
+				ah.newsgroup_id AS source_newsgroup_id,
+				ah.message_id,
+				aip.xref
+			FROM article_headers ah
+			JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE ah.id > $1
+			  AND BTRIM(COALESCE(aip.xref, '')) <> ''
+			ORDER BY ah.id
+			LIMIT $2
+		),
+		exploded AS (
+			SELECT DISTINCT
+				b.article_header_id,
+				b.provider_id,
+				b.source_newsgroup_id,
+				b.message_id,
+				LOWER(BTRIM(SPLIT_PART(tok.token, ':', 1))) AS observed_group_name,
+				COALESCE(NULLIF(SPLIT_PART(tok.token, ':', 2), ''), '0')::bigint AS observed_article_number
+			FROM batch b
+			CROSS JOIN LATERAL regexp_split_to_table(
+				regexp_replace(b.xref, '^\s*Xref:\s*', '', 'i'),
+				E'\\s+'
+			) AS tok(token)
+			WHERE POSITION(':' IN tok.token) > 0
+			  AND BTRIM(SPLIT_PART(tok.token, ':', 1)) <> ''
+		),
+		ins AS (
+			INSERT INTO article_header_crosspost_groups (
+				article_header_id,
+				provider_id,
+				source_newsgroup_id,
+				message_id,
+				observed_group_name,
+				observed_article_number,
+				observed_at
+			)
+			SELECT
+				e.article_header_id,
+				e.provider_id,
+				e.source_newsgroup_id,
+				e.message_id,
+				e.observed_group_name,
+				e.observed_article_number,
+				NOW()
+			FROM exploded e
+			ON CONFLICT (article_header_id, observed_group_name) DO UPDATE
+			SET
+				message_id = EXCLUDED.message_id,
+				observed_article_number = EXCLUDED.observed_article_number,
+				observed_at = EXCLUDED.observed_at
+			RETURNING 1
+		)
+		SELECT
+			COALESCE((SELECT COUNT(*)::bigint FROM batch), 0),
+			COALESCE((SELECT COUNT(*)::bigint FROM ins), 0),
+			COALESCE((SELECT MAX(article_header_id)::bigint FROM batch), 0)`,
+		afterArticleID,
+		batchSize,
+	).Scan(&headers, &rows, &lastID); err != nil {
+		return 0, 0, 0, fmt.Errorf("backfill indexer crosspost groups batch: %w", err)
+	}
+	return headers, rows, lastID, nil
 }
