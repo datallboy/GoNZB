@@ -210,6 +210,14 @@ var indexerMaintenanceReindexCriticalCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenancePurgeHeaderPayloadsCmd = &cobra.Command{
+	Use:   "purge-header-payloads",
+	Short: "Manually purge aged article_header_ingest_payloads rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerPurgeHeaderPayloads()
+	},
+}
+
 var indexerReclaimStorageCmd = &cobra.Command{
 	Use:   "reclaim-storage [table...]",
 	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
@@ -392,6 +400,7 @@ func init() {
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceCheckIntegrityCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceReindexCriticalCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenancePurgeHeaderPayloadsCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
