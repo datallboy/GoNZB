@@ -227,6 +227,11 @@ Current landed behavior:
 - manual scrape runs still bypass the gate
 - `release_summary_refresh` is suppressed when ready release backlog is already deep enough for `release` to catch up
 - inspect stages are suppressed while core assemble/yEnc/refresh/release backlog is hot
+- NNTP-bound stage admission also uses live local saturation:
+  - `inspect_par2` yields first
+  - `scrape_backfill` yields next
+  - `scrape_latest` yields behind hot `recover_yenc`
+  - stage concurrency is still a hard operator cap; only stage admission is dynamic
 
 Current non-goal:
 

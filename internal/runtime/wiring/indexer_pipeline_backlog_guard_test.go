@@ -119,3 +119,24 @@ func TestPipelineBacklogGuardAllowsReleaseToKeepRunning(t *testing.T) {
 		t.Fatalf("expected release to stay allowed, got %+v", decision)
 	}
 }
+
+func TestPipelineBacklogGuardDefaultsToAllowedWhenNoBlockDecisionExists(t *testing.T) {
+	guard := &cachedPipelineBacklogGuard{
+		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
+			Indexing: &app.IndexingRuntimeSettings{
+				ReleaseSummaryRefresh: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 1000},
+				Release:               app.IndexingReleaseRuntimeSettings{Enabled: true, BatchSize: 200},
+			},
+		}},
+		repo:        fakePipelineBacklogReader{ready: 0},
+		lastResults: make(map[supervisor.StageName]supervisor.StageGateDecision),
+	}
+
+	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageReleaseSummaryRefresh}, "scheduled")
+	if err != nil {
+		t.Fatalf("allowStage returned error: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("expected release summary refresh to default allowed, got %+v", decision)
+	}
+}

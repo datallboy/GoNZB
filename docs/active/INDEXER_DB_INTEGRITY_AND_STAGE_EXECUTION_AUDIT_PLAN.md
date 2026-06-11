@@ -157,6 +157,14 @@ Additional landed admission gates:
     - yEnc hot backlog
     - release summary refresh queue
     - ready release candidates
+- NNTP traffic priority gate
+  - uses live local NNTP saturation in `serve`
+  - keeps stage `concurrency` as the operator-configured hard ceiling
+  - when the pool is hot, lower-priority NNTP stages yield first:
+    - `inspect_par2`
+    - `scrape_backfill`
+    - `scrape_latest`
+  - `recover_yenc` retains priority when it has meaningful hot backlog
 
 ### Deliberately deferred
 

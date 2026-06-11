@@ -74,8 +74,11 @@ func (g *cachedPipelineBacklogGuard) allowStage(ctx context.Context, stage super
 	g.mu.Lock()
 	g.lastCheck = time.Now()
 	g.lastResults = results
-	result := results[stage.Name]
+	result, ok := results[stage.Name]
 	g.mu.Unlock()
+	if !ok {
+		return supervisor.StageGateDecision{Allowed: true}, nil
+	}
 	return result, nil
 }
 

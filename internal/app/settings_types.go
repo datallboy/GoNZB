@@ -69,10 +69,11 @@ type DownloadRuntimeSettings struct {
 }
 
 type NNTPPoolRuntimeSettings struct {
-	IdleBorrowEnabled        bool `json:"idle_borrow_enabled"`
-	IndexerMaxPercent        int  `json:"indexer_max_percent"`
-	DownloaderReservePercent int  `json:"downloader_reserve_percent"`
-	DemandWindowSeconds      int  `json:"demand_window_seconds"`
+	IdleBorrowEnabled         bool `json:"idle_borrow_enabled"`
+	IndexerMaxPercent         int  `json:"indexer_max_percent"`
+	IndexerStageTargetPercent int  `json:"indexer_stage_target_percent"`
+	DownloaderReservePercent  int  `json:"downloader_reserve_percent"`
+	DemandWindowSeconds       int  `json:"demand_window_seconds"`
 }
 
 type IndexingStageRuntimeSettings struct {
