@@ -178,7 +178,7 @@ type UsenetIndexStore interface {
 	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
 	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
 	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
-	ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]pgindex.ReleasePurgeCandidate, error)
+	ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error)
 	PurgeArchivedReleaseSources(ctx context.Context, releaseID string) (*pgindex.ReleasePurgeResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error
@@ -224,6 +224,7 @@ type UsenetIndexStore interface {
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
+	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
 	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error)
@@ -244,15 +245,20 @@ type UsenetIndexStore interface {
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
 	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error
+	DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
+	ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
+	CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtension bool) (*pgindex.IndexerIntegrityReport, error)
+	ReindexCriticalIndexerIndexes(ctx context.Context) (*pgindex.IndexerIntegrityRepairResult, error)
 	DatabaseStorageStatus(ctx context.Context) (*pgindex.DatabaseStorageStatus, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	ListBinaryInspectionCandidatesWithOptions(ctx context.Context, stageName string, limit int, opts pgindex.BinaryInspectionCandidateOptions) ([]pgindex.BinaryInspectionCandidate, error)
 	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error

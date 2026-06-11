@@ -2,6 +2,10 @@ package scrape
 
 import (
 	"context"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,98 +55,6 @@ func TestRunBackfillRespectsUntilDateBeforeInsert(t *testing.T) {
 	}
 }
 
-type fakeScrapeRepo struct {
-	backfillCheckpoint        int64
-	latestCheckpoint          int64
-	insertedHeaders           []pgindex.ArticleHeader
-	cutoffReached             bool
-	backfillCheckpointUpdated bool
-	latestCheckpointUpdated   bool
-	latestCheckpointValue     int64
-	groupCutoffReached        bool
-}
-
-func (f *fakeScrapeRepo) EnsureProvider(context.Context, string, string) (int64, error) {
-	return 1, nil
-}
-
-func (f *fakeScrapeRepo) EnsureNewsgroup(context.Context, string) (int64, error) {
-	return 1, nil
-}
-
-func (f *fakeScrapeRepo) StartScrapeRun(context.Context, int64) (int64, error) {
-	return 1, nil
-}
-
-func (f *fakeScrapeRepo) FinishScrapeRun(context.Context, int64, string, string) error {
-	return nil
-}
-
-func (f *fakeScrapeRepo) GetLatestCheckpoint(context.Context, int64, int64) (int64, error) {
-	return f.latestCheckpoint, nil
-}
-
-func (f *fakeScrapeRepo) UpsertLatestCheckpoint(_ context.Context, _ int64, _ int64, lastArticleNumber int64) error {
-	f.latestCheckpointUpdated = true
-	f.latestCheckpointValue = lastArticleNumber
-	return nil
-}
-
-func (f *fakeScrapeRepo) GetBackfillCheckpoint(context.Context, int64, int64) (int64, error) {
-	return f.backfillCheckpoint, nil
-}
-
-func (f *fakeScrapeRepo) UpsertBackfillCheckpoint(context.Context, int64, int64, int64) error {
-	f.backfillCheckpointUpdated = true
-	return nil
-}
-
-func (f *fakeScrapeRepo) GetBackfillCheckpointState(context.Context, int64, int64) (*pgindex.BackfillCheckpointState, error) {
-	return nil, nil
-}
-
-func (f *fakeScrapeRepo) HasBackfillCutoffReachedForGroup(context.Context, int64, time.Time) (bool, error) {
-	return f.groupCutoffReached, nil
-}
-
-func (f *fakeScrapeRepo) SetBackfillCheckpointState(_ context.Context, _ int64, _ int64, _ *time.Time, cutoffReached bool, _ string) error {
-	f.cutoffReached = cutoffReached
-	return nil
-}
-
-func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, _ int64, _ int64, headers []pgindex.ArticleHeader) (int64, error) {
-	f.insertedHeaders = append(f.insertedHeaders, headers...)
-	return int64(len(headers)), nil
-}
-
-type fakeScrapeProvider struct {
-	stats   GroupStats
-	headers []OverviewHeader
-	xoverFn func(context.Context, string, int64, int64) ([]OverviewHeader, error)
-}
-
-func (f fakeScrapeProvider) ID() string {
-	return "fake"
-}
-
-func (f fakeScrapeProvider) GroupStats(context.Context, string) (GroupStats, error) {
-	return f.stats, nil
-}
-
-func (f fakeScrapeProvider) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
-	if f.xoverFn != nil {
-		return f.xoverFn(ctx, group, from, to)
-	}
-	return append([]OverviewHeader(nil), f.headers...), nil
-}
-
-type testScrapeLogger struct{}
-
-func (testScrapeLogger) Debug(string, ...interface{}) {}
-func (testScrapeLogger) Info(string, ...interface{})  {}
-func (testScrapeLogger) Warn(string, ...interface{})  {}
-func (testScrapeLogger) Error(string, ...interface{}) {}
-
 func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) {
 	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	repo := &fakeScrapeRepo{
@@ -176,6 +88,32 @@ func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) 
 	}
 	if got := metrics["groups_with_work"]; got != 0 {
 		t.Fatalf("expected groups_with_work=0, got %+v", got)
+	}
+}
+
+func TestRunLatestOnceFailsWhenCriticalIndexIntegrityFails(t *testing.T) {
+	svc := NewService(&fakeScrapeRepo{
+		integrityReport: &pgindex.IndexerIntegrityReport{
+			AmcheckAvailable: true,
+			Checks: []pgindex.IndexerIntegrityCheck{{
+				Relation:   "public.article_headers_newsgroup_id_message_id_key",
+				MetadataOK: true,
+				AmcheckRan: true,
+				OK:         false,
+				Detail:     "btree corruption detected",
+			}},
+		},
+	}, fakeScrapeProvider{}, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+	})
+
+	_, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err == nil {
+		t.Fatal("expected integrity failure")
+	}
+	if !strings.Contains(err.Error(), "critical ingest index integrity failed") {
+		t.Fatalf("expected integrity failure error, got %v", err)
 	}
 }
 
@@ -221,3 +159,252 @@ func TestRunLatestAdvancesSingleBatchPerRun(t *testing.T) {
 		t.Fatalf("expected articles_inserted=10, got %+v", got)
 	}
 }
+
+func TestRunLatestRotatesAcrossGroupsByRunBudget(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	var mu sync.Mutex
+	seen := make([]string, 0, 3)
+	provider := fakeScrapeProvider{
+		statsByGroup: map[string]GroupStats{
+			"alt.one":   {Low: 1, High: 5},
+			"alt.two":   {Low: 1, High: 5},
+			"alt.three": {Low: 1, High: 5},
+		},
+		xoverFn: func(_ context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+			mu.Lock()
+			seen = append(seen, group)
+			mu.Unlock()
+			return []OverviewHeader{{ArticleNumber: from, MessageID: "<msg>"}}, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups:  []string{"alt.one", "alt.two", "alt.three"},
+		BatchSize:   1,
+		Concurrency: 1,
+		MaxBatches:  1,
+	})
+
+	for range 3 {
+		if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+			t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+		}
+	}
+
+	if !slices.Equal(seen, []string{"alt.one", "alt.two", "alt.three"}) {
+		t.Fatalf("expected round-robin order [alt.one alt.two alt.three], got %+v", seen)
+	}
+}
+
+func TestRunLatestUsesConcurrentWorkersWithinBudget(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	var current atomic.Int32
+	var maxInFlight atomic.Int32
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	provider := fakeScrapeProvider{
+		statsByGroup: map[string]GroupStats{
+			"alt.one":   {Low: 1, High: 5},
+			"alt.two":   {Low: 1, High: 5},
+			"alt.three": {Low: 1, High: 5},
+		},
+		xoverFn: func(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+			inFlight := current.Add(1)
+			for {
+				prev := maxInFlight.Load()
+				if inFlight <= prev || maxInFlight.CompareAndSwap(prev, inFlight) {
+					break
+				}
+			}
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				current.Add(-1)
+				return nil, ctx.Err()
+			}
+			current.Add(-1)
+			return []OverviewHeader{{ArticleNumber: from, MessageID: "<msg>"}}, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups:  []string{"alt.one", "alt.two", "alt.three"},
+		BatchSize:   1,
+		Concurrency: 2,
+		MaxBatches:  3,
+	})
+
+	done := make(chan map[string]any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		done <- metrics
+	}()
+
+	<-started
+	<-started
+	close(release)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	case metrics := <-done:
+		if got := metrics["workers_used"]; got != 2 {
+			t.Fatalf("expected workers_used=2, got %+v", got)
+		}
+		if got := metrics["groups_scheduled"]; got != 3 {
+			t.Fatalf("expected groups_scheduled=3, got %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for concurrent scrape run")
+	}
+
+	if maxInFlight.Load() < 2 {
+		t.Fatalf("expected at least 2 concurrent XOVER calls, got %d", maxInFlight.Load())
+	}
+}
+
+type fakeScrapeRepo struct {
+	backfillCheckpoint        int64
+	latestCheckpoint          int64
+	insertedHeaders           []pgindex.ArticleHeader
+	integrityReport           *pgindex.IndexerIntegrityReport
+	integrityErr              error
+	cutoffReached             bool
+	backfillCheckpointUpdated bool
+	latestCheckpointUpdated   bool
+	latestCheckpointValue     int64
+	groupCutoffReached        bool
+	nextNewsgroupID           int64
+	groupNamesByID            map[int64]string
+	latestCheckpointByGroup   map[string]int64
+	backfillCheckpointByGroup map[string]int64
+}
+
+func (f *fakeScrapeRepo) EnsureProvider(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
+
+func (f *fakeScrapeRepo) CheckCriticalIndexerIntegrity(context.Context, bool) (*pgindex.IndexerIntegrityReport, error) {
+	return f.integrityReport, f.integrityErr
+}
+
+func (f *fakeScrapeRepo) EnsureNewsgroup(_ context.Context, group string) (int64, error) {
+	if f.groupNamesByID == nil {
+		f.groupNamesByID = map[int64]string{}
+	}
+	for id, existing := range f.groupNamesByID {
+		if existing == group {
+			return id, nil
+		}
+	}
+	f.nextNewsgroupID++
+	if f.nextNewsgroupID <= 0 {
+		f.nextNewsgroupID = 1
+	}
+	f.groupNamesByID[f.nextNewsgroupID] = group
+	return f.nextNewsgroupID, nil
+}
+
+func (f *fakeScrapeRepo) StartScrapeRun(context.Context, int64) (int64, error) {
+	return 1, nil
+}
+
+func (f *fakeScrapeRepo) FinishScrapeRun(context.Context, int64, string, string) error {
+	return nil
+}
+
+func (f *fakeScrapeRepo) GetLatestCheckpoint(_ context.Context, _ int64, newsgroupID int64) (int64, error) {
+	if len(f.latestCheckpointByGroup) == 0 {
+		return f.latestCheckpoint, nil
+	}
+	return f.latestCheckpointByGroup[f.groupName(newsgroupID)], nil
+}
+
+func (f *fakeScrapeRepo) UpsertLatestCheckpoint(_ context.Context, _ int64, newsgroupID int64, lastArticleNumber int64) error {
+	f.latestCheckpointUpdated = true
+	f.latestCheckpointValue = lastArticleNumber
+	if f.latestCheckpointByGroup == nil {
+		f.latestCheckpointByGroup = map[string]int64{}
+	}
+	f.latestCheckpointByGroup[f.groupName(newsgroupID)] = lastArticleNumber
+	return nil
+}
+
+func (f *fakeScrapeRepo) GetBackfillCheckpoint(_ context.Context, _ int64, newsgroupID int64) (int64, error) {
+	if len(f.backfillCheckpointByGroup) == 0 {
+		return f.backfillCheckpoint, nil
+	}
+	return f.backfillCheckpointByGroup[f.groupName(newsgroupID)], nil
+}
+
+func (f *fakeScrapeRepo) UpsertBackfillCheckpoint(_ context.Context, _ int64, newsgroupID int64, backfillArticleNumber int64) error {
+	f.backfillCheckpointUpdated = true
+	if f.backfillCheckpointByGroup == nil {
+		f.backfillCheckpointByGroup = map[string]int64{}
+	}
+	f.backfillCheckpointByGroup[f.groupName(newsgroupID)] = backfillArticleNumber
+	return nil
+}
+
+func (f *fakeScrapeRepo) GetBackfillCheckpointState(context.Context, int64, int64) (*pgindex.BackfillCheckpointState, error) {
+	return nil, nil
+}
+
+func (f *fakeScrapeRepo) HasBackfillCutoffReachedForGroup(context.Context, int64, time.Time) (bool, error) {
+	return f.groupCutoffReached, nil
+}
+
+func (f *fakeScrapeRepo) SetBackfillCheckpointState(_ context.Context, _ int64, _ int64, _ *time.Time, cutoffReached bool, _ string) error {
+	f.cutoffReached = cutoffReached
+	return nil
+}
+
+func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, _ int64, _ int64, headers []pgindex.ArticleHeader) (int64, error) {
+	f.insertedHeaders = append(f.insertedHeaders, headers...)
+	return int64(len(headers)), nil
+}
+
+func (f *fakeScrapeRepo) groupName(newsgroupID int64) string {
+	if f.groupNamesByID == nil {
+		return ""
+	}
+	return f.groupNamesByID[newsgroupID]
+}
+
+type fakeScrapeProvider struct {
+	stats        GroupStats
+	statsByGroup map[string]GroupStats
+	headers      []OverviewHeader
+	xoverFn      func(context.Context, string, int64, int64) ([]OverviewHeader, error)
+}
+
+func (f fakeScrapeProvider) ID() string {
+	return "fake"
+}
+
+func (f fakeScrapeProvider) GroupStats(_ context.Context, group string) (GroupStats, error) {
+	if f.statsByGroup != nil {
+		if stats, ok := f.statsByGroup[group]; ok {
+			return stats, nil
+		}
+	}
+	return f.stats, nil
+}
+
+func (f fakeScrapeProvider) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+	if f.xoverFn != nil {
+		return f.xoverFn(ctx, group, from, to)
+	}
+	return append([]OverviewHeader(nil), f.headers...), nil
+}
+
+type testScrapeLogger struct{}
+
+func (testScrapeLogger) Debug(string, ...interface{}) {}
+func (testScrapeLogger) Info(string, ...interface{})  {}
+func (testScrapeLogger) Warn(string, ...interface{})  {}
+func (testScrapeLogger) Error(string, ...interface{}) {}

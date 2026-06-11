@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -21,6 +23,7 @@ type logger interface {
 type repository interface {
 	EnsureProvider(ctx context.Context, providerKey, displayName string) (int64, error)
 	EnsureNewsgroup(ctx context.Context, groupName string) (int64, error)
+	CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtension bool) (*pgindex.IndexerIntegrityReport, error)
 
 	StartScrapeRun(ctx context.Context, providerID int64) (int64, error)
 	FinishScrapeRun(ctx context.Context, runID int64, status, errorText string) error
@@ -62,22 +65,39 @@ type OverviewHeader struct {
 type Options struct {
 	Newsgroups               []string
 	BatchSize                int64
+	Concurrency              int
+	MaxBatches               int
 	BackfillUntilDateByGroup map[string]time.Time
 }
 
 type Service struct {
-	repo     repository
-	provider provider
-	log      logger
-	opts     Options
+	repo           repository
+	provider       provider
+	log            logger
+	opts           Options
+	mu             sync.Mutex
+	nextGroupIndex int
 }
 
 type runMetrics struct {
 	Mode               string
 	BatchSize          int64
 	GroupsTotal        int
+	GroupsScheduled    int
 	GroupsProcessed    int
 	GroupsWithWork     int
+	WorkersUsed        int
+	RangesFetched      int
+	ArticleHeadersSeen int64
+	ArticlesInserted   int64
+	CutoffFiltered     int64
+	CheckpointUpdates  int
+	RotationStartIndex int
+	RotationNextIndex  int
+}
+
+type groupRunResult struct {
+	HadWork            bool
 	RangesFetched      int
 	ArticleHeadersSeen int64
 	ArticlesInserted   int64
@@ -85,9 +105,20 @@ type runMetrics struct {
 	CheckpointUpdates  int
 }
 
+type groupRunOutcome struct {
+	result groupRunResult
+	err    error
+}
+
 func NewService(repo repository, p provider, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 5000
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 1
+	}
+	if opts.MaxBatches <= 0 {
+		opts.MaxBatches = opts.Concurrency
 	}
 
 	return &Service{
@@ -133,11 +164,25 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	if s.repo == nil {
 		return nil, fmt.Errorf("scrape repo is required")
 	}
+	report, err := s.repo.CheckCriticalIndexerIntegrity(ctx, false)
+	if err != nil {
+		return nil, fmt.Errorf("check critical ingest index integrity: %w", err)
+	}
+	if report != nil {
+		if report.HasFailures() {
+			return nil, fmt.Errorf("critical ingest index integrity failed: %s", report.FailureSummary())
+		}
+		if !report.AmcheckAvailable && s.log != nil {
+			s.log.Warn("scrape integrity preflight: amcheck unavailable, proceeding with metadata-only checks")
+		}
+	}
+
+	groups := s.effectiveGroups()
+	if len(groups) == 0 {
+		return (&runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}).toMap(), nil
+	}
 	if s.provider == nil {
 		return nil, fmt.Errorf("scrape provider is required")
-	}
-	if len(s.opts.Newsgroups) == 0 {
-		return nil, fmt.Errorf("at least one newsgroup is required")
 	}
 
 	providerKey := strings.TrimSpace(s.provider.ID())
@@ -156,7 +201,7 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	}
 
 	metrics := &runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}
-	runErr := s.runGroups(ctx, providerID, mode, metrics)
+	runErr := s.runGroups(ctx, providerID, mode, groups, metrics)
 
 	status := "completed"
 	errText := ""
@@ -175,50 +220,102 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	return metrics.toMap(), runErr
 }
 
-func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, metrics *runMetrics) error {
-	metrics.GroupsTotal = len(s.opts.Newsgroups)
-	for _, g := range s.opts.Newsgroups {
-		group := strings.TrimSpace(g)
-		if group == "" {
-			continue
-		}
+func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, groups []string, metrics *runMetrics) error {
+	metrics.GroupsTotal = len(groups)
+	scheduled, startIndex, nextIndex := s.reserveRunGroups(groups)
+	metrics.GroupsScheduled = len(scheduled)
+	metrics.RotationStartIndex = startIndex
+	metrics.RotationNextIndex = nextIndex
+	if len(scheduled) == 0 {
+		return nil
+	}
+
+	workerCount := s.opts.Concurrency
+	if workerCount > len(scheduled) {
+		workerCount = len(scheduled)
+	}
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	metrics.WorkersUsed = workerCount
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan string, len(scheduled))
+	outcomes := make(chan groupRunOutcome, len(scheduled))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for group := range jobs {
+				result, err := s.runGroup(runCtx, providerID, mode, group)
+				if err != nil {
+					cancel()
+				}
+				outcomes <- groupRunOutcome{result: result, err: err}
+			}
+		}()
+	}
+
+	for _, group := range scheduled {
+		jobs <- group
+	}
+	close(jobs)
+
+	var firstErr error
+	for range scheduled {
+		outcome := <-outcomes
 		metrics.GroupsProcessed++
-
-		var err error
-		switch mode {
-		case "latest":
-			err = s.runLatestGroup(ctx, providerID, group, metrics)
-		case "backfill":
-			err = s.runBackfillGroup(ctx, providerID, group, metrics)
-		default:
-			err = fmt.Errorf("unsupported scrape mode %q", mode)
+		if outcome.result.HadWork {
+			metrics.GroupsWithWork++
 		}
+		metrics.RangesFetched += outcome.result.RangesFetched
+		metrics.ArticleHeadersSeen += outcome.result.ArticleHeadersSeen
+		metrics.ArticlesInserted += outcome.result.ArticlesInserted
+		metrics.CutoffFiltered += outcome.result.CutoffFiltered
+		metrics.CheckpointUpdates += outcome.result.CheckpointUpdates
 
-		if err != nil {
-			return err
+		if outcome.err != nil && !isContextCancellation(outcome.err) && firstErr == nil {
+			firstErr = outcome.err
 		}
 	}
-	return nil
+
+	wg.Wait()
+	return firstErr
 }
 
-func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string, metrics *runMetrics) error {
+func (s *Service) runGroup(ctx context.Context, providerID int64, mode, group string) (groupRunResult, error) {
+	switch mode {
+	case "latest":
+		return s.runLatestGroup(ctx, providerID, group)
+	case "backfill":
+		return s.runBackfillGroup(ctx, providerID, group)
+	default:
+		return groupRunResult{}, fmt.Errorf("unsupported scrape mode %q", mode)
+	}
+}
+
+func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string) (groupRunResult, error) {
 	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
 	if err != nil {
-		return fmt.Errorf("ensure newsgroup %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("ensure newsgroup %s: %w", group, err)
 	}
 
 	stats, err := s.provider.GroupStats(ctx, group)
 	if err != nil {
-		return fmt.Errorf("group stats %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("group stats %s: %w", group, err)
 	}
 	if stats.High <= 0 {
 		s.log.Warn("scrape latest: group %s has no articles yet", group)
-		return nil
+		return groupRunResult{}, nil
 	}
 
 	last, err := s.repo.GetLatestCheckpoint(ctx, providerID, newsgroupID)
 	if err != nil {
-		return fmt.Errorf("get latest checkpoint %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("get latest checkpoint %s: %w", group, err)
 	}
 
 	// cold start begins near the head, not the oldest retained article.
@@ -231,9 +328,8 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	}
 	if start > stats.High {
 		s.log.Debug("scrape latest: group %s up-to-date at %d", group, last)
-		return nil
+		return groupRunResult{}, nil
 	}
-	metrics.GroupsWithWork++
 
 	s.log.Info("scrape latest: group=%s start=%d high=%d batch=%d", group, start, stats.High, s.opts.BatchSize)
 
@@ -244,65 +340,67 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 
 	headers, inserted, _, _, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil)
 	if err != nil {
-		return err
+		return groupRunResult{}, err
 	}
-	metrics.RangesFetched++
-	metrics.ArticleHeadersSeen += int64(len(headers))
-	metrics.ArticlesInserted += inserted
-	metrics.CheckpointUpdates++
 
 	if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
-		return fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
+		return groupRunResult{}, fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
 	}
 
 	s.log.Info("scrape latest: group=%s range=%d-%d inserted=%d", group, start, to, inserted)
 
-	return nil
+	return groupRunResult{
+		HadWork:            true,
+		RangesFetched:      1,
+		ArticleHeadersSeen: int64(len(headers)),
+		ArticlesInserted:   inserted,
+		CheckpointUpdates:  1,
+	}, nil
 }
 
-func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group string, metrics *runMetrics) error {
+func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group string) (groupRunResult, error) {
 	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
 	if err != nil {
-		return fmt.Errorf("ensure newsgroup %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("ensure newsgroup %s: %w", group, err)
 	}
 
 	stats, err := s.provider.GroupStats(ctx, group)
 	if err != nil {
-		return fmt.Errorf("group stats %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("group stats %s: %w", group, err)
 	}
 	if stats.High <= 0 {
 		s.log.Warn("scrape backfill: group %s has no articles yet", group)
-		return nil
+		return groupRunResult{}, nil
 	}
 
 	latestCursor, err := s.repo.GetLatestCheckpoint(ctx, providerID, newsgroupID)
 	if err != nil {
-		return fmt.Errorf("get latest checkpoint %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("get latest checkpoint %s: %w", group, err)
 	}
 
 	backfillCursor, err := s.repo.GetBackfillCheckpoint(ctx, providerID, newsgroupID)
 	if err != nil {
-		return fmt.Errorf("get backfill checkpoint %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("get backfill checkpoint %s: %w", group, err)
 	}
 
 	cutoffDate, hasCutoff := s.opts.BackfillUntilDateByGroup[group]
 	state, err := s.repo.GetBackfillCheckpointState(ctx, providerID, newsgroupID)
 	if err != nil {
-		return fmt.Errorf("get backfill checkpoint state %s: %w", group, err)
+		return groupRunResult{}, fmt.Errorf("get backfill checkpoint state %s: %w", group, err)
 	}
 	if hasCutoff {
 		cutoff := cutoffDate.UTC()
 		reachedForGroup, err := s.repo.HasBackfillCutoffReachedForGroup(ctx, newsgroupID, cutoff)
 		if err != nil {
-			return fmt.Errorf("check backfill cutoff state %s: %w", group, err)
+			return groupRunResult{}, fmt.Errorf("check backfill cutoff state %s: %w", group, err)
 		}
 		if reachedForGroup {
 			s.log.Debug("scrape backfill: group %s already reached cutoff %s for another provider", group, cutoff.Format("2006-01-02"))
-			return nil
+			return groupRunResult{}, nil
 		}
 		if state == nil || state.UntilDate == nil || !state.UntilDate.Equal(cutoff) {
 			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, &cutoff, false, ""); err != nil {
-				return fmt.Errorf("set backfill cutoff state %s: %w", group, err)
+				return groupRunResult{}, fmt.Errorf("set backfill cutoff state %s: %w", group, err)
 			}
 			state = &pgindex.BackfillCheckpointState{
 				ArticleNumber: backfillCursor,
@@ -310,11 +408,11 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 			}
 		} else if state.CutoffReached {
 			s.log.Debug("scrape backfill: group %s already reached cutoff %s", group, cutoff.Format("2006-01-02"))
-			return nil
+			return groupRunResult{}, nil
 		}
 	} else if state != nil && (state.UntilDate != nil || state.CutoffReached || strings.TrimSpace(state.StoppedReason) != "") {
 		if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, nil, false, ""); err != nil {
-			return fmt.Errorf("clear backfill cutoff state %s: %w", group, err)
+			return groupRunResult{}, fmt.Errorf("clear backfill cutoff state %s: %w", group, err)
 		}
 	}
 
@@ -334,9 +432,8 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 	if end < stats.Low {
 		s.log.Debug("scrape backfill: group %s completed at %d", group, end)
-		return nil
+		return groupRunResult{}, nil
 	}
-	metrics.GroupsWithWork++
 
 	start := end - s.opts.BatchSize + 1
 	if start < stats.Low {
@@ -352,20 +449,22 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 	headers, inserted, oldestSeen, cutoffFiltered, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff)
 	if err != nil {
-		return err
+		return groupRunResult{}, err
 	}
-	metrics.RangesFetched++
-	metrics.ArticleHeadersSeen += int64(len(headers))
-	metrics.ArticlesInserted += inserted
-	metrics.CutoffFiltered += int64(cutoffFiltered)
 
 	if hasCutoff {
 		if oldestSeen != nil && !oldestSeen.After(cutoffDate.UTC()) {
 			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, ptrTime(cutoffDate.UTC()), true, "until_date_reached"); err != nil {
-				return fmt.Errorf("mark backfill cutoff reached %s: %w", group, err)
+				return groupRunResult{}, fmt.Errorf("mark backfill cutoff reached %s: %w", group, err)
 			}
 			s.log.Info("scrape backfill: group=%s reached cutoff=%s oldest=%s inserted=%d", group, cutoffDate.UTC().Format(time.RFC3339), oldestSeen.Format(time.RFC3339), inserted)
-			return nil
+			return groupRunResult{
+				HadWork:            true,
+				RangesFetched:      1,
+				ArticleHeadersSeen: int64(len(headers)),
+				ArticlesInserted:   inserted,
+				CutoffFiltered:     int64(cutoffFiltered),
+			}, nil
 		}
 	}
 
@@ -375,12 +474,18 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 
 	if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, nextCursor); err != nil {
-		return fmt.Errorf("upsert backfill checkpoint %s=%d: %w", group, nextCursor, err)
+		return groupRunResult{}, fmt.Errorf("upsert backfill checkpoint %s=%d: %w", group, nextCursor, err)
 	}
-	metrics.CheckpointUpdates++
 
 	s.log.Info("scrape backfill: group=%s range=%d-%d inserted=%d next=%d", group, start, end, inserted, nextCursor)
-	return nil
+	return groupRunResult{
+		HadWork:            true,
+		RangesFetched:      1,
+		ArticleHeadersSeen: int64(len(headers)),
+		ArticlesInserted:   inserted,
+		CutoffFiltered:     int64(cutoffFiltered),
+		CheckpointUpdates:  1,
+	}, nil
 }
 
 func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time) ([]pgindex.ArticleHeader, int64, *time.Time, int, error) {
@@ -442,6 +547,52 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 	return headers, inserted, oldestSeen, cutoffFiltered, nil
 }
 
+func (s *Service) effectiveGroups() []string {
+	if len(s.opts.Newsgroups) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.opts.Newsgroups))
+	for _, raw := range s.opts.Newsgroups {
+		group := strings.TrimSpace(raw)
+		if group == "" || slices.Contains(out, group) {
+			continue
+		}
+		out = append(out, group)
+	}
+	return out
+}
+
+func (s *Service) reserveRunGroups(groups []string) ([]string, int, int) {
+	if len(groups) == 0 {
+		return nil, 0, 0
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	start := s.nextGroupIndex % len(groups)
+	if start < 0 {
+		start = 0
+	}
+	budget := s.opts.MaxBatches
+	if budget <= 0 {
+		budget = s.opts.Concurrency
+	}
+	if budget <= 0 {
+		budget = 1
+	}
+	if budget > len(groups) {
+		budget = len(groups)
+	}
+
+	scheduled := make([]string, 0, budget)
+	for i := 0; i < budget; i++ {
+		scheduled = append(scheduled, groups[(start+i)%len(groups)])
+	}
+	s.nextGroupIndex = (start + budget) % len(groups)
+	return scheduled, start, s.nextGroupIndex
+}
+
 func (m *runMetrics) toMap() map[string]any {
 	if m == nil {
 		return map[string]any{}
@@ -449,14 +600,18 @@ func (m *runMetrics) toMap() map[string]any {
 	return map[string]any{
 		"mode":                 m.Mode,
 		"groups_total":         m.GroupsTotal,
+		"groups_scheduled":     m.GroupsScheduled,
 		"groups_processed":     m.GroupsProcessed,
 		"groups_with_work":     m.GroupsWithWork,
+		"workers_used":         m.WorkersUsed,
 		"ranges_fetched":       m.RangesFetched,
 		"article_headers_seen": m.ArticleHeadersSeen,
 		"articles_inserted":    m.ArticlesInserted,
 		"cutoff_filtered":      m.CutoffFiltered,
 		"checkpoint_updates":   m.CheckpointUpdates,
 		"batch_size":           m.BatchSize,
+		"rotation_start_index": m.RotationStartIndex,
+		"rotation_next_index":  m.RotationNextIndex,
 	}
 }
 
@@ -474,4 +629,8 @@ func sanitizeScrapeUTF8(s string) string {
 		return s
 	}
 	return string(bytes.ToValidUTF8([]byte(s), []byte{}))
+}
+
+func isContextCancellation(err error) bool {
+	return err == context.Canceled || err == context.DeadlineExceeded
 }

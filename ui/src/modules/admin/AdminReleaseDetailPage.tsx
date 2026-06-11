@@ -101,6 +101,7 @@ export function AdminReleaseDetailPage() {
   }
 
   const release = data.release.release
+  const diagnostics = data.release.diagnostics
   const subtitleLanguages = release.subtitle_languages ?? []
   const mediaTags = release.media_tags ?? []
 
@@ -126,6 +127,7 @@ export function AdminReleaseDetailPage() {
       <div className="dashboard-grid">
         <div className="page-card">
           <h2 className="section-title">Release Summary</h2>
+          {diagnostics.readiness_note ? <div className="banner">{diagnostics.readiness_note}</div> : null}
           <dl className="detail-grid">
             <div>
               <dt>Completion</dt>
@@ -158,6 +160,18 @@ export function AdminReleaseDetailPage() {
             <div>
               <dt>NZB Cache</dt>
               <dd>{release.nzb_generation_status || 'pending'}</dd>
+            </div>
+            <div>
+              <dt>Payload Complete</dt>
+              <dd>{diagnostics.payload_complete ? 'Yes' : 'No'}</dd>
+            </div>
+            <div>
+              <dt>Expected Files Complete</dt>
+              <dd>{diagnostics.expected_file_count_complete ? 'Yes' : 'No'}</dd>
+            </div>
+            <div>
+              <dt>Missing Expected Files</dt>
+              <dd>{diagnostics.missing_expected_file_count}</dd>
             </div>
             <div>
               <dt>Metadata Updated</dt>

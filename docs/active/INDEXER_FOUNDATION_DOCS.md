@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-06-03
+Snapshot date: 2026-06-04
 
 This is an internal execution and planning index for ongoing indexer work. It is not intended to be an end-user documentation entrypoint.
 
@@ -35,21 +35,13 @@ Use for:
 - deciding which docs should drive execution right now
 - keeping the current sprint pointed at the right workstream
 
-### `docs/active/INDEXER_STAGE_OWNERSHIP_AND_SCHEMA_BOUNDARIES_PLAN.md`
+### `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
 
 Use for:
 
-- the active execution plan for enforcing stage ownership and table boundaries
-- removing remaining cross-stage write-backs and tightening repository/query ownership
-- finishing the durable release-catalog and purge-boundary follow-up after the archival sprint
-
-### `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
-
-Use for:
-
-- the implemented architecture and closeout reference for local-indexer NZB archival and source purge
-- archival-state, durable-catalog, and purge-lineage decisions that still inform current schema work
-- any remaining operational validation or cleanup tied directly to the archival rollout
+- the active execution plan for the database-integrity incident follow-up
+- the hot-query / DBO audit order before a stable release
+- the stage execution model, overlap rules, and fresh-database bootstrap profile
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
@@ -86,6 +78,22 @@ Use for:
 - recovered-file-set candidate shape, groupless acking, and multi-group `release_newsgroups` behavior
 - NZB export provenance validation and downloader yEnc filename-adoption defer rationale
 
+### `docs/archive/completed/indexer/2026-06-11-indexer-runtime-and-recovery/INDEXER_SCRAPE_NEWSGROUP_MANAGEMENT_SPRINT.md`
+
+Use for:
+
+- the completed scrape/newsgroup runtime management sprint
+- persistent wildcard rules, provider inventory scans, and dedicated scrape admin workflow history
+- the transition away from direct editing assumptions around the flat `indexing.newsgroups` surface
+
+### `docs/archive/completed/indexer/2026-06-11-indexer-runtime-and-recovery/INDEXER_RECOVERABLE_BACKLOG_AND_YENC_DRAIN_PLAN.md`
+
+Use for:
+
+- the completed yEnc drain, release-ready queue, and incident timeline history
+- prior release-summary-refresh and recover-yEnc tuning findings
+- the captured evidence from the database integrity incident before the clean-slate rebuild
+
 ### `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 
 Use for:
@@ -115,15 +123,17 @@ Use for:
 
 The just-completed focus was NZB archival/source purge and the remaining serve-mode contention hardening after the earlier database-growth trim sprint.
 
-Primary active workstream:
+Primary active workstreams:
 
-- stage ownership and schema-boundary enforcement for the remaining serve-mode contention and long-term maintainability work
+- database-integrity recovery and incident hardening
+- hot-query / DBO audit of ingest, recovery, release-summary-refresh, and maintenance paths
+- stage execution model hardening so concurrent stages remain safe and reviewable
 
 Primary active goals:
 
 - keep each hot table owned by one canonical stage wherever practical
-- remove remaining cross-stage write-backs into shared derived or upstream fact tables
-- finish the durable release-catalog boundary so purge can stay aggressive without breaking release detail or enrichment
+- preserve concurrent stages only where overlap is proven safe for the underlying hot tables and indexes
+- isolate `scrape_*` during fresh-database bootstrap and integrity recovery
 - keep purge as the explicit terminal cleanup owner for source lineage, not a general-purpose downstream mutator
 
 Closeout/reference storage-reduction workstream:

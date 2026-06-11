@@ -19,7 +19,7 @@ Related reference docs:
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 - `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
-- `docs/active/INDEXER_SCRAPE_NEWSGROUP_MANAGEMENT_SPRINT.md`
+- `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
 
 ## How To Use This Doc
 
@@ -136,6 +136,74 @@ Policy implication:
 - upstream reads are acceptable
 - shared row families should not have multiple heavy writers
 - if a stage needs to signal downstream work, prefer a queue row over mutating upstream facts
+
+## Execution Model Guidance
+
+The preferred long-term runtime model remains concurrent stages with strict ownership boundaries and explicit overlap rules.
+
+We do not assume that one global sequential pipeline is the target model. Instead:
+
+- concurrent stages are allowed when they write different hot row/index families
+- high-risk overlapping writers should be gated or staggered through runtime policy
+- `scrape_*` is the highest-risk canonical writer and should be isolated during fresh-database bootstrap or integrity recovery
+
+### Runtime profiles
+
+#### Bootstrap / fresh database
+
+Allowed:
+
+- `scrape_latest`
+- `scrape_backfill`
+
+Held back:
+
+- `assemble_*`
+- `recover_yenc`
+- `release_summary_refresh`
+- `release`
+- inspect stages
+- archive / NZB tail stages
+
+#### Build / regroup
+
+Allowed:
+
+- `assemble_lane_a`
+- `assemble_lane_b`
+- `recover_yenc`
+- `release_summary_refresh`
+- `release`
+
+Held back:
+
+- `scrape_*`
+- inspect stages
+- archive / NZB tail stages
+
+#### Steady state
+
+Allowed:
+
+- concurrent operation only where the overlap is proven safe for the hot tables involved
+- inspect and archive-tail stages after release formation is healthy
+
+Guidance:
+
+- `scrape_*` should not overlap with the hottest regroup/materialization stages by default
+- prerequisite and stage-gate policy is preferred over ad hoc operator choreography
+
+### Integrity guardrail
+
+Before scrape writes to `article_headers`, critical ingest indexes must pass the current integrity preflight.
+
+Current protected relations:
+
+- `article_headers_pkey`
+- `article_headers_newsgroup_id_article_number_key`
+- `article_headers_newsgroup_id_message_id_key`
+
+If those checks fail, scrape should idle/fail fast rather than continue applying write pressure to a damaged cluster.
 
 ## Table Ownership Matrix
 
