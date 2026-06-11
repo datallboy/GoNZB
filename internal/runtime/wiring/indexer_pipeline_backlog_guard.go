@@ -29,7 +29,6 @@ type cachedPipelineBacklogGuard struct {
 	lastCheck      time.Time
 	lastResults    map[supervisor.StageName]supervisor.StageGateDecision
 	refreshBlocked bool
-	inspectBlocked bool
 }
 
 func newIndexerPipelineBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc {
@@ -132,42 +131,6 @@ func (g *cachedPipelineBacklogGuard) evaluate(ctx context.Context, runtime *app.
 		}
 	}
 
-	assembleBacklog, err := g.repo.EstimateUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("estimate assemble backlog: %w", err)
-	}
-	yencBacklog, err := g.repo.CountPendingYEncRecoveryBinaries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count pending yenc recovery backlog: %w", err)
-	}
-	refreshQueue, err := g.repo.CountQueuedReleaseFamilySummaries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count queued release family summaries: %w", err)
-	}
-
-	coreHigh, coreLow := inspectDeferralThresholds(runtime.Indexing)
-	coreHot := pipelineCoreBacklogHot(runtime.Indexing, assembleBacklog, yencBacklog, int64(refreshQueue), pendingReleaseCandidates, coreHigh)
-	if g.inspectBlocked {
-		if pipelineCoreBacklogHot(runtime.Indexing, assembleBacklog, yencBacklog, int64(refreshQueue), pendingReleaseCandidates, coreLow) {
-			for _, stageName := range deferredInspectStageNames() {
-				results[stageName] = supervisor.StageGateDecision{
-					Allowed: false,
-					Reason:  fmt.Sprintf("inspect paused for core pipeline catch-up: assemble=%d yenc=%d refresh_queue=%d ready_candidates=%d resume_threshold=%d", assembleBacklog, yencBacklog, refreshQueue, pendingReleaseCandidates, coreLow),
-				}
-			}
-		} else {
-			g.inspectBlocked = false
-		}
-	} else if coreHot {
-		g.inspectBlocked = true
-		for _, stageName := range deferredInspectStageNames() {
-			results[stageName] = supervisor.StageGateDecision{
-				Allowed: false,
-				Reason:  fmt.Sprintf("inspect paused for core pipeline catch-up: assemble=%d yenc=%d refresh_queue=%d ready_candidates=%d high_water=%d", assembleBacklog, yencBacklog, refreshQueue, pendingReleaseCandidates, coreHigh),
-			}
-		}
-	}
-
 	return results, nil
 }
 
@@ -175,35 +138,8 @@ func pipelineGuardApplies(stageName supervisor.StageName) bool {
 	switch stageName {
 	case supervisor.StageReleaseSummaryRefresh:
 		return true
-	case supervisor.StageInspectDiscovery,
-		supervisor.StageInspectPAR2,
-		supervisor.StageInspectNFO,
-		supervisor.StageInspectArchive,
-		supervisor.StageInspectPassword,
-		supervisor.StageInspectMedia:
-		return true
 	default:
 		return false
-	}
-}
-
-func inspectStageNames() []supervisor.StageName {
-	return []supervisor.StageName{
-		supervisor.StageInspectDiscovery,
-		supervisor.StageInspectPAR2,
-		supervisor.StageInspectNFO,
-		supervisor.StageInspectArchive,
-		supervisor.StageInspectPassword,
-		supervisor.StageInspectMedia,
-	}
-}
-
-func deferredInspectStageNames() []supervisor.StageName {
-	return []supervisor.StageName{
-		supervisor.StageInspectNFO,
-		supervisor.StageInspectArchive,
-		supervisor.StageInspectPassword,
-		supervisor.StageInspectMedia,
 	}
 }
 
@@ -224,57 +160,4 @@ func releaseReadyThresholds(indexing *app.IndexingRuntimeSettings) (highWater, l
 		lowWater = 250
 	}
 	return highWater, lowWater
-}
-
-func inspectDeferralThresholds(indexing *app.IndexingRuntimeSettings) (highWater, lowWater int64) {
-	if indexing == nil {
-		return 1000, 500
-	}
-	maxBatch := 0
-	for _, batch := range []int{
-		indexing.Assemble.BatchSize,
-		indexing.AssembleLaneA.BatchSize,
-		indexing.AssembleLaneB.BatchSize,
-		indexing.RecoverYEnc.BatchSize,
-		indexing.ReleaseSummaryRefresh.BatchSize,
-		indexing.Release.BatchSize,
-	} {
-		if batch > maxBatch {
-			maxBatch = batch
-		}
-	}
-	if maxBatch <= 0 {
-		maxBatch = 1000
-	}
-	highWater = int64(maxBatch * 4)
-	if highWater < 1000 {
-		highWater = 1000
-	}
-	lowWater = highWater / 2
-	if lowWater < 250 {
-		lowWater = 250
-	}
-	return highWater, lowWater
-}
-
-func pipelineCoreBacklogHot(indexing *app.IndexingRuntimeSettings, assembleBacklog, yencBacklog, refreshQueue, readyCandidates, threshold int64) bool {
-	if indexing == nil {
-		return false
-	}
-	if threshold <= 0 {
-		threshold = 1000
-	}
-	if assembleEnabled(indexing) && assembleBacklog >= threshold {
-		return true
-	}
-	if indexing.RecoverYEnc.Enabled && yencBacklog >= threshold {
-		return true
-	}
-	if indexing.ReleaseSummaryRefresh.Enabled && refreshQueue >= threshold {
-		return true
-	}
-	if indexing.Release.Enabled && readyCandidates >= threshold {
-		return true
-	}
-	return false
 }
