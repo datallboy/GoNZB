@@ -58,6 +58,71 @@ Operational guidance until the next phase:
 - keep building header backlog with CLI scrape-only commands first
 - do not enable assemble/recover/release stages until the scrape-only bootstrap has accumulated a meaningful backlog and remains stable over a longer soak window
 
+## Smart Stage Executor Plan
+
+The preferred direction is not a permanently sequential pipeline and not a second scheduler. The preferred direction is an adaptive supervisor policy layered onto the existing stage-gate chain:
+
+- prerequisite gate
+- storage guard
+- memory guard
+- new backlog-aware execution gate
+
+The new execution gate should make overlap decisions from live backlog and capacity signals instead of static operator choreography alone.
+
+### Phase 1 target behavior
+
+1. Let `scrape_latest` and `scrape_backfill` run together during fresh bootstrap.
+2. When unclaimed `article_headers` backlog crosses a configured threshold and assemble is enabled, temporarily suppress or reduce scrape until assemble reports that it needs more work.
+3. Allow `assemble_*`, `recover_yenc`, `release_summary_refresh`, and `release` to run together only when their upstream backlog signals say the overlap is productive.
+4. Keep inspect/archive tail stages deprioritized until release formation is healthy.
+
+### Candidate backlog signals
+
+The first implementation should be based on bounded, cheap signals already available or easy to add:
+
+- unassembled `article_headers` count or capped estimate
+- joinable `yenc_recovery_work_items` ready-now count
+- `release_family_summary_refresh_queue` count
+- `release_ready_candidates` count
+- inspect-ready candidate counts already used by dashboard stats
+
+### Candidate decisions
+
+- `scrape_*`
+  - allowed when assemble backlog is below threshold
+  - paused/throttled when unassembled header backlog is above threshold and assemble is enabled
+- `assemble_*`
+  - preferred whenever scrape-created backlog is above threshold
+- `recover_yenc`
+  - preferred when joinable hot queue is above threshold
+- `release_summary_refresh`
+  - preferred when refresh queue is above threshold
+- `release`
+  - always allowed when ready candidates are present
+
+### NNTP saturation policy
+
+The supervisor should eventually drive NNTP utilization toward saturation without forcing every stage to its static max concurrency.
+
+The intended control split is:
+
+- keep per-stage `max_concurrent` as the hard ceiling
+- add a runtime target such as `desired_nntp_utilization_percent`
+- let the adaptive gate decide which stages are allowed to consume connections at a given moment
+
+This means the first smart executor step is stage admission/gating, not automatic per-stage concurrency mutation.
+
+### Cross-process NNTP telemetry requirement
+
+The dashboard and future smart executor both need NNTP visibility outside the local process.
+
+Current change direction:
+
+- every active indexer runtime can publish an NNTP runtime snapshot to PostgreSQL
+- the dashboard reads the freshest shared snapshot instead of assuming the local `serve` process owns the active manager
+
+This is required because standalone `indexer ...` CLI runs and `serve --no-indexer-supervisor` do not share an in-memory manager with the dashboard process.
+
 ## Pass 1 Findings: Scrape
 
 Status: in progress, but the primary scrape-stage write path has now been reviewed enough to lock the first findings.

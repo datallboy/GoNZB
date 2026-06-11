@@ -929,6 +929,32 @@ func TestRuntimeIndexerServiceNNTPStatsUsesCurrentRuntimeIndexer(t *testing.T) {
 	}
 }
 
+type testSnapshotReader struct {
+	snapshot *pgindex.NNTPRuntimeSnapshot
+	err      error
+}
+
+func (t testSnapshotReader) GetLatestNNTPSnapshot(context.Context, string) (*pgindex.NNTPRuntimeSnapshot, error) {
+	return t.snapshot, t.err
+}
+
+func TestRuntimeIndexerServiceNNTPStatsPrefersSharedSnapshot(t *testing.T) {
+	appCtx := &app.Context{}
+	service := &runtimeIndexerService{
+		appCtx:        appCtx,
+		nntpSnapshots: testSnapshotReader{snapshot: &pgindex.NNTPRuntimeSnapshot{Payload: json.RawMessage(`{"scope":"indexer","active":9}`)}},
+	}
+	appCtx.UsenetIndexer = &testRuntimeIndexerService{stats: &app.NNTPRuntimeStats{Scope: "indexer", Active: 2}}
+
+	stats, err := service.NNTPStats(context.Background())
+	if err != nil {
+		t.Fatalf("NNTPStats returned error: %v", err)
+	}
+	if stats == nil || stats.Active != 9 {
+		t.Fatalf("expected shared snapshot active=9, got %+v", stats)
+	}
+}
+
 type testRuntimeIndexerService struct {
 	stats *app.NNTPRuntimeStats
 }

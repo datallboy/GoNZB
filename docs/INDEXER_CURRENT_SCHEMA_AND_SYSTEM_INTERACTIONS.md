@@ -199,6 +199,27 @@ Guidance:
 - `scrape_*` should not overlap with the hottest regroup/materialization stages by default
 - prerequisite and stage-gate policy is preferred over ad hoc operator choreography
 
+### Adaptive execution target
+
+The intended next-step runtime model is a smart stage executor built as another supervisor gate, not a second scheduler and not a permanently sequential queue.
+
+Design constraints:
+
+- preserve concurrent execution where hot-table ownership is disjoint
+- suppress or throttle stages when upstream backlog shows another stage should catch up first
+- keep per-stage configured concurrency as a hard ceiling
+- use backlog-aware admission to improve NNTP saturation before trying to auto-tune every stage’s worker count
+
+Expected first-class signals:
+
+- unassembled `article_headers` backlog
+- joinable `yenc_recovery_work_items` hot backlog
+- `release_family_summary_refresh_queue`
+- `release_ready_candidates`
+- inspect-ready bounded backlog signals
+
+The smart executor should plug into the existing stage-gate chain alongside prerequisite, storage, and memory guards.
+
 ### Integrity guardrail
 
 Before scrape writes to `article_headers`, critical ingest indexes must pass the current integrity preflight.
