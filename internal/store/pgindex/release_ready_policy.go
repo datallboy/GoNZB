@@ -84,7 +84,6 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 		fmt.Sprintf("COALESCE(%s.completion_pct, 0) >= %.4f", alias, policy.MinCompletionPct),
 		identityClause,
 		fmt.Sprintf("COALESCE(%s.size_bytes, 0) > 0", alias),
-		fmt.Sprintf("COALESCE(%s.category_id, 8010) <> 8010", alias),
 		fmt.Sprintf(`(
 			COALESCE(%[1]s.expected_file_count, 0) <= 1
 			OR COALESCE(%[1]s.file_count, 0) >= 2
