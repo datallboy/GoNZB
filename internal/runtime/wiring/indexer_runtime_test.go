@@ -87,6 +87,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Enabled:         &enabled,
 		IntervalMinutes: &interval,
 		BatchSize:       &batch,
+		Concurrency:     &concurrency,
 		BackoffSeconds:  &backoff,
 	}
 	cfg.Indexing.Assemble = config.IndexingStageConfig{
@@ -106,6 +107,10 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		MinCompletionPct:           func() *float64 { v := 25.0; return &v }(),
 		MinExpectedFileCoveragePct: func() *float64 { v := 92.0; return &v }(),
 		RequireExpectedFileCountForContextualObfuscated: func() *bool { v := true; return &v }(),
+		PublicRequirePayloadComplete:                    func() *bool { v := true; return &v }(),
+		PublicRequireExpectedFileCountComplete:          func() *bool { v := true; return &v }(),
+		RetainUntilExpectedFileCountComplete:            func() *bool { v := true; return &v }(),
+		ReopenArchivedNZBOnReleaseChange:                func() *bool { v := true; return &v }(),
 	}
 	cfg.Indexing.InspectMedia = config.IndexingStageConfig{
 		Enabled:     &enabled,
@@ -137,16 +142,17 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		TMDBAccessToken:    "tmdb-token",
 	}
 	cfg.Indexing.Inspect = config.IndexingInspectConfig{
-		WorkDir:          "/tmp/inspect",
-		WorkspaceBackend: "memory",
-		MemoryWorkDir:    "/dev/shm/gonzb-inspect-test",
-		FFProbePath:      "ffprobe",
-		SevenZipPath:     "7z",
-		UnrarPath:        "unrar",
-		PAR2Path:         "par2",
-		MaxBytes:         1024,
-		MaxArchiveDepth:  2,
-		ToolTimeoutSecs:  15,
+		WorkDir:                  "/tmp/inspect",
+		WorkspaceBackend:         "memory",
+		MemoryWorkDir:            "/dev/shm/gonzb-inspect-test",
+		FFProbePath:              "ffprobe",
+		SevenZipPath:             "7z",
+		UnrarPath:                "unrar",
+		PAR2Path:                 "par2",
+		MaxBytes:                 1024,
+		MaxArchiveDepth:          2,
+		ToolTimeoutSecs:          15,
+		RequireExpectedFileCount: true,
 	}
 
 	got, err := deriveUsenetIndexerConfig(cfg)
@@ -157,14 +163,17 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ScrapeLatest.Interval != 90*time.Second || got.ScrapeLatest.BatchSize != batch {
 		t.Fatalf("unexpected scrape_latest stage config: %+v", got.ScrapeLatest)
 	}
-	if got.ScrapeLatest.Backoff != 9*time.Second || got.Assemble.Concurrency != concurrency {
-		t.Fatalf("unexpected scrape_latest backoff or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
+	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.Assemble.Concurrency != concurrency {
+		t.Fatalf("unexpected scrape_latest backoff/concurrency or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
 	}
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
 	}
 	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || got.ReleaseMinExpectedFileCoveragePct != 92 || !got.RequireExpectedFileCountForContextualObfuscated {
 		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v min_expected_file_coverage_pct=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.ReleaseMinExpectedFileCoveragePct, got.RequireExpectedFileCountForContextualObfuscated)
+	}
+	if !got.ReopenArchivedNZBOnReleaseChange || !got.ReleaseReadyPolicy.RequirePayloadComplete || !got.ReleaseReadyPolicy.RequireExpectedFileCountComplete || !got.ReleaseReadyPolicy.RetainUntilExpectedFileCountComplete {
+		t.Fatalf("expected release policy toggles to reach runtime config, got %+v / %+v", got.ReleaseReadyPolicy, got)
 	}
 	if !got.ReleaseSummaryRefreshStage.Enabled || got.ReleaseSummaryRefreshStage.BatchSize != 10000 || got.ReleaseSummaryRefreshStage.MaxBatches != 10 || got.ReleaseSummaryRefreshStage.Interval != 2*time.Minute {
 		t.Fatalf("unexpected release summary refresh stage config: %+v", got.ReleaseSummaryRefreshStage)
@@ -180,6 +189,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.Inspect.WorkspaceBackend != "memory" || got.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect-test" {
 		t.Fatalf("expected inspect workspace backend settings, got %+v", got.Inspect)
+	}
+	if !got.Inspect.RequireExpectedFileCount {
+		t.Fatalf("expected inspect expected-file gate to reach runtime options, got %+v", got.Inspect)
 	}
 	if got.EnrichPreDB.Limit != batch || got.EnrichPreDB.HTTPTimeout != 22*time.Second {
 		t.Fatalf("unexpected predb options: %+v", got.EnrichPreDB)

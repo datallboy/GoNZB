@@ -19,14 +19,14 @@ func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutServer(t *testi
 	}
 }
 
-func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutNewsgroup(t *testing.T) {
+func TestValidateRuntimeSettingsAllowsEnabledIndexerStageWithoutNewsgroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
 	runtime.Indexing.ScrapeLatest.Enabled = true
 
 	err := ValidateRuntimeSettings(&config.Config{}, runtime)
-	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one newsgroup in indexing.newsgroups") {
-		t.Fatalf("expected newsgroup validation error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected zero-group scrape config to save, got %v", err)
 	}
 }
 
@@ -70,6 +70,23 @@ func TestValidateRuntimeSettingsAllowsLocalIndexerAggregatorSourceWhenModuleEnab
 	}, runtime)
 	if err != nil {
 		t.Fatalf("expected local indexer source to save without NNTP/newsgroup prerequisites, got %v", err)
+	}
+}
+
+func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if indexer.Ready || len(indexer.Requirements) == 0 {
+		t.Fatalf("expected scrape-group requirement, got %+v", indexer)
+	}
+	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group") {
+		t.Fatalf("expected scrape-group detail, got %+v", indexer.Requirements)
 	}
 }
 

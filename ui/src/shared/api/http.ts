@@ -34,6 +34,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   return (await response.json()) as T
 }
 
+export function apiURL(path: string) {
+  return `${API_BASE}${path}`
+}
+
 function isSafeMethod(method: string) {
   return method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
 }

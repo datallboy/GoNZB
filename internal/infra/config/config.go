@@ -133,6 +133,7 @@ type IndexingReleaseConfig struct {
 	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	AutoReformBatchSize                             *int     `mapstructure:"auto_reform_batch_size" yaml:"auto_reform_batch_size"`
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
@@ -143,23 +144,34 @@ type IndexingReleaseConfig struct {
 	PublicMinIdentityStatus                         string   `mapstructure:"public_min_identity_status" yaml:"public_min_identity_status"`
 	PublicRequireInspection                         *bool    `mapstructure:"public_require_inspection" yaml:"public_require_inspection"`
 	PublicRequireEnrichment                         *bool    `mapstructure:"public_require_enrichment" yaml:"public_require_enrichment"`
+	PublicRequirePayloadComplete                    *bool    `mapstructure:"public_require_payload_complete" yaml:"public_require_payload_complete"`
+	PublicRequireExpectedFileCountComplete          *bool    `mapstructure:"public_require_expected_file_count_complete" yaml:"public_require_expected_file_count_complete"`
+	PublicRequirePAR2                               *bool    `mapstructure:"public_require_par2" yaml:"public_require_par2"`
+	PublicRequireNFO                                *bool    `mapstructure:"public_require_nfo" yaml:"public_require_nfo"`
+	PublicRequireSFV                                *bool    `mapstructure:"public_require_sfv" yaml:"public_require_sfv"`
+	RetainUntilExpectedFileCountComplete            *bool    `mapstructure:"retain_until_expected_file_count_complete" yaml:"retain_until_expected_file_count_complete"`
+	RetainRequirePAR2                               *bool    `mapstructure:"retain_require_par2" yaml:"retain_require_par2"`
+	RetainRequireNFO                                *bool    `mapstructure:"retain_require_nfo" yaml:"retain_require_nfo"`
+	RetainRequireSFV                                *bool    `mapstructure:"retain_require_sfv" yaml:"retain_require_sfv"`
+	ReopenArchivedNZBOnReleaseChange                *bool    `mapstructure:"reopen_archived_nzb_on_release_change" yaml:"reopen_archived_nzb_on_release_change"`
 }
 
 type IndexingInspectConfig struct {
-	WorkDir          string   `mapstructure:"work_dir" yaml:"work_dir"`
-	WorkspaceBackend string   `mapstructure:"workspace_backend" yaml:"workspace_backend"`
-	MemoryWorkDir    string   `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
-	MaxBytes         int64    `mapstructure:"max_bytes" yaml:"max_bytes"`
-	MinBinaryBytes   int64    `mapstructure:"min_binary_bytes" yaml:"min_binary_bytes"`
-	MaxBinaryBytes   int64    `mapstructure:"max_binary_bytes" yaml:"max_binary_bytes"`
-	BlockedMagicHex  []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
-	MaxArchiveDepth  int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
-	ToolTimeoutSecs  int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
-	FFmpegPath       string   `mapstructure:"ffmpeg_path" yaml:"ffmpeg_path"`
-	FFProbePath      string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
-	SevenZipPath     string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
-	UnrarPath        string   `mapstructure:"unrar_path" yaml:"unrar_path"`
-	PAR2Path         string   `mapstructure:"par2_path" yaml:"par2_path"`
+	WorkDir                  string   `mapstructure:"work_dir" yaml:"work_dir"`
+	WorkspaceBackend         string   `mapstructure:"workspace_backend" yaml:"workspace_backend"`
+	MemoryWorkDir            string   `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
+	MaxBytes                 int64    `mapstructure:"max_bytes" yaml:"max_bytes"`
+	MinBinaryBytes           int64    `mapstructure:"min_binary_bytes" yaml:"min_binary_bytes"`
+	MaxBinaryBytes           int64    `mapstructure:"max_binary_bytes" yaml:"max_binary_bytes"`
+	RequireExpectedFileCount bool     `mapstructure:"require_expected_file_count" yaml:"require_expected_file_count"`
+	BlockedMagicHex          []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
+	MaxArchiveDepth          int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
+	ToolTimeoutSecs          int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFmpegPath               string   `mapstructure:"ffmpeg_path" yaml:"ffmpeg_path"`
+	FFProbePath              string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath             string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath                string   `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path                 string   `mapstructure:"par2_path" yaml:"par2_path"`
 }
 
 type IndexingStorageGuardConfig struct {
@@ -285,6 +297,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
+	v.SetDefault("indexing.release.auto_reform_batch_size", 25)
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
@@ -295,6 +308,17 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.public_min_identity_status", "probable")
 	v.SetDefault("indexing.release.public_require_inspection", false)
 	v.SetDefault("indexing.release.public_require_enrichment", false)
+	v.SetDefault("indexing.release.public_require_payload_complete", true)
+	v.SetDefault("indexing.release.public_require_expected_file_count_complete", false)
+	v.SetDefault("indexing.release.public_require_par2", false)
+	v.SetDefault("indexing.release.public_require_nfo", false)
+	v.SetDefault("indexing.release.public_require_sfv", false)
+	v.SetDefault("indexing.release.retain_until_expected_file_count_complete", false)
+	v.SetDefault("indexing.release.retain_require_par2", false)
+	v.SetDefault("indexing.release.retain_require_nfo", false)
+	v.SetDefault("indexing.release.retain_require_sfv", false)
+	v.SetDefault("indexing.release.reopen_archived_nzb_on_release_change", false)
+	v.SetDefault("indexing.inspect.require_expected_file_count", false)
 	v.SetDefault("indexing.release_generate_nzb.enabled", false)
 	v.SetDefault("indexing.release_generate_nzb.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_generate_nzb.batch_size", 100)

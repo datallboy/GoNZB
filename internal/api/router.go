@@ -71,6 +71,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
+	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
 	var authSvc *auth.Service
 	if store, ok := any(appCtx.SettingsStore).(auth.Store); ok {
 		authSvc = auth.NewService(store)
@@ -87,7 +88,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
-		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.Use(csrfProtectionMiddleware())
 		v1Admin.Use(auditLogMiddleware(appCtx, "admin.settings"))
 		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsRead))
@@ -106,7 +107,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Auth.POST("/tokens", authCtrl.CreateCurrentUserToken, authMiddleware(authSvc, appCtx.Config.API.Key, false), csrfProtectionMiddleware())
 		v1Auth.DELETE("/tokens/:id", authCtrl.RevokeCurrentUserToken, authMiddleware(authSvc, appCtx.Config.API.Key, false), csrfProtectionMiddleware())
 
-		v1AdminAuth := e.Group("/api/v1/admin/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminAuth := e.Group("/api/v1/admin/auth", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminAuth.Use(csrfProtectionMiddleware())
 		v1AdminAuth.Use(auditLogMiddleware(appCtx, "admin.auth"))
 		v1AdminAuth.GET("/users", authCtrl.ListUsers, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersRead))
@@ -164,11 +165,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 
-		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminIndexer.Use(authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
 		v1AdminIndexer.Use(csrfProtectionMiddleware())
 		v1AdminIndexer.Use(auditLogMiddleware(appCtx, "admin.indexer"))
 		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
+		v1AdminIndexer.GET("/overview/stream", indexerAdminCtrl.StreamOverview)
 		v1AdminIndexer.GET("/overview/stats", indexerAdminCtrl.GetDashboardStats)
 		v1AdminIndexer.POST("/overview/stats/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.GET("/overview/backfill-progress", indexerAdminCtrl.GetBackfillProgress)
@@ -176,6 +178,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/overview/nntp", indexerAdminCtrl.GetNNTPStats)
 		v1AdminIndexer.GET("/overview/backlog", indexerAdminCtrl.GetDashboardStats)
 		v1AdminIndexer.POST("/overview/backlog/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.GET("/scrape", indexerScrapeAdminCtrl.GetConfig)
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
 		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
 		v1AdminIndexer.GET("/releases", indexerAdminCtrl.ListReleases)
@@ -183,6 +186,10 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/runs", indexerAdminCtrl.ListRuns)
 		v1AdminIndexer.GET("/runs/:id", indexerAdminCtrl.GetRun)
 		v1AdminIndexer.PATCH("/stages/:stage", indexerAdminCtrl.PatchStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.PUT("/scrape", indexerScrapeAdminCtrl.UpdateConfig, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.POST("/scrape/actions/scan", indexerScrapeAdminCtrl.ScanProviders, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.GET("/scrape/preview", indexerScrapeAdminCtrl.PreviewWildcardGroups)
+		v1AdminIndexer.POST("/scrape/actions/apply", indexerScrapeAdminCtrl.ApplyWildcardGroups, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
 		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))

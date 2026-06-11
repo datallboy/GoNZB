@@ -63,6 +63,16 @@ func TestParseOverviewLinePreservesPosterAndMessageIDPartCounter(t *testing.T) {
 	}
 }
 
+func TestParseListActiveLine(t *testing.T) {
+	item, ok := parseListActiveLine("alt.binaries.example 500 10 y")
+	if !ok {
+		t.Fatal("expected list active line to parse")
+	}
+	if item.Group != "alt.binaries.example" || item.High != 500 || item.Low != 10 || item.Status != "y" {
+		t.Fatalf("unexpected list active item: %+v", item)
+	}
+}
+
 func TestReturnConnAfterCloseDoesNotPanic(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
