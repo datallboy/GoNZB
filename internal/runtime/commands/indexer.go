@@ -468,7 +468,7 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d skipped_readiness_cleanup=%t refresh_queue_backlog=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
@@ -481,6 +481,8 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 			out.PurgedGroupingEvidence,
 			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
+			out.SkippedReadinessCleanup,
+			out.RefreshQueueBacklog,
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance completed")
@@ -529,6 +531,50 @@ func (r *Runner) ExecuteIndexerRepairRuntime() {
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance repair-runtime completed")
+}
+
+func (r *Runner) ExecuteIndexerCheckIntegrity(ensureExtension bool) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer integrity check requires store.pg_dsn.")
+	defer cleanup()
+
+	report, err := appCtx.PGIndexStore.CheckCriticalIndexerIntegrity(ctx, ensureExtension)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance check-integrity failed: %v", err)
+	}
+	if report == nil {
+		appCtx.Logger.Fatal("indexer maintenance check-integrity failed: no report returned")
+	}
+	for _, check := range report.Checks {
+		appCtx.Logger.Info(
+			"indexer integrity: relation=%s access_method=%s metadata_ok=%t amcheck_ran=%t ok=%t detail=%s",
+			check.Relation,
+			check.AccessMethod,
+			check.MetadataOK,
+			check.AmcheckRan,
+			check.OK,
+			check.Detail,
+		)
+	}
+	if report.HasFailures() {
+		appCtx.Logger.Fatal("indexer integrity failed: %s", report.FailureSummary())
+	}
+	appCtx.Logger.Info("indexer integrity check completed")
+}
+
+func (r *Runner) ExecuteIndexerReindexCritical() {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer critical reindex requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.ReindexCriticalIndexerIndexes(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance reindex-critical failed: %v", err)
+	}
+	if out != nil {
+		for _, relation := range out.Reindexed {
+			appCtx.Logger.Info("indexer integrity repair: reindexed=%s", relation)
+		}
+	}
+	appCtx.Logger.Info("indexer critical reindex completed")
 }
 
 func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {

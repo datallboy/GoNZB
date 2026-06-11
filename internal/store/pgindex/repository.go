@@ -123,11 +123,16 @@ type BinaryInspectionCandidate struct {
 	ArchiveSummaryJSON json.RawMessage
 }
 
+type BinaryInspectionCandidateOptions struct {
+	RequireExpectedFileCount bool
+}
+
 type BinaryInspectionClaimRequest struct {
 	StageName     string
 	Limit         int
 	Owner         string
 	LeaseDuration time.Duration
+	Options       BinaryInspectionCandidateOptions
 }
 
 type BinaryInspectionRecord struct {
@@ -1107,6 +1112,19 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 
 	query.WriteString(`
 		),
+		existing_candidates AS (
+			SELECT
+				r.ord,
+				ah.id,
+				CASE WHEN ah.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.newsgroup_id = r.newsgroup_id
+			 AND (
+				ah.article_number = r.article_number
+				OR ah.message_id = r.message_id
+			 )
+		),
 		inserted AS (
 			INSERT INTO article_headers (
 				provider_id,
@@ -1128,44 +1146,55 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				r.lines,
 				NOW()
 			FROM requested r
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM existing_candidates ec
+				WHERE ec.ord = r.ord
+			)
 			ON CONFLICT DO NOTHING
 			RETURNING id, newsgroup_id, article_number, message_id
-		)
-		SELECT
-			r.ord,
-			resolved.id
-		FROM requested r
-		JOIN LATERAL (
-			SELECT candidate.id
+		),
+		inserted_candidates AS (
+			SELECT
+				r.ord,
+				i.id,
+				CASE WHEN i.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
+			FROM requested r
+			JOIN inserted i
+			  ON i.newsgroup_id = r.newsgroup_id
+			 AND (
+				i.article_number = r.article_number
+				OR i.message_id = r.message_id
+			 )
+		),
+		resolved AS (
+			SELECT DISTINCT ON (candidate.ord)
+				candidate.ord,
+				candidate.id
 			FROM (
 				SELECT
-					i.id,
+					ic.ord,
+					ic.id,
 					0 AS source_rank,
-					CASE WHEN i.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
-				FROM inserted i
-				WHERE i.newsgroup_id = r.newsgroup_id
-				  AND (
-					i.article_number = r.article_number
-					OR i.message_id = r.message_id
-				  )
+					ic.match_rank
+				FROM inserted_candidates ic
 
 				UNION ALL
 
 				SELECT
-					ah.id,
+					ec.ord,
+					ec.id,
 					1 AS source_rank,
-					CASE WHEN ah.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
-				FROM article_headers ah
-				WHERE ah.newsgroup_id = r.newsgroup_id
-				  AND (
-					ah.article_number = r.article_number
-					OR ah.message_id = r.message_id
-				  )
+					ec.match_rank
+				FROM existing_candidates ec
 			) AS candidate
-			ORDER BY candidate.source_rank, candidate.match_rank
-			LIMIT 1
-		) AS resolved ON TRUE
-		ORDER BY r.ord`)
+			ORDER BY candidate.ord, candidate.source_rank, candidate.match_rank, candidate.id
+		)
+		SELECT
+			ord,
+			id
+		FROM resolved
+		ORDER BY ord`)
 
 	rows, err := tx.QueryContext(ctx, query.String(), args...)
 	if err != nil {

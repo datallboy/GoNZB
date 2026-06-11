@@ -27,8 +27,9 @@ var (
 	inspectOnce     bool
 	enrichOnce      bool
 
-	indexerReclaimFull  bool
-	indexerReclaimCheck bool
+	indexerReclaimFull              bool
+	indexerReclaimCheck             bool
+	indexerIntegrityEnsureExtension bool
 )
 
 var rootCmd = &cobra.Command{
@@ -60,8 +61,8 @@ var serveCmd = &cobra.Command{
 	Short: "Starts GoNZB in server mode. Start HTTP server.",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteServerWithOptions(commands.ServerOptions{
-			DisableIndexerSupervisor:             serveWithoutIndexerSupervisor,
-			DisableReleasePurgeArchivedSources:  disableReleasePurgeArchivedSources,
+			DisableIndexerSupervisor:           serveWithoutIndexerSupervisor,
+			DisableReleasePurgeArchivedSources: disableReleasePurgeArchivedSources,
 		})
 	},
 }
@@ -190,6 +191,22 @@ var indexerMaintenanceRepairRuntimeCmd = &cobra.Command{
 	Short: "Repair stale indexer stage leases and running stage rows",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerRepairRuntime()
+	},
+}
+
+var indexerMaintenanceCheckIntegrityCmd = &cobra.Command{
+	Use:   "check-integrity",
+	Short: "Check critical PostgreSQL article-header indexes for corruption",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerCheckIntegrity(indexerIntegrityEnsureExtension)
+	},
+}
+
+var indexerMaintenanceReindexCriticalCmd = &cobra.Command{
+	Use:   "reindex-critical",
+	Short: "Reindex the critical article-header indexes used by scrape ingest",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReindexCritical()
 	},
 }
 
@@ -355,6 +372,7 @@ func init() {
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimCheck, "check", false, "Report current bytes for the allowlisted reclaim tables without running VACUUM")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
+	indexerMaintenanceCheckIntegrityCmd.Flags().BoolVar(&indexerIntegrityEnsureExtension, "ensure-extension", false, "Install the amcheck extension before running the integrity check")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -372,6 +390,8 @@ func init() {
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceCheckIntegrityCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceReindexCriticalCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)
