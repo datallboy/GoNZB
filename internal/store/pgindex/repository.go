@@ -1116,14 +1116,22 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			SELECT
 				r.ord,
 				ah.id,
-				CASE WHEN ah.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
+				0 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
 			  ON ah.newsgroup_id = r.newsgroup_id
-			 AND (
-				ah.article_number = r.article_number
-				OR ah.message_id = r.message_id
-			 )
+			 AND ah.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				ah.id,
+				1 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.newsgroup_id = r.newsgroup_id
+			 AND ah.message_id = r.message_id
 		),
 		inserted AS (
 			INSERT INTO article_headers (
@@ -1158,14 +1166,22 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			SELECT
 				r.ord,
 				i.id,
-				CASE WHEN i.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
+				0 AS match_rank
 			FROM requested r
 			JOIN inserted i
 			  ON i.newsgroup_id = r.newsgroup_id
-			 AND (
-				i.article_number = r.article_number
-				OR i.message_id = r.message_id
-			 )
+			 AND i.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				i.id,
+				1 AS match_rank
+			FROM requested r
+			JOIN inserted i
+			  ON i.newsgroup_id = r.newsgroup_id
+			 AND i.message_id = r.message_id
 		),
 		resolved AS (
 			SELECT DISTINCT ON (candidate.ord)
