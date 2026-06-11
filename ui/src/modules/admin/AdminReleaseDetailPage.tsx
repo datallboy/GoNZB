@@ -23,7 +23,7 @@ function stringifyJSON(value: unknown) {
 
 function fileKindLabel(fileName: string, isPars: boolean) {
   const name = fileName.toLowerCase()
-  if (name.endsWith('.nzb')) return 'Uploaded NZB'
+  if (name.endsWith('.nzb')) return 'Posted NZB Sidecar'
   if (isPars || name.endsWith('.par2')) return 'PAR2'
   if (name.endsWith('.nfo')) return 'NFO'
   if (name.match(/\.(rar|zip|7z|tar|gz|bz2|xz)$/)) return 'Archive'
@@ -470,7 +470,7 @@ export function AdminReleaseDetailPage() {
               </div>
               {file.file_name.toLowerCase().endsWith('.nzb') ? (
                 <div className="banner">
-                  Uploaded payload NZB. This is a file inside the indexed release payload, not the generated cache NZB for this release.
+                  Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
                 </div>
               ) : null}
               <details className="detail-block detail-block--nested">
