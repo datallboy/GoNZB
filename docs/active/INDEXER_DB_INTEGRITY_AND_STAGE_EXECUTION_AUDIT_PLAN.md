@@ -147,13 +147,15 @@ Additional landed admission gates:
   - paused when `release_ready_candidates` backlog is already above threshold and `release` is enabled
   - resumes only after ready backlog drops below the lower resume threshold
 - inspect family
-  - `inspect_discovery`
-  - `inspect_par2`
-  - `inspect_nfo`
-  - `inspect_archive`
-  - `inspect_password`
-  - `inspect_media`
-  - these are paused while core pipeline backlog is hot:
+  - light lanes remain eligible under backlog pressure:
+    - `inspect_discovery`
+    - `inspect_par2`
+  - heavier lanes are paused while core pipeline backlog is hot:
+    - `inspect_nfo`
+    - `inspect_archive`
+    - `inspect_password`
+    - `inspect_media`
+  - the core backlog signals are:
     - claimable assemble backlog
     - yEnc hot backlog
     - release summary refresh queue
@@ -166,6 +168,13 @@ Additional landed admission gates:
     - `scrape_backfill`
     - `scrape_latest`
   - `recover_yenc` retains priority when it has meaningful hot backlog
+
+Observed live behavior on `2026-06-11` with all supervisor stages enabled:
+
+- `inspect_discovery` completed repeatedly under supervisor even while assemble/yEnc/refresh backlog remained hot
+- `inspect_par2` also completed repeatedly and processed actionable work
+- `inspect_nfo`, `inspect_archive`, `inspect_password`, and `inspect_media` stayed deferred as intended
+- `release_generate_nzb`, `release_archive_nzb`, and `release_purge_archived_sources` were not backlog-gated; they simply completed as no-op passes because there were still no formed releases
 
 ### Deliberately deferred
 

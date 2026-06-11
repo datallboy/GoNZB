@@ -226,7 +226,12 @@ Current landed behavior:
 - scheduled `scrape_*` is suppressed when assemble is enabled and unassembled-header backlog exceeds a hysteresis threshold
 - manual scrape runs still bypass the gate
 - `release_summary_refresh` is suppressed when ready release backlog is already deep enough for `release` to catch up
-- inspect stages are suppressed while core assemble/yEnc/refresh/release backlog is hot
+- heavy inspect stages are suppressed while core assemble/yEnc/refresh/release backlog is hot:
+  - `inspect_nfo`
+  - `inspect_archive`
+  - `inspect_password`
+  - `inspect_media`
+- `inspect_discovery` and `inspect_par2` remain eligible under supervisor even while that core backlog is hot
 - NNTP-bound stage admission also uses live local saturation:
   - `inspect_par2` yields first
   - `scrape_backfill` yields next

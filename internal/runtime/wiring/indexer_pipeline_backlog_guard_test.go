@@ -81,7 +81,7 @@ func TestPipelineBacklogGuardBlocksRefreshWhenReleaseReadyBacklogIsHigh(t *testi
 	}
 }
 
-func TestPipelineBacklogGuardBlocksInspectWhenCoreBacklogIsHot(t *testing.T) {
+func TestPipelineBacklogGuardBlocksHeavyInspectWhenCoreBacklogIsHot(t *testing.T) {
 	guard := &cachedPipelineBacklogGuard{
 		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
@@ -94,12 +94,39 @@ func TestPipelineBacklogGuardBlocksInspectWhenCoreBacklogIsHot(t *testing.T) {
 		lastResults: make(map[supervisor.StageName]supervisor.StageGateDecision),
 	}
 
-	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageInspectPAR2}, "scheduled")
+	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageInspectArchive}, "scheduled")
 	if err != nil {
 		t.Fatalf("allowStage returned error: %v", err)
 	}
 	if decision.Allowed {
-		t.Fatalf("expected inspect stage to be blocked, got %+v", decision)
+		t.Fatalf("expected heavy inspect stage to be blocked, got %+v", decision)
+	}
+}
+
+func TestPipelineBacklogGuardAllowsDiscoveryAndPAR2WhenCoreBacklogIsHot(t *testing.T) {
+	guard := &cachedPipelineBacklogGuard{
+		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
+			Indexing: &app.IndexingRuntimeSettings{
+				AssembleLaneA: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				RecoverYEnc:   app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 1000},
+				Release:       app.IndexingReleaseRuntimeSettings{Enabled: true, BatchSize: 200},
+			},
+		}},
+		repo:        fakePipelineBacklogReader{assembleEstimate: 200000},
+		lastResults: make(map[supervisor.StageName]supervisor.StageGateDecision),
+	}
+
+	for _, stageName := range []supervisor.StageName{
+		supervisor.StageInspectDiscovery,
+		supervisor.StageInspectPAR2,
+	} {
+		decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: stageName}, "scheduled")
+		if err != nil {
+			t.Fatalf("allowStage(%s) returned error: %v", stageName, err)
+		}
+		if !decision.Allowed {
+			t.Fatalf("expected %s to stay allowed, got %+v", stageName, decision)
+		}
 	}
 }
 
