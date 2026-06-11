@@ -197,6 +197,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		return []pgindex.BinaryInspectionCandidate{candidate}, nil
+	}
+
 	files, err := s.repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)

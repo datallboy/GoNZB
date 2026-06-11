@@ -6947,6 +6947,71 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolume
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueBinary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.discovery.standalone.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-discovery-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("discovery-standalone-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: baseKey,
+		ReleaseFamilyKey: baseKey,
+		FileFamilyKey:    baseKey + "::file",
+		FamilyKind:       "opaque_set",
+		BaseStem:         baseKey,
+		IsMainPayload:    true,
+		IsAuxiliary:      false,
+		ReleaseKey:       baseKey,
+		ReleaseName:      "Standalone Discovery",
+		BinaryKey:        baseKey + "::binary",
+		BinaryName:       "standalone-discovery.bin",
+		FileName:         "standalone-discovery.bin",
+		FileIndex:        1,
+		TotalParts:       1,
+		PostedAt:         &now,
+		MatchConfidence:  0.82,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_discovery", 20)
+	if err != nil {
+		t.Fatalf("list inspect discovery candidates: %v", err)
+	}
+
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID != binaryID {
+			continue
+		}
+		found = true
+		if candidate.ReleaseID != "" {
+			t.Fatalf("expected standalone discovery candidate to have empty release id, got %+v", candidate)
+		}
+		if candidate.FileName != "standalone-discovery.bin" {
+			t.Fatalf("expected standalone file name, got %+v", candidate)
+		}
+	}
+	if !found {
+		t.Fatalf("expected standalone opaque binary to be discoverable, got %d candidates", len(candidates))
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectMediaToleratesScalarArchiveEntries(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

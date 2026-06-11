@@ -974,6 +974,82 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
 	}
 
+	if stageName == "inspect_discovery" {
+		query := `
+			SELECT *
+			FROM (
+				SELECT DISTINCT ON (
+					CASE
+						WHEN COALESCE(r.release_id, '') <> '' THEN r.release_id
+						ELSE 'binary:' || b.id::text
+					END
+				)
+					$1 AS stage_name,
+					b.id AS binary_id,
+					COALESCE(r.release_id, '') AS release_id,
+					COALESCE(r.provider_id, b.provider_id) AS provider_id,
+					COALESCE(r.title, '') AS title,
+					COALESCE(r.source_title, '') AS source_title,
+					COALESCE(r.deobfuscated_title, '') AS deobfuscated_title,
+					COALESCE(NULLIF(r.group_name, ''), NULLIF(b.release_family_key, ''), NULLIF(b.base_stem, ''), '') AS group_name,
+					COALESCE(rf.file_name, b.file_name, '') AS file_name,
+					b.binary_name,
+					b.release_name,
+					COALESCE(r.poster, p.poster_name, '') AS poster,
+					b.posted_at,
+					b.total_bytes,
+					b.total_parts,
+					b.match_confidence,
+					b.updated_at AS source_updated_at,
+					COALESCE(bi.status, '') AS current_status,
+					bi.updated_at AS current_updated_at,
+					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
+				FROM binaries b
+				LEFT JOIN posters p ON p.id = b.poster_id
+				LEFT JOIN release_files rf ON rf.binary_id = b.id
+				LEFT JOIN releases r ON r.release_id = rf.release_id
+				LEFT JOIN binary_inspections bi
+					ON bi.stage_name = $1
+					AND bi.binary_id = b.id
+				LEFT JOIN binary_inspections abi
+					ON abi.stage_name = 'inspect_archive'
+					AND abi.binary_id = b.id
+				WHERE (
+					(
+						r.release_id IS NOT NULL AND
+						r.completion_pct >= 100 AND
+						(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count)
+					) OR
+					r.release_id IS NULL
+				)
+				  AND COALESCE(b.recovered_extension, '') = ''
+				  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+				  AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.bin' OR
+					COALESCE(rf.file_name, b.file_name, '') !~ '\.[A-Za-z0-9]{1,8}$'
+				  )
+				  AND (
+					` + rerunPredicate + `
+				  )
+				  AND (
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				  )
+				ORDER BY
+					CASE
+						WHEN COALESCE(r.release_id, '') <> '' THEN r.release_id
+						ELSE 'binary:' || b.id::text
+					END,
+					COALESCE(rf.file_index, b.file_index, 0),
+					b.updated_at DESC,
+					b.id
+			) candidates
+			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
+			LIMIT $2`
+		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
+	}
+
 	query := `
 		SELECT
 			$1,
@@ -1014,57 +1090,8 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			bi.inspection_claimed_until IS NULL OR
 			bi.inspection_claimed_until < NOW()
 		  )`
-	if stageName != "inspect_discovery" {
-		query += filteredPredicate
-	}
-	if stageName == "inspect_discovery" {
-		query = `
-			SELECT *
-			FROM (
-				SELECT DISTINCT ON (r.release_id)
-					$1 AS stage_name,
-					b.id AS binary_id,
-					r.release_id,
-					r.provider_id,
-					r.title,
-					r.source_title,
-					r.deobfuscated_title,
-					r.group_name,
-					COALESCE(rf.file_name, b.file_name, '') AS file_name,
-					b.binary_name,
-					b.release_name,
-					COALESCE(r.poster, '') AS poster,
-					b.posted_at,
-					b.total_bytes,
-					b.total_parts,
-					b.match_confidence,
-					b.updated_at AS source_updated_at,
-					COALESCE(bi.status, '') AS current_status,
-					bi.updated_at AS current_updated_at,
-					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
-					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
-				FROM binaries b
-				JOIN release_files rf ON rf.binary_id = b.id
-				JOIN releases r ON r.release_id = rf.release_id
-				LEFT JOIN binary_inspections bi
-					ON bi.stage_name = $1
-					AND bi.binary_id = b.id
-				LEFT JOIN binary_inspections abi
-					ON abi.stage_name = 'inspect_archive'
-					AND abi.binary_id = b.id
-				WHERE ` + filter + `
-				  AND (
-					` + rerunPredicate + `
-				  )
-				  AND (
-					bi.inspection_claimed_until IS NULL OR
-					bi.inspection_claimed_until < NOW()
-				  )
-				ORDER BY r.release_id, COALESCE(rf.file_index, b.file_index, 0), b.updated_at DESC, b.id
-			) candidates
-			ORDER BY candidates.source_updated_at DESC, candidates.binary_id DESC
-			LIMIT $2`
-	} else if stageName == "inspect_archive" {
+	query += filteredPredicate
+	if stageName == "inspect_archive" {
 		representativePredicate := `
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
