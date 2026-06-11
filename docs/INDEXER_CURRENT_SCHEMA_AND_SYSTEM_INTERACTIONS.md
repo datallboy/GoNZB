@@ -276,7 +276,7 @@ This matrix is the schema contract for current and near-term code changes.
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
-| `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
+| `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Observed `Xref` group memberships for popularity/review only; not canonical file lineage. Admin popularity reporting is intentionally recent-window based, not all-time. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |

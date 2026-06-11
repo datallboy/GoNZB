@@ -240,6 +240,7 @@ Observed write/query shape:
 - scrape run tracking is a simple insert/update lifecycle in `scrape_runs`
 - scrape now also records cross-post discovery telemetry from observed `Xref` memberships into `article_header_crosspost_groups`
 - that telemetry is intended for operator review and candidate-group reporting only; it is not part of canonical binary/file lineage or NZB provenance
+- the first admin popularity report is intentionally bounded to a recent rolling window so it does not devolve into an all-time aggregate over the full telemetry table
 - checkpoint state is centralized in `scrape_checkpoints`
 - header ingest is a transactional batch that does:
   - poster dimension ensure

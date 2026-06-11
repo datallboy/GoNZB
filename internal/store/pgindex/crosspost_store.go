@@ -176,6 +176,7 @@ func (s *Store) GetIndexerCrosspostNewsgroupPopularity(ctx context.Context, limi
 			MAX(acg.observed_at) AS last_seen_at
 		FROM article_header_crosspost_groups acg
 		WHERE BTRIM(COALESCE(acg.observed_group_name, '')) <> ''
+		  AND acg.observed_at >= (NOW() - INTERVAL '30 days')
 		GROUP BY acg.observed_group_name
 		ORDER BY distinct_message_count DESC, observed_article_count DESC, last_seen_at DESC NULLS LAST, acg.observed_group_name ASC
 		LIMIT $1`, limit)
