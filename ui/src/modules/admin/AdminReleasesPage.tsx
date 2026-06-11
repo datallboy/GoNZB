@@ -30,6 +30,28 @@ const defaultFilters: AdminReleaseListParams = {
   offset: 0,
 }
 
+function formatNZBStatus(value: string) {
+  switch (value) {
+    case 'legacy_pending':
+    case 'pending':
+      return 'NZB pending'
+    case 'legacy_ready':
+    case 'ready':
+      return 'NZB ready'
+    case 'legacy_failed':
+    case 'failed':
+      return 'NZB failed'
+    case 'archived':
+      return 'Archived'
+    case 'purge_pending':
+      return 'Archived, purge pending'
+    case 'purged':
+      return 'Archived, sources purged'
+    default:
+      return value || 'NZB pending'
+  }
+}
+
 export function AdminReleasesPage() {
   const [filters, setFilters] = useState<AdminReleaseListParams>(defaultFilters)
   const [submittedFilters, setSubmittedFilters] = useState<AdminReleaseListParams>(defaultFilters)
@@ -289,7 +311,7 @@ export function AdminReleasesPage() {
                   <td>
                     <div>{item.hidden ? 'hidden' : item.public_visible ? 'public' : 'internal-only'}</div>
                     <div className="muted-row">
-                      <span>{item.nzb_generation_status || 'pending'}</span>
+                      <span>{formatNZBStatus(item.nzb_generation_status || 'pending')}</span>
                       <span>{Math.floor(item.completion_pct)}%</span>
                       <span>{item.password_candidate_count} pwd</span>
                     </div>

@@ -43,6 +43,28 @@ function binaryEvidenceSummary(binary: AdminReleaseDetailResponse['binaries'][nu
   return items.join(' · ')
 }
 
+function formatNZBStatus(value: string) {
+  switch (value) {
+    case 'legacy_pending':
+    case 'pending':
+      return 'NZB pending'
+    case 'legacy_ready':
+    case 'ready':
+      return 'NZB ready'
+    case 'legacy_failed':
+    case 'failed':
+      return 'NZB failed'
+    case 'archived':
+      return 'Archived'
+    case 'purge_pending':
+      return 'Archived, purge pending'
+    case 'purged':
+      return 'Archived, sources purged'
+    default:
+      return value || 'NZB pending'
+  }
+}
+
 export function AdminReleaseDetailPage() {
   const { id = '' } = useParams()
   const [data, setData] = useState<AdminReleaseDetailResponse | null>(null)
@@ -181,7 +203,7 @@ export function AdminReleaseDetailPage() {
             </div>
             <div>
               <dt>NZB Cache</dt>
-              <dd>{release.nzb_generation_status || 'pending'}</dd>
+              <dd>{formatNZBStatus(release.nzb_generation_status || 'pending')}</dd>
             </div>
             <div>
               <dt>Payload Complete</dt>
