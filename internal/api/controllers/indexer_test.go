@@ -943,7 +943,23 @@ func (t testSnapshotReader) ListRecentNNTPSnapshots(context.Context, string, tim
 	return t.items, t.err
 }
 
-func TestRuntimeIndexerServiceNNTPStatsPrefersSharedSnapshot(t *testing.T) {
+func TestRuntimeIndexerServiceNNTPStatsUsesSharedSnapshotWhenNoLocalRuntime(t *testing.T) {
+	appCtx := &app.Context{}
+	service := &runtimeIndexerService{
+		appCtx:        appCtx,
+		nntpSnapshots: testSnapshotReader{items: []pgindex.NNTPRuntimeSnapshot{{Payload: json.RawMessage(`{"scope":"indexer","active":9}`)}}},
+	}
+
+	stats, err := service.NNTPStats(context.Background())
+	if err != nil {
+		t.Fatalf("NNTPStats returned error: %v", err)
+	}
+	if stats == nil || stats.Active != 9 {
+		t.Fatalf("expected shared snapshot active=9, got %+v", stats)
+	}
+}
+
+func TestRuntimeIndexerServiceNNTPStatsPrefersLocalRuntimeWhenAvailable(t *testing.T) {
 	appCtx := &app.Context{}
 	service := &runtimeIndexerService{
 		appCtx:        appCtx,
@@ -955,8 +971,8 @@ func TestRuntimeIndexerServiceNNTPStatsPrefersSharedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NNTPStats returned error: %v", err)
 	}
-	if stats == nil || stats.Active != 9 {
-		t.Fatalf("expected shared snapshot active=9, got %+v", stats)
+	if stats == nil || stats.Active != 2 {
+		t.Fatalf("expected local runtime stats active=2, got %+v", stats)
 	}
 }
 
@@ -984,6 +1000,39 @@ func TestRuntimeIndexerServiceNNTPStatsAggregatesRecentSnapshots(t *testing.T) {
 		t.Fatalf("expected merged scope stats, got %+v", stats.Scopes)
 	}
 }
+
+func TestOverlayBackfillProgressFromRuntimeClearsStaleCutoff(t *testing.T) {
+	progress := &pgindex.IndexerBackfillProgress{
+		Items: []pgindex.IndexerBackfillProgressItem{{
+			GroupName:            "alt.binaries.xray",
+			ConfiguredCutoffDate: ptrTimeTest(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+			CutoffReached:        true,
+		}},
+		Count: 1,
+	}
+	indexing := &app.IndexingRuntimeSettings{
+		ExplicitGroups: []app.IndexingScrapeGroupRuntimeSettings{{
+			GroupName:         "alt.binaries.xray",
+			Enabled:           true,
+			BackfillUntilDate: "2020-01-01",
+		}},
+	}
+
+	overlayBackfillProgressFromRuntime(progress, indexing)
+
+	if len(progress.Items) != 1 {
+		t.Fatalf("expected one backfill item, got %+v", progress.Items)
+	}
+	item := progress.Items[0]
+	if item.ConfiguredCutoffDate == nil || item.ConfiguredCutoffDate.Year() != 2020 {
+		t.Fatalf("expected runtime cutoff date 2020, got %+v", item.ConfiguredCutoffDate)
+	}
+	if item.CutoffReached {
+		t.Fatalf("expected stale cutoff reached state to clear after runtime cutoff change, got %+v", item)
+	}
+}
+
+func ptrTimeTest(t time.Time) *time.Time { return &t }
 
 type testRuntimeIndexerService struct {
 	stats *app.NNTPRuntimeStats

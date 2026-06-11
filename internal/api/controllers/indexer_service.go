@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -149,7 +150,16 @@ func (s *runtimeIndexerService) BackfillProgress(ctx context.Context) (*pgindex.
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
-	return s.store.GetIndexerBackfillProgress(ctx)
+	progress, err := s.store.GetIndexerBackfillProgress(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil || runtime == nil || runtime.Indexing == nil {
+		return progress, nil
+	}
+	overlayBackfillProgressFromRuntime(progress, runtime.Indexing)
+	return progress, nil
 }
 
 func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
@@ -160,6 +170,16 @@ func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.I
 }
 
 func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	indexer := s.currentIndexer()
+	if s != nil && indexer != nil {
+		stats, err := indexer.NNTPStats(ctx)
+		if err == nil && stats != nil {
+			return stats, nil
+		}
+		if err != nil && s.log != nil {
+			s.log.Error("load local nntp runtime stats: %v", err)
+		}
+	}
 	if s != nil && s.nntpSnapshots != nil {
 		snapshots, err := s.nntpSnapshots.ListRecentNNTPSnapshots(ctx, "indexer", time.Now().Add(-10*time.Second))
 		if err != nil {
@@ -189,7 +209,6 @@ func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntime
 			}
 		}
 	}
-	indexer := s.currentIndexer()
 	if s == nil || indexer == nil {
 		return nil, errIndexerUnavailable
 	}
@@ -321,6 +340,90 @@ func aggregateNNTPSnapshots(snapshots []pgindex.NNTPRuntimeSnapshot, log interfa
 		aggregate.Scopes = append(aggregate.Scopes, scope)
 	}
 	return &aggregate, true
+}
+
+func overlayBackfillProgressFromRuntime(progress *pgindex.IndexerBackfillProgress, indexing *app.IndexingRuntimeSettings) {
+	if progress == nil || indexing == nil {
+		return
+	}
+	effective := app.EffectiveScrapeGroups(indexing)
+	cutoffs := make(map[string]*time.Time, len(effective))
+	for _, group := range effective {
+		name := strings.TrimSpace(group.GroupName)
+		if name == "" {
+			continue
+		}
+		var cutoff *time.Time
+		if until := strings.TrimSpace(group.BackfillUntilDate); until != "" {
+			if parsed, err := time.Parse("2006-01-02", until); err == nil {
+				utc := parsed.UTC()
+				cutoff = &utc
+			}
+		}
+		cutoffs[strings.ToLower(name)] = cutoff
+	}
+
+	seen := make(map[string]struct{}, len(progress.Items))
+	for i := range progress.Items {
+		item := &progress.Items[i]
+		key := strings.ToLower(strings.TrimSpace(item.GroupName))
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		runtimeCutoff, ok := cutoffs[key]
+		if !ok {
+			item.ConfiguredCutoffDate = nil
+			item.CutoffReached = false
+			continue
+		}
+		if runtimeCutoff == nil {
+			item.ConfiguredCutoffDate = nil
+			item.CutoffReached = false
+			continue
+		}
+		if item.ConfiguredCutoffDate == nil || !item.ConfiguredCutoffDate.Equal(*runtimeCutoff) {
+			item.ConfiguredCutoffDate = runtimeCutoff
+			item.CutoffReached = false
+			continue
+		}
+		item.ConfiguredCutoffDate = runtimeCutoff
+	}
+
+	for _, group := range effective {
+		if !group.Enabled {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(group.GroupName))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		item := pgindex.IndexerBackfillProgressItem{
+			GroupName: strings.TrimSpace(group.GroupName),
+		}
+		if until := strings.TrimSpace(group.BackfillUntilDate); until != "" {
+			if parsed, err := time.Parse("2006-01-02", until); err == nil {
+				utc := parsed.UTC()
+				item.ConfiguredCutoffDate = &utc
+			}
+		}
+		progress.Items = append(progress.Items, item)
+	}
+
+	slices.SortFunc(progress.Items, func(a, b pgindex.IndexerBackfillProgressItem) int {
+		switch {
+		case a.GroupName < b.GroupName:
+			return -1
+		case a.GroupName > b.GroupName:
+			return 1
+		default:
+			return 0
+		}
+	})
+	progress.Count = len(progress.Items)
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {
