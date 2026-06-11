@@ -631,17 +631,31 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 
 func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfillProgress, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH checkpoint_rollup AS (
+		WITH latest_cutoff AS (
 			SELECT
 				sc.newsgroup_id,
-				MAX(sc.backfill_until_date) AS configured_cutoff_date,
-				BOOL_OR(sc.backfill_cutoff_reached) AS cutoff_reached,
+				MAX(sc.backfill_until_date) AS configured_cutoff_date
+			FROM scrape_checkpoints sc
+			GROUP BY sc.newsgroup_id
+		),
+		checkpoint_rollup AS (
+			SELECT
+				sc.newsgroup_id,
+				lc.configured_cutoff_date,
+				BOOL_OR(
+					sc.backfill_cutoff_reached = TRUE
+					AND (
+						(lc.configured_cutoff_date IS NULL AND sc.backfill_until_date IS NULL)
+						OR sc.backfill_until_date = lc.configured_cutoff_date
+					)
+				) AS cutoff_reached,
 				MIN(NULLIF(sc.backfill_article_number, 0)) AS backfill_cursor_article_number,
 				MAX(sc.last_article_number) AS latest_article_number,
 				COUNT(DISTINCT sc.provider_id) AS provider_count,
 				MAX(sc.updated_at) AS last_checkpoint_updated_at
 			FROM scrape_checkpoints sc
-			GROUP BY sc.newsgroup_id
+			JOIN latest_cutoff lc ON lc.newsgroup_id = sc.newsgroup_id
+			GROUP BY sc.newsgroup_id, lc.configured_cutoff_date
 		)
 		SELECT
 			ng.group_name,

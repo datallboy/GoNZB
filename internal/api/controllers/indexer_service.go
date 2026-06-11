@@ -93,6 +93,7 @@ type runtimeIndexerService struct {
 	store         app.UsenetIndexStore
 	nntpSnapshots interface {
 		GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+		ListRecentNNTPSnapshots(ctx context.Context, moduleName string, since time.Time) ([]pgindex.NNTPRuntimeSnapshot, error)
 	}
 	settingsAdmin   app.SettingsAdmin
 	archiveStore    app.BlobStore
@@ -160,19 +161,31 @@ func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.I
 
 func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
 	if s != nil && s.nntpSnapshots != nil {
-		snapshot, err := s.nntpSnapshots.GetLatestNNTPSnapshot(ctx, "indexer")
+		snapshots, err := s.nntpSnapshots.ListRecentNNTPSnapshots(ctx, "indexer", time.Now().Add(-10*time.Second))
 		if err != nil {
 			if s.log != nil {
-				s.log.Error("load shared nntp runtime snapshot: %v", err)
+				s.log.Error("load shared nntp runtime snapshots: %v", err)
 			}
-		} else if snapshot != nil && len(snapshot.Payload) > 0 {
-			var stats app.NNTPRuntimeStats
-			if err := json.Unmarshal(snapshot.Payload, &stats); err != nil {
+		} else if len(snapshots) > 0 {
+			aggregated, ok := aggregateNNTPSnapshots(snapshots, s.log)
+			if ok {
+				return aggregated, nil
+			}
+		} else {
+			snapshot, err := s.nntpSnapshots.GetLatestNNTPSnapshot(ctx, "indexer")
+			if err != nil {
 				if s.log != nil {
-					s.log.Error("decode shared nntp runtime snapshot: %v", err)
+					s.log.Error("load latest shared nntp runtime snapshot: %v", err)
 				}
-			} else {
-				return &stats, nil
+			} else if snapshot != nil && len(snapshot.Payload) > 0 {
+				var stats app.NNTPRuntimeStats
+				if err := json.Unmarshal(snapshot.Payload, &stats); err != nil {
+					if s.log != nil {
+						s.log.Error("decode shared nntp runtime snapshot: %v", err)
+					}
+				} else {
+					return &stats, nil
+				}
 			}
 		}
 	}
@@ -185,14 +198,129 @@ func (s *runtimeIndexerService) NNTPStats(ctx context.Context) (*app.NNTPRuntime
 
 func snapshotReaderFromStore(store app.UsenetIndexStore) interface {
 	GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+	ListRecentNNTPSnapshots(ctx context.Context, moduleName string, since time.Time) ([]pgindex.NNTPRuntimeSnapshot, error)
 } {
 	if store == nil {
 		return nil
 	}
 	reader, _ := store.(interface {
 		GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
+		ListRecentNNTPSnapshots(ctx context.Context, moduleName string, since time.Time) ([]pgindex.NNTPRuntimeSnapshot, error)
 	})
 	return reader
+}
+
+func aggregateNNTPSnapshots(snapshots []pgindex.NNTPRuntimeSnapshot, log interface {
+	Error(format string, v ...interface{})
+}) (*app.NNTPRuntimeStats, bool) {
+	if len(snapshots) == 0 {
+		return nil, false
+	}
+	var (
+		aggregate       app.NNTPRuntimeStats
+		providerTotals  = make(map[string]app.NNTPProviderRuntimeStats)
+		scopeTotals     = make(map[string]app.NNTPScopeRuntimeStats)
+		policy          string
+		modulesAssigned bool
+		decodedAny      bool
+	)
+	aggregate.Scope = "indexer"
+	for _, snapshot := range snapshots {
+		if len(snapshot.Payload) == 0 {
+			continue
+		}
+		var stats app.NNTPRuntimeStats
+		if err := json.Unmarshal(snapshot.Payload, &stats); err != nil {
+			if log != nil {
+				log.Error("decode shared nntp runtime snapshot: %v", err)
+			}
+			continue
+		}
+		decodedAny = true
+		if policy == "" {
+			policy = stats.Policy
+		} else if policy != stats.Policy {
+			policy = "mixed"
+		}
+		aggregate.Capacity += stats.Capacity
+		aggregate.Active += stats.Active
+		aggregate.Idle += stats.Idle
+		aggregate.Waiting += stats.Waiting
+		aggregate.BusyReturns += stats.BusyReturns
+		aggregate.WaitCount += stats.WaitCount
+		aggregate.WaitDurationMS += stats.WaitDurationMS
+		if stats.WaitMaxMS > aggregate.WaitMaxMS {
+			aggregate.WaitMaxMS = stats.WaitMaxMS
+		}
+		aggregate.Fetches += stats.Fetches
+		aggregate.FetchBodyPrefix += stats.FetchBodyPrefix
+		aggregate.GroupStats += stats.GroupStats
+		aggregate.XOver += stats.XOver
+		aggregate.ArticleNotFound += stats.ArticleNotFound
+		aggregate.OperationErrors += stats.OperationErrors
+		if !modulesAssigned {
+			aggregate.Modules = stats.Modules
+			modulesAssigned = true
+		} else {
+			aggregate.Modules.IndexerActive += stats.Modules.IndexerActive
+			aggregate.Modules.DownloaderActive += stats.Modules.DownloaderActive
+			aggregate.Modules.IndexerLimit += stats.Modules.IndexerLimit
+			aggregate.Modules.DownloaderLimit += stats.Modules.DownloaderLimit
+			aggregate.Modules.DownloaderDemandActive = aggregate.Modules.DownloaderDemandActive || stats.Modules.DownloaderDemandActive
+		}
+		for _, provider := range stats.Providers {
+			total := providerTotals[provider.ID]
+			total.ID = provider.ID
+			total.Label = provider.Label
+			total.Priority = provider.Priority
+			total.Capacity += provider.Capacity
+			total.Active += provider.Active
+			total.Idle += provider.Idle
+			total.Dials += provider.Dials
+			total.DialFailures += provider.DialFailures
+			total.PoolReuses += provider.PoolReuses
+			total.PoolReturns += provider.PoolReturns
+			total.PoolDiscardIdle += provider.PoolDiscardIdle
+			total.PoolDiscardAge += provider.PoolDiscardAge
+			total.PoolDiscardError += provider.PoolDiscardError
+			total.FetchRetries += provider.FetchRetries
+			total.GroupStatsRetries += provider.GroupStatsRetries
+			total.XOverRetries += provider.XOverRetries
+			total.RecoverableErrors += provider.RecoverableErrors
+			providerTotals[provider.ID] = total
+		}
+		for _, scope := range stats.Scopes {
+			total := scopeTotals[scope.Scope]
+			total.Scope = scope.Scope
+			total.Active += scope.Active
+			total.Waiting += scope.Waiting
+			total.WaitCount += scope.WaitCount
+			total.WaitDurationMS += scope.WaitDurationMS
+			if scope.WaitMaxMS > total.WaitMaxMS {
+				total.WaitMaxMS = scope.WaitMaxMS
+			}
+			total.Fetches += scope.Fetches
+			total.FetchBodyPrefix += scope.FetchBodyPrefix
+			total.GroupStats += scope.GroupStats
+			total.XOver += scope.XOver
+			total.ArticleNotFound += scope.ArticleNotFound
+			total.OperationErrors += scope.OperationErrors
+			scopeTotals[scope.Scope] = total
+		}
+	}
+	if !decodedAny {
+		return nil, false
+	}
+	aggregate.Policy = policy
+	aggregate.Providers = make([]app.NNTPProviderRuntimeStats, 0, len(providerTotals))
+	for _, provider := range providerTotals {
+		aggregate.Providers = append(aggregate.Providers, provider)
+	}
+	aggregate.Scopes = make([]app.NNTPScopeRuntimeStats, 0, len(scopeTotals))
+	for _, scope := range scopeTotals {
+		aggregate.Scopes = append(aggregate.Scopes, scope)
+	}
+	return &aggregate, true
 }
 
 func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageView, error) {

@@ -88,3 +88,39 @@ func (s *Store) GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*
 	}
 	return &snapshot, nil
 }
+
+func (s *Store) ListRecentNNTPSnapshots(ctx context.Context, moduleName string, since time.Time) ([]NNTPRuntimeSnapshot, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if moduleName == "" {
+		moduleName = "indexer"
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT publisher_id, module_name, scope, payload, updated_at
+		FROM indexer_nntp_runtime_snapshots
+		WHERE module_name = $1
+		  AND updated_at >= $2
+		ORDER BY updated_at DESC, publisher_id`,
+		moduleName,
+		since.UTC(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recent nntp runtime snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]NNTPRuntimeSnapshot, 0, 8)
+	for rows.Next() {
+		var item NNTPRuntimeSnapshot
+		if err := rows.Scan(&item.PublisherID, &item.ModuleName, &item.Scope, &item.Payload, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan nntp runtime snapshot: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate nntp runtime snapshots: %w", err)
+	}
+	return items, nil
+}
