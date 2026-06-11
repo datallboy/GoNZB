@@ -148,6 +148,23 @@ export function AdminReleaseDetailPage() {
   const diagnostics = data.release.diagnostics
   const subtitleLanguages = release.subtitle_languages ?? []
   const mediaTags = release.media_tags ?? []
+  const archiveState = release.nzb_generation_status || 'pending'
+  const isArchivedOrPurged =
+    archiveState === 'archived' ||
+    archiveState === 'purge_pending' ||
+    archiveState === 'purged'
+  const hasBinaryDetail =
+    (data.binaries ?? []).length > 0 &&
+    (data.binaries ?? []).some(
+      (binary) =>
+        binary.parts.length > 0 ||
+        binary.inspections.length > 0 ||
+        binary.artifacts.length > 0 ||
+        binary.archive_entries.length > 0 ||
+        binary.media_streams.length > 0 ||
+        binary.text_evidence.length > 0 ||
+        binary.par2_sets.length > 0,
+    )
 
   return (
     <div className="page-section stack">
@@ -204,6 +221,10 @@ export function AdminReleaseDetailPage() {
             <div>
               <dt>NZB Cache</dt>
               <dd>{formatNZBStatus(release.nzb_generation_status || 'pending')}</dd>
+            </div>
+            <div>
+              <dt>Archive State</dt>
+              <dd>{isArchivedOrPurged ? formatNZBStatus(archiveState) : 'Not archived yet'}</dd>
             </div>
             <div>
               <dt>Payload Complete</dt>
@@ -505,6 +526,7 @@ export function AdminReleaseDetailPage() {
         ))}
       </div>
 
+      {hasBinaryDetail ? (
       <div className="page-card stack">
         <div className="page-header">
           <div>
@@ -679,6 +701,14 @@ export function AdminReleaseDetailPage() {
           </details>
         ))}
       </div>
+      ) : isArchivedOrPurged ? (
+        <div className="page-card">
+          <h2 className="section-title">Binary Grouping and Evidence</h2>
+          <div className="banner">
+            This release has already been archived/purged. Source-level binary and inspection detail is no longer available here.
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
