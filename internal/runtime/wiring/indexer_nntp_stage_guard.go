@@ -22,6 +22,8 @@ type cachedNNTPTrafficGuard struct {
 	statsFn       func() app.NNTPRuntimeStats
 
 	mu          sync.Mutex
+	cond        *sync.Cond
+	evaluating  bool
 	lastCheck   time.Time
 	lastResults map[supervisor.StageName]supervisor.StageGateDecision
 }
@@ -40,6 +42,7 @@ func newIndexerNNTPTrafficGuard(appCtx *app.Context, statsFn func() app.NNTPRunt
 		statsFn:       statsFn,
 		lastResults:   make(map[supervisor.StageName]supervisor.StageGateDecision),
 	}
+	guard.cond = sync.NewCond(&guard.mu)
 	return guard.allowStage
 }
 
@@ -49,6 +52,12 @@ func (g *cachedNNTPTrafficGuard) allowStage(ctx context.Context, stage superviso
 	}
 
 	g.mu.Lock()
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	for g.evaluating {
+		g.cond.Wait()
+	}
 	if time.Since(g.lastCheck) < nntpStageGuardRefreshInterval {
 		if result, ok := g.lastResults[stage.Name]; ok {
 			g.mu.Unlock()
@@ -57,14 +66,23 @@ func (g *cachedNNTPTrafficGuard) allowStage(ctx context.Context, stage superviso
 		g.mu.Unlock()
 		return supervisor.StageGateDecision{Allowed: true}, nil
 	}
+	g.evaluating = true
 	g.mu.Unlock()
 
 	runtime, err := g.settingsStore.GetRuntimeSettings(ctx)
 	if err != nil {
+		g.mu.Lock()
+		g.evaluating = false
+		g.cond.Broadcast()
+		g.mu.Unlock()
 		return supervisor.StageGateDecision{}, fmt.Errorf("load runtime settings for nntp stage guard: %w", err)
 	}
 	results, err := g.evaluate(ctx, runtime)
 	if err != nil {
+		g.mu.Lock()
+		g.evaluating = false
+		g.cond.Broadcast()
+		g.mu.Unlock()
 		return supervisor.StageGateDecision{}, err
 	}
 
@@ -72,6 +90,8 @@ func (g *cachedNNTPTrafficGuard) allowStage(ctx context.Context, stage superviso
 	g.lastCheck = time.Now()
 	g.lastResults = results
 	result, ok := results[stage.Name]
+	g.evaluating = false
+	g.cond.Broadcast()
 	g.mu.Unlock()
 	if !ok {
 		return supervisor.StageGateDecision{Allowed: true}, nil
