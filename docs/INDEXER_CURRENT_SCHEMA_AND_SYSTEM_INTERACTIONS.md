@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-06-04
+Snapshot date: 2026-06-11
 
 This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
@@ -165,6 +165,12 @@ Held back:
 - inspect stages
 - archive / NZB tail stages
 
+Validated current bootstrap posture:
+
+- prefer CLI stage commands over full `serve` during first ingest on a fresh DB
+- `scrape_latest` and `scrape_backfill` may run together during bootstrap
+- keep every non-scrape stage disabled until scrape-only backlog is established and integrity remains clean
+
 #### Build / regroup
 
 Allowed:
@@ -204,6 +210,11 @@ Current protected relations:
 - `article_headers_newsgroup_id_message_id_key`
 
 If those checks fail, scrape should idle/fail fast rather than continue applying write pressure to a damaged cluster.
+
+Additional ingest guardrail:
+
+- all NNTP text fields written through scrape must strip embedded NUL bytes before any PostgreSQL text insert/upsert path
+- this applies at minimum to message IDs, subjects, posters, and xref text
 
 ## Table Ownership Matrix
 

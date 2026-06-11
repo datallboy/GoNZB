@@ -92,6 +92,39 @@ Before calling the schema stable:
 - commit split for the current dirty tree
 - fresh-DB bring-up playbook using the bootstrap/build/steady-state profiles
 
+## Live Bootstrap Status
+
+Validated on `2026-06-11` against a clean database:
+
+- `indexer maintenance check-integrity --ensure-extension` passed for:
+  - `article_headers_pkey`
+  - `article_headers_newsgroup_id_article_number_key`
+  - `article_headers_newsgroup_id_message_id_key`
+- scrape-only bootstrap is currently the active rebuild profile
+- `indexer scrape latest` and `indexer scrape backfill` were both launched in CLI mode, not via full `serve`
+- concurrent scrape-only execution is currently healthy on the fresh DB
+
+Observed live behavior after the restart:
+
+- `scrape_latest` resumed completing runs after the first bad historical run
+- `scrape_backfill` started cleanly and began inserting 20k-row ranges
+- `article_headers` grew past `180k` rows without a repeat of the earlier ingest failure
+
+Fresh issue found and fixed during bootstrap:
+
+- some NNTP strings included embedded NUL bytes
+- Go still treats those strings as valid UTF-8, so the old sanitizer let them through
+- PostgreSQL then rejected poster inserts with:
+  - `ERROR: invalid byte sequence for encoding "UTF8": 0x00`
+- fix applied:
+  - strip `\\x00` in `sanitizeUTF8()` before any header/payload/poster DB write
+  - add regression coverage on `InsertArticleHeaders`
+
+Current operational guidance:
+
+- continue building header backlog with CLI scrape-only commands first
+- do not enable assemble/recover/release stages until the scrape-only bootstrap has accumulated a meaningful backlog and remains stable over a longer window
+
 ## Acceptance Criteria
 
 - the live schema doc clearly states which stages may overlap and which should be isolated

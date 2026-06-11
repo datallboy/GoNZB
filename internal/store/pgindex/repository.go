@@ -1368,10 +1368,14 @@ func sanitizeUTF8(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = strings.ReplaceAll(s, "\x00", "")
+	if s == "" {
+		return ""
+	}
 	if utf8.ValidString(s) {
 		return s
 	}
-	return string(bytes.ToValidUTF8([]byte(s), []byte{}))
+	return strings.ReplaceAll(string(bytes.ToValidUTF8([]byte(s), []byte{})), "\x00", "")
 }
 
 func sanitizeStringMap(in map[string]any) map[string]any {

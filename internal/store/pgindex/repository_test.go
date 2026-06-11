@@ -1601,6 +1601,69 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 	}
 }
 
+func TestInsertArticleHeadersStripsNULBytesFromTextFields(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.nul.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 11, 10, 30, 0, 0, time.UTC)
+	inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 7001,
+		MessageID:     "<nul-byte-test@test>\x00",
+		Subject:       "Bad\x00Subject [1/1] - \"nul.rar\" yEnc (1/1)",
+		Poster:        "bad\x00poster@example.com",
+		DateUTC:       &now,
+		Bytes:         1234,
+		Lines:         12,
+		Xref:          "xref\x00value",
+	}})
+	if err != nil {
+		t.Fatalf("insert article headers with nul bytes: %v", err)
+	}
+	if inserted != 1 {
+		t.Fatalf("expected 1 processed header, got %d", inserted)
+	}
+
+	var (
+		messageID string
+		subject   string
+		poster    string
+		xref      string
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			ah.message_id,
+			p.subject,
+			COALESCE(po.poster_name, p.poster, ''),
+			p.xref
+		FROM article_headers ah
+		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		LEFT JOIN posters po ON po.id = p.poster_id
+		WHERE ah.newsgroup_id = $1`, newsgroupID,
+	).Scan(&messageID, &subject, &poster, &xref); err != nil {
+		t.Fatalf("query sanitized header payload: %v", err)
+	}
+
+	if strings.ContainsRune(messageID, '\x00') || strings.ContainsRune(subject, '\x00') || strings.ContainsRune(poster, '\x00') || strings.ContainsRune(xref, '\x00') {
+		t.Fatalf("expected nul bytes stripped, got message_id=%q subject=%q poster=%q xref=%q", messageID, subject, poster, xref)
+	}
+}
+
 func TestInsertArticleHeadersBatchResolvesExistingRowsWithoutPerRowProbe(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
