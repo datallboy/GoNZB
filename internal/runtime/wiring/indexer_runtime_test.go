@@ -90,7 +90,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Concurrency:     &concurrency,
 		BackoffSeconds:  &backoff,
 	}
-	cfg.Indexing.Assemble = config.IndexingStageConfig{
+	cfg.Indexing.AssembleLaneA = config.IndexingStageConfig{
 		Concurrency: &concurrency,
 	}
 	cfg.Indexing.Match = config.IndexingMatchConfig{
@@ -163,8 +163,8 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ScrapeLatest.Interval != 90*time.Second || got.ScrapeLatest.BatchSize != batch {
 		t.Fatalf("unexpected scrape_latest stage config: %+v", got.ScrapeLatest)
 	}
-	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.Assemble.Concurrency != concurrency {
-		t.Fatalf("unexpected scrape_latest backoff/concurrency or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
+	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.AssembleLaneA.Concurrency != concurrency {
+		t.Fatalf("unexpected scrape/latest or assemble lane-a concurrency: scrape=%+v laneA=%+v", got.ScrapeLatest, got.AssembleLaneA)
 	}
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)

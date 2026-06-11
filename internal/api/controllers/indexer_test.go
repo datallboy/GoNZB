@@ -482,8 +482,8 @@ func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
 		Service: &stubIndexerService{
 			throughput: &pgindex.IndexerStageThroughput{
 				Items: []pgindex.IndexerStageThroughputItem{{
-					StageName: "assemble",
-					Label:     "Assemble",
+					StageName: "assemble_lane_a",
+					Label:     "Assemble Lane A",
 					ItemLabel: "headers",
 					Windows: []pgindex.IndexerStageThroughputWindow{{
 						WindowHours:        1,
@@ -513,7 +513,7 @@ func TestIndexerAdminControllerGetStageThroughput(t *testing.T) {
 		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{`"count":1`, `"stage_name":"assemble"`, `"items_per_second":500`, `"max_workers_used":12`} {
+	for _, needle := range []string{`"count":1`, `"stage_name":"assemble_lane_a"`, `"items_per_second":500`, `"max_workers_used":12`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)
 		}

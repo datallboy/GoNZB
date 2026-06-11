@@ -58,7 +58,6 @@ type usenetIndexerConfig struct {
 	EnrichTMDB                                      tmdb.Options
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
-	Assemble                                        indexerStageConfig
 	AssembleLaneA                                   indexerStageConfig
 	AssembleLaneB                                   indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
@@ -121,7 +120,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeBackfillSvc       *scrape.Service
 		scrapeProvider          io.Closer
 		nntpStats               func() app.NNTPRuntimeStats
-		assembleFetcher         inspectpkg.ArticleFetcher
 		assembleAFetcher        inspectpkg.ArticleFetcher
 		assembleBFetcher        inspectpkg.ArticleFetcher
 		inspectDiscoveryFetcher inspectpkg.ArticleFetcher
@@ -166,7 +164,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			return nil, err
 		}
 		scrapeClient := indexerNNTPClient(manager, "scrape")
-		assembleClient := indexerNNTPClient(manager, "assemble")
 		assembleLaneAClient := indexerNNTPClient(manager, "assemble_lane_a")
 		assembleLaneBClient := indexerNNTPClient(manager, "assemble_lane_b")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
@@ -204,7 +201,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		nntpStats = func() app.NNTPRuntimeStats {
 			return manager.RuntimeStats("indexer")
 		}
-		assembleFetcher = assembleClient
 		assembleAFetcher = assembleLaneAClient
 		assembleBFetcher = assembleLaneBClient
 		inspectDiscoveryFetcher = indexerNNTPClient(manager, "inspect_discovery")
@@ -217,19 +213,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
-	assembleSvc := assemble.NewService(
-		appCtx.PGIndexStore,
-		matcherSvc,
-		assembleFetcher,
-		appCtx.Logger,
-		assemble.Options{
-			BatchSize:               runtimeCfg.Assemble.BatchSize,
-			ClaimOwner:              "assemble",
-			ClaimLease:              5 * time.Minute,
-			Concurrency:             runtimeCfg.Assemble.Concurrency,
-			BinaryUpsertDBChunkSize: runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
-		},
-	)
 	assembleLaneASvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
@@ -343,17 +326,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
-			}),
-		},
-		{
-			Name:        supervisor.StageAssemble,
-			Interval:    runtimeCfg.Assemble.Interval,
-			Enabled:     assembleSvc != nil && runtimeCfg.Assemble.Enabled,
-			BatchSize:   runtimeCfg.Assemble.BatchSize,
-			Concurrency: runtimeCfg.Assemble.Concurrency,
-			Backoff:     runtimeCfg.Assemble.Backoff,
-			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-				return marshalStageMetrics(assembleSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -705,7 +677,6 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		}),
 		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
-		Assemble:                   newIndexerStageConfig(indexingCfg.Assemble),
 		AssembleLaneA:              newIndexerStageConfig(indexingCfg.AssembleLaneA),
 		AssembleLaneB:              newIndexerStageConfig(indexingCfg.AssembleLaneB),
 		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),

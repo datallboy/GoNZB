@@ -304,7 +304,6 @@ type UsenetIndexerService interface {
 	ScrapeOnce(ctx context.Context) error
 	ScrapeLatestOnce(ctx context.Context) error
 	ScrapeBackfillOnce(ctx context.Context) error
-	AssembleOnce(ctx context.Context) error
 	AssembleLaneAOnce(ctx context.Context) error
 	AssembleLaneBOnce(ctx context.Context) error
 	RecoverYEncOnce(ctx context.Context) error

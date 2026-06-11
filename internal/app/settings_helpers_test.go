@@ -23,7 +23,7 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			BatchSize:   func() *int { v := 5000; return &v }(),
 			Concurrency: func() *int { v := 12; return &v }(),
 		},
-		Assemble: config.IndexingStageConfig{
+		AssembleLaneA: config.IndexingStageConfig{
 			BatchSize: func() *int { v := 5000; return &v }(),
 		},
 		Release: config.IndexingReleaseConfig{
@@ -145,7 +145,7 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
 	runtime := WithRuntimeDefaults(&RuntimeSettings{
 		Indexing: &IndexingRuntimeSettings{
-			Assemble: IndexingStageRuntimeSettings{Enabled: true, IntervalMinutes: 5, BatchSize: 4000, Concurrency: 2},
+			AssembleLaneA: IndexingStageRuntimeSettings{Enabled: true, IntervalMinutes: 5, BatchSize: 4000, Concurrency: 2},
 		},
 	})
 
@@ -157,9 +157,6 @@ func TestWithRuntimeDefaultsBackfillsAssembleLaneStageDefaults(t *testing.T) {
 	}
 	if runtime.Indexing.AssembleLaneB.IntervalMinutes <= 0 || runtime.Indexing.AssembleLaneB.BatchSize <= 0 {
 		t.Fatalf("expected lane B defaults to be backfilled, got %+v", runtime.Indexing.AssembleLaneB)
-	}
-	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 250 {
-		t.Fatalf("expected assemble chunk-size default to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
 	if runtime.Indexing.AssembleLaneA.BinaryUpsertDBChunkSize != 250 || runtime.Indexing.AssembleLaneB.BinaryUpsertDBChunkSize != 250 {
 		t.Fatalf("expected lane chunk-size defaults to be backfilled, got laneA=%+v laneB=%+v", runtime.Indexing.AssembleLaneA, runtime.Indexing.AssembleLaneB)

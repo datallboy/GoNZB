@@ -93,6 +93,7 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
 		)`, alias),
 		probableWeakTitleClause(alias),
+		fmt.Sprintf("COALESCE(%s.password_state, 'unknown') <> 'passworded_unknown'", alias),
 		"COALESCE(ro.hidden, FALSE) = FALSE",
 	}
 

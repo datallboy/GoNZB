@@ -15,7 +15,6 @@ import type {
 type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
-  | 'assemble'
   | 'assemble_lane_a'
   | 'assemble_lane_b'
   | 'recover_yenc'
@@ -48,7 +47,6 @@ type StageDefinition = {
 const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group batch at a time so large group sets stay responsive.' },
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.' },
-  { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
   { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
   { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
@@ -69,7 +67,7 @@ const stageDefinitions: StageDefinition[] = [
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
-  { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
+  { title: 'Assemble and recovery commands', keys: ['assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb', 'release_purge_archived_sources'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
@@ -109,7 +107,6 @@ function defaultSettings(): RuntimeSettings {
       materialized_groups: [],
       scrape_latest: stageDefaults(5000, 1, { max_batches: 1 }),
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
-      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
       recover_yenc: stageDefaults(25, 1),
@@ -249,7 +246,6 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       materialized_groups: indexing.materialized_groups ?? [],
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
-      assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
       assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
       assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },

@@ -30,7 +30,6 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
 			ScrapeLatest:                defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
-			Assemble:                    defaultAssembleStage(false, 10, 5000, 1),
 			AssembleLaneA:               defaultAssembleStage(false, 2, 5000, 1),
 			AssembleLaneB:               defaultAssembleStage(false, 10, 2500, 1),
 			RecoverYEnc:                 defaultStage(false, 10, 25, 1),
@@ -207,7 +206,6 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 
 	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
-	out.Assemble = indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, true, 10, 5000)
 	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
 	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
@@ -378,7 +376,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
-		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
 		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
 		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
 		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
@@ -686,7 +683,6 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		len(in.BackfillUntilDateByGroup) > 0 ||
 		in.ScrapeLatest.Enabled ||
 		in.ScrapeBackfill.Enabled ||
-		in.Assemble.Enabled ||
 		in.AssembleLaneA.Enabled ||
 		in.AssembleLaneB.Enabled ||
 		in.RecoverYEnc.Enabled ||
@@ -820,7 +816,6 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
 		ScrapeLatest:                in.ScrapeLatest,
 		ScrapeBackfill:              in.ScrapeBackfill,
-		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 5000, 1), in.Assemble),
 		AssembleLaneA:               mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
 		AssembleLaneB:               mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),

@@ -9109,6 +9109,43 @@ func TestPublicIndexerReleaseVisibilitySuppressesProbableOpaquePartRows(t *testi
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("passwordunknown%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "Useful App Suite 2026 x64 Incl Keygen"
+		in.SourceTitle = in.Title
+		in.SearchTitle = strings.ToLower(in.Title)
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+		in.Classification = "archive"
+		in.IdentityStatus = "identified"
+		in.MatchConfidence = 0.96
+		in.Passworded = true
+		in.PasswordedUnknown = true
+		in.PasswordState = "passworded_unknown"
+		in.Encrypted = true
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: "Useful App Suite", Limit: 50})
+	if err != nil {
+		t.Fatalf("list public passworded unknown releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected passworded_unknown release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public passworded unknown detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected passworded_unknown detail to be hidden, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

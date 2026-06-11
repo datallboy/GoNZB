@@ -82,7 +82,7 @@ function isInspectBacklogStat(stat: IndexerDashboardStat) {
 function backlogCommand(stat: IndexerDashboardStat) {
   switch (stat.key) {
     case 'unassembled_headers':
-      return 'indexer assemble'
+      return 'indexer assemble lane-a / lane-b'
     case 'pending_release_summary_refresh_summaries':
       return 'indexer release refresh-summaries'
     case 'pending_release_candidate_families':
