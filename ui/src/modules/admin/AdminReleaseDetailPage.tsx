@@ -21,6 +21,28 @@ function stringifyJSON(value: unknown) {
   }
 }
 
+function fileKindLabel(fileName: string, isPars: boolean) {
+  const name = fileName.toLowerCase()
+  if (name.endsWith('.nzb')) return 'Uploaded NZB'
+  if (isPars || name.endsWith('.par2')) return 'PAR2'
+  if (name.endsWith('.nfo')) return 'NFO'
+  if (name.match(/\.(rar|zip|7z|tar|gz|bz2|xz)$/)) return 'Archive'
+  if (name.match(/\.(mkv|mp4|avi|m2ts|ts|mp3|flac)$/)) return 'Media'
+  return 'Payload'
+}
+
+function binaryEvidenceSummary(binary: AdminReleaseDetailResponse['binaries'][number]) {
+  const items = [
+    `${binary.inspections.length} inspections`,
+    `${binary.artifacts.length} artifacts`,
+    `${binary.archive_entries.length} archive entries`,
+    `${binary.media_streams.length} media streams`,
+    `${binary.text_evidence.length} text evidence`,
+    `${binary.par2_sets.length} PAR2 sets`,
+  ]
+  return items.join(' · ')
+}
+
 export function AdminReleaseDetailPage() {
   const { id = '' } = useParams()
   const [data, setData] = useState<AdminReleaseDetailResponse | null>(null)
@@ -398,11 +420,16 @@ export function AdminReleaseDetailPage() {
       </div>
 
       <div className="page-card stack">
-        <h2 className="section-title">Files and Articles</h2>
+        <div className="page-header">
+          <div>
+            <h2 className="section-title">Release Files</h2>
+            <p className="muted-copy">Catalog view of the release payload. Expand a file to review its article segments.</p>
+          </div>
+        </div>
         {(data.files ?? []).map((file) => (
           <details className="detail-block" key={file.file_id} open={file.is_pars}>
             <summary>
-              {file.file_name} · {formatBytes(file.size_bytes)} · {file.is_pars ? 'PAR2' : 'payload'}
+              {file.file_name} · {formatBytes(file.size_bytes)} · {fileKindLabel(file.file_name, file.is_pars)}
             </summary>
             <div className="stack">
               <div className="muted-row">
@@ -413,41 +440,70 @@ export function AdminReleaseDetailPage() {
                 <span>Articles {file.article_count}</span>
                 <span>Posted {formatDateTime(file.posted_at)}</span>
               </div>
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Part</th>
-                      <th>Message ID</th>
-                      <th>Bytes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {file.articles.map((article) => (
-                      <tr key={`${file.file_id}-${article.message_id}-${article.part_number}`}>
-                        <td>{article.part_number}</td>
-                        <td className="mono-cell">{article.message_id}</td>
-                        <td>{formatBytes(article.bytes)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="muted-row">
+                <span>Binary {file.binary_id}</span>
+                <span>{file.match_status || 'unmatched'}</span>
+                <span>{file.poster || 'Unknown poster'}</span>
+                <span>{file.newsgroups.join(', ') || 'No groups recorded'}</span>
               </div>
-              <pre className="json-block">{stringifyJSON(file.grouping_evidence_json)}</pre>
+              {file.file_name.toLowerCase().endsWith('.nzb') ? (
+                <div className="banner">
+                  Uploaded payload NZB. This is a file inside the indexed release payload, not the generated cache NZB for this release.
+                </div>
+              ) : null}
+              <details className="detail-block detail-block--nested">
+                <summary>Article Segments ({file.articles.length})</summary>
+                <div className="table-shell">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Part</th>
+                        <th>Message ID</th>
+                        <th>Bytes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {file.articles.map((article) => (
+                        <tr key={`${file.file_id}-${article.message_id}-${article.part_number}`}>
+                          <td>{article.part_number}</td>
+                          <td className="mono-cell">{article.message_id}</td>
+                          <td>{formatBytes(article.bytes)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              <details className="detail-block detail-block--nested">
+                <summary>Grouping Evidence</summary>
+                <pre className="json-block">{stringifyJSON(file.grouping_evidence_json)}</pre>
+              </details>
             </div>
           </details>
         ))}
       </div>
 
       <div className="page-card stack">
-        <h2 className="section-title">Binaries and Inspection Artifacts</h2>
+        <div className="page-header">
+          <div>
+            <h2 className="section-title">Binary Grouping and Evidence</h2>
+            <p className="muted-copy">
+              Source binary view of how the release was grouped and what downstream inspection stages derived from it.
+            </p>
+          </div>
+        </div>
         {(data.binaries ?? []).map((binary) => (
           <details className="detail-block" key={binary.binary_id}>
             <summary>
-              {binary.binary_name} · {binary.match_status || 'unmatched'} · {binary.observed_parts}/{binary.total_parts}
+              {binary.binary_name} · {binary.match_status || 'unmatched'} · {binary.observed_parts}/{binary.total_parts} ·{' '}
+              {binaryEvidenceSummary(binary)}
             </summary>
             <div className="stack">
               <dl className="detail-grid">
+                <div>
+                  <dt>File</dt>
+                  <dd>{binary.file_name || 'Unknown'}</dd>
+                </div>
                 <div>
                   <dt>Posted</dt>
                   <dd>{formatDateTime(binary.posted_at)}</dd>
@@ -464,11 +520,19 @@ export function AdminReleaseDetailPage() {
                   <dt>Password State</dt>
                   <dd>{binary.password_state || 'unknown'}</dd>
                 </div>
+                <div>
+                  <dt>Release Key</dt>
+                  <dd>{binary.release_key || 'None'}</dd>
+                </div>
+                <div>
+                  <dt>Binary Key</dt>
+                  <dd>{binary.binary_key || 'None'}</dd>
+                </div>
               </dl>
 
               <div className="dashboard-grid">
                 <div className="stack">
-                  <h3 className="section-subtitle">Inspections</h3>
+                  <h3 className="section-subtitle">Inspection Runs</h3>
                   {binary.inspections.map((inspection) => (
                     <details className="detail-block detail-block--nested" key={`${binary.binary_id}-${inspection.stage_name}`}>
                       <summary>
@@ -479,7 +543,7 @@ export function AdminReleaseDetailPage() {
                   ))}
                 </div>
                 <div className="stack">
-                  <h3 className="section-subtitle">Artifacts</h3>
+                  <h3 className="section-subtitle">Derived Artifacts</h3>
                   {binary.artifacts.map((artifact) => (
                     <div className="list-row list-row--start" key={`${binary.binary_id}-${artifact.artifact_path}`}>
                       <div>
@@ -497,7 +561,7 @@ export function AdminReleaseDetailPage() {
 
               <div className="dashboard-grid">
                 <div className="stack">
-                  <h3 className="section-subtitle">Archive Entries</h3>
+                  <h3 className="section-subtitle">Archive Contents</h3>
                   {binary.archive_entries.map((entry) => (
                     <div className="list-row list-row--start" key={`${binary.binary_id}-${entry.entry_name}`}>
                       <div>
@@ -512,7 +576,7 @@ export function AdminReleaseDetailPage() {
                   ))}
                 </div>
                 <div className="stack">
-                  <h3 className="section-subtitle">Media Streams</h3>
+                  <h3 className="section-subtitle">Media Metadata</h3>
                   {binary.media_streams.map((stream) => (
                     <div className="list-row list-row--start" key={`${binary.binary_id}-${stream.stream_index}-${stream.stream_type}`}>
                       <div>
@@ -549,7 +613,7 @@ export function AdminReleaseDetailPage() {
                   ))}
                 </div>
                 <div className="stack">
-                  <h3 className="section-subtitle">PAR2 and Parts</h3>
+                  <h3 className="section-subtitle">PAR2 and Source Segments</h3>
                   {binary.par2_sets.map((set) => (
                     <div className="list-row list-row--start" key={`${binary.binary_id}-${set.set_name}`}>
                       <div>
@@ -563,7 +627,7 @@ export function AdminReleaseDetailPage() {
                     </div>
                   ))}
                   <details className="detail-block detail-block--nested">
-                    <summary>Binary Parts ({binary.parts.length})</summary>
+                    <summary>Source Segments ({binary.parts.length})</summary>
                     <div className="table-shell">
                       <table className="data-table">
                         <thead>
