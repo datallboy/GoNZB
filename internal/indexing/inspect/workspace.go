@@ -129,6 +129,9 @@ func CleanupStaleWorkspaceRoots(ctx context.Context, opts Options) (int, error) 
 		}
 		cleaned, err := cleanupWorkspaceRoot(root, WorkspaceStaleTTL)
 		if err != nil {
+			if os.IsPermission(err) {
+				continue
+			}
 			return total, err
 		}
 		total += cleaned
@@ -143,6 +146,9 @@ func cleanupWorkspaceRoot(root string, ttl time.Duration) (int, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		if os.IsPermission(err) {
 			return 0, nil
 		}
 		return 0, err
@@ -168,6 +174,9 @@ func cleanupStaleWorkspaces(stageDir string, ttl time.Duration) (int, error) {
 	entries, err := os.ReadDir(stageDir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		if os.IsPermission(err) {
 			return 0, nil
 		}
 		return 0, err
