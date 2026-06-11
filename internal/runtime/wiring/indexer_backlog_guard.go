@@ -26,6 +26,8 @@ type cachedScrapeBacklogGuard struct {
 	repo          unassembledBacklogReader
 
 	mu         sync.Mutex
+	cond       *sync.Cond
+	evaluating bool
 	lastCheck  time.Time
 	lastResult supervisor.StageGateDecision
 	blocked    bool
@@ -43,6 +45,7 @@ func newIndexerScrapeBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc 
 		settingsStore: appCtx.SettingsStore,
 		repo:          repo,
 	}
+	guard.cond = sync.NewCond(&guard.mu)
 	return guard.allowStage
 }
 
@@ -55,25 +58,42 @@ func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervi
 	}
 
 	g.mu.Lock()
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	for g.evaluating {
+		g.cond.Wait()
+	}
 	if time.Since(g.lastCheck) < scrapeBacklogGuardRefreshInterval {
 		result := g.lastResult
 		g.mu.Unlock()
 		return result, nil
 	}
+	g.evaluating = true
 	g.mu.Unlock()
 
 	runtime, err := g.settingsStore.GetRuntimeSettings(ctx)
 	if err != nil {
+		g.mu.Lock()
+		g.evaluating = false
+		g.cond.Broadcast()
+		g.mu.Unlock()
 		return supervisor.StageGateDecision{}, fmt.Errorf("load runtime settings for scrape backlog guard: %w", err)
 	}
 	decision, err := g.evaluate(ctx, runtime)
 	if err != nil {
+		g.mu.Lock()
+		g.evaluating = false
+		g.cond.Broadcast()
+		g.mu.Unlock()
 		return supervisor.StageGateDecision{}, err
 	}
 
 	g.mu.Lock()
 	g.lastCheck = time.Now()
 	g.lastResult = decision
+	g.evaluating = false
+	g.cond.Broadcast()
 	g.mu.Unlock()
 	return decision, nil
 }

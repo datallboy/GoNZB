@@ -37,13 +37,17 @@ func (f fakePipelineSettingsStore) ExpectedSchemaVersion() int           { retur
 func (f fakePipelineSettingsStore) ValidateSchema(context.Context) error { return nil }
 
 type fakePipelineBacklogReader struct {
-	assemble int64
-	yenc     int64
-	refresh  int
-	ready    int64
+	assembleEstimate int64
+	assemble         int64
+	yenc             int64
+	refresh          int
+	ready            int64
 }
 
-func (f fakePipelineBacklogReader) CountClaimableAssembleBacklog(context.Context) (int64, error) {
+func (f fakePipelineBacklogReader) EstimateUnassembledArticleHeaders(context.Context) (int64, error) {
+	if f.assembleEstimate > 0 {
+		return f.assembleEstimate, nil
+	}
 	return f.assemble, nil
 }
 func (f fakePipelineBacklogReader) CountPendingYEncRecoveryBinaries(context.Context) (int64, error) {
@@ -86,7 +90,7 @@ func TestPipelineBacklogGuardBlocksInspectWhenCoreBacklogIsHot(t *testing.T) {
 				Release:       app.IndexingReleaseRuntimeSettings{Enabled: true, BatchSize: 200},
 			},
 		}},
-		repo:        fakePipelineBacklogReader{assemble: 200000},
+		repo:        fakePipelineBacklogReader{assembleEstimate: 200000},
 		lastResults: make(map[supervisor.StageName]supervisor.StageGateDecision),
 	}
 
