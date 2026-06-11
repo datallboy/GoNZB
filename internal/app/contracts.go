@@ -253,6 +253,7 @@ type UsenetIndexStore interface {
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 	ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
 	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
 	CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtension bool) (*pgindex.IndexerIntegrityReport, error)
 	ReindexCriticalIndexerIndexes(ctx context.Context) (*pgindex.IndexerIntegrityRepairResult, error)

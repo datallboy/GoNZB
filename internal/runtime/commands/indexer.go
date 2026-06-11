@@ -488,6 +488,17 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	appCtx.Logger.Info("indexer maintenance completed")
 }
 
+func (r *Runner) ExecuteIndexerPurgeHeaderPayloads() {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer payload purge requires store.pg_dsn.")
+	defer cleanup()
+
+	purged, err := appCtx.PGIndexStore.PurgeArticleHeaderPayloads(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance purge-header-payloads failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer maintenance purge-header-payloads: purged_header_payloads=%d", purged)
+}
+
 func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
 	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
 	defer cleanup()

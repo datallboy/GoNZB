@@ -24,6 +24,7 @@ Working decisions already locked:
 - keep the long-term execution model concurrent where hot-table ownership is disjoint
 - treat `scrape_*` as the highest-risk canonical writer and isolate it during bootstrap/recovery
 - prefer stage overlap gates and phased runtime profiles over introducing multi-process topology first
+- automatic maintenance must not purge ingest payloads during normal supervisor operation; destructive payload purge is manual-only
 
 ## Current Live Bootstrap Status
 
@@ -176,6 +177,25 @@ For now:
 - the smart executor only decides stage admission
 - CPU/DB-heavy stages keep manual concurrency control
 - NNTP-driven stages may eventually gain utilization-target tuning, but that is not part of the current landed behavior
+
+## Maintenance Safety Policy
+
+Effective now:
+
+- scheduled `indexer_maintenance` keeps:
+  - stale stage runtime repair
+  - yEnc work-item backfill/retire
+  - catalog-file backfill
+  - bounded derived-state cleanup
+- scheduled `indexer_maintenance` no longer purges `article_header_ingest_payloads`
+- payload purge is manual-only through:
+  - `gonzb indexer maintenance purge-header-payloads`
+
+Rationale:
+
+- `article_header_ingest_payloads` still feeds assemble lane A and yEnc recovery
+- auto-purging payloads before downstream backlog drains can reduce release formation quality and regroup potential
+- intentional source purge remains the only automated destructive lineage cleanup path after NZB generation/archive/purge eligibility
 
 ## Pass 1 Findings: Scrape
 

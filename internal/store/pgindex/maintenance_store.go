@@ -65,17 +65,18 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		return nil, err
 	}
 
-	purgedHeaderPayloads, err := s.purgeArticleHeaderPayloadsInBatches(ctx, articleHeaderPayloadPurgeWindowSize)
-	if err != nil {
-		return nil, err
-	}
-	result.PurgedHeaderPayloads = purgedHeaderPayloads
-
 	if err := s.runIndexerMaintenanceDerivedCleanup(ctx, result); err != nil {
 		return nil, err
 	}
 
 	return result, nil
+}
+
+func (s *Store) PurgeArticleHeaderPayloads(ctx context.Context) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("pgindex store is not initialized")
+	}
+	return s.purgeArticleHeaderPayloadsInBatches(ctx, articleHeaderPayloadPurgeWindowSize)
 }
 
 func (s *Store) runIndexerMaintenanceMetadataCleanup(ctx context.Context, result *IndexerMaintenanceResult) error {

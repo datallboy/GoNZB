@@ -238,6 +238,13 @@ Current non-goal:
 - automatic per-stage concurrency tuning is not yet implemented
 - stage admission is dynamic; worker counts remain runtime-configured
 
+### Maintenance boundary
+
+- scheduled `indexer_maintenance` may repair stale runtime state and clean bounded derived/runtime rows
+- scheduled `indexer_maintenance` must not auto-purge `article_header_ingest_payloads`
+- manual payload cleanup, if needed, is an explicit operator action
+- intentional destructive source cleanup belongs to the archive/purge lifecycle, not generic maintenance
+
 ### Integrity guardrail
 
 Before scrape writes to `article_headers`, critical ingest indexes must pass the current integrity preflight.
