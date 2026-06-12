@@ -6938,6 +6938,82 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedMissingArticleProbe(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.missingarticle.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-missingarticle-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-missingarticle-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Missing Article",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "example.par2",
+		FileName:          "example.par2",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("seed observed_parts: %v", err)
+	}
+
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{{
+		BinaryID:    binaryID,
+		SetName:     "example.par2",
+		BaseName:    "example.par2",
+		SignatureOK: true,
+	}}); err != nil {
+		t.Fatalf("seed par2 set: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        binaryID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true, "probe_skip_reason": "prefix_sample_failed", "probe_error_detail": "fetch article <abc@example>: article not found (430)"},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete par2 inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("did not expect completed missing-article probe to rerun, got %+v", candidate)
+		}
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolumeSets(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
