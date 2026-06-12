@@ -60,6 +60,8 @@ type LogConfig struct {
 	Path          string `mapstructure:"path" yaml:"path"`
 	Level         string `mapstructure:"level" yaml:"level"`
 	IncludeStdout bool   `mapstructure:"include_stdout" yaml:"include_stdout"`
+	MaxSizeMB     int    `mapstructure:"max_size_mb" yaml:"max_size_mb"`
+	MaxBackups    int    `mapstructure:"max_backups" yaml:"max_backups"`
 }
 
 type StoreConfig struct {
@@ -271,6 +273,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
+	v.SetDefault("log.max_size_mb", 32)
+	v.SetDefault("log.max_backups", 5)
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
 
