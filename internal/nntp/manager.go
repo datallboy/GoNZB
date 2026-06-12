@@ -19,7 +19,8 @@ var FETCH_RETRY_COUNT = 3
 
 type managedProvider struct {
 	Provider
-	semaphore chan struct{}
+	semaphore    chan struct{}
+	debugLogging bool
 }
 
 type CapacityPolicy string
@@ -164,8 +165,9 @@ func NewManagerWithOptions(ctx *app.Context, opts ManagerOptions) (*Manager, err
 		}
 
 		managed = append(managed, &managedProvider{
-			Provider:  p,
-			semaphore: make(chan struct{}, p.MaxConnection()),
+			Provider:     p,
+			semaphore:    make(chan struct{}, p.MaxConnection()),
+			debugLogging: cfg.EnablePoolLogging,
 		})
 	}
 
@@ -370,7 +372,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 
 		// If we already have some 430s for this segment, log that we are trying a failover
 		if len(seg.MissingFrom) > 0 {
-			m.ctx.Logger.Debug("[Failover] Segment %s missing on %d providers, trying %s (Priority %d)",
+			m.debugProviderFetch(mp, "[Failover] Segment %s missing on %d providers, trying %s (Priority %d)",
 				seg.MessageID, len(seg.MissingFrom), mp.Label(), mp.Priority())
 		}
 
@@ -379,9 +381,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 			return nil, err
 		}
 		if acquired {
-			if m.ctx != nil && m.ctx.Logger != nil {
-				m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
-			}
+			m.debugProviderFetch(mp, "Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
 			reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
 			if err == nil {
 				return reader, nil
@@ -436,17 +436,13 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, m
 
 		if errors.Is(err, ErrArticleNotFound) {
 			m.recordArticleNotFound(scope)
-			if m.ctx != nil && m.ctx.Logger != nil {
-				m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
-			}
+			m.debugProviderFetch(mp, "Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
 			seg.MissingFrom[mp.ID()] = true
 			time.Sleep(100 * time.Millisecond)
 			return nil, ErrArticleNotFound
 		}
 
-		if m.ctx != nil && m.ctx.Logger != nil {
-			m.ctx.Logger.Debug("Failover: %s error: %v", mp.Label(), err)
-		}
+		m.debugProviderFetch(mp, "Failover: %s error: %v", mp.Label(), err)
 		return nil, err
 	}
 
@@ -456,6 +452,13 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, m
 			m.releaseForScope(scope, mp)
 		},
 	}, nil
+}
+
+func (m *Manager) debugProviderFetch(mp *managedProvider, format string, v ...interface{}) {
+	if m == nil || m.ctx == nil || m.ctx.Logger == nil || mp == nil || !mp.debugLogging {
+		return
+	}
+	m.ctx.Logger.Debug(format, v...)
 }
 
 func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {

@@ -38,6 +38,8 @@ log:
   path: "gonzb.log" # Set to "" or "none" to disable file logging (recommended for Docker)
   level: "info"     # debug, info, warn, error
   include_stdout: true
+  max_size_mb: 32   # Rotate active log file after this size.
+  max_backups: 5    # Keep this many rotated files: gonzb.log.1, gonzb.log.2, ...
 
 # Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir is the single
 # filesystem root for cached and archived NZBs.
