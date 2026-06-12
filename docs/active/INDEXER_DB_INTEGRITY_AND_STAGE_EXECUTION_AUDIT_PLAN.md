@@ -27,6 +27,7 @@ Working decisions already locked:
 - automatic maintenance must not purge ingest payloads during normal supervisor operation; destructive payload purge is manual-only
 - `binaries` identity fields are confidence-guarded; lower-confidence rediscovery must not rewrite indexed family identity after a stronger match exists
 - detailed matcher traces are no longer retained in PostgreSQL during normal assemble; compact inline summaries remain for release/admin behavior
+- behavior-bearing binary evidence should be columned, not kept in hot JSONB fields
 
 ## Current DB Corruption Follow-up Findings
 
@@ -48,6 +49,10 @@ Landed hardening direction:
 - stop persisting detailed matcher traces into `binary_grouping_evidence` by default
 - set fresh Docker Postgres clusters to initialize with data checksums
 - set hot binary evidence JSONB storage to avoid pglz compression where those fields remain
+- move remaining hot `binaries.grouping_evidence_json` behavior fields into scalar columns:
+  - grouping summary kind/status/fallback
+  - PAR2 target base/file/source markers
+- treat `binaries.grouping_evidence_json` as legacy read compatibility only; detail reads may synthesize JSON from scalar columns for the UI
 
 Remaining validation requirement:
 

@@ -1153,16 +1153,16 @@ func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T)
 		t.Fatalf("upsert binary: %v", err)
 	}
 
-	var inlineEvidence []byte
+	var summaryKind string
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind
 		FROM binaries
 		WHERE id = $1`, binaryID,
-	).Scan(&inlineEvidence); err != nil {
-		t.Fatalf("query inline grouping evidence: %v", err)
+	).Scan(&summaryKind); err != nil {
+		t.Fatalf("query grouping summary kind: %v", err)
 	}
-	if !strings.Contains(string(inlineEvidence), "\"readable_title\"") {
-		t.Fatalf("expected compact inline grouping evidence, got %s", string(inlineEvidence))
+	if summaryKind != "readable_title" {
+		t.Fatalf("expected scalar grouping summary kind, got %q", summaryKind)
 	}
 
 	var sideEvidence []byte
@@ -1239,16 +1239,17 @@ func TestUpsertBinarySkipsDetailedGroupingEvidenceSideTableForWeakMatches(t *tes
 		t.Fatalf("upsert binary: %v", err)
 	}
 
-	var inlineEvidence []byte
+	var summaryKind, summaryStatus string
+	var fallbackUsed bool
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind, grouping_summary_status, grouping_summary_fallback_used
 		FROM binaries
 		WHERE id = $1`, binaryID,
-	).Scan(&inlineEvidence); err != nil {
-		t.Fatalf("query inline grouping evidence: %v", err)
+	).Scan(&summaryKind, &summaryStatus, &fallbackUsed); err != nil {
+		t.Fatalf("query scalar grouping summary: %v", err)
 	}
-	if !strings.Contains(string(inlineEvidence), "\"fallback_used\":true") {
-		t.Fatalf("expected inline summary to retain fallback flag, got %s", string(inlineEvidence))
+	if summaryKind != "contextual_obfuscated" || summaryStatus != "probable" || !fallbackUsed {
+		t.Fatalf("expected scalar fallback summary, got kind=%q status=%q fallback=%v", summaryKind, summaryStatus, fallbackUsed)
 	}
 
 	var sideEvidence []byte
@@ -8990,16 +8991,16 @@ func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
 		t.Fatalf("expected 1 purged grouping evidence row, got %+v", out)
 	}
 
-	var stableInline []byte
+	var stableSummaryKind string
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind
 		FROM binaries
 		WHERE id = $1`, stableBinaryID,
-	).Scan(&stableInline); err != nil {
-		t.Fatalf("query stable inline evidence: %v", err)
+	).Scan(&stableSummaryKind); err != nil {
+		t.Fatalf("query stable scalar evidence: %v", err)
 	}
-	if !strings.Contains(string(stableInline), "\"readable_title\"") {
-		t.Fatalf("expected stable inline summary to be backfilled, got %s", string(stableInline))
+	if stableSummaryKind != "readable_title" {
+		t.Fatalf("expected stable scalar summary to be backfilled, got %q", stableSummaryKind)
 	}
 
 	var stableSideCount int

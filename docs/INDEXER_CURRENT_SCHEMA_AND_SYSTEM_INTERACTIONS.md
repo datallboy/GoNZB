@@ -282,7 +282,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
-| `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. |
+| `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. Behavior-bearing evidence is scalarized into columns; `grouping_evidence_json` is legacy read compatibility only. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep only compact inline summaries on `binaries`; full matcher traces are no longer persisted to PostgreSQL by default. |
 | `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
@@ -622,7 +622,17 @@ Current audit note:
   - equal-or-better confidence may replace family/name identity fields
   - lower-confidence rediscovery may still advance monotonic counters such as expected file count and total parts
   - lower-confidence rediscovery must not rewrite `release_family_key` or other indexed identity fields
-- assemble no longer persists detailed matcher traces into `binary_grouping_evidence`; only compact `grouping_evidence_json.summary` remains inline for release/admin use
+- assemble no longer persists detailed matcher traces into `binary_grouping_evidence`
+- assemble stores behavior-bearing matcher summary evidence in scalar columns:
+  - `grouping_summary_kind`
+  - `grouping_summary_status`
+  - `grouping_summary_fallback_used`
+- PAR2 coverage stores behavior-bearing target markers in scalar columns:
+  - `par2_target_base_stem`
+  - `par2_target_file_name`
+  - `par2_source_binary_id`
+  - `par2_target_coverage_source`
+- `grouping_evidence_json` is no longer a hot write target; admin/detail reads synthesize compatible JSON from scalar columns when needed
 - two helper functions in `assembly_store.go` are currently unused by the active assemble service:
   - `listPriorityAssemblyBinaries`
   - `listPendingHeadersForProgressBinaries`

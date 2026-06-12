@@ -1926,7 +1926,23 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.match_status,
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+				ELSE COALESCE(NULLIF(b.grouping_evidence_json, '{}'::jsonb), jsonb_strip_nulls(jsonb_build_object(
+					'summary', CASE
+						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
+						  OR COALESCE(b.grouping_summary_status, '') <> ''
+						  OR COALESCE(b.grouping_summary_fallback_used, FALSE)
+						THEN jsonb_build_object(
+							'kind', NULLIF(b.grouping_summary_kind, ''),
+							'status', NULLIF(b.grouping_summary_status, ''),
+							'fallback_used', b.grouping_summary_fallback_used
+						)
+						ELSE NULL
+					END,
+					'par2_target_base_stem', NULLIF(b.par2_target_base_stem, ''),
+					'par2_target_file_name', NULLIF(b.par2_target_file_name, ''),
+					'par2_source_binary_id', b.par2_source_binary_id,
+					'par2_target_coverage_source', NULLIF(b.par2_target_coverage_source, '')
+				)))
 			END,
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
@@ -2044,7 +2060,23 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.match_status, ''),
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+				ELSE COALESCE(NULLIF(b.grouping_evidence_json, '{}'::jsonb), jsonb_strip_nulls(jsonb_build_object(
+					'summary', CASE
+						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
+						  OR COALESCE(b.grouping_summary_status, '') <> ''
+						  OR COALESCE(b.grouping_summary_fallback_used, FALSE)
+						THEN jsonb_build_object(
+							'kind', NULLIF(b.grouping_summary_kind, ''),
+							'status', NULLIF(b.grouping_summary_status, ''),
+							'fallback_used', b.grouping_summary_fallback_used
+						)
+						ELSE NULL
+					END,
+					'par2_target_base_stem', NULLIF(b.par2_target_base_stem, ''),
+					'par2_target_file_name', NULLIF(b.par2_target_file_name, ''),
+					'par2_source_binary_id', b.par2_source_binary_id,
+					'par2_target_coverage_source', NULLIF(b.par2_target_coverage_source, '')
+				)))
 			END,
 			COALESCE(cf.article_count, 0)
 		FROM release_catalog_files cf
