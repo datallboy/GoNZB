@@ -180,8 +180,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if s != nil && s.log != nil {
 			s.log.Info("inspect_discovery: recovered binary_id=%d release_id=%s kind=%s ext=%s confidence=%.2f sampled_files=%d", bestTarget.BinaryID, candidate.ReleaseID, kind, ext, confidence, sampledBinaries)
 		}
-	} else if s != nil && s.log != nil {
-		s.log.Debug("inspect_discovery: no recovery release_id=%s sampled_files=%d last_binary_id=%d signature=%q", candidate.ReleaseID, sampledBinaries, bestTarget.BinaryID, bestSample.Signature)
 	}
 
 	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
