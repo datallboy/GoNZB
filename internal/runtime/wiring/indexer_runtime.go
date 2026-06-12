@@ -520,6 +520,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		Owner:   stageOwner,
 		StageGate: chainStageGates(
 			newIndexerPrerequisiteGate(appCtx),
+			newIndexerIntegrityGuard(appCtx.PGIndexStore),
 			newIndexerScrapeBacklogGuard(appCtx),
 			newIndexerPipelineBacklogGuard(appCtx),
 			newIndexerNNTPTrafficGuard(appCtx, nntpStats),

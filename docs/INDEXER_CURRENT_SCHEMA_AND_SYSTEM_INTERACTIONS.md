@@ -222,6 +222,8 @@ The smart executor should plug into the existing stage-gate chain alongside prer
 
 Current landed behavior:
 
+- a global critical-index integrity gate blocks scheduled stages when `article_headers` critical index checks fail
+- manual commands bypass that integrity gate so repair and diagnostic workflows remain available
 - a backlog-aware scrape gate now sits in that chain
 - scheduled `scrape_*` is suppressed when assemble is enabled and unassembled-header backlog exceeds a hysteresis threshold
 - manual scrape runs still bypass the gate

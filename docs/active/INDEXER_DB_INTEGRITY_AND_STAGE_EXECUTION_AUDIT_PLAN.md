@@ -143,6 +143,10 @@ The gate uses `EstimateUnassembledArticleHeaders()` first and falls back to exac
 
 Additional landed admission gates:
 
+- global critical-index integrity gate
+  - scheduled stages are blocked when `article_headers` critical index checks fail
+  - manual runs bypass the gate so repair and diagnostic commands remain usable
+  - the gate is cached briefly and runs before backlog/resource admission gates
 - `release_summary_refresh`
   - paused when `release_ready_candidates` backlog is already above threshold and `release` is enabled
   - resumes only after ready backlog drops below the lower resume threshold
@@ -448,6 +452,7 @@ Remaining recover-specific follow-up:
 - move the remaining retry/backoff compatibility state out of `article_header_ingest_payloads` if the schema freeze allows one more cleanup pass
 - audit the three-branch seed path plans after a clean rebuild; it is bounded, but still the only recover-yEnc path that joins several hot source tables by design
 - broaden the same query-safety contract to other stages: no scheduled selector should join multiple giant tables unless it first bounds input with a queue or explicit ID window
+- keep the global integrity gate enabled during every long soak; a failed critical index check should stop scheduled stages before they continue exercising a compromised cluster
 
 ## Pass 4 Findings: Release Summary Refresh
 
