@@ -1039,6 +1039,8 @@ func (s *Store) syncYEncRecoveryWorkItemRetryState(ctx context.Context, articleH
 		    	FROM article_header_ingest_payloads p
 		    	WHERE p.article_header_id = $1
 		    ), missing_count),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
 		    updated_at = NOW()
 		WHERE article_header_id = $1`, articleHeaderID); err != nil {
 		return fmt.Errorf("update yenc recovery work item retry state for article header %d: %w", articleHeaderID, err)

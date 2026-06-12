@@ -256,7 +256,29 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 				ah.id AS article_header_id,
 				ah.provider_id,
 				ah.newsgroup_id,
+				ng.group_name AS newsgroup_name,
+				ah.article_number,
 				ah.message_id,
+				COALESCE(NULLIF(p.subject, ''), NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), NULLIF(b.release_name, ''), '') AS subject,
+				COALESCE(p.poster, '') AS poster,
+				ah.date_utc,
+				ah.bytes AS article_bytes,
+				ah.lines AS article_lines,
+				COALESCE(p.xref, '') AS xref,
+				COALESCE(NULLIF(p.subject_file_name, ''), NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS subject_file_name,
+				CASE
+					WHEN COALESCE(p.subject_file_index, 0) > 0 THEN p.subject_file_index
+					WHEN COALESCE(b.file_index, 0) > 0 THEN b.file_index
+					ELSE 0
+				END AS subject_file_index,
+				GREATEST(
+					COALESCE(p.subject_file_total, 0),
+					COALESCE(b.expected_file_count, 0),
+					COALESCE(b.expected_archive_file_count, 0)
+				) AS subject_file_total,
+				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+				GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(b.total_parts, 0)) AS yenc_total_parts,
+				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 `+yencRecoveryWorkItemPriorityRankSQL+` AS priority_rank,
 				COALESCE(p.yenc_recovery_retry_after, NOW()) AS ready_at,
 				COALESCE(p.yenc_recovery_missing_count, 0) AS missing_count,
@@ -281,6 +303,7 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			) bp ON true
 			JOIN article_headers ah ON ah.id = bp.article_header_id
 			LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 			WHERE b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND b.is_main_payload = TRUE
 			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
@@ -293,7 +316,21 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 				article_header_id,
 				provider_id,
 				newsgroup_id,
+				newsgroup_name,
+				article_number,
 				message_id,
+				subject,
+				poster,
+				date_utc,
+				article_bytes,
+				article_lines,
+				xref,
+				subject_file_name,
+				subject_file_index,
+				subject_file_total,
+				yenc_part_number,
+				yenc_total_parts,
+				yenc_file_size,
 				status,
 				ready_at,
 				priority_rank,
@@ -310,7 +347,21 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 				e.article_header_id,
 				e.provider_id,
 				e.newsgroup_id,
+				e.newsgroup_name,
+				e.article_number,
 				e.message_id,
+				e.subject,
+				e.poster,
+				e.date_utc,
+				e.article_bytes,
+				e.article_lines,
+				e.xref,
+				e.subject_file_name,
+				e.subject_file_index,
+				e.subject_file_total,
+				e.yenc_part_number,
+				e.yenc_total_parts,
+				e.yenc_file_size,
 				'ready',
 				e.ready_at,
 				e.priority_rank,
@@ -326,7 +377,21 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			SET article_header_id = EXCLUDED.article_header_id,
 			    provider_id = EXCLUDED.provider_id,
 			    newsgroup_id = EXCLUDED.newsgroup_id,
+			    newsgroup_name = EXCLUDED.newsgroup_name,
+			    article_number = EXCLUDED.article_number,
 			    message_id = EXCLUDED.message_id,
+			    subject = EXCLUDED.subject,
+			    poster = EXCLUDED.poster,
+			    date_utc = EXCLUDED.date_utc,
+			    article_bytes = EXCLUDED.article_bytes,
+			    article_lines = EXCLUDED.article_lines,
+			    xref = EXCLUDED.xref,
+			    subject_file_name = EXCLUDED.subject_file_name,
+			    subject_file_index = EXCLUDED.subject_file_index,
+			    subject_file_total = EXCLUDED.subject_file_total,
+			    yenc_part_number = EXCLUDED.yenc_part_number,
+			    yenc_total_parts = EXCLUDED.yenc_total_parts,
+			    yenc_file_size = EXCLUDED.yenc_file_size,
 			    status = 'ready',
 			    ready_at = EXCLUDED.ready_at,
 			    priority_rank = EXCLUDED.priority_rank,
@@ -336,6 +401,8 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			    current_base_stem = EXCLUDED.current_base_stem,
 			    current_readiness_bucket = EXCLUDED.current_readiness_bucket,
 			    structured_identity_binary_matched = EXCLUDED.structured_identity_binary_matched,
+			    lease_owner = '',
+			    lease_expires_at = NULL,
 			    updated_at = NOW()
 			RETURNING 1
 		)

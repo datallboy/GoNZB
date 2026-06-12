@@ -27,6 +27,7 @@ type repository interface {
 	ApplyYEncHeaderRecovery(ctx context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error)
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
+	RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error
 }
 
 type bodyPrefixFetcher interface {
@@ -268,6 +269,11 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		if s.log != nil {
 			s.log.Warn("recover_yenc: fetch prefix failed article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
 		}
+		started = time.Now()
+		if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+			s.log.Warn("recover_yenc: failed to persist transient backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+		}
+		timings.NotFoundWrite = time.Since(started)
 		return nil, "fetch_failure", timings, nil
 	}
 
@@ -359,7 +365,13 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 			if s.log != nil {
 				s.log.Debug("recover_yenc: skipped stale binary article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
 			}
+			if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+				s.log.Warn("recover_yenc: failed to release stale candidate article=%d err=%v", candidate.ArticleHeaderID, markErr)
+			}
 			return nil, "stale", timings, nil
+		}
+		if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+			s.log.Warn("recover_yenc: failed to release failed candidate article=%d err=%v", candidate.ArticleHeaderID, markErr)
 		}
 		return nil, "", timings, fmt.Errorf("apply yenc recovery binary=%d article=%d: %w", candidate.BinaryID, candidate.ArticleHeaderID, err)
 	}

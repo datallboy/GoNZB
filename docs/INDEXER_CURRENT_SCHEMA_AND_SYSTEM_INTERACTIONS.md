@@ -283,7 +283,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | derived/audit | `assemble_*` | none | Bounded audit/evidence surface. |
-| `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned work queue. |
+| `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
 | `binary_inspections` | queue/work | `inspect_*` | none | Inspection stage tracking only. |
 | `binary_archive_entries` | derived/evidence | `inspect_archive` | none | Archive evidence owned by archive inspection. |
 | `binary_media_streams` | derived/evidence | `inspect_media` | none | Media evidence owned by media inspection. |
@@ -627,8 +627,8 @@ Current audit note:
 
 Allowed reads:
 
-- `article_headers`
-- `article_header_ingest_payloads`
+- `article_headers` only during bounded queue seeding/refresh
+- `article_header_ingest_payloads` only during bounded queue seeding/refresh and legacy retry compatibility writes
 - `binary_parts`
 - `binaries`
 - `yenc_recovery_work_items`
@@ -659,6 +659,9 @@ Primary DBO entry points:
 
 Current audit note:
 
+- `recover_yenc` candidate selection reads materialized queue snapshots and does not join the hot source tables at selection time
+- ready candidates are claimed with `FOR UPDATE SKIP LOCKED` and `running` leases; abandoned claims become eligible again after lease expiry
+- transient fetch/apply failures release the queue claim with a short queue-local backoff
 - `recover_yenc` is queue-first and only seeds/backfills on hot-queue shortfall
 - seed/backfill is branch-prioritized rather than one monolithic selector
 - retry/backoff state still lives partly in `article_header_ingest_payloads`, which remains a transitional boundary debt

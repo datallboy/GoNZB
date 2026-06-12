@@ -391,11 +391,11 @@ Hot-path inefficiencies found:
 
 ## Pass 3 Findings: Recover yEnc
 
-Status: service/store/query audit completed; no new hot-path code change was required in this pass.
+Status: service/store/query audit completed; crash-hardening code change landed after the `2026-06-12` Postgres recovery incident.
 
 ### Service-layer findings
 
-- `recover_yenc` is now firmly queue-first:
+- `recover_yenc` is now queue-snapshot-first:
   - `ListYEncRecoveryCandidates`
   - fetch BODY prefix
   - parse yEnc header
@@ -419,21 +419,24 @@ Hot recover-owned store paths confirmed:
 - `ApplyYEncHeaderRecovery`
 - `RecordYEncRecoveryNotFound`
 - `RecordYEncRecoveryNoop`
+- `RecordYEncRecoveryTransientFailure`
 
 Observed queue/query behavior:
 
-- candidate listing is hot-queue-first and only seeds on shortfall
-- stale ready rows are retired before candidate selection
+- candidate listing now reads from denormalized `yenc_recovery_work_items` snapshots and does not join `article_headers`, `article_header_ingest_payloads`, or `binaries`
+- candidate listing claims rows with `FOR UPDATE SKIP LOCKED`, marks them `running`, and uses lease expiry to recover abandoned work
+- transient fetch/apply failures release the claim with a short queue-local backoff
+- stale ready rows with unusable queue identity are retired in bounded batches before candidate selection
 - seed/backfill is branch-based, not one giant inferential selector:
   - high-value multipart / expected-file-count binaries
   - blank-family weak/provisional binaries
   - summary-backed weak/recover-pending families
-- queue rows carry enough current identity/readiness state to prioritize without forcing the full old selector shape
+- queue seeding/refresh is the only place that performs source-table joins to populate candidate snapshots
 
 Schema / overlap findings:
 
-- `recover_yenc` still reads `article_header_ingest_payloads` opportunistically for subject/yEnc hints and retry state
-- payload rows are no longer required for the queue to remain useful, but the retry/backoff state is still mixed into that support table
+- `recover_yenc` candidate listing no longer depends on `article_header_ingest_payloads`; queue snapshots carry the subject, poster, xref, yEnc, and article metadata needed by the service
+- payload rows are still read during bounded queue refresh/seeding and updated for legacy retry/backoff compatibility
 - overlap with assemble is acceptable only because:
   - assemble owns binary formation
   - recover owns recovery queue state
@@ -442,8 +445,9 @@ Schema / overlap findings:
 
 Remaining recover-specific follow-up:
 
-- decide whether retry/backoff state should remain in `article_header_ingest_payloads` for `0.8` or move to fully recovery-owned work state later
-- decide whether the three-branch seed path is sufficient long-term or whether a dedicated recoverable-backlog materialization surface is still warranted after the rest of the audit
+- move the remaining retry/backoff compatibility state out of `article_header_ingest_payloads` if the schema freeze allows one more cleanup pass
+- audit the three-branch seed path plans after a clean rebuild; it is bounded, but still the only recover-yEnc path that joins several hot source tables by design
+- broaden the same query-safety contract to other stages: no scheduled selector should join multiple giant tables unless it first bounds input with a queue or explicit ID window
 
 ## Pass 4 Findings: Release Summary Refresh
 
