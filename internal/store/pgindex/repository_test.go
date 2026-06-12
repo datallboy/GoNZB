@@ -1189,7 +1189,7 @@ func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T)
 	}
 }
 
-func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.T) {
+func TestUpsertBinarySkipsDetailedGroupingEvidenceSideTableForWeakMatches(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -1256,11 +1256,11 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.
 		SELECT payload_json
 		FROM binary_grouping_evidence
 		WHERE binary_id = $1`, binaryID,
-	).Scan(&sideEvidence); err != nil {
+	).Scan(&sideEvidence); err != nil && err != sql.ErrNoRows {
 		t.Fatalf("query side-table grouping evidence: %v", err)
 	}
-	if !strings.Contains(string(sideEvidence), "\"fallback\"") {
-		t.Fatalf("expected weak evidence payload in side table, got %s", string(sideEvidence))
+	if len(sideEvidence) != 0 {
+		t.Fatalf("expected weak detailed evidence to skip side-table retention, got %s", string(sideEvidence))
 	}
 
 	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
@@ -1270,8 +1270,8 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.
 	if detail == nil {
 		t.Fatalf("expected binary detail for %d", binaryID)
 	}
-	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback\"") {
-		t.Fatalf("expected binary detail grouping evidence from side table, got %s", string(detail.GroupingEvidence))
+	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\":true") {
+		t.Fatalf("expected binary detail grouping evidence from inline summary, got %s", string(detail.GroupingEvidence))
 	}
 }
 
@@ -2111,6 +2111,107 @@ func TestUpsertBinarySkipsUnchangedRowRewriteButUpdatesOnRealChange(t *testing.T
 	}
 	if changedStatus != "very_strong" || changedConfidence != 0.99 {
 		t.Fatalf("expected changed upsert to persist stronger match, got status=%q confidence=%f", changedStatus, changedConfidence)
+	}
+}
+
+func TestUpsertBinaryDoesNotDowngradeIdentityWithLowerConfidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.upsert.identity.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "strong-source",
+		ReleaseFamilyKey:  "strong-family",
+		FileSetKey:        "strong-fileset",
+		FileFamilyKey:     "strong-file-family",
+		IdentityStrength:  "strong",
+		IdentityReason:    "strong evidence",
+		SubjectSetToken:   "strong-token",
+		SubjectSetKind:    "subject",
+		FamilyKind:        "readable_title",
+		BaseStem:          "strong-stem",
+		IsMainPayload:     true,
+		ReleaseKey:        "strong-family",
+		ReleaseName:       "Strong Family",
+		BinaryKey:         "stable-identity-binary",
+		BinaryName:        "strong.part01.rar",
+		FileName:          "strong.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}
+	binaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("seed strong binary: %v", err)
+	}
+
+	downgrade := record
+	downgrade.SourceReleaseKey = "weak-source"
+	downgrade.ReleaseFamilyKey = "weak-family"
+	downgrade.FileSetKey = "weak-fileset"
+	downgrade.FileFamilyKey = "weak-file-family"
+	downgrade.IdentityStrength = "weak"
+	downgrade.IdentityReason = "weak evidence"
+	downgrade.SubjectSetToken = "weak-token"
+	downgrade.FamilyKind = "contextual_obfuscated"
+	downgrade.BaseStem = "weak-stem"
+	downgrade.ReleaseKey = "weak-family"
+	downgrade.ReleaseName = "Weak Family"
+	downgrade.BinaryName = "weak.bin"
+	downgrade.FileName = "weak.bin"
+	downgrade.FileIndex = 99
+	downgrade.ExpectedFileCount = 3
+	downgrade.TotalParts = 12
+	downgrade.MatchConfidence = 0.50
+	downgrade.MatchStatus = "probable"
+	if _, err := store.UpsertBinary(ctx, downgrade); err != nil {
+		t.Fatalf("upsert lower-confidence binary: %v", err)
+	}
+
+	var got struct {
+		releaseFamilyKey string
+		releaseName      string
+		fileName         string
+		fileIndex        int
+		expectedCount    int
+		totalParts       int
+		matchConfidence  float64
+		matchStatus      string
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT release_family_key, release_name, file_name, file_index,
+		       expected_file_count, total_parts, match_confidence, match_status
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(
+		&got.releaseFamilyKey,
+		&got.releaseName,
+		&got.fileName,
+		&got.fileIndex,
+		&got.expectedCount,
+		&got.totalParts,
+		&got.matchConfidence,
+		&got.matchStatus,
+	); err != nil {
+		t.Fatalf("query binary after lower-confidence upsert: %v", err)
+	}
+	if got.releaseFamilyKey != "strong-family" || got.releaseName != "Strong Family" || got.fileName != "strong.part01.rar" || got.fileIndex != 1 {
+		t.Fatalf("expected strong identity to be retained, got family=%q release=%q file=%q index=%d", got.releaseFamilyKey, got.releaseName, got.fileName, got.fileIndex)
+	}
+	if got.expectedCount != 3 || got.totalParts != 12 {
+		t.Fatalf("expected monotonic counters to advance, got expected=%d total_parts=%d", got.expectedCount, got.totalParts)
+	}
+	if got.matchConfidence != 0.95 || got.matchStatus != "matched" {
+		t.Fatalf("expected stronger match status to remain, got confidence=%f status=%q", got.matchConfidence, got.matchStatus)
 	}
 }
 
@@ -8849,11 +8950,33 @@ func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
 		t.Fatalf("clear stable inline summary: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE binary_grouping_evidence
-		SET updated_at = NOW() - INTERVAL '25 hours'
-		WHERE binary_id IN ($1, $2)`, stableBinaryID, weakBinaryID,
+		INSERT INTO binary_grouping_evidence (
+			binary_id,
+			evidence_source,
+			evidence_version,
+			payload_json,
+			updated_at
+		)
+		VALUES
+			(
+				$1,
+				'matcher',
+				'v1',
+				'{"summary":{"kind":"readable_title","status":"matched","fallback_used":false}}'::jsonb,
+				NOW() - INTERVAL '25 hours'
+			),
+			(
+				$2,
+				'matcher',
+				'v1',
+				'{"summary":{"kind":"contextual_obfuscated","status":"probable","fallback_used":true},"fallback":{"used":true}}'::jsonb,
+				NOW() - INTERVAL '25 hours'
+			)
+		ON CONFLICT (binary_id) DO UPDATE
+		SET payload_json = EXCLUDED.payload_json,
+		    updated_at = EXCLUDED.updated_at`, stableBinaryID, weakBinaryID,
 	); err != nil {
-		t.Fatalf("age grouping evidence rows: %v", err)
+		t.Fatalf("seed legacy grouping evidence rows: %v", err)
 	}
 
 	out, err := store.RunIndexerMaintenance(ctx)
