@@ -21,10 +21,10 @@ const (
 	releaseReadinessOvergrouped              = "overgrouped_contextual"
 	releaseFamilyDirtyBatchSize              = 10000
 	releaseFamilySummaryRefreshBatch         = 5000
-	releaseFamilySummaryRefreshCap           = 1000
-	releaseFamilySummaryRefreshHotCap        = 200
-	releaseFamilySummaryRefreshColdCap       = 100
-	releaseFamilySummaryRefreshQueryBatchCap = 25
+	releaseFamilySummaryRefreshCap           = 5000
+	releaseFamilySummaryRefreshHotCap        = 1000
+	releaseFamilySummaryRefreshColdCap       = 1000
+	releaseFamilySummaryRefreshQueryBatchCap = 100
 	releaseFamilySummaryMergeRowsMax         = 2500
 )
 
@@ -2858,12 +2858,21 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 		},
 	}
 
+	keys := make([]releaseFamilySummaryKey, 0, limit)
 	for _, branch := range branches {
-		rows, err := conn.QueryContext(ctx, branch.query, branch.args...)
+		remaining := limit - len(keys)
+		if remaining <= 0 {
+			break
+		}
+		args := append([]any(nil), branch.args...)
+		if len(args) > 0 {
+			args[0] = remaining
+		}
+
+		rows, err := conn.QueryContext(ctx, branch.query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("dequeue hot release family summary refresh branch: %w", err)
 		}
-		keys := make([]releaseFamilySummaryKey, 0, limit)
 		for rows.Next() {
 			var key releaseFamilySummaryKey
 			if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
@@ -2879,12 +2888,9 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 		if err := rows.Close(); err != nil {
 			return nil, fmt.Errorf("close hot release family summary refresh queue rows: %w", err)
 		}
-		if len(keys) > 0 {
-			return keys, nil
-		}
 	}
 
-	return nil, nil
+	return keys, nil
 }
 
 func (s *Store) CountQueuedReleaseFamilySummaries(ctx context.Context) (int, error) {

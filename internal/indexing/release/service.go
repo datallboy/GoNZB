@@ -137,6 +137,7 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 
 	remainingSummaryBacklog := initialSummaryBacklog
 	refreshedSummaries := 0
+	dequeuedSummaries := 0
 	refreshDuration := time.Duration(0)
 	summaryRefreshBatches := 0
 	dequeueDuration := time.Duration(0)
@@ -159,6 +160,7 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
 			}
 			refreshedBatch = refreshMetrics.Refreshed
+			dequeuedSummaries += refreshMetrics.Dequeued
 			dequeueDuration += refreshMetrics.DequeueDuration
 			summaryAggregationDuration += refreshMetrics.SummaryRefreshDuration
 			summaryAggregateDuration += refreshMetrics.SummaryAggregateDuration
@@ -192,9 +194,6 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 			break
 		}
 		remainingSummaryBacklog -= refreshedBatch
-		if refreshedBatch < s.opts.SummaryRefreshBatchSize {
-			break
-		}
 	}
 
 	metrics := map[string]any{
@@ -205,6 +204,7 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		"summary_refresh_remaining_count":         remainingSummaryBacklog,
 		"summary_refresh_batches":                 summaryRefreshBatches,
 		"summary_refresh_count":                   refreshedSummaries,
+		"summary_refresh_dequeued_count":          dequeuedSummaries,
 		"summary_refresh_duration_ms":             durationMillis(refreshDuration),
 		"summary_refresh_dequeue_duration_ms":     durationMillis(dequeueDuration),
 		"summary_refresh_summary_duration_ms":     durationMillis(summaryAggregationDuration),
@@ -218,10 +218,11 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		"summary_refresh_cold_batches":            coldBatches,
 	}
 	s.log.Info(
-		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d batches=%d refresh_duration_ms=%.2f dequeue_duration_ms=%.2f summary_duration_ms=%.2f aggregate_duration_ms=%.2f dominant_duration_ms=%.2f ready_sync_duration_ms=%.2f recovered_file_set_duration_ms=%.2f hot_batches=%d cold_batches=%d",
+		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d dequeued=%d batches=%d refresh_duration_ms=%.2f dequeue_duration_ms=%.2f summary_duration_ms=%.2f aggregate_duration_ms=%.2f dominant_duration_ms=%.2f ready_sync_duration_ms=%.2f recovered_file_set_duration_ms=%.2f hot_batches=%d cold_batches=%d",
 		initialSummaryBacklog,
 		remainingSummaryBacklog,
 		refreshedSummaries,
+		dequeuedSummaries,
 		summaryRefreshBatches,
 		durationMillis(refreshDuration),
 		durationMillis(dequeueDuration),
