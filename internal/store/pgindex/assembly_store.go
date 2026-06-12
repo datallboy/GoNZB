@@ -1336,24 +1336,24 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	if _, err := runner.ExecContext(ctx, `
 		UPDATE binaries b
 		SET poster_id = COALESCE(r.poster_id, b.poster_id),
-		    source_release_key = r.source_release_key,
-		    release_family_key = r.release_family_key,
-		    file_set_key = r.file_set_key,
-		    file_family_key = r.file_family_key,
-		    identity_strength = r.identity_strength,
-		    identity_reason = r.identity_reason,
-		    subject_set_token = r.subject_set_token,
-		    subject_set_kind = r.subject_set_kind,
-		    family_kind = r.family_kind,
-		    base_stem = r.base_stem,
-		    is_auxiliary = r.is_auxiliary,
-		    is_main_payload = r.is_main_payload,
-		    release_key = r.release_key,
-		    release_name = r.release_name,
-		    binary_name = r.binary_name,
-		    file_name = r.file_name,
+		    source_release_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.source_release_key ELSE b.source_release_key END,
+		    release_family_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_family_key ELSE b.release_family_key END,
+		    file_set_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_set_key ELSE b.file_set_key END,
+		    file_family_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_family_key ELSE b.file_family_key END,
+		    identity_strength = CASE WHEN r.match_confidence >= b.match_confidence THEN r.identity_strength ELSE b.identity_strength END,
+		    identity_reason = CASE WHEN r.match_confidence >= b.match_confidence THEN r.identity_reason ELSE b.identity_reason END,
+		    subject_set_token = CASE WHEN r.match_confidence >= b.match_confidence THEN r.subject_set_token ELSE b.subject_set_token END,
+		    subject_set_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.subject_set_kind ELSE b.subject_set_kind END,
+		    family_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.family_kind ELSE b.family_kind END,
+		    base_stem = CASE WHEN r.match_confidence >= b.match_confidence THEN r.base_stem ELSE b.base_stem END,
+		    is_auxiliary = CASE WHEN r.match_confidence >= b.match_confidence THEN r.is_auxiliary ELSE b.is_auxiliary END,
+		    is_main_payload = CASE WHEN r.match_confidence >= b.match_confidence THEN r.is_main_payload ELSE b.is_main_payload END,
+		    release_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_key ELSE b.release_key END,
+		    release_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_name ELSE b.release_name END,
+		    binary_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.binary_name ELSE b.binary_name END,
+		    file_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_name ELSE b.file_name END,
 		    file_index = CASE
-		    	WHEN r.file_index > 0 THEN r.file_index
+		    	WHEN r.match_confidence >= b.match_confidence AND r.file_index > 0 THEN r.file_index
 		    	ELSE b.file_index
 		    END,
 		    expected_file_count = GREATEST(b.expected_file_count, r.expected_file_count),
@@ -1374,23 +1374,28 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		WHERE b.id = e.binary_id
 		  AND (
 		  	b.poster_id IS DISTINCT FROM COALESCE(r.poster_id, b.poster_id)
-		  	OR b.source_release_key IS DISTINCT FROM r.source_release_key
-		  	OR b.release_family_key IS DISTINCT FROM r.release_family_key
-		  	OR b.file_set_key IS DISTINCT FROM r.file_set_key
-		  	OR b.file_family_key IS DISTINCT FROM r.file_family_key
-		  	OR b.identity_strength IS DISTINCT FROM r.identity_strength
-		  	OR b.identity_reason IS DISTINCT FROM r.identity_reason
-		  	OR b.subject_set_token IS DISTINCT FROM r.subject_set_token
-		  	OR b.subject_set_kind IS DISTINCT FROM r.subject_set_kind
-		  	OR b.family_kind IS DISTINCT FROM r.family_kind
-		  	OR b.base_stem IS DISTINCT FROM r.base_stem
-		  	OR b.is_auxiliary IS DISTINCT FROM r.is_auxiliary
-		  	OR b.is_main_payload IS DISTINCT FROM r.is_main_payload
-		  	OR b.release_key IS DISTINCT FROM r.release_key
-		  	OR b.release_name IS DISTINCT FROM r.release_name
-		  	OR b.binary_name IS DISTINCT FROM r.binary_name
-		  	OR b.file_name IS DISTINCT FROM r.file_name
-		  	OR (r.file_index > 0 AND b.file_index IS DISTINCT FROM r.file_index)
+		  	OR (
+		  		r.match_confidence >= b.match_confidence
+		  		AND (
+		  			b.source_release_key IS DISTINCT FROM r.source_release_key
+		  			OR b.release_family_key IS DISTINCT FROM r.release_family_key
+		  			OR b.file_set_key IS DISTINCT FROM r.file_set_key
+		  			OR b.file_family_key IS DISTINCT FROM r.file_family_key
+		  			OR b.identity_strength IS DISTINCT FROM r.identity_strength
+		  			OR b.identity_reason IS DISTINCT FROM r.identity_reason
+		  			OR b.subject_set_token IS DISTINCT FROM r.subject_set_token
+		  			OR b.subject_set_kind IS DISTINCT FROM r.subject_set_kind
+		  			OR b.family_kind IS DISTINCT FROM r.family_kind
+		  			OR b.base_stem IS DISTINCT FROM r.base_stem
+		  			OR b.is_auxiliary IS DISTINCT FROM r.is_auxiliary
+		  			OR b.is_main_payload IS DISTINCT FROM r.is_main_payload
+		  			OR b.release_key IS DISTINCT FROM r.release_key
+		  			OR b.release_name IS DISTINCT FROM r.release_name
+		  			OR b.binary_name IS DISTINCT FROM r.binary_name
+		  			OR b.file_name IS DISTINCT FROM r.file_name
+		  			OR (r.file_index > 0 AND b.file_index IS DISTINCT FROM r.file_index)
+		  		)
+		  	)
 		  	OR b.expected_file_count < r.expected_file_count
 		  	OR b.total_parts < r.total_parts
 		  	OR (b.posted_at IS NULL AND r.posted_at IS NOT NULL)
@@ -1518,13 +1523,14 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 				e.existing_release_family_key,
 				e.existing_base_stem,
 				e.existing_expected_file_count,
-				r.release_family_key,
-				r.base_stem,
-				GREATEST(e.existing_expected_file_count, r.expected_file_count) AS expected_file_count,
+				b.release_family_key,
+				b.base_stem,
+				b.expected_file_count,
 				r.provider_id,
 				r.newsgroup_id
 			FROM tmp_existing_binaries e
 			JOIN tmp_upsert_binaries r ON r.ordinal = e.ordinal
+			JOIN binaries b ON b.id = e.binary_id
 
 			UNION ALL
 
@@ -1922,32 +1928,11 @@ func marshalInlineGroupingEvidence(evidence map[string]any) []byte {
 	return raw
 }
 
-func shouldPersistDetailedGroupingEvidence(in BinaryRecord, evidence map[string]any) bool {
-	if len(evidence) == 0 {
-		return false
-	}
-	if in.MatchConfidence < 0.85 {
-		return true
-	}
-
-	switch strings.ToLower(strings.TrimSpace(in.IdentityStrength)) {
-	case "weak", "provisional":
-		return true
-	}
-
-	switch strings.ToLower(strings.TrimSpace(in.FamilyKind)) {
-	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
-		return true
-	}
-
-	summary, _ := evidence["summary"].(map[string]any)
-	if status, _ := summary["status"].(string); strings.TrimSpace(strings.ToLower(status)) != "" && strings.TrimSpace(strings.ToLower(status)) != "matched" {
-		return true
-	}
-	if fallbackUsed, _ := summary["fallback_used"].(bool); fallbackUsed {
-		return true
-	}
-
+func shouldPersistDetailedGroupingEvidence(_ BinaryRecord, _ map[string]any) bool {
+	// Detailed matcher traces are intentionally not retained in PostgreSQL by
+	// default. The compact inline summary is enough for release formation and
+	// admin review, while the full per-binary JSONB payload created excessive
+	// write amplification on long indexer runs.
 	return false
 }
 

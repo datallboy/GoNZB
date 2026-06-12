@@ -284,7 +284,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
 | `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
-| `binary_grouping_evidence` | derived/audit | `assemble_*` | none | Bounded audit/evidence surface. |
+| `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep only compact inline summaries on `binaries`; full matcher traces are no longer persisted to PostgreSQL by default. |
 | `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
 | `binary_inspections` | queue/work | `inspect_*` | none | Inspection stage tracking only. |
 | `binary_archive_entries` | derived/evidence | `inspect_archive` | none | Archive evidence owned by archive inspection. |
@@ -585,7 +585,6 @@ Allowed writes:
 
 - `binaries`
 - `binary_parts`
-- `binary_grouping_evidence`
 - `yenc_recovery_work_items` seeding
 - release-family refresh queue enqueue only
 - transitional bounded write-back to `article_headers` for:
@@ -619,6 +618,11 @@ Current audit note:
 - lane B is the recent general backlog selector and can exclude structured-progress matches
 - current service usage defers release-summary recomputation and only enqueues dirty family keys
 - the store still supports inline release-summary recomputation when callers do not set the defer flag
+- `binaries` identity updates are guarded by match confidence:
+  - equal-or-better confidence may replace family/name identity fields
+  - lower-confidence rediscovery may still advance monotonic counters such as expected file count and total parts
+  - lower-confidence rediscovery must not rewrite `release_family_key` or other indexed identity fields
+- assemble no longer persists detailed matcher traces into `binary_grouping_evidence`; only compact `grouping_evidence_json.summary` remains inline for release/admin use
 - two helper functions in `assembly_store.go` are currently unused by the active assemble service:
   - `listPriorityAssemblyBinaries`
   - `listPendingHeadersForProgressBinaries`
@@ -982,7 +986,7 @@ Purge owns deletion of temporary source lineage and heavy build surfaces, includ
 - `article_header_ingest_payloads` tied only to that purged lineage
 - `binaries`
 - `binary_parts`
-- `binary_grouping_evidence`
+- `binary_grouping_evidence` legacy rows
 - inspection evidence tables tied only to purged binaries
 - recovery work/support rows tied only to purged binaries
 - transitional release-source bridge tables where durable replacements now exist

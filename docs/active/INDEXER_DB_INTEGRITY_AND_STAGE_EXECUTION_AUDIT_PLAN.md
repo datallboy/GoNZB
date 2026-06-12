@@ -25,6 +25,33 @@ Working decisions already locked:
 - treat `scrape_*` as the highest-risk canonical writer and isolate it during bootstrap/recovery
 - prefer stage overlap gates and phased runtime profiles over introducing multi-process topology first
 - automatic maintenance must not purge ingest payloads during normal supervisor operation; destructive payload purge is manual-only
+- `binaries` identity fields are confidence-guarded; lower-confidence rediscovery must not rewrite indexed family identity after a stronger match exists
+- detailed matcher traces are no longer retained in PostgreSQL during normal assemble; compact inline summaries remain for release/admin behavior
+
+## Current DB Corruption Follow-up Findings
+
+Observed on `2026-06-12` during the repeated corruption investigation:
+
+- PostgreSQL reported `compressed pglz data is corrupt` while `indexer_maintenance` read old `binary_grouping_evidence.payload_json`
+- `amcheck` separately reported `heap tuple (355980,1) from table "binaries" lacks matching index tuple within index "idx_binaries_release_family_key"`
+- the maintenance read exposed the corrupt JSONB value, but it was not the causative write path
+- the confirmed corrupt index is on `(provider_id, newsgroup_id, release_family_key)`, which is written by assemble/recovery identity updates
+- the assemble binary upsert path was found to replace indexed identity fields unconditionally, even when incoming matcher confidence was lower than the persisted match
+- this allowed weaker rediscovery passes to churn `release_family_key` and neighboring identity columns while leaving the stronger `match_confidence` in place
+- detailed matcher evidence retention also wrote millions of JSONB rows to `binary_grouping_evidence`, creating high varlena/WAL pressure without being required for release formation
+
+Landed hardening direction:
+
+- guard binary identity replacement by match confidence
+- keep monotonic counters such as expected file count and total parts able to advance under lower-confidence rediscovery
+- read back actual persisted identity after upsert before queueing release-summary refresh keys
+- stop persisting detailed matcher traces into `binary_grouping_evidence` by default
+- set fresh Docker Postgres clusters to initialize with data checksums
+- set hot binary evidence JSONB storage to avoid pglz compression where those fields remain
+
+Remaining validation requirement:
+
+- restart from a fresh checksummed database and run a staged soak with `amcheck` checkpoints between scrape, assemble, recovery, release-summary-refresh, and release formation
 
 ## Current Live Bootstrap Status
 
