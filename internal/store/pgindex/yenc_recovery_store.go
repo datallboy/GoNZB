@@ -3,7 +3,6 @@ package pgindex
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -575,11 +574,8 @@ func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, n
 }
 
 func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int64, in YEncHeaderRecoveryRecord) error {
-	evidenceJSON, err := json.Marshal(in.GroupingEvidence)
-	if err != nil {
-		return fmt.Errorf("marshal yenc grouping evidence: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `
+	groupingSummaryKind, groupingSummaryStatus, groupingSummaryFallbackUsed := groupingSummaryScalars(sanitizeStringMap(in.GroupingEvidence))
+	_, err := tx.ExecContext(ctx, `
 		UPDATE binaries
 		SET source_release_key = $2,
 		    release_family_key = $3,
@@ -603,7 +599,9 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    total_parts = GREATEST(total_parts, $21),
 		    match_confidence = GREATEST(match_confidence, $22),
 		    match_status = $23,
-		    grouping_evidence_json = $24::jsonb,
+		    grouping_summary_kind = $24,
+		    grouping_summary_status = $25,
+		    grouping_summary_fallback_used = $26,
 		    recovered_source = 'yenc_header',
 		    recovered_confidence = GREATEST(recovered_confidence, $22),
 		    recovered_at = NOW(),
@@ -632,7 +630,9 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		in.TotalParts,
 		in.MatchConfidence,
 		in.MatchStatus,
-		string(evidenceJSON),
+		groupingSummaryKind,
+		groupingSummaryStatus,
+		groupingSummaryFallbackUsed,
 	)
 	if err != nil {
 		return fmt.Errorf("update yenc recovered binary %d: %w", binaryID, err)

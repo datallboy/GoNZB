@@ -179,7 +179,9 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		WITH eligible AS (
 			SELECT
 				b.id AS binary_id,
-				jsonb_build_object('summary', bge.payload_json->'summary') AS inline_summary
+				COALESCE(bge.payload_json->'summary'->>'kind', '') AS summary_kind,
+				COALESCE(bge.payload_json->'summary'->>'status', '') AS summary_status,
+				COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) AS summary_fallback_used
 			FROM binary_grouping_evidence bge
 			JOIN binaries b ON b.id = bge.binary_id
 			WHERE bge.updated_at < NOW() - INTERVAL '24 hours'
@@ -191,12 +193,9 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		),
 		backfilled AS (
 			UPDATE binaries b
-			SET grouping_evidence_json = CASE
-				WHEN COALESCE(b.grouping_evidence_json, '{}'::jsonb) = '{}'::jsonb
-					OR NOT (COALESCE(b.grouping_evidence_json, '{}'::jsonb) ? 'summary')
-				THEN e.inline_summary
-				ELSE b.grouping_evidence_json
-			END,
+			SET grouping_summary_kind = CASE WHEN b.grouping_summary_kind = '' THEN e.summary_kind ELSE b.grouping_summary_kind END,
+			grouping_summary_status = CASE WHEN b.grouping_summary_status = '' THEN e.summary_status ELSE b.grouping_summary_status END,
+			grouping_summary_fallback_used = b.grouping_summary_fallback_used OR e.summary_fallback_used,
 			updated_at = b.updated_at
 			FROM eligible e
 			WHERE b.id = e.binary_id

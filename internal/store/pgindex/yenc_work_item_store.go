@@ -286,7 +286,7 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 				b.release_family_key,
 				b.base_stem,
 				COALESCE(s.readiness_bucket, '') AS readiness_bucket,
-				COALESCE((b.grouping_evidence_json -> 'summary' ->> 'fallback_used')::boolean, false) AS structured_identity_binary_matched
+				COALESCE(b.grouping_summary_fallback_used, false) AS structured_identity_binary_matched
 			FROM requested r
 			JOIN binaries b ON b.id = r.binary_id
 			LEFT JOIN release_family_readiness_summaries s

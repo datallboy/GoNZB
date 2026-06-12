@@ -2592,11 +2592,8 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 				    is_auxiliary = TRUE,
 				    is_main_payload = FALSE,
 				    expected_archive_file_count = GREATEST(expected_archive_file_count, $4::integer),
-				    grouping_evidence_json = grouping_evidence_json || jsonb_build_object(
-				    	'par2_archive_file_count', $4::integer,
-				    	'par2_target_base_stem', $3::text,
-				    	'par2_target_coverage_source', 'inspect_par2'
-				    ),
+				    par2_target_base_stem = $3::text,
+				    par2_target_coverage_source = 'inspect_par2',
 				    updated_at = NOW()
 				WHERE id = $1
 				  AND (
@@ -2608,8 +2605,8 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 					is_auxiliary <> TRUE OR
 					is_main_payload <> FALSE OR
 					expected_archive_file_count < $4::integer OR
-					COALESCE(grouping_evidence_json->>'par2_target_base_stem', '') <> $3::text OR
-					COALESCE(grouping_evidence_json->>'par2_target_coverage_source', '') <> 'inspect_par2'
+					COALESCE(par2_target_base_stem, '') <> $3::text OR
+					COALESCE(par2_target_coverage_source, '') <> 'inspect_par2'
 				  )
 				RETURNING release_family_key, base_stem, expected_file_count, expected_archive_file_count`,
 				binaryID,
@@ -2663,7 +2660,9 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 					$%d::text AS normalized_name,
 					file_index,
 					expected_archive_file_count,
-					grouping_evidence_json
+					par2_target_file_name,
+					par2_source_binary_id,
+					par2_target_coverage_source
 				FROM binaries
 				WHERE provider_id = $1
 				  AND newsgroup_id = $2
@@ -2688,9 +2687,11 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 				normalizedName          string
 				currentFileIndex        int
 				currentArchiveFileCount int
-				groupingEvidence        []byte
+				par2TargetFileName      string
+				par2SourceBinaryID      sql.NullInt64
+				par2TargetSource        string
 			)
-			if err := selectRows.Scan(&id, &normalizedName, &currentFileIndex, &currentArchiveFileCount, &groupingEvidence); err != nil {
+			if err := selectRows.Scan(&id, &normalizedName, &currentFileIndex, &currentArchiveFileCount, &par2TargetFileName, &par2SourceBinaryID, &par2TargetSource); err != nil {
 				selectRows.Close()
 				return result, fmt.Errorf("scan par2 target coverage lookup batch %d-%d: %w", start, end, err)
 			}
@@ -2698,18 +2699,12 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 			if !ok {
 				continue
 			}
-			evidence := map[string]any{}
-			if len(groupingEvidence) > 0 {
-				if err := json.Unmarshal(groupingEvidence, &evidence); err != nil {
-					selectRows.Close()
-					return result, fmt.Errorf("decode par2 target coverage evidence batch %d-%d: %w", start, end, err)
-				}
-			}
 			if currentArchiveFileCount >= len(targets) &&
 				!(currentFileIndex <= 0 && target.fileIndex > 0) &&
-				stringMapValue(evidence, "par2_target_file_name") == target.fileName &&
-				stringMapValue(evidence, "par2_source_binary_id") == fmt.Sprintf("%d", binaryID) &&
-				stringMapValue(evidence, "par2_target_coverage_source") == "inspect_par2" {
+				par2TargetFileName == target.fileName &&
+				par2SourceBinaryID.Valid &&
+				par2SourceBinaryID.Int64 == binaryID &&
+				par2TargetSource == "inspect_par2" {
 				continue
 			}
 			updateRows = append(updateRows, struct {
@@ -2754,12 +2749,9 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 				    	WHEN b.file_index <= 0 AND uv.file_index > 0 THEN uv.file_index
 				    	ELSE b.file_index
 				    END,
-				    grouping_evidence_json = b.grouping_evidence_json || jsonb_build_object(
-				    	'par2_archive_file_count', $1::integer,
-				    	'par2_target_file_name', uv.file_name,
-				    	'par2_source_binary_id', $2::bigint,
-				    	'par2_target_coverage_source', 'inspect_par2'
-				    ),
+				    par2_target_file_name = uv.file_name,
+				    par2_source_binary_id = $2::bigint,
+				    par2_target_coverage_source = 'inspect_par2',
 				    updated_at = NOW()
 				FROM update_values uv
 				WHERE b.id = uv.id

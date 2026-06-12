@@ -86,12 +86,14 @@ type BinaryRecord struct {
 }
 
 type preparedBinaryRecord struct {
-	record             BinaryRecord
-	postedAt           any
-	posterID           any
-	evidenceJSON       []byte
-	inlineEvidenceJSON []byte
-	keepDetailed       bool
+	record                      BinaryRecord
+	postedAt                    any
+	posterID                    any
+	evidenceJSON                []byte
+	groupingSummaryKind         string
+	groupingSummaryStatus       string
+	groupingSummaryFallbackUsed bool
+	keepDetailed                bool
 }
 
 type binaryEvidenceRecord struct {
@@ -1165,7 +1167,7 @@ func prepareBinaryRecord(in BinaryRecord) (preparedBinaryRecord, error) {
 		in.MatchStatus = "low_confidence"
 	}
 
-	prepared := preparedBinaryRecord{record: in, evidenceJSON: []byte(`{}`), inlineEvidenceJSON: []byte(`{}`)}
+	prepared := preparedBinaryRecord{record: in, evidenceJSON: []byte(`{}`)}
 	if in.PostedAt != nil {
 		prepared.postedAt = in.PostedAt.UTC()
 	}
@@ -1180,7 +1182,7 @@ func prepareBinaryRecord(in BinaryRecord) (preparedBinaryRecord, error) {
 			return preparedBinaryRecord{}, fmt.Errorf("marshal binary grouping evidence %q: %w", in.BinaryKey, err)
 		}
 		prepared.evidenceJSON = b
-		prepared.inlineEvidenceJSON = marshalInlineGroupingEvidence(cleanEvidence)
+		prepared.groupingSummaryKind, prepared.groupingSummaryStatus, prepared.groupingSummaryFallbackUsed = groupingSummaryScalars(cleanEvidence)
 		prepared.keepDetailed = shouldPersistDetailedGroupingEvidence(in, cleanEvidence)
 	}
 
@@ -1364,10 +1366,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    	WHEN r.match_confidence >= b.match_confidence THEN r.match_status
 		    	ELSE b.match_status
 		    END,
-		    grouping_evidence_json = CASE
-		    	WHEN r.match_confidence >= b.match_confidence THEN r.grouping_evidence_json
-		    	ELSE b.grouping_evidence_json
-		    END,
+		    grouping_summary_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_kind ELSE b.grouping_summary_kind END,
+		    grouping_summary_status = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_status ELSE b.grouping_summary_status END,
+		    grouping_summary_fallback_used = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_fallback_used ELSE b.grouping_summary_fallback_used END,
 		    updated_at = NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
@@ -1404,7 +1405,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		  		r.match_confidence >= b.match_confidence
 		  		AND (
 		  			b.match_status IS DISTINCT FROM r.match_status
-		  			OR b.grouping_evidence_json IS DISTINCT FROM r.grouping_evidence_json
+		  			OR b.grouping_summary_kind IS DISTINCT FROM r.grouping_summary_kind
+		  			OR b.grouping_summary_status IS DISTINCT FROM r.grouping_summary_status
+		  			OR b.grouping_summary_fallback_used IS DISTINCT FROM r.grouping_summary_fallback_used
 		  		)
 		  	)
 		  )`); err != nil {
@@ -1442,7 +1445,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			posted_at,
 			match_confidence,
 			match_status,
-			grouping_evidence_json,
+			grouping_summary_kind,
+			grouping_summary_status,
+			grouping_summary_fallback_used,
 			updated_at
 		)
 		SELECT
@@ -1472,7 +1477,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.posted_at,
 			r.match_confidence,
 			r.match_status,
-			r.grouping_evidence_json,
+			r.grouping_summary_kind,
+			r.grouping_summary_status,
+			r.grouping_summary_fallback_used,
 			NOW()
 		FROM tmp_upsert_binaries r
 		LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
@@ -1677,7 +1684,9 @@ func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedB
 			posted_at TIMESTAMPTZ NULL,
 			match_confidence DOUBLE PRECISION NOT NULL,
 			match_status TEXT NOT NULL,
-			grouping_evidence_json JSONB NOT NULL,
+			grouping_summary_kind TEXT NOT NULL,
+			grouping_summary_status TEXT NOT NULL,
+			grouping_summary_fallback_used BOOLEAN NOT NULL,
 			grouping_evidence_payload JSONB NOT NULL
 		) ON COMMIT DROP`); err != nil {
 		return fmt.Errorf("create binary upsert temp table: %w", err)
@@ -1712,12 +1721,14 @@ func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedB
 			posted_at,
 			match_confidence,
 			match_status,
-			grouping_evidence_json,
+			grouping_summary_kind,
+			grouping_summary_status,
+			grouping_summary_fallback_used,
 			grouping_evidence_payload
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
 			$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-			$21,$22,$23,$24,$25,$26,$27,$28,$29
+			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
 		)`)
 	if err != nil {
 		return fmt.Errorf("prepare binary upsert temp insert: %w", err)
@@ -1753,7 +1764,9 @@ func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedB
 			record.postedAt,
 			record.record.MatchConfidence,
 			record.record.MatchStatus,
-			record.inlineEvidenceJSON,
+			record.groupingSummaryKind,
+			record.groupingSummaryStatus,
+			record.groupingSummaryFallbackUsed,
 			record.evidenceJSON,
 		); err != nil {
 			return fmt.Errorf("insert binary upsert temp row: %w", err)
@@ -1798,7 +1811,9 @@ func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []p
 			posted_at TIMESTAMPTZ NULL,
 			match_confidence DOUBLE PRECISION NOT NULL,
 			match_status TEXT NOT NULL,
-			grouping_evidence_json JSONB NOT NULL,
+			grouping_summary_kind TEXT NOT NULL,
+			grouping_summary_status TEXT NOT NULL,
+			grouping_summary_fallback_used BOOLEAN NOT NULL,
 			grouping_evidence_payload JSONB NOT NULL
 		) ON COMMIT DROP`); err != nil {
 		return fmt.Errorf("create binary upsert temp table: %w", err)
@@ -1836,7 +1851,9 @@ func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []p
 				record.postedAt,
 				record.record.MatchConfidence,
 				record.record.MatchStatus,
-				record.inlineEvidenceJSON,
+				record.groupingSummaryKind,
+				record.groupingSummaryStatus,
+				record.groupingSummaryFallbackUsed,
 				record.evidenceJSON,
 			}, nil
 		})
@@ -1870,7 +1887,9 @@ func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []p
 				"posted_at",
 				"match_confidence",
 				"match_status",
-				"grouping_evidence_json",
+				"grouping_summary_kind",
+				"grouping_summary_status",
+				"grouping_summary_fallback_used",
 				"grouping_evidence_payload",
 			},
 			rows,
@@ -1913,19 +1932,18 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 	return nil
 }
 
-func marshalInlineGroupingEvidence(evidence map[string]any) []byte {
+func groupingSummaryScalars(evidence map[string]any) (kind, status string, fallbackUsed bool) {
 	if len(evidence) == 0 {
-		return []byte(`{}`)
+		return "", "", false
 	}
-	summary, ok := evidence["summary"]
+	summary, ok := evidence["summary"].(map[string]any)
 	if !ok {
-		return []byte(`{}`)
+		return "", "", false
 	}
-	raw, err := json.Marshal(map[string]any{"summary": summary})
-	if err != nil {
-		return []byte(`{}`)
-	}
-	return raw
+	kind, _ = summary["kind"].(string)
+	status, _ = summary["status"].(string)
+	fallbackUsed, _ = summary["fallback_used"].(bool)
+	return strings.TrimSpace(kind), strings.TrimSpace(status), fallbackUsed
 }
 
 func shouldPersistDetailedGroupingEvidence(_ BinaryRecord, _ map[string]any) bool {
