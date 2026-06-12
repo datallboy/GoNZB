@@ -2620,7 +2620,11 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 	}
 
 	if len(summaryKeys) == 0 {
-		return nil, fmt.Errorf("refresh binary stats batch: no binary stats were updated")
+		// Some lane-B binaries can legitimately exist before they have enough
+		// identity to materialize release-family/base-stem summary keys. The
+		// aggregate stats update is still valid in that case, so do not fail the
+		// whole batch just because no summary keys were derivable yet.
+		return nil, nil
 	}
 
 	return summaryKeys, nil

@@ -1497,6 +1497,102 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 }
 
+func TestRefreshBinaryStatsAllowsBlankSummaryKeys(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.refresh.blankkeys.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-refresh-blankkeys-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	now := time.Now().UTC()
+	messageID := fmt.Sprintf("<refresh-blankkeys-%d@test>", time.Now().UnixNano())
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 101,
+		MessageID:     messageID,
+		Subject:       `Blank Summary Keys [1/1] - "blank.bin" yEnc (1/1)`,
+		Poster:        "poster-refresh-blankkeys@example.com",
+		DateUTC:       &now,
+		Bytes:         1234,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var headerID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		  AND message_id = $2`, newsgroupID, messageID,
+	).Scan(&headerID); err != nil {
+		t.Fatalf("lookup inserted article header: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "refresh-blankkeys-source",
+		ReleaseKey:       "refresh-blankkeys-release",
+		ReleaseName:      "Refresh Blank Keys",
+		BinaryKey:        fmt.Sprintf("refresh-blankkeys-binary-%d", time.Now().UnixNano()),
+		BinaryName:       "blank.bin",
+		FileName:         "blank.bin",
+		FileIndex:        1,
+		TotalParts:       1,
+		MatchConfidence:  0.5,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_family_key = '',
+		    base_stem = '',
+		    expected_file_count = 0,
+		    expected_archive_file_count = 0
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("blank binary summary keys: %v", err)
+	}
+
+	if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+		BinaryID:        binaryID,
+		ArticleHeaderID: headerID,
+		MessageID:       fmt.Sprintf("<refresh-blankkeys-part-%d@test>", time.Now().UnixNano()),
+		PartNumber:      1,
+		TotalParts:      1,
+		SegmentBytes:    1234,
+		FileName:        "blank.bin",
+	}); err != nil {
+		t.Fatalf("upsert binary part: %v", err)
+	}
+
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with blank summary keys: %v", err)
+	}
+
+	var observedParts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT observed_parts
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&observedParts); err != nil {
+		t.Fatalf("query refreshed binary observed_parts: %v", err)
+	}
+	if observedParts != 1 {
+		t.Fatalf("expected observed_parts=1, got %d", observedParts)
+	}
+}
+
 func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
