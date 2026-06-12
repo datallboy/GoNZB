@@ -15,7 +15,4 @@ func TestExpectedMigrationVersionTracksLatestEmbeddedMigration(t *testing.T) {
 	if got := expectedMigrationVersion(); got != latest {
 		t.Fatalf("expectedMigrationVersion() = %d, want %d", got, latest)
 	}
-	if latest != 42 {
-		t.Fatalf("latest embedded migration = %d, want 42", latest)
-	}
 }
