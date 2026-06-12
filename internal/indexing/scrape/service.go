@@ -83,6 +83,7 @@ type Service struct {
 	integrityCachedValid  bool
 	integrityCached       *pgindex.IndexerIntegrityReport
 	integrityPreflightTTL time.Duration
+	amcheckWarned         bool
 }
 
 type runMetrics struct {
@@ -179,8 +180,8 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 		if report.HasFailures() {
 			return nil, fmt.Errorf("critical ingest index integrity failed: %s", report.FailureSummary())
 		}
-		if !report.AmcheckAvailable && s.log != nil {
-			s.log.Warn("scrape integrity preflight: amcheck unavailable, proceeding with metadata-only checks")
+		if !report.AmcheckAvailable {
+			s.warnAmcheckUnavailableOnce()
 		}
 	}
 
@@ -243,6 +244,20 @@ func (s *Service) checkCriticalIndexerIntegrity(ctx context.Context) (*pgindex.I
 	s.integrityCachedValid = true
 	s.integrityCheckedAt = time.Now()
 	return report, nil
+}
+
+func (s *Service) warnAmcheckUnavailableOnce() {
+	if s.log == nil {
+		return
+	}
+
+	s.integrityMu.Lock()
+	defer s.integrityMu.Unlock()
+	if s.amcheckWarned {
+		return
+	}
+	s.amcheckWarned = true
+	s.log.Warn("scrape integrity preflight: amcheck unavailable, proceeding with metadata-only checks")
 }
 
 func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, groups []string, metrics *runMetrics) error {
