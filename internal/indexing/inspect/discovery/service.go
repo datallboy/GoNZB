@@ -135,7 +135,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       "no materializable opaque binaries found for discovery",
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return fmt.Errorf("no materializable opaque binaries found for release %s", candidate.ReleaseID)
+		return nil
 	}
 
 	summary := map[string]any{
