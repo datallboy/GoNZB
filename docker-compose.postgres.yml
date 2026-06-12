@@ -39,6 +39,7 @@ services:
       - "5432:5432"
     volumes:
       - /mnt/vm-store/docker-vols/gonzb_gonzb_postgres_data/:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gonzb"]
       interval: 5s
