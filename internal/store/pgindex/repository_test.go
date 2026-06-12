@@ -5297,6 +5297,82 @@ func TestRefreshQueuedReleaseFamilySummariesPrioritizesNonWeakResidue(t *testing
 	}
 }
 
+func TestRefreshQueuedReleaseFamilySummariesFillsHotBatchAcrossPriorityBranches(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.fill.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	actionableFamily := "fill-actionable-family"
+	missingOne := "fill-missing-family-one"
+	missingTwo := "fill-missing-family-two"
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, expected_archive_file_count, has_expected_file_count, has_expected_archive_file_count,
+			total_bytes, earliest_posted_at, dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, recover_pending, expected_file_coverage_pct, archive_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES (
+			1, $1, 'release_family', $2,
+			$2, $2, $2,
+			1, 1, 1, 0,
+			1, 0, true, false,
+			100, NOW(), 'archive_stem', 'fill.actionable.rar', 0.97,
+			'actionable', false, 100, 0, NOW() - INTERVAL '1 minute', TIMESTAMPTZ 'epoch'
+		)`,
+		newsgroupID,
+		actionableFamily,
+	); err != nil {
+		t.Fatalf("insert actionable readiness row: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, NOW() - INTERVAL '3 minutes'),
+			(1, $1, 'release_family', $3, NOW() - INTERVAL '2 minutes'),
+			(1, $1, 'release_family', $4, NOW() - INTERVAL '1 minute')`,
+		newsgroupID,
+		actionableFamily,
+		missingOne,
+		missingTwo,
+	); err != nil {
+		t.Fatalf("insert refresh queue rows: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 3)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 3 {
+		t.Fatalf("expected hot refresh to fill batch across branches, got %d", refreshed)
+	}
+
+	var queueCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1`,
+		newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("query refresh queue count: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected all queued hot keys to be drained, got %d", queueCount)
+	}
+}
+
 func TestRefreshBinaryStatsUpdatesReleaseFamilySummary(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
