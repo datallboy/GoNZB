@@ -45,6 +45,8 @@ type Options struct {
 	Concurrency    int
 }
 
+const maxPrefixFetchConcurrency = 4
+
 type Service struct {
 	repo    repository
 	matcher matcher
@@ -117,6 +119,16 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	workerCount := s.opts.Concurrency
+	if workerCount > maxPrefixFetchConcurrency {
+		workerCount = maxPrefixFetchConcurrency
+		if s.log != nil {
+			s.log.Warn(
+				"recover_yenc: capped prefix fetch concurrency requested=%d effective=%d",
+				s.opts.Concurrency,
+				workerCount,
+			)
+		}
+	}
 	if workerCount > len(candidates) {
 		workerCount = len(candidates)
 	}

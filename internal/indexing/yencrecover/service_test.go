@@ -3,6 +3,7 @@ package yencrecover
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,6 +169,59 @@ func TestRunOnceSkipsStaleBinaryRecoveryCandidate(t *testing.T) {
 	}
 }
 
+func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
+	candidates := make([]pgindex.YEncRecoveryCandidate, 12)
+	for i := range candidates {
+		candidates[i] = pgindex.YEncRecoveryCandidate{
+			BinaryID:        int64(i + 1),
+			ArticleHeaderID: int64(i + 100),
+			NewsgroupName:   "alt.binaries.test",
+			MessageID:       fmt.Sprintf("msg-%d@test", i),
+			Subject:         `[01/01] capped yEnc (1/1)`,
+		}
+	}
+	repo := &fakeRepo{candidates: candidates}
+	fetcher := &fakePrefixFetcher{
+		body:  []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.mkv\r\n=ypart begin=1 end=1024\r\n"),
+		block: make(chan struct{}),
+	}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 12, MaxHeaderBytes: 256, Concurrency: 32})
+
+	done := make(chan struct{})
+	var (
+		metrics map[string]any
+		runErr  error
+	)
+	go func() {
+		defer close(done)
+		metrics, runErr = svc.RunOnceWithMetrics(context.Background())
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if fetcher.maxActiveCount() == maxPrefixFetchConcurrency {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for capped workers, max active=%d", fetcher.maxActiveCount())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	close(fetcher.block)
+	<-done
+
+	if runErr != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", runErr)
+	}
+	if metrics["effective_concurrency"] != maxPrefixFetchConcurrency {
+		t.Fatalf("expected effective concurrency cap %d, got metrics=%v", maxPrefixFetchConcurrency, metrics)
+	}
+	if fetcher.maxActiveCount() > maxPrefixFetchConcurrency {
+		t.Fatalf("prefix fetch concurrency exceeded cap: %d", fetcher.maxActiveCount())
+	}
+}
+
 type fakeRepo struct {
 	candidates         []pgindex.YEncRecoveryCandidate
 	applied            pgindex.YEncHeaderRecoveryRecord
@@ -205,13 +259,33 @@ func (f *fakeRepo) RecordYEncRecoveryTransientFailure(_ context.Context, article
 }
 
 type fakePrefixFetcher struct {
-	body     []byte
-	err      error
-	maxBytes int64
+	body      []byte
+	err       error
+	maxBytes  int64
+	block     chan struct{}
+	mu        sync.Mutex
+	active    int
+	maxActive int
 }
 
 func (f *fakePrefixFetcher) FetchBodyPrefix(_ context.Context, _ string, _ []string, maxBytes int64) ([]byte, error) {
+	f.mu.Lock()
 	f.maxBytes = maxBytes
+	f.active++
+	if f.active > f.maxActive {
+		f.maxActive = f.active
+	}
+	block := f.block
+	f.mu.Unlock()
+
+	if block != nil {
+		<-block
+	}
+
+	f.mu.Lock()
+	f.active--
+	f.mu.Unlock()
+
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -219,6 +293,12 @@ func (f *fakePrefixFetcher) FetchBodyPrefix(_ context.Context, _ string, _ []str
 		return f.body[:int(maxBytes)], nil
 	}
 	return append([]byte(nil), f.body...), nil
+}
+
+func (f *fakePrefixFetcher) maxActiveCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxActive
 }
 
 func ptrTime(t time.Time) *time.Time {
