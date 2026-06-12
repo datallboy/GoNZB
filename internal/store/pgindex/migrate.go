@@ -33,44 +33,10 @@ func (s *Store) RunMigrations() error {
 		return err
 	}
 
-	entries, err := migrationFS.ReadDir("migrations")
+	migs, err := loadEmbeddedMigrations()
 	if err != nil {
-		return fmt.Errorf("read pgindex migrations dir: %w", err)
+		return err
 	}
-
-	type mig struct {
-		version int
-		path    string
-	}
-
-	migs := make([]mig, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-
-		name := e.Name()
-		if !strings.HasSuffix(name, ".up.sql") {
-			continue
-		}
-
-		m := migrationNameRE.FindStringSubmatch(name)
-		if len(m) != 2 {
-			return fmt.Errorf("invalid migration filename: %s", name)
-		}
-
-		v, err := strconv.Atoi(m[1])
-		if err != nil {
-			return fmt.Errorf("parse migration version %s: %w", name, err)
-		}
-
-		migs = append(migs, mig{
-			version: v,
-			path:    filepath.ToSlash(filepath.Join("migrations", name)),
-		})
-	}
-
-	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
 
 	for _, m := range migs {
 		if m.version <= current {
@@ -111,6 +77,59 @@ func (s *Store) RunMigrations() error {
 	}
 
 	return nil
+}
+
+func expectedMigrationVersion() int {
+	migs, err := loadEmbeddedMigrations()
+	if err != nil {
+		panic(err)
+	}
+	if len(migs) == 0 {
+		return 0
+	}
+	return migs[len(migs)-1].version
+}
+
+type embeddedMigration struct {
+	version int
+	path    string
+}
+
+func loadEmbeddedMigrations() ([]embeddedMigration, error) {
+	entries, err := migrationFS.ReadDir("migrations")
+	if err != nil {
+		return nil, fmt.Errorf("read pgindex migrations dir: %w", err)
+	}
+
+	migs := make([]embeddedMigration, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+
+		name := e.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+
+		m := migrationNameRE.FindStringSubmatch(name)
+		if len(m) != 2 {
+			return nil, fmt.Errorf("invalid migration filename: %s", name)
+		}
+
+		v, err := strconv.Atoi(m[1])
+		if err != nil {
+			return nil, fmt.Errorf("parse migration version %s: %w", name, err)
+		}
+
+		migs = append(migs, embeddedMigration{
+			version: v,
+			path:    filepath.ToSlash(filepath.Join("migrations", name)),
+		})
+	}
+
+	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
+	return migs, nil
 }
 
 func ensureModuleVersionTable(ctx context.Context, db *sql.DB) error {

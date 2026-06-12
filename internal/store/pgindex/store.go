@@ -11,8 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-const expectedSchemaVersion = 41
-
 type Store struct {
 	db *sql.DB
 
@@ -112,7 +110,7 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 }
 
 func (s *Store) ExpectedSchemaVersion() int {
-	return expectedSchemaVersion
+	return expectedMigrationVersion()
 }
 
 func (s *Store) ValidateSchema(ctx context.Context) error {
