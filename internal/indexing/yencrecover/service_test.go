@@ -169,11 +169,12 @@ func TestRunOnceSkipsStaleBinaryRecoveryCandidate(t *testing.T) {
 }
 
 type fakeRepo struct {
-	candidates        []pgindex.YEncRecoveryCandidate
-	applied           pgindex.YEncHeaderRecoveryRecord
-	notFoundArticleID int64
-	noopArticleID     int64
-	applyErr          error
+	candidates         []pgindex.YEncRecoveryCandidate
+	applied            pgindex.YEncHeaderRecoveryRecord
+	notFoundArticleID  int64
+	noopArticleID      int64
+	transientArticleID int64
+	applyErr           error
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
@@ -195,6 +196,11 @@ func (f *fakeRepo) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID
 
 func (f *fakeRepo) RecordYEncRecoveryNoop(_ context.Context, articleHeaderID int64) error {
 	f.noopArticleID = articleHeaderID
+	return nil
+}
+
+func (f *fakeRepo) RecordYEncRecoveryTransientFailure(_ context.Context, articleHeaderID int64) error {
+	f.transientArticleID = articleHeaderID
 	return nil
 }
 

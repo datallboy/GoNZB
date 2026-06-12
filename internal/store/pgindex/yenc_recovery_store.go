@@ -113,14 +113,10 @@ func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int6
 		WITH stale AS (
 			SELECT wi.binary_id
 			FROM yenc_recovery_work_items wi
-			LEFT JOIN article_headers ah ON ah.id = wi.article_header_id
-			LEFT JOIN newsgroups ng ON ng.id = wi.newsgroup_id
-			WHERE wi.status = 'ready'
-			  AND (
-			  	ah.id IS NULL OR
-			  	ng.id IS NULL OR
-			  	BTRIM(COALESCE(wi.message_id, '')) = ''
-			  )
+			WHERE wi.status IN ('ready', 'running')
+			  AND BTRIM(COALESCE(wi.message_id, '')) = ''
+			ORDER BY wi.updated_at
+			LIMIT 5000
 		),
 		retired AS (
 			UPDATE yenc_recovery_work_items wi
@@ -144,25 +140,18 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 
 	var count int
 	windowLimit := yencRecoveryReadyWindowLimit(limit)
-	if err := s.withParallelGatherDisabledReadTx(ctx, func(tx *sql.Tx) error {
+	if err := s.withParallelGatherDisabledTx(ctx, true, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `
 			WITH ready_window AS (
-				SELECT wi.article_header_id
+				SELECT wi.binary_id
 				FROM yenc_recovery_work_items wi
 				WHERE wi.status = 'ready'
 				  AND wi.ready_at <= NOW()
+				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
 				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
 				LIMIT $1
 			)
-			SELECT COUNT(*)
-			FROM (
-				SELECT rw.article_header_id
-				FROM ready_window rw
-				JOIN article_headers ah ON ah.id = rw.article_header_id
-				JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-				WHERE BTRIM(COALESCE(ah.message_id, '')) <> ''
-				LIMIT $2
-			) ready`,
+			SELECT COUNT(*) FROM (SELECT 1 FROM ready_window LIMIT $2) ready`,
 			windowLimit,
 			limit,
 		).Scan(&count)
@@ -175,12 +164,41 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
 	windowLimit := yencRecoveryReadyWindowLimit(limit)
 	var out []YEncRecoveryCandidate
-	err := s.withParallelGatherDisabledReadTx(ctx, func(tx *sql.Tx) error {
+	err := s.withParallelGatherDisabledTx(ctx, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			WITH ready_window AS (
+			WITH expired AS (
+				UPDATE yenc_recovery_work_items wi
+				SET status = 'ready',
+				    lease_owner = '',
+				    lease_expires_at = NULL,
+				    updated_at = NOW()
+				WHERE wi.status = 'running'
+				  AND wi.lease_expires_at <= NOW()
+				RETURNING wi.binary_id
+			),
+			ready_window AS (
 				SELECT
 					wi.binary_id,
 					wi.article_header_id,
+					wi.provider_id,
+					wi.newsgroup_id,
+					wi.newsgroup_name,
+					wi.article_number,
+					wi.message_id,
+					wi.subject,
+					wi.poster,
+					wi.date_utc,
+					wi.article_bytes,
+					wi.article_lines,
+					wi.xref,
+					wi.subject_file_name,
+					wi.subject_file_index,
+					wi.subject_file_total,
+					wi.yenc_part_number,
+					wi.yenc_total_parts,
+					wi.yenc_file_size,
+					wi.missing_count,
+					wi.ready_at,
 					wi.current_binary_key,
 					wi.current_release_family_key,
 					wi.current_base_stem,
@@ -191,64 +209,72 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) 
 				FROM yenc_recovery_work_items wi
 				WHERE wi.status = 'ready'
 				  AND wi.ready_at <= NOW()
+				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
 				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
 				LIMIT $2
+				FOR UPDATE SKIP LOCKED
 			),
-			ready_items AS (
+			ranked AS (
 				SELECT
 					rw.binary_id,
-					ah.id,
-					ah.provider_id,
-					ah.newsgroup_id,
-					ng.group_name,
-					ah.article_number,
-					ah.message_id,
-					COALESCE(NULLIF(p.subject, ''), NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), NULLIF(b.release_name, ''), '') AS subject,
-					COALESCE(p.poster, '') AS poster,
-					ah.date_utc,
-					ah.bytes,
-					ah.lines,
-					COALESCE(p.xref, '') AS xref,
-					COALESCE(NULLIF(p.subject_file_name, ''), NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS subject_file_name,
-					CASE
-						WHEN COALESCE(p.subject_file_index, 0) > 0 THEN p.subject_file_index
-						WHEN COALESCE(b.file_index, 0) > 0 THEN b.file_index
-						ELSE 0
-					END AS subject_file_index,
-					GREATEST(
-						COALESCE(p.subject_file_total, 0),
-						COALESCE(b.expected_file_count, 0),
-						COALESCE(b.expected_archive_file_count, 0)
-					) AS subject_file_total,
-					COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-					GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(b.total_parts, 0)) AS yenc_total_parts,
-					COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-					COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
-					p.yenc_recovery_retry_after,
-					rw.current_binary_key,
-					rw.current_release_family_key,
-					rw.current_base_stem,
-					rw.current_readiness_bucket,
-					rw.structured_identity_binary_matched,
-					rw.priority_rank,
-					rw.updated_at,
 					ROW_NUMBER() OVER (
-						PARTITION BY ah.provider_id, ah.newsgroup_id, rw.priority_rank
+						PARTITION BY rw.provider_id, rw.newsgroup_id, rw.priority_rank
 						ORDER BY rw.updated_at DESC, rw.binary_id
 					) AS group_rank
 				FROM ready_window rw
-				JOIN binaries b ON b.id = rw.binary_id
-				JOIN article_headers ah ON ah.id = rw.article_header_id
-				LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-				JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-				WHERE BTRIM(COALESCE(ah.message_id, '')) <> ''
+			),
+			selected AS (
+				SELECT rw.*, r.group_rank
+				FROM ready_window rw
+				JOIN ranked r ON r.binary_id = rw.binary_id
+				ORDER BY rw.priority_rank, r.group_rank, rw.updated_at DESC, rw.binary_id
+				LIMIT $1
+			),
+			claimed AS (
+				UPDATE yenc_recovery_work_items wi
+				SET status = 'running',
+				    lease_owner = 'recover_yenc',
+				    lease_expires_at = NOW() + INTERVAL '30 minutes',
+				    updated_at = NOW()
+				FROM selected s
+				WHERE wi.binary_id = s.binary_id
+				RETURNING
+					s.binary_id,
+					s.article_header_id,
+					s.provider_id,
+					s.newsgroup_id,
+					s.newsgroup_name,
+					s.article_number,
+					s.message_id,
+					s.subject,
+					s.poster,
+					s.date_utc,
+					s.article_bytes,
+					s.article_lines,
+					s.xref,
+					s.subject_file_name,
+					s.subject_file_index,
+					s.subject_file_total,
+					s.yenc_part_number,
+					s.yenc_total_parts,
+					s.yenc_file_size,
+					s.missing_count,
+					s.ready_at,
+					s.current_binary_key,
+					s.current_release_family_key,
+					s.current_base_stem,
+					s.current_readiness_bucket,
+					s.structured_identity_binary_matched,
+					s.group_rank,
+					s.priority_rank,
+					s.updated_at
 			)
 			SELECT
 				binary_id,
-				id,
+				article_header_id,
 				provider_id,
 				newsgroup_id,
-				group_name,
+				newsgroup_name,
 				article_number,
 				message_id,
 				subject,
@@ -263,14 +289,15 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) 
 				yenc_part_number,
 				yenc_total_parts,
 				yenc_file_size,
-				yenc_recovery_missing_count,
-				yenc_recovery_retry_after,
+				missing_count,
+				ready_at,
 				current_binary_key,
 				current_release_family_key,
 				current_base_stem,
 				current_readiness_bucket,
-				structured_identity_binary_matched
-			FROM ready_items
+				structured_identity_binary_matched,
+				group_rank
+			FROM claimed
 			ORDER BY
 				priority_rank,
 				group_rank,
@@ -287,7 +314,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) 
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
 		for rows.Next() {
-			item, err := scanYEncRecoveryCandidate(rows)
+			item, err := scanYEncRecoveryCandidateWithRank(rows)
 			if err != nil {
 				return err
 			}
@@ -304,8 +331,8 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) 
 	return out, nil
 }
 
-func (s *Store) withParallelGatherDisabledReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+func (s *Store) withParallelGatherDisabledTx(ctx context.Context, readOnly bool, fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: readOnly})
 	if err != nil {
 		return err
 	}
@@ -323,13 +350,39 @@ func (s *Store) withParallelGatherDisabledReadTx(ctx context.Context, fn func(tx
 	return tx.Commit()
 }
 
+func (s *Store) RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error {
+	if articleHeaderID <= 0 {
+		return fmt.Errorf("article header id is required")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items
+		SET status = 'ready',
+		    ready_at = NOW() + INTERVAL '15 minutes',
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE article_header_id = $1`, articleHeaderID); err != nil {
+		return fmt.Errorf("record yenc recovery transient failure for article header %d: %w", articleHeaderID, err)
+	}
+	return nil
+}
+
 func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
+	return scanYEncRecoveryCandidateDest(scanner, nil)
+}
+
+func scanYEncRecoveryCandidateWithRank(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
+	var groupRank int
+	return scanYEncRecoveryCandidateDest(scanner, &groupRank)
+}
+
+func scanYEncRecoveryCandidateDest(scanner interface{ Scan(dest ...any) error }, groupRank *int) (YEncRecoveryCandidate, error) {
 	var (
 		item       YEncRecoveryCandidate
 		date       sql.NullTime
 		retryAfter sql.NullTime
 	)
-	if err := scanner.Scan(
+	dest := []any{
 		&item.BinaryID,
 		&item.ArticleHeaderID,
 		&item.ProviderID,
@@ -356,7 +409,11 @@ func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YE
 		&item.CurrentBaseStem,
 		&item.CurrentReadinessBucket,
 		&item.StructuredIdentityBinaryMatched,
-	); err != nil {
+	}
+	if groupRank != nil {
+		dest = append(dest, groupRank)
+	}
+	if err := scanner.Scan(dest...); err != nil {
 		return YEncRecoveryCandidate{}, fmt.Errorf("scan yenc recovery candidate: %w", err)
 	}
 	if date.Valid {
@@ -434,6 +491,8 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 			UPDATE yenc_recovery_work_items
 			SET status = 'done',
 			    ready_at = NOW(),
+			    lease_owner = '',
+			    lease_expires_at = NULL,
 			    updated_at = NOW()
 			WHERE binary_id IN ($1, $2)`,
 			in.BinaryID,

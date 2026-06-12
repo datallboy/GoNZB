@@ -3734,9 +3734,50 @@ func TestListYEncRecoveryCandidatesRoundRobinsAcrossGroups(t *testing.T) {
 	if candidates[2].BinaryID != binaryA2 {
 		t.Fatalf("expected third candidate %d, got %d", binaryA2, candidates[2].BinaryID)
 	}
+
+	var runningCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE binary_id IN ($1, $2, $3)
+		  AND status = 'running'
+		  AND lease_owner = 'recover_yenc'
+		  AND lease_expires_at > NOW()`,
+		binaryA1, binaryA2, binaryB1,
+	).Scan(&runningCount); err != nil {
+		t.Fatalf("count running yenc work items: %v", err)
+	}
+	if runningCount != 3 {
+		t.Fatalf("expected 3 claimed running work items, got %d", runningCount)
+	}
+
+	leasedAgain, err := store.ListYEncRecoveryCandidates(ctx, 3)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates after claim: %v", err)
+	}
+	if len(leasedAgain) != 0 {
+		t.Fatalf("expected claimed candidates to be skipped, got %+v", leasedAgain)
+	}
+
+	if err := store.RecordYEncRecoveryTransientFailure(ctx, articleA1); err != nil {
+		t.Fatalf("record transient failure: %v", err)
+	}
+	var releasedStatus, leaseOwner string
+	var releasedReadyAfter time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status, lease_owner, ready_at
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		binaryA1,
+	).Scan(&releasedStatus, &leaseOwner, &releasedReadyAfter); err != nil {
+		t.Fatalf("load released yenc work item: %v", err)
+	}
+	if releasedStatus != "ready" || leaseOwner != "" || !releasedReadyAfter.After(time.Now().UTC()) {
+		t.Fatalf("expected transient failure to release with future backoff, got status=%q lease=%q ready_at=%s", releasedStatus, leaseOwner, releasedReadyAfter)
+	}
 }
 
-func TestListYEncRecoveryCandidatesRetiresStaleReadyWorkItemsWithoutPayload(t *testing.T) {
+func TestListYEncRecoveryCandidatesAllowsReadyWorkItemsWithoutPayload(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -3843,21 +3884,106 @@ func TestListYEncRecoveryCandidatesRetiresStaleReadyWorkItemsWithoutPayload(t *t
 	if err != nil {
 		t.Fatalf("list yenc recovery candidates: %v", err)
 	}
-	if len(candidates) != 1 || candidates[0].BinaryID != validBinaryID {
-		t.Fatalf("expected only valid candidate %d, got %+v", validBinaryID, candidates)
+	gotIDs := map[int64]bool{}
+	for _, candidate := range candidates {
+		gotIDs[candidate.BinaryID] = true
+	}
+	if len(candidates) != 2 || !gotIDs[validBinaryID] || !gotIDs[staleBinaryID] {
+		t.Fatalf("expected both payload-backed and payloadless candidates, got %+v", candidates)
 	}
 
-	var staleStatus string
+	var payloadlessStatus string
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT status
 		FROM yenc_recovery_work_items
 		WHERE binary_id = $1`,
 		staleBinaryID,
-	).Scan(&staleStatus); err != nil {
-		t.Fatalf("load stale status: %v", err)
+	).Scan(&payloadlessStatus); err != nil {
+		t.Fatalf("load payloadless status: %v", err)
 	}
-	if staleStatus != "stale" {
-		t.Fatalf("expected stale work item to be retired, got %q", staleStatus)
+	if payloadlessStatus != "ready" {
+		t.Fatalf("expected payloadless work item to remain ready, got %q", payloadlessStatus)
+	}
+}
+
+func TestListYEncRecoveryCandidatesRetiresBlankMessageWorkItems(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.blank-message.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "blank-message-family",
+		FileFamilyKey:    "blank-message-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "blank-message-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "blank-message-family",
+		ReleaseName:      "Blank Message Family",
+		BinaryKey:        "blank-message-family::binary",
+		BinaryName:       "blank-message-family.bin",
+		FileName:         "blank-message-family.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 91001,
+		MessageID:     "<blank-message-family@test>",
+		Subject:       `"blank-message-family.bin" yEnc (1/1)`,
+		Poster:        "poster@test",
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+	var articleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = '<blank-message-family@test>'`,
+		newsgroupID,
+	).Scan(&articleID); err != nil {
+		t.Fatalf("load article id: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			updated_at
+		) VALUES ($1, $2, 1, $3, '', 'ready', NOW(), 2, NOW())`,
+		binaryID, articleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed blank-message work item: %v", err)
+	}
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no candidates for blank-message work item, got %+v", candidates)
+	}
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `SELECT status FROM yenc_recovery_work_items WHERE binary_id = $1`, binaryID).Scan(&status); err != nil {
+		t.Fatalf("load work item status: %v", err)
+	}
+	if status != "stale" {
+		t.Fatalf("expected blank-message work item to be stale, got %q", status)
 	}
 }
 
