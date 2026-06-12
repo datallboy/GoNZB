@@ -10,7 +10,25 @@ import (
 	"time"
 )
 
-const yencRecoverySeedScanLowYieldThreshold = 25
+const (
+	yencRecoverySeedScanLowYieldThreshold = 25
+	yencRecoveryReadyWindowMultiplier     = 8
+	yencRecoveryReadyWindowMax            = 8000
+)
+
+func yencRecoveryReadyWindowLimit(limit int) int {
+	if limit <= 0 {
+		return yencRecoverySeedScanLowYieldThreshold
+	}
+	window := limit * yencRecoveryReadyWindowMultiplier
+	if window < limit {
+		window = limit
+	}
+	if window > yencRecoveryReadyWindowMax {
+		window = yencRecoveryReadyWindowMax
+	}
+	return window
+}
 
 func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
 	if limit <= 0 {
@@ -125,131 +143,184 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 	}
 
 	var count int
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM (
-			SELECT wi.binary_id
-			FROM yenc_recovery_work_items wi
-			JOIN article_headers ah ON ah.id = wi.article_header_id
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			WHERE wi.status = 'ready'
-			  AND wi.ready_at <= NOW()
-			  AND BTRIM(COALESCE(ah.message_id, '')) <> ''
-			LIMIT $1
-		) ready`,
-		limit,
-	).Scan(&count); err != nil {
+	windowLimit := yencRecoveryReadyWindowLimit(limit)
+	if err := s.withParallelGatherDisabledReadTx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			WITH ready_window AS (
+				SELECT wi.article_header_id
+				FROM yenc_recovery_work_items wi
+				WHERE wi.status = 'ready'
+				  AND wi.ready_at <= NOW()
+				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
+				LIMIT $1
+			)
+			SELECT COUNT(*)
+			FROM (
+				SELECT rw.article_header_id
+				FROM ready_window rw
+				JOIN article_headers ah ON ah.id = rw.article_header_id
+				JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+				WHERE BTRIM(COALESCE(ah.message_id, '')) <> ''
+				LIMIT $2
+			) ready`,
+			windowLimit,
+			limit,
+		).Scan(&count)
+	}); err != nil {
 		return 0, fmt.Errorf("count ready yenc recovery candidates: %w", err)
 	}
 	return count, nil
 }
 
 func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH ready_items AS (
+	windowLimit := yencRecoveryReadyWindowLimit(limit)
+	var out []YEncRecoveryCandidate
+	err := s.withParallelGatherDisabledReadTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			WITH ready_window AS (
+				SELECT
+					wi.binary_id,
+					wi.article_header_id,
+					wi.current_binary_key,
+					wi.current_release_family_key,
+					wi.current_base_stem,
+					wi.current_readiness_bucket,
+					wi.structured_identity_binary_matched,
+					wi.priority_rank,
+					wi.updated_at
+				FROM yenc_recovery_work_items wi
+				WHERE wi.status = 'ready'
+				  AND wi.ready_at <= NOW()
+				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
+				LIMIT $2
+			),
+			ready_items AS (
+				SELECT
+					rw.binary_id,
+					ah.id,
+					ah.provider_id,
+					ah.newsgroup_id,
+					ng.group_name,
+					ah.article_number,
+					ah.message_id,
+					COALESCE(NULLIF(p.subject, ''), NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), NULLIF(b.release_name, ''), '') AS subject,
+					COALESCE(p.poster, '') AS poster,
+					ah.date_utc,
+					ah.bytes,
+					ah.lines,
+					COALESCE(p.xref, '') AS xref,
+					COALESCE(NULLIF(p.subject_file_name, ''), NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS subject_file_name,
+					CASE
+						WHEN COALESCE(p.subject_file_index, 0) > 0 THEN p.subject_file_index
+						WHEN COALESCE(b.file_index, 0) > 0 THEN b.file_index
+						ELSE 0
+					END AS subject_file_index,
+					GREATEST(
+						COALESCE(p.subject_file_total, 0),
+						COALESCE(b.expected_file_count, 0),
+						COALESCE(b.expected_archive_file_count, 0)
+					) AS subject_file_total,
+					COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
+					GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(b.total_parts, 0)) AS yenc_total_parts,
+					COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
+					COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
+					p.yenc_recovery_retry_after,
+					rw.current_binary_key,
+					rw.current_release_family_key,
+					rw.current_base_stem,
+					rw.current_readiness_bucket,
+					rw.structured_identity_binary_matched,
+					rw.priority_rank,
+					rw.updated_at,
+					ROW_NUMBER() OVER (
+						PARTITION BY ah.provider_id, ah.newsgroup_id, rw.priority_rank
+						ORDER BY rw.updated_at DESC, rw.binary_id
+					) AS group_rank
+				FROM ready_window rw
+				JOIN binaries b ON b.id = rw.binary_id
+				JOIN article_headers ah ON ah.id = rw.article_header_id
+				LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+				JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+				WHERE BTRIM(COALESCE(ah.message_id, '')) <> ''
+			)
 			SELECT
-				wi.binary_id,
-				ah.id,
-				ah.provider_id,
-				ah.newsgroup_id,
-				ng.group_name,
-				ah.article_number,
-				ah.message_id,
-				COALESCE(NULLIF(p.subject, ''), NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), NULLIF(b.release_name, ''), '') AS subject,
-				COALESCE(p.poster, '') AS poster,
-				ah.date_utc,
-				ah.bytes,
-				ah.lines,
-				COALESCE(p.xref, '') AS xref,
-				COALESCE(NULLIF(p.subject_file_name, ''), NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS subject_file_name,
-				CASE
-					WHEN COALESCE(p.subject_file_index, 0) > 0 THEN p.subject_file_index
-					WHEN COALESCE(b.file_index, 0) > 0 THEN b.file_index
-					ELSE 0
-				END AS subject_file_index,
-				GREATEST(
-					COALESCE(p.subject_file_total, 0),
-					COALESCE(b.expected_file_count, 0),
-					COALESCE(b.expected_archive_file_count, 0)
-				) AS subject_file_total,
-				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-				GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(b.total_parts, 0)) AS yenc_total_parts,
-				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-				COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
-				p.yenc_recovery_retry_after,
-				wi.current_binary_key,
-				wi.current_release_family_key,
-				wi.current_base_stem,
-				wi.current_readiness_bucket,
-				wi.structured_identity_binary_matched,
-				wi.priority_rank,
-				wi.updated_at,
-				ROW_NUMBER() OVER (
-					PARTITION BY ah.provider_id, ah.newsgroup_id, wi.priority_rank
-					ORDER BY wi.updated_at DESC, wi.binary_id
-				) AS group_rank
-			FROM yenc_recovery_work_items wi
-			JOIN binaries b ON b.id = wi.binary_id
-			JOIN article_headers ah ON ah.id = wi.article_header_id
-			LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			WHERE wi.status = 'ready'
-			  AND wi.ready_at <= NOW()
-			  AND BTRIM(COALESCE(ah.message_id, '')) <> ''
+				binary_id,
+				id,
+				provider_id,
+				newsgroup_id,
+				group_name,
+				article_number,
+				message_id,
+				subject,
+				poster,
+				date_utc,
+				bytes,
+				lines,
+				xref,
+				subject_file_name,
+				subject_file_index,
+				subject_file_total,
+				yenc_part_number,
+				yenc_total_parts,
+				yenc_file_size,
+				yenc_recovery_missing_count,
+				yenc_recovery_retry_after,
+				current_binary_key,
+				current_release_family_key,
+				current_base_stem,
+				current_readiness_bucket,
+				structured_identity_binary_matched
+			FROM ready_items
+			ORDER BY
+				priority_rank,
+				group_rank,
+				updated_at DESC,
+				binary_id
+			LIMIT $1`,
+			limit,
+			windowLimit,
 		)
-		SELECT
-			binary_id,
-			id,
-			provider_id,
-			newsgroup_id,
-			group_name,
-			article_number,
-			message_id,
-			subject,
-			poster,
-			date_utc,
-			bytes,
-			lines,
-			xref,
-			subject_file_name,
-			subject_file_index,
-			subject_file_total,
-			yenc_part_number,
-			yenc_total_parts,
-			yenc_file_size,
-			yenc_recovery_missing_count,
-			yenc_recovery_retry_after,
-			current_binary_key,
-			current_release_family_key,
-			current_base_stem,
-			current_readiness_bucket,
-			structured_identity_binary_matched
-		FROM ready_items
-		ORDER BY
-			priority_rank,
-			group_rank,
-			updated_at DESC,
-			binary_id
-		LIMIT $1`,
-		limit,
-	)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		out = make([]YEncRecoveryCandidate, 0, limit)
+		for rows.Next() {
+			item, err := scanYEncRecoveryCandidate(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, item)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate yenc recovery candidates: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
-	defer rows.Close()
-
-	out := make([]YEncRecoveryCandidate, 0, limit)
-	for rows.Next() {
-		item, err := scanYEncRecoveryCandidate(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate yenc recovery candidates: %w", err)
-	}
 	return out, nil
+}
+
+func (s *Store) withParallelGatherDisabledReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SET LOCAL max_parallel_workers_per_gather = 0`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_parallel_hash = off`); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
