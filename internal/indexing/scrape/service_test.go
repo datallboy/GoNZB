@@ -331,6 +331,32 @@ func TestRunLatestCachesIntegrityPreflight(t *testing.T) {
 	}
 }
 
+func TestRunLatestWarnsOnceWhenAmcheckUnavailable(t *testing.T) {
+	repo := &fakeScrapeRepo{integrityReport: &pgindex.IndexerIntegrityReport{AmcheckAvailable: false}}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 1},
+		headers: []OverviewHeader{{
+			ArticleNumber: 1,
+			MessageID:     "<msg@test>",
+		}},
+	}
+	log := &countingScrapeLogger{}
+	svc := NewService(repo, provider, log, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("first RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("second RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if log.warns != 1 {
+		t.Fatalf("expected 1 amcheck warning, got %d", log.warns)
+	}
+}
+
 type fakeScrapeRepo struct {
 	backfillCheckpoint        int64
 	latestCheckpoint          int64
@@ -474,3 +500,14 @@ func (testScrapeLogger) Debug(string, ...interface{}) {}
 func (testScrapeLogger) Info(string, ...interface{})  {}
 func (testScrapeLogger) Warn(string, ...interface{})  {}
 func (testScrapeLogger) Error(string, ...interface{}) {}
+
+type countingScrapeLogger struct {
+	warns int
+}
+
+func (*countingScrapeLogger) Debug(string, ...interface{}) {}
+func (*countingScrapeLogger) Info(string, ...interface{})  {}
+func (l *countingScrapeLogger) Warn(string, ...interface{}) {
+	l.warns++
+}
+func (*countingScrapeLogger) Error(string, ...interface{}) {}
