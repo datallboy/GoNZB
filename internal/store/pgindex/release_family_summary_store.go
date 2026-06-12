@@ -1819,91 +1819,235 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		return nil
 	}
 
-	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
+	actionableParam := len(args) + 1
+	fragmentParam := len(args) + 2
+	keyKindParam := len(args) + 3
+	aggregateSQL := fmt.Sprintf(`
 		WITH requested(file_set_key) AS (
 			VALUES %s
+		),
+		aggregates AS (
+			SELECT
+				$1::BIGINT AS provider_id,
+				r.file_set_key,
+				COALESCE(MIN(b.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
+				COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), r.file_set_key) AS source_release_key,
+				r.file_set_key AS release_key,
+				COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), r.file_set_key) AS release_name,
+				COUNT(b.id)::INTEGER AS binary_count,
+				COUNT(*) FILTER (
+					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+				)::INTEGER AS complete_binary_count,
+				COUNT(*) FILTER (
+					WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+					  AND b.total_parts > 0
+					  AND b.observed_parts = b.total_parts
+				)::INTEGER AS complete_main_payload_binary_count,
+				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
+				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+				COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
+				COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
+				MIN(b.posted_at) AS earliest_posted_at,
+				MAX(b.posted_at) AS latest_posted_at,
+				MAX(b.updated_at) AS max_updated_at,
+				COUNT(DISTINCT b.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
+				COUNT(*) FILTER (
+					WHERE b.is_main_payload = TRUE OR b.is_auxiliary = FALSE
+				)::INTEGER AS main_payload_binary_count
+			FROM requested r
+			LEFT JOIN binaries b
+			  ON b.provider_id = $1
+			 AND b.file_set_key = r.file_set_key
+			 AND COALESCE(b.recovered_source, '') = 'yenc_header'
+			 AND BTRIM(b.file_set_key) <> ''
+			 AND b.posted_at IS NOT NULL
+			GROUP BY r.file_set_key
+		),
+		scored AS (
+			SELECT
+				a.*,
+				GREATEST(a.expected_file_count, a.expected_archive_file_count) AS max_expected,
+				CASE
+					WHEN a.expected_file_count > 0 THEN LEAST(100::DOUBLE PRECISION, (a.complete_main_payload_binary_count::DOUBLE PRECISION / a.expected_file_count::DOUBLE PRECISION) * 100)
+					ELSE 0::DOUBLE PRECISION
+				END AS expected_file_coverage_pct,
+				CASE
+					WHEN a.expected_archive_file_count > 0 THEN LEAST(100::DOUBLE PRECISION, (a.complete_main_payload_binary_count::DOUBLE PRECISION / a.expected_archive_file_count::DOUBLE PRECISION) * 100)
+					ELSE 0::DOUBLE PRECISION
+				END AS archive_file_coverage_pct,
+				CASE
+					WHEN a.complete_main_payload_binary_count > 0 THEN $%d
+					ELSE $%d
+				END AS readiness_bucket
+			FROM aggregates a
+		),
+		valid AS (
+			SELECT *
+			FROM scored
+			WHERE binary_count > 0
+			  AND distinct_newsgroup_count > 1
+			  AND main_payload_binary_count >= 2
+			  AND max_expected > 1
+			  AND earliest_posted_at IS NOT NULL
+			  AND latest_posted_at IS NOT NULL
+			AND latest_posted_at - earliest_posted_at <= INTERVAL '24 hours'
+		)
+	`, strings.Join(values, ","), actionableParam, fragmentParam)
+
+	statementArgs := append([]any(nil), args...)
+	statementArgs = append(statementArgs, releaseReadinessActionable, releaseReadinessFragmentOnly)
+	statementArgsWithKind := append(append([]any(nil), statementArgs...), ReleaseCandidateKeyKindRecoveredFileSet)
+
+	if _, err := runner.ExecContext(ctx, aggregateSQL+`
+		DELETE FROM release_recovered_file_set_candidates c
+		USING requested r
+		LEFT JOIN valid v ON v.file_set_key = r.file_set_key
+		WHERE c.provider_id = $1
+		  AND c.file_set_key = r.file_set_key
+		  AND v.file_set_key IS NULL`, statementArgs...); err != nil {
+		return fmt.Errorf("delete stale recovered file-set candidates provider=%d count=%d: %w", providerID, len(values), err)
+	}
+	if _, err := runner.ExecContext(ctx, aggregateSQL+`
+		DELETE FROM release_ready_candidates c
+		USING requested r
+		LEFT JOIN valid v ON v.file_set_key = r.file_set_key
+		WHERE c.provider_id = $1
+		  AND c.key_kind = $`+fmt.Sprint(keyKindParam)+`
+		  AND c.family_key = r.file_set_key
+		  AND (
+		  	v.file_set_key IS NULL OR
+		  	v.readiness_bucket <> $`+fmt.Sprint(actionableParam)+`
+		  )`, statementArgsWithKind...); err != nil {
+		return fmt.Errorf("delete stale ready recovered file-set candidates provider=%d count=%d: %w", providerID, len(values), err)
+	}
+	if _, err := runner.ExecContext(ctx, aggregateSQL+`
+		INSERT INTO release_recovered_file_set_candidates (
+			provider_id,
+			file_set_key,
+			representative_newsgroup_id,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			total_bytes,
+			earliest_posted_at,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			readiness_bucket,
+			updated_at
 		)
 		SELECT
-			$1::BIGINT AS provider_id,
-			r.file_set_key,
-			COALESCE(MIN(b.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
-			COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), r.file_set_key) AS source_release_key,
-			r.file_set_key AS release_key,
-			COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), r.file_set_key) AS release_name,
-			COUNT(b.id)::INTEGER AS binary_count,
-			COUNT(*) FILTER (
-				WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
-			)::INTEGER AS complete_binary_count,
-			COUNT(*) FILTER (
-				WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-				  AND b.total_parts > 0
-				  AND b.observed_parts = b.total_parts
-			)::INTEGER AS complete_main_payload_binary_count,
-			COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
-			COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-			COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
-			COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-			MIN(b.posted_at) AS earliest_posted_at,
-			MAX(b.posted_at) AS latest_posted_at,
-			MAX(b.updated_at) AS max_updated_at,
-			COUNT(DISTINCT b.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
-			COUNT(*) FILTER (
-				WHERE b.is_main_payload = TRUE OR b.is_auxiliary = FALSE
-			)::INTEGER AS main_payload_binary_count
-		FROM requested r
-		LEFT JOIN binaries b
-		  ON b.provider_id = $1
-		 AND b.file_set_key = r.file_set_key
-		 AND COALESCE(b.recovered_source, '') = 'yenc_header'
-		 AND BTRIM(b.file_set_key) <> ''
-		 AND b.posted_at IS NOT NULL
-		GROUP BY r.file_set_key
-		ORDER BY r.file_set_key`,
-		strings.Join(values, ",")), args...)
-	if err != nil {
-		return fmt.Errorf("query recovered file-set candidate batch provider=%d count=%d: %w", providerID, len(values), err)
+			provider_id,
+			file_set_key,
+			representative_newsgroup_id,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			total_bytes,
+			earliest_posted_at,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			readiness_bucket,
+			COALESCE(max_updated_at, NOW())
+		FROM valid
+		ON CONFLICT (provider_id, file_set_key) DO UPDATE
+		SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
+		    source_release_key = EXCLUDED.source_release_key,
+		    release_key = EXCLUDED.release_key,
+		    release_name = EXCLUDED.release_name,
+		    binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    updated_at = EXCLUDED.updated_at`, statementArgs...); err != nil {
+		return fmt.Errorf("upsert recovered file-set candidates provider=%d count=%d: %w", providerID, len(values), err)
 	}
-	defer rows.Close()
-
-	aggregates := make([]recoveredFileSetCandidateAggregate, 0, len(values))
-	for rows.Next() {
-		var row recoveredFileSetCandidateAggregate
-		if err := rows.Scan(
-			&row.ProviderID,
-			&row.FileSetKey,
-			&row.RepresentativeNewsgroupID,
-			&row.SourceReleaseKey,
-			&row.ReleaseKey,
-			&row.ReleaseName,
-			&row.BinaryCount,
-			&row.CompleteBinaryCount,
-			&row.CompleteMainPayloadBinaryCount,
-			&row.ExpectedFileCount,
-			&row.ExpectedArchiveFileCount,
-			&row.HasExpectedFileCount,
-			&row.HasExpectedArchiveFileCount,
-			&row.TotalBytes,
-			&row.EarliestPostedAt,
-			&row.LatestPostedAt,
-			&row.MaxUpdatedAt,
-			&row.DistinctNewsgroupCount,
-			&row.MainPayloadBinaryCount,
-		); err != nil {
-			return fmt.Errorf("scan recovered file-set candidate batch row: %w", err)
-		}
-		aggregates = append(aggregates, row)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate recovered file-set candidate batch provider=%d: %w", providerID, err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close recovered file-set candidate batch provider=%d rows: %w", providerID, err)
-	}
-	for _, row := range aggregates {
-		if err := upsertRecoveredFileSetCandidateAggregate(ctx, runner, row); err != nil {
-			return err
-		}
+	if _, err := runner.ExecContext(ctx, aggregateSQL+`
+		INSERT INTO release_ready_candidates (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			total_bytes,
+			earliest_posted_at,
+			ready_reason,
+			updated_at
+		)
+		SELECT
+			provider_id,
+			representative_newsgroup_id,
+			$`+fmt.Sprint(keyKindParam)+`,
+			file_set_key,
+			source_release_key,
+			release_key,
+			release_name,
+			binary_count,
+			complete_binary_count,
+			complete_main_payload_binary_count,
+			expected_file_count,
+			expected_archive_file_count,
+			has_expected_file_count,
+			has_expected_archive_file_count,
+			expected_file_coverage_pct,
+			archive_file_coverage_pct,
+			total_bytes,
+			earliest_posted_at,
+			$`+fmt.Sprint(actionableParam)+`,
+			COALESCE(max_updated_at, NOW())
+		FROM valid
+		WHERE readiness_bucket = $`+fmt.Sprint(actionableParam)+`
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET source_release_key = EXCLUDED.source_release_key,
+		    release_key = EXCLUDED.release_key,
+		    release_name = EXCLUDED.release_name,
+		    binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    expected_archive_file_count = EXCLUDED.expected_archive_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    has_expected_archive_file_count = EXCLUDED.has_expected_archive_file_count,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    archive_file_coverage_pct = EXCLUDED.archive_file_coverage_pct,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    ready_reason = EXCLUDED.ready_reason,
+		    updated_at = EXCLUDED.updated_at`, statementArgsWithKind...); err != nil {
+		return fmt.Errorf("upsert ready recovered file-set candidates provider=%d count=%d: %w", providerID, len(values), err)
 	}
 	return nil
 }

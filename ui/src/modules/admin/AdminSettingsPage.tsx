@@ -42,25 +42,29 @@ type StageDefinition = {
   showBinaryUpsertChunk?: boolean
   showMaxBatches?: boolean
   defaultMaxBatches?: number
+  batchHelpText?: string
+  maxBatchesHelpText?: string
+  backoffHelpText?: string
+  concurrencyHelpText?: string
 }
 
 const stageDefinitions: StageDefinition[] = [
-  { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group batch at a time so large group sets stay responsive.' },
-  { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.' },
-  { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
-  { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
-  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
-  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
-  { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
-  { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.' },
-  { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.' },
-  { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.' },
-  { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
-  { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
-  { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.' },
-  { key: 'inspect_archive', label: 'Inspect archive', supportsConcurrency: true, description: 'Archive listing and encrypted/password detection.' },
-  { key: 'inspect_password', label: 'Inspect password', supportsConcurrency: false, description: 'Password verification workflow.' },
-  { key: 'inspect_media', label: 'Inspect media', supportsConcurrency: true, description: 'Media probe and stream metadata extraction.' },
+  { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group batch at a time so large group sets stay responsive.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
+  { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
+  { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
+  { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'NNTP-backed BODY fetch workers.' },
+  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
+  { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
+  { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
+  { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
+  { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.', batchHelpText: 'Archived releases purged per run.' },
+  { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
+  { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
+  { key: 'inspect_archive', label: 'Inspect archive', supportsConcurrency: true, description: 'Archive listing and encrypted/password detection.', batchHelpText: 'Archive binaries/releases claimed per run.', concurrencyHelpText: 'Archive tooling workers. Higher values can increase disk and memory pressure.' },
+  { key: 'inspect_password', label: 'Inspect password', supportsConcurrency: false, description: 'Password verification workflow.', batchHelpText: 'Password candidates/releases checked per run.' },
+  { key: 'inspect_media', label: 'Inspect media', supportsConcurrency: true, description: 'Media probe and stream metadata extraction.', batchHelpText: 'Media candidates probed per run.', concurrencyHelpText: 'ffprobe workers. Higher values can increase CPU and memory pressure.' },
   { key: 'enrich_predb', label: 'Enrich PreDB', supportsConcurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
   { key: 'enrich_tmdb', label: 'Enrich TMDB', supportsConcurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
 ]
@@ -728,18 +732,37 @@ export function AdminSettingsPage() {
                             helpText="Supports sub-minute scheduling. Example: 0.1 = 6 seconds."
                             onChange={(next) => updateStage(key, { interval_minutes: next })}
                           />
-                          <NumberField label="Batch size" min={1} value={value.batch_size ?? 0} onChange={(next) => updateStage(key, { batch_size: next })} />
+                          <NumberField
+                            label="Batch size"
+                            min={1}
+                            value={value.batch_size ?? 0}
+                            helpText={definition.batchHelpText}
+                            onChange={(next) => updateStage(key, { batch_size: next })}
+                          />
                           {definition.showMaxBatches ? (
                             <NumberField
                               label="Max batches"
                               min={1}
                               value={value.max_batches ?? definition.defaultMaxBatches ?? 10}
+                              helpText={definition.maxBatchesHelpText}
                               onChange={(next) => updateStage(key, { max_batches: next })}
                             />
                           ) : null}
-                          <NumberField label="Backoff seconds" min={0} value={value.backoff_seconds ?? 0} onChange={(next) => updateStage(key, { backoff_seconds: next })} />
+                          <NumberField
+                            label="Backoff seconds"
+                            min={0}
+                            value={value.backoff_seconds ?? 0}
+                            helpText={definition.backoffHelpText ?? 'Delay after a failed or blocked run before this stage tries again.'}
+                            onChange={(next) => updateStage(key, { backoff_seconds: next })}
+                          />
                           {definition.supportsConcurrency ? (
-                            <NumberField label="Concurrency" min={1} value={value.concurrency ?? 1} onChange={(next) => updateStage(key, { concurrency: next })} />
+                            <NumberField
+                              label="Concurrency"
+                              min={1}
+                              value={value.concurrency ?? 1}
+                              helpText={definition.concurrencyHelpText}
+                              onChange={(next) => updateStage(key, { concurrency: next })}
+                            />
                           ) : null}
                         </div>
                         {showAdvanced && definition.showBinaryUpsertChunk ? (
