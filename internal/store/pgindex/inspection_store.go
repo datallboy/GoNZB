@@ -766,6 +766,50 @@ type binaryInspectionQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+const binaryInspectionCandidateStateCTE = `
+binary_state AS (
+	SELECT
+		bc.binary_id AS id,
+		bc.provider_id,
+		bc.newsgroup_id,
+		bc.poster_id,
+		bc.binary_key,
+		bic.release_family_key,
+		bic.base_stem,
+		bic.release_key,
+		bic.release_name,
+		bic.binary_name,
+		bic.file_name,
+		bic.file_index,
+		bic.expected_file_count,
+		bic.expected_archive_file_count,
+		bic.is_auxiliary,
+		bic.is_main_payload,
+		bic.match_confidence,
+		bic.match_status,
+		bos.posted_at,
+		bos.total_bytes,
+		bos.total_parts,
+		bos.observed_parts,
+		bos.first_article_number,
+		bos.last_article_number,
+		COALESCE(brc.recovered_kind, '') AS recovered_kind,
+		COALESCE(brc.recovered_extension, '') AS recovered_extension,
+		COALESCE(brc.recovered_source, '') AS recovered_source,
+		COALESCE(brc.recovered_confidence, 0) AS recovered_confidence,
+		COALESCE(brc.recovered_file_name, '') AS recovered_file_name,
+		GREATEST(
+			bc.updated_at,
+			bic.updated_at,
+			bos.updated_at,
+			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+		) AS updated_at
+	FROM binary_core bc
+	JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+	JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+	LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+)`
+
 func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
 	stageName = strings.TrimSpace(stageName)
 	if stageName == "" {
@@ -840,7 +884,8 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 
 	if stageName == "inspect_par2" {
 		query := `
-			WITH candidate_rows AS (
+			WITH ` + binaryInspectionCandidateStateCTE + `,
+			candidate_rows AS (
 				SELECT
 					b.id,
 					b.release_family_key,
@@ -887,7 +932,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					(
 						` + rerunPredicate + `
 					) AS needs_rerun
-				FROM binaries b
+				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
 				LEFT JOIN binary_inspections bi
 					ON bi.stage_name = $1
@@ -982,6 +1027,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 
 	if stageName == "inspect_discovery" {
 		query := `
+			WITH ` + binaryInspectionCandidateStateCTE + `
 			SELECT
 				$1 AS stage_name,
 				b.id AS binary_id,
@@ -1004,7 +1050,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				bi.updated_at AS current_updated_at,
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
-			FROM binaries b
+			FROM binary_state b
 			LEFT JOIN posters p ON p.id = b.poster_id
 			LEFT JOIN binary_inspections bi
 				ON bi.stage_name = $1
@@ -1028,6 +1074,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 	}
 
 	query := `
+		WITH ` + binaryInspectionCandidateStateCTE + `
 		SELECT
 			$1,
 			b.id,
@@ -1050,7 +1097,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			bi.updated_at,
 			COALESCE(bi.summary_json, '{}'::jsonb),
 			COALESCE(abi.summary_json, '{}'::jsonb)
-		FROM binaries b
+		FROM binary_state b
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
@@ -1081,6 +1128,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip'`
 		query = `
+			WITH ` + binaryInspectionCandidateStateCTE + `
 			SELECT *
 			FROM (
 				SELECT DISTINCT ON (
@@ -1118,7 +1166,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					bi.updated_at AS current_updated_at,
 					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 					COALESCE(abi.summary_json, '{}'::jsonb) AS archive_summary_json
-				FROM binaries b
+				FROM binary_state b
 				JOIN release_files rf ON rf.binary_id = b.id
 				JOIN releases r ON r.release_id = rf.release_id
 				LEFT JOIN binary_inspections bi
