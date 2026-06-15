@@ -78,6 +78,15 @@ export function previewAdminScrapeWildcards(params?: { q?: string; limit?: numbe
   return apiRequest<{ items: AdminScrapeConfigResponse['preview_groups']; count: number; limit: number; offset: number }>(`/api/v1/admin/indexer/scrape/preview${suffix ? `?${suffix}` : ''}`)
 }
 
+export function getAdminScrapeCrosspostPopularity(params?: { limit?: number }) {
+  const query = new URLSearchParams()
+  if (params?.limit) {
+    query.set('limit', String(params.limit))
+  }
+  const suffix = query.toString()
+  return apiRequest<{ items: AdminScrapeConfigResponse['crosspost_popularity']; limit: number }>(`/api/v1/admin/indexer/scrape/crosspost-popularity${suffix ? `?${suffix}` : ''}`)
+}
+
 export function applyAdminScrapeWildcards() {
   return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape/actions/apply', { method: 'POST' })
 }
