@@ -89,9 +89,16 @@ func (ctrl *IndexerScrapeAdminController) PreviewWildcardGroups(c *echo.Context)
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
+	limit, offset, err := parsePaginationParams(c, 50, 500)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total := previewWildcardGroupsPage(runtime.Indexing, queryParamTrimmed(c, "q"), limit, offset)
 	return c.JSON(http.StatusOK, map[string]any{
-		"items": previewWildcardGroups(runtime.Indexing),
-		"count": len(previewWildcardGroups(runtime.Indexing)),
+		"items":  items,
+		"count":  total,
+		"limit":  limit,
+		"offset": offset,
 	})
 }
 
@@ -174,16 +181,19 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 	if indexing == nil {
 		indexing = app.DefaultRuntimeSettings().Indexing
 	}
-	preview := previewWildcardGroups(indexing)
 	crossposts := loadCrosspostPopularity(ctx, appCtx, indexing)
+	previewPage, previewTotal := previewWildcardGroupsPage(indexing, "", 50, 0)
 	return map[string]any{
-		"explicit_groups":          ensureExplicitGroups(indexing.ExplicitGroups),
-		"wildcard_rules":           ensureWildcardRules(indexing.WildcardRules),
-		"provider_group_inventory": ensureProviderInventory(indexing.ProviderGroupInventory),
-		"materialized_groups":      ensureMaterializedGroups(indexing.MaterializedGroups),
-		"effective_groups":         ensureExplicitGroups(app.EffectiveScrapeGroups(indexing)),
-		"preview_groups":           ensurePreviewGroups(preview),
-		"crosspost_popularity":     crossposts,
+		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
+		"wildcard_rules":                 ensureWildcardRules(indexing.WildcardRules),
+		"provider_group_inventory":       []app.IndexingProviderGroupInventoryRuntimeSettings{},
+		"provider_inventory_count":       len(indexing.ProviderGroupInventory),
+		"provider_inventory_latest_scan": latestProviderInventoryScan(indexing.ProviderGroupInventory),
+		"materialized_groups":            ensureMaterializedGroups(indexing.MaterializedGroups),
+		"effective_groups":               ensureExplicitGroups(app.EffectiveScrapeGroups(indexing)),
+		"preview_groups":                 ensurePreviewGroups(previewPage),
+		"preview_total":                  previewTotal,
+		"crosspost_popularity":           crossposts,
 	}
 }
 
@@ -251,7 +261,54 @@ func previewWildcardGroups(indexing *app.IndexingRuntimeSettings) []scrapePrevie
 	for _, item := range aggregated {
 		out = append(out, *item)
 	}
+	slices.SortFunc(out, func(a, b scrapePreviewItem) int {
+		return strings.Compare(strings.ToLower(a.GroupName), strings.ToLower(b.GroupName))
+	})
 	return out
+}
+
+func previewWildcardGroupsPage(indexing *app.IndexingRuntimeSettings, query string, limit, offset int) ([]scrapePreviewItem, int) {
+	all := previewWildcardGroups(indexing)
+	query = strings.ToLower(strings.TrimSpace(query))
+	filtered := make([]scrapePreviewItem, 0, len(all))
+	for _, item := range all {
+		if query != "" &&
+			!strings.Contains(strings.ToLower(item.GroupName), query) &&
+			!containsAnyFold(item.ProviderIDs, query) &&
+			!containsAnyFold(item.RuleIDs, query) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	total := len(filtered)
+	if offset >= total {
+		return []scrapePreviewItem{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return filtered[offset:end], total
+}
+
+func latestProviderInventoryScan(items []app.IndexingProviderGroupInventoryRuntimeSettings) string {
+	latest := ""
+	for _, item := range items {
+		scannedAt := strings.TrimSpace(item.ScannedAt)
+		if scannedAt > latest {
+			latest = scannedAt
+		}
+	}
+	return latest
+}
+
+func containsAnyFold(items []string, needle string) bool {
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(item)), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func materializeWildcardGroups(indexing *app.IndexingRuntimeSettings) []app.IndexingMaterializedGroupRuntimeSettings {

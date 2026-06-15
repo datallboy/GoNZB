@@ -967,9 +967,12 @@ export type AdminScrapeConfigResponse = {
   explicit_groups: ScrapeExplicitGroup[]
   wildcard_rules: ScrapeWildcardRule[]
   provider_group_inventory: ScrapeProviderInventoryItem[]
+  provider_inventory_count?: number
+  provider_inventory_latest_scan?: string
   materialized_groups: ScrapeMaterializedGroup[]
   effective_groups: ScrapeExplicitGroup[]
   preview_groups: ScrapePreviewGroup[]
+  preview_total?: number
   crosspost_popularity: ScrapeCrosspostPopularityItem[]
 }
 
