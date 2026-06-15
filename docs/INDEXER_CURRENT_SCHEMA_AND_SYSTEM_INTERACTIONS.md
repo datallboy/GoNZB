@@ -836,7 +836,8 @@ Current audit note:
 Allowed reads:
 
 - `release_family_readiness_summaries`
-- `binaries`
+- `binary_core`, `binary_identity_current`, and `binary_observation_stats` for candidate binary fan-out
+- `binaries` only for release paths that have not yet moved in later binary V2 phases
 - inspection rollups and release-facing metadata needed for catalog formation
 
 Allowed writes:
@@ -872,6 +873,9 @@ Primary DBO entry points:
 - `ReplaceReleaseNewsgroups`
 
 Current audit note:
+
+- `ListBinariesForReleaseCandidate` now reads binary fan-out data from the v2 projection tables.
+- `ListExistingReleaseCandidates`, release catalog compatibility reads, and some title/detail helpers still have legacy `binaries` reads and remain later migration targets.
 
 - release is ready-candidate-driven and no longer uses fragment-only families as a normal queue
 - cross-newsgroup release provenance is already supported through `release_newsgroups`, while per-file article lineage remains tied to file/binary provenance
