@@ -2538,6 +2538,68 @@ func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(
 	}
 }
 
+func TestListBinariesForReleaseCandidateReadsBinaryV2Projections(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.binaryfanout.v2.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "fanout-v2-source",
+		ReleaseFamilyKey:  "fanout-v2-family",
+		ReleaseKey:        "fanout-v2-family",
+		ReleaseName:       "Fanout V2 Family",
+		BinaryKey:         "fanout-v2-binary",
+		BinaryName:        "fanout.v2.rar",
+		FileName:          "fanout.v2.rar",
+		ExpectedFileCount: 3,
+		TotalParts:        7,
+		MatchConfidence:   0.88,
+		MatchStatus:       "strong",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "fanout.v2",
+		IsMainPayload:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_name = 'LEGACY FANOUT POISON',
+		    binary_name = 'legacy.poison.bin',
+		    file_name = 'legacy.poison.bin',
+		    expected_file_count = 99,
+		    family_kind = 'legacy_poison',
+		    match_confidence = 0.01
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("poison legacy binary row: %v", err)
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, 1, newsgroupID, ReleaseCandidateKeyKindReleaseFamily, "fanout-v2-family")
+	if err != nil {
+		t.Fatalf("list binaries for release candidate: %v", err)
+	}
+	if len(binaries) != 1 {
+		t.Fatalf("expected one binary, got %d", len(binaries))
+	}
+	got := binaries[0]
+	if got.ReleaseName != "Fanout V2 Family" ||
+		got.BinaryName != "fanout.v2.rar" ||
+		got.FileName != "fanout.v2.rar" ||
+		got.ExpectedFileCount != 3 ||
+		got.FamilyKind != "archive_stem" ||
+		got.MatchConfidence != 0.88 {
+		t.Fatalf("expected fan-out to use v2 projection values, got %+v", got)
+	}
+}
+
 func TestAckReleaseCandidateStoresAckWithoutMutatingSummaryRow(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

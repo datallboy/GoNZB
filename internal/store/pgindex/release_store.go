@@ -396,47 +396,47 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	}
 
 	candidateSelector := `
-			SELECT b.id
-			FROM binaries b
-			WHERE b.provider_id = $1
-			  AND b.release_family_key = $2`
+			SELECT bic.binary_id
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND bic.release_family_key = $2`
 	if newsgroupID > 0 {
 		candidateSelector += `
-			  AND b.newsgroup_id = $3`
+			  AND bic.newsgroup_id = $3`
 	}
 	switch keyKind {
 	case ReleaseCandidateKeyKindBaseStem:
 		candidateSelector = `
-			SELECT b.id
-			FROM binaries b
-			WHERE b.provider_id = $1
-			  AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
-			  AND BTRIM(b.base_stem) <> ''
-			  AND LOWER(BTRIM(b.base_stem)) = $2`
+			SELECT bic.binary_id
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+			  AND BTRIM(bic.base_stem) <> ''
+			  AND LOWER(BTRIM(bic.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
-			  AND b.newsgroup_id = $3`
+			  AND bic.newsgroup_id = $3`
 		}
 	case ReleaseCandidateKeyKindReleaseFamily:
 	case ReleaseCandidateKeyKindRecoveredFileSet:
 		candidateSelector = `
-			SELECT b.id
-			FROM binaries b
-			WHERE b.provider_id = $1
-			  AND BTRIM(b.file_set_key) <> ''
-			  AND b.file_set_key = $2`
+			SELECT bic.binary_id
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND BTRIM(bic.file_set_key) <> ''
+			  AND bic.file_set_key = $2`
 	default:
 		candidateSelector += `
 			UNION
-			SELECT b.id
-			FROM binaries b
-			WHERE b.provider_id = $1
-			  AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
-			  AND BTRIM(b.base_stem) <> ''
-			  AND LOWER(BTRIM(b.base_stem)) = $2`
+			SELECT bic.binary_id
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+			  AND BTRIM(bic.base_stem) <> ''
+			  AND LOWER(BTRIM(bic.base_stem)) = $2`
 		if newsgroupID > 0 {
 			candidateSelector += `
-			  AND b.newsgroup_id = $3`
+			  AND bic.newsgroup_id = $3`
 		}
 	}
 
@@ -445,48 +445,50 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 ` + candidateSelector + `
 		)
 		SELECT
-			b.id,
-			b.provider_id,
-			b.newsgroup_id,
-			b.source_release_key,
+			bc.binary_id,
+			bc.provider_id,
+			bc.newsgroup_id,
+			bic.source_release_key,
 			CASE
-				WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-				 AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
-				 AND LOWER(BTRIM(b.base_stem)) = $2
-				THEN LOWER(BTRIM(b.base_stem))
-				ELSE b.release_family_key
+				WHEN NULLIF(BTRIM(bic.base_stem), '') IS NOT NULL
+				 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+				 AND LOWER(BTRIM(bic.base_stem)) = $2
+				THEN LOWER(BTRIM(bic.base_stem))
+				ELSE bic.release_family_key
 			END AS effective_release_family_key,
-			b.file_family_key,
-			b.family_kind,
-			b.base_stem,
-			b.is_auxiliary,
-			b.is_main_payload,
-			b.release_key,
-			b.release_name,
-			b.binary_key,
-			b.binary_name,
-			b.file_name,
-			b.file_index,
-			b.expected_file_count,
-			b.expected_archive_file_count,
+			bic.file_family_key,
+			bic.family_kind,
+			bic.base_stem,
+			bic.is_auxiliary,
+			bic.is_main_payload,
+			bic.release_key,
+			bic.release_name,
+			bc.binary_key,
+			bic.binary_name,
+			bic.file_name,
+			bic.file_index,
+			bic.expected_file_count,
+			bic.expected_archive_file_count,
 			COALESCE(p.poster_name, ''),
-			b.posted_at,
-			b.total_parts,
-			b.observed_parts,
-			b.total_bytes,
-			b.first_article_number,
-			b.last_article_number,
-			b.match_confidence,
-			b.match_status
+			bos.posted_at,
+			bos.total_parts,
+			bos.observed_parts,
+			bos.total_bytes,
+			bos.first_article_number,
+			bos.last_article_number,
+			bic.match_confidence,
+			bic.match_status
 		FROM candidate_binaries cb
-		JOIN binaries b ON b.id = cb.id
-		LEFT JOIN posters p ON p.id = b.poster_id`
+		JOIN binary_core bc ON bc.binary_id = cb.binary_id
+		JOIN binary_identity_current bic ON bic.binary_id = cb.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = cb.binary_id
+		LEFT JOIN posters p ON p.id = bc.poster_id`
 	args := []any{providerID, releaseFamilyKey}
 	if newsgroupID > 0 {
 		args = append(args, newsgroupID)
 	}
 	query += `
-		ORDER BY b.file_index, b.file_name, b.first_article_number, b.id`
+		ORDER BY bic.file_index, bic.file_name, bos.first_article_number, bc.binary_id`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
