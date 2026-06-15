@@ -637,15 +637,15 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 		defer rollbackTx(tx)
 
 		rows, err := tx.QueryContext(ctx, `
-			SELECT DISTINCT LOWER(BTRIM(b.base_stem)) AS family_key
-			FROM binaries b
-			WHERE b.provider_id = $1
-			  AND b.newsgroup_id = $2
-			  AND b.release_family_key = $3
-			  AND b.expected_file_count > 1
-			  AND b.file_index > 0
-			  AND BTRIM(COALESCE(b.base_stem, '')) <> ''
-			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`,
+			SELECT DISTINCT LOWER(BTRIM(bic.base_stem)) AS family_key
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND bic.newsgroup_id = $2
+			  AND bic.release_family_key = $3
+			  AND bic.expected_file_count > 1
+			  AND bic.file_index > 0
+			  AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
+			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)`,
 			providerID,
 			newsgroupID,
 			releaseFamilyKey,
@@ -1138,18 +1138,18 @@ func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, provider
 		  AND EXISTS (
 		  	SELECT 1
 		  	FROM release_files rf
-		  	JOIN binaries b ON b.id = rf.binary_id
+			    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
 		  	WHERE rf.release_id = r.release_id
-		  	  AND b.provider_id = $1
-		  	  AND b.newsgroup_id = $2
-		  	  AND LOWER(BTRIM(COALESCE(b.base_stem, ''))) = $3
+			      AND bic.provider_id = $1
+			      AND bic.newsgroup_id = $2
+			      AND LOWER(BTRIM(COALESCE(bic.base_stem, ''))) = $3
 		  )
 		  AND NOT EXISTS (
 		  	SELECT 1
 		  	FROM release_files rf
-		  	JOIN binaries b ON b.id = rf.binary_id
+			    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
 		  	WHERE rf.release_id = r.release_id
-		  	  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+			      AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 		  )`
 	if len(keepReleaseIDs) > 0 {
 		placeholders := make([]string, 0, len(keepReleaseIDs))
@@ -1177,11 +1177,11 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 			  	OR EXISTS (
 			  		SELECT 1
 			  		FROM release_files rf
-			  		JOIN binaries b ON b.id = rf.binary_id
+						    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
 			  		WHERE rf.release_id = r.release_id
-			  		  AND b.provider_id = $1
-			  		  AND b.file_set_key = $2
-			  		  AND BTRIM(b.file_set_key) <> ''
+						      AND bic.provider_id = $1
+						      AND bic.file_set_key = $2
+						      AND BTRIM(bic.file_set_key) <> ''
 			  	)
 			  )`,
 			providerID,
@@ -1209,11 +1209,11 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 		  	OR EXISTS (
 		  		SELECT 1
 		  		FROM release_files rf
-		  		JOIN binaries b ON b.id = rf.binary_id
+				    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
 		  		WHERE rf.release_id = r.release_id
-		  		  AND b.provider_id = $1
-		  		  AND b.file_set_key = $2
-		  		  AND BTRIM(b.file_set_key) <> ''
+				      AND bic.provider_id = $1
+				      AND bic.file_set_key = $2
+				      AND BTRIM(bic.file_set_key) <> ''
 		  	)
 		  )
 		  AND r.group_name NOT IN (`+strings.Join(placeholders, ",")+`)`,

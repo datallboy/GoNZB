@@ -44,13 +44,14 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 			COALESCE(rf.poster, ''),
 			rf.posted_at,
 			COUNT(bp.id)::integer AS article_count,
-			COALESCE(MAX(b.total_parts), 0)::integer,
-			COALESCE(MAX(b.observed_parts), 0)::integer,
-			COALESCE(MAX(b.match_confidence), 0),
-			COALESCE(MAX(b.match_status), ''),
+			COALESCE(MAX(bos.total_parts), 0)::integer,
+			COALESCE(MAX(bos.observed_parts), 0)::integer,
+			COALESCE(MAX(bic.match_confidence), 0),
+			COALESCE(MAX(bic.match_status), ''),
 			NOW()
 		FROM release_files rf
-		LEFT JOIN binaries b ON b.id = rf.binary_id
+		LEFT JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+		LEFT JOIN binary_observation_stats bos ON bos.binary_id = rf.binary_id
 		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
 		WHERE rf.release_id = $1
 		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at`,

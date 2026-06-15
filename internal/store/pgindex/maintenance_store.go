@@ -178,28 +178,15 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 	if res, err := tx.ExecContext(ctx, `
 		WITH eligible AS (
 			SELECT
-				b.id AS binary_id,
-				COALESCE(bge.payload_json->'summary'->>'kind', '') AS summary_kind,
-				COALESCE(bge.payload_json->'summary'->>'status', '') AS summary_status,
-				COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) AS summary_fallback_used
+				bge.binary_id
 			FROM binary_grouping_evidence bge
-			JOIN binaries b ON b.id = bge.binary_id
+			JOIN binary_identity_current bic ON bic.binary_id = bge.binary_id
 			WHERE bge.updated_at < NOW() - INTERVAL '24 hours'
-			  AND b.match_confidence >= 0.85
-			  AND LOWER(COALESCE(b.identity_strength, '')) NOT IN ('weak', 'provisional')
-			  AND LOWER(COALESCE(b.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			  AND bic.match_confidence >= 0.85
+			  AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional')
+			  AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false
 			  AND bge.payload_json ? 'summary'
-		),
-		backfilled AS (
-			UPDATE binaries b
-			SET grouping_summary_kind = CASE WHEN b.grouping_summary_kind = '' THEN e.summary_kind ELSE b.grouping_summary_kind END,
-			grouping_summary_status = CASE WHEN b.grouping_summary_status = '' THEN e.summary_status ELSE b.grouping_summary_status END,
-			grouping_summary_fallback_used = b.grouping_summary_fallback_used OR e.summary_fallback_used,
-			updated_at = b.updated_at
-			FROM eligible e
-			WHERE b.id = e.binary_id
-			RETURNING b.id
 		)
 		DELETE FROM binary_grouping_evidence bge
 		USING eligible e
@@ -305,14 +292,15 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		  AND s.updated_at < NOW() - INTERVAL '24 hours'
 		  AND NOT EXISTS (
 		  	SELECT 1
-		  	FROM binaries b
-		  	WHERE b.provider_id = s.provider_id
-		  	  AND b.newsgroup_id = s.newsgroup_id
+			    FROM binary_identity_current bic
+			    LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			    WHERE bic.provider_id = s.provider_id
+			      AND bic.newsgroup_id = s.newsgroup_id
 		  	  AND s.key_kind = 'release_family'
-		  	  AND b.release_family_key = s.family_key
-		  	  AND LOWER(COALESCE(b.family_kind, '')) IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-		  	  AND b.is_main_payload = TRUE
-		  	  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
+			      AND bic.release_family_key = s.family_key
+			      AND LOWER(COALESCE(bic.family_kind, '')) IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			      AND bic.is_main_payload = TRUE
+			      AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
 		  )`,
 		releaseReadinessWeakSingle,
 		releaseReadinessWeakObfuscated,

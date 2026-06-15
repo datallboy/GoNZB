@@ -75,9 +75,18 @@ Phase B remaining reader migration checklist:
 - [x] yEnc recovery work-item selection, stale-retire, seed, and target reads.
 - [x] inspect candidate selection reads for discovery, PAR2, NFO, archive, password, and media stages.
 - [x] catalog/detail/admin/public release reads.
-- [ ] NZB generation, archive, and purge reads.
-- [ ] maintenance/helper reads and backlog counters.
+- [x] NZB generation, archive, and purge reads.
+- [x] maintenance/helper reads and backlog counters.
 - [ ] ownership tests expanded to reject new legacy behavior-field reads/writes once each path migrates.
+
+Remaining intentional temporary `binaries` anchor touches:
+
+- assemble owns the legacy anchor bridge until Phase C replaces `binaries` with a narrow anchor or compatibility view.
+- `binary_storage_v2.go` reads the legacy bridge only to dual-write projections during the transition.
+- `recover_yenc` and `binary_recovery` still update/merge through the legacy anchor and must be decomposed before Phase C.
+- inspection claim/start/finish paths still lock/check the legacy anchor row for FK and stale-binary safety; candidate selection no longer depends on behavior-bearing legacy columns.
+- release purge deletes `binaries` as the temporary FK cascade root only after archive durability, durable catalog retention, and purge preflight pass.
+- release-summary compatibility helpers still contain legacy query variants and should be covered by the final ownership scanner cleanup.
 
 Phase C:
 
