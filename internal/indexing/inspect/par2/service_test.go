@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +250,68 @@ func TestPAR2WorkerCountAllowsTwentyWorkers(t *testing.T) {
 	}
 	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 40}, 1000); got != 32 {
 		t.Fatalf("expected safety cap of 32 workers, got %d", got)
+	}
+}
+
+func TestPAR2ProbeSkipReasonClassifiesOperationalCauses(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "article missing on provider",
+			err:  errors.New("fetch article <abc@example>: article not found (430)"),
+			want: "article_not_found",
+		},
+		{
+			name: "binary missing",
+			err:  errors.New("binary 123 not found"),
+			want: "binary_not_found",
+		},
+		{
+			name: "yenc header decode",
+			err:  errors.New("decode article <abc@example> header: invalid yenc header"),
+			want: "yenc_header_decode_failed",
+		},
+		{
+			name: "yenc body decode",
+			err:  errors.New("decode article <abc@example> body: invalid escape"),
+			want: "yenc_body_decode_failed",
+		},
+		{
+			name: "yenc verify checksum",
+			err:  errors.New("decode article <abc@example> verify: checksum mismatch"),
+			want: "article_checksum_mismatch",
+		},
+		{
+			name: "unsupported standalone",
+			err:  errors.New("standalone binary materialization is not supported"),
+			want: "standalone_materialization_unsupported",
+		},
+		{
+			name: "unknown prefix failure",
+			err:  errors.New("fetch article <abc@example>: malformed response"),
+			want: "prefix_sample_failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := par2ProbeSkipReason(tc.err); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestTrimPAR2ProbeErrorDetailBoundsLogPayload(t *testing.T) {
+	detail := trimPAR2ProbeErrorDetail(errors.New(strings.Repeat("x", 300)))
+	if len(detail) > 243 {
+		t.Fatalf("expected bounded detail, got length %d", len(detail))
+	}
+	if !strings.HasSuffix(detail, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", detail)
 	}
 }
 

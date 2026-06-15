@@ -465,7 +465,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 		result.persist = persist
 		if s != nil && s.log != nil {
-			s.log.Debug("inspect_par2: skipped binary_id=%d release_id=%s reason=%s", candidate.BinaryID, candidate.ReleaseID, par2ProbeSkipReason(err))
+			s.log.Debug(
+				"inspect_par2: skipped binary_id=%d release_id=%s reason=%s detail=%q",
+				candidate.BinaryID,
+				candidate.ReleaseID,
+				par2ProbeSkipReason(err),
+				trimPAR2ProbeErrorDetail(err),
+			)
 		}
 		return result, nil
 	}
@@ -703,15 +709,39 @@ func par2ProbeSkipReason(err error) string {
 	switch {
 	case strings.Contains(msg, "has no file for binary"):
 		return "release_file_missing"
+	case strings.Contains(msg, "binary ") && strings.Contains(msg, " not found"):
+		return "binary_not_found"
+	case strings.Contains(msg, "not found"):
+		return "article_not_found"
 	case strings.Contains(msg, "has no articles"):
 		return "article_refs_missing"
 	case strings.Contains(msg, "has no newsgroups"):
 		return "newsgroups_missing"
 	case strings.Contains(msg, "checksum mismatch"):
 		return "article_checksum_mismatch"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "header"):
+		return "yenc_header_decode_failed"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "body"):
+		return "yenc_body_decode_failed"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "verify"):
+		return "yenc_verify_failed"
+	case strings.Contains(msg, "standalone binary materialization is not supported"):
+		return "standalone_materialization_unsupported"
 	default:
 		return "prefix_sample_failed"
 	}
+}
+
+func trimPAR2ProbeErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	const maxLen = 240
+	if len(detail) <= maxLen {
+		return detail
+	}
+	return detail[:maxLen] + "..."
 }
 
 func isRecoverablePAR2InspectionError(err error) bool {
