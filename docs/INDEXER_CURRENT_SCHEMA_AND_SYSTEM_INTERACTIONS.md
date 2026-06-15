@@ -278,7 +278,11 @@ This matrix is the schema contract for current and near-term code changes.
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
-| `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Observed `Xref` group memberships for popularity/review only; not canonical file lineage. Admin popularity reporting is intentionally recent-window based, not all-time. |
+| `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
+| `article_header_crosspost_group_summary` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Summary-backed admin popularity report; avoids live aggregation over raw crosspost rows. |
+| `article_header_crosspost_group_messages` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Exact distinct message keys used to maintain crosspost summary counts. |
+| `article_header_crosspost_group_sources` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Exact distinct source-newsgroup keys used to maintain crosspost summary counts. |
+| `indexer_provider_group_inventory` | discovery/support state | scrape admin provider scan | none | Persisted provider LIST snapshot used by wildcard preview/apply; not runtime scrape selection by itself. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
@@ -537,6 +541,7 @@ Current audit note:
 - `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
 - `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
 - `scrape_*` now also materializes `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
+- `scrape_*` maintains `article_header_crosspost_group_summary` plus exact distinct key tables during ingest so the admin popularity report does not run `COUNT(DISTINCT ...)` over the raw telemetry table
 - scrape integrity preflight is cached in-process for a short TTL; the critical index check remains required, but it is no longer rerun before every single scrape pass
 
 ## Scrape Configuration Ownership
@@ -550,12 +555,13 @@ The scrape configuration subsystem owns four distinct state classes:
 
 Ownership rules:
 
-- provider inventory is discovery data only and must not directly imply scrape selection
+- provider inventory is persisted in `indexer_provider_group_inventory`; it is discovery data only and must not directly imply scrape selection
 - wildcard rules are global across configured indexer providers
 - wildcard refresh is manual through explicit scan/rescan plus preview/apply
 - scrape stages consume only the effective group list derived from explicit groups plus enabled materialized groups
 - saving zero effective groups is valid; scrape stages should idle rather than force persistence failure
 - historical cross-post telemetry backfill is a manual maintenance command, not part of normal scrape startup or steady-state execution
+- cross-post popularity reads the summary table; raw telemetry backfill should also update the summary tables, but migrations must not run a full raw crosspost aggregation during application startup
 
 ## Cross-Group Release And File Rules
 

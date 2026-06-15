@@ -28,6 +28,10 @@ type IndexerCrosspostBackfillResult struct {
 	LastArticleID    int64 `json:"last_article_id"`
 }
 
+func normalizeCrosspostGroupName(groupName string) string {
+	return strings.ToLower(strings.TrimSpace(groupName))
+}
+
 func parseXrefGroupRefs(xref string) []xrefGroupRef {
 	fields := strings.Fields(strings.TrimSpace(xref))
 	if len(fields) == 0 {
@@ -110,7 +114,11 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			continue
 		}
 		for _, ref := range refs {
-			key := fmt.Sprintf("%d\x00%s", resolvedIDs[idx], strings.ToLower(ref.GroupName))
+			groupName := normalizeCrosspostGroupName(ref.GroupName)
+			if groupName == "" {
+				continue
+			}
+			key := fmt.Sprintf("%d\x00%s", resolvedIDs[idx], groupName)
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -118,7 +126,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			rows = append(rows, row{
 				articleHeaderID:    resolvedIDs[idx],
 				messageID:          item.MessageID,
-				observedGroupName:  ref.GroupName,
+				observedGroupName:  groupName,
 				observedArticleNum: ref.ArticleNumber,
 			})
 		}
@@ -129,7 +137,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 
 	var query strings.Builder
 	query.WriteString(`
-		INSERT INTO article_header_crosspost_groups (
+		WITH input_rows (
 			article_header_id,
 			provider_id,
 			source_newsgroup_id,
@@ -137,8 +145,8 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			observed_group_name,
 			observed_article_number,
 			observed_at
-		)
-		VALUES `)
+		) AS (
+			VALUES `)
 	args := make([]any, 0, len(rows)*6)
 	for idx, row := range rows {
 		if idx > 0 {
@@ -160,10 +168,119 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		query.WriteString("NOW())")
 	}
 	query.WriteString(`
-		ON CONFLICT (article_header_id, observed_group_name) DO UPDATE
-		SET message_id = EXCLUDED.message_id,
-		    observed_article_number = EXCLUDED.observed_article_number,
-		    observed_at = EXCLUDED.observed_at`)
+		),
+		inserted AS (
+			INSERT INTO article_header_crosspost_groups (
+			article_header_id,
+			provider_id,
+			source_newsgroup_id,
+			message_id,
+			observed_group_name,
+			observed_article_number,
+			observed_at
+		)
+			SELECT
+				article_header_id,
+				provider_id,
+				source_newsgroup_id,
+				COALESCE(BTRIM(message_id), ''),
+				observed_group_name,
+				observed_article_number,
+				observed_at
+			FROM input_rows
+			WHERE BTRIM(COALESCE(observed_group_name, '')) <> ''
+			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING
+			RETURNING
+				observed_group_name,
+				NULLIF(BTRIM(message_id), '') AS message_id,
+				source_newsgroup_id,
+				observed_at
+		),
+		message_ins AS (
+			INSERT INTO article_header_crosspost_group_messages (
+				observed_group_name,
+				message_id,
+				first_seen_at
+			)
+			SELECT DISTINCT
+				observed_group_name,
+				message_id,
+				MIN(observed_at)
+			FROM inserted
+			WHERE message_id IS NOT NULL
+			GROUP BY observed_group_name, message_id
+			ON CONFLICT (observed_group_name, message_id) DO NOTHING
+			RETURNING observed_group_name
+		),
+		source_ins AS (
+			INSERT INTO article_header_crosspost_group_sources (
+				observed_group_name,
+				source_newsgroup_id,
+				first_seen_at
+			)
+			SELECT DISTINCT
+				observed_group_name,
+				source_newsgroup_id,
+				MIN(observed_at)
+			FROM inserted
+			GROUP BY observed_group_name, source_newsgroup_id
+			ON CONFLICT (observed_group_name, source_newsgroup_id) DO NOTHING
+			RETURNING observed_group_name
+		),
+		obs_delta AS (
+			SELECT
+				observed_group_name,
+				COUNT(*)::bigint AS observed_article_count,
+				MAX(observed_at) AS last_seen_at
+			FROM inserted
+			GROUP BY observed_group_name
+		),
+		msg_delta AS (
+			SELECT observed_group_name, COUNT(*)::bigint AS distinct_message_count
+			FROM message_ins
+			GROUP BY observed_group_name
+		),
+		source_delta AS (
+			SELECT observed_group_name, COUNT(*)::bigint AS distinct_source_group_count
+			FROM source_ins
+			GROUP BY observed_group_name
+		),
+		delta AS (
+			SELECT
+				o.observed_group_name,
+				o.observed_article_count,
+				COALESCE(m.distinct_message_count, 0)::bigint AS distinct_message_count,
+				COALESCE(s.distinct_source_group_count, 0)::bigint AS distinct_source_group_count,
+				o.last_seen_at
+			FROM obs_delta o
+			LEFT JOIN msg_delta m ON m.observed_group_name = o.observed_group_name
+			LEFT JOIN source_delta s ON s.observed_group_name = o.observed_group_name
+		)
+		INSERT INTO article_header_crosspost_group_summary (
+			observed_group_name,
+			observed_article_count,
+			distinct_message_count,
+			distinct_source_group_count,
+			last_seen_at,
+			updated_at
+		)
+		SELECT
+			observed_group_name,
+			observed_article_count,
+			distinct_message_count,
+			distinct_source_group_count,
+			last_seen_at,
+			NOW()
+		FROM delta
+		ON CONFLICT (observed_group_name) DO UPDATE
+		SET observed_article_count = article_header_crosspost_group_summary.observed_article_count + EXCLUDED.observed_article_count,
+		    distinct_message_count = article_header_crosspost_group_summary.distinct_message_count + EXCLUDED.distinct_message_count,
+		    distinct_source_group_count = article_header_crosspost_group_summary.distinct_source_group_count + EXCLUDED.distinct_source_group_count,
+		    last_seen_at = GREATEST(
+			    COALESCE(article_header_crosspost_group_summary.last_seen_at, EXCLUDED.last_seen_at),
+			    EXCLUDED.last_seen_at
+		    ),
+		    updated_at = NOW()`)
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("upsert article header crosspost groups batch: %w", err)
 	}
@@ -176,16 +293,14 @@ func (s *Store) GetIndexerCrosspostNewsgroupPopularity(ctx context.Context, limi
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			acg.observed_group_name,
-			COUNT(*)::bigint AS observed_article_count,
-			COUNT(DISTINCT NULLIF(BTRIM(acg.message_id), ''))::bigint AS distinct_message_count,
-			COUNT(DISTINCT acg.source_newsgroup_id)::bigint AS distinct_source_group_count,
-			MAX(acg.observed_at) AS last_seen_at
-		FROM article_header_crosspost_groups acg
-		WHERE BTRIM(COALESCE(acg.observed_group_name, '')) <> ''
-		  AND acg.observed_at >= (NOW() - INTERVAL '30 days')
-		GROUP BY acg.observed_group_name
-		ORDER BY distinct_message_count DESC, observed_article_count DESC, last_seen_at DESC NULLS LAST, acg.observed_group_name ASC
+			s.observed_group_name,
+			s.observed_article_count,
+			s.distinct_message_count,
+			s.distinct_source_group_count,
+			s.last_seen_at
+		FROM article_header_crosspost_group_summary s
+		WHERE BTRIM(COALESCE(s.observed_group_name, '')) <> ''
+		ORDER BY distinct_message_count DESC, observed_article_count DESC, last_seen_at DESC NULLS LAST, s.observed_group_name ASC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get indexer crosspost popularity: %w", err)
@@ -299,11 +414,99 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				e.observed_article_number,
 				NOW()
 			FROM exploded e
-			ON CONFLICT (article_header_id, observed_group_name) DO UPDATE
-			SET
-				message_id = EXCLUDED.message_id,
-				observed_article_number = EXCLUDED.observed_article_number,
-				observed_at = EXCLUDED.observed_at
+			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING
+			RETURNING
+				observed_group_name,
+				NULLIF(BTRIM(message_id), '') AS message_id,
+				source_newsgroup_id,
+				observed_at
+		),
+		message_ins AS (
+			INSERT INTO article_header_crosspost_group_messages (
+				observed_group_name,
+				message_id,
+				first_seen_at
+			)
+			SELECT
+				observed_group_name,
+				message_id,
+				MIN(observed_at)
+			FROM ins
+			WHERE message_id IS NOT NULL
+			GROUP BY observed_group_name, message_id
+			ON CONFLICT (observed_group_name, message_id) DO NOTHING
+			RETURNING observed_group_name
+		),
+		source_ins AS (
+			INSERT INTO article_header_crosspost_group_sources (
+				observed_group_name,
+				source_newsgroup_id,
+				first_seen_at
+			)
+			SELECT
+				observed_group_name,
+				source_newsgroup_id,
+				MIN(observed_at)
+			FROM ins
+			GROUP BY observed_group_name, source_newsgroup_id
+			ON CONFLICT (observed_group_name, source_newsgroup_id) DO NOTHING
+			RETURNING observed_group_name
+		),
+		obs_delta AS (
+			SELECT
+				observed_group_name,
+				COUNT(*)::bigint AS observed_article_count,
+				MAX(observed_at) AS last_seen_at
+			FROM ins
+			GROUP BY observed_group_name
+		),
+		msg_delta AS (
+			SELECT observed_group_name, COUNT(*)::bigint AS distinct_message_count
+			FROM message_ins
+			GROUP BY observed_group_name
+		),
+		source_delta AS (
+			SELECT observed_group_name, COUNT(*)::bigint AS distinct_source_group_count
+			FROM source_ins
+			GROUP BY observed_group_name
+		),
+		delta AS (
+			SELECT
+				o.observed_group_name,
+				o.observed_article_count,
+				COALESCE(m.distinct_message_count, 0)::bigint AS distinct_message_count,
+				COALESCE(s.distinct_source_group_count, 0)::bigint AS distinct_source_group_count,
+				o.last_seen_at
+			FROM obs_delta o
+			LEFT JOIN msg_delta m ON m.observed_group_name = o.observed_group_name
+			LEFT JOIN source_delta s ON s.observed_group_name = o.observed_group_name
+		),
+		summary_upsert AS (
+			INSERT INTO article_header_crosspost_group_summary (
+				observed_group_name,
+				observed_article_count,
+				distinct_message_count,
+				distinct_source_group_count,
+				last_seen_at,
+				updated_at
+			)
+			SELECT
+				observed_group_name,
+				observed_article_count,
+				distinct_message_count,
+				distinct_source_group_count,
+				last_seen_at,
+				NOW()
+			FROM delta
+			ON CONFLICT (observed_group_name) DO UPDATE
+			SET observed_article_count = article_header_crosspost_group_summary.observed_article_count + EXCLUDED.observed_article_count,
+			    distinct_message_count = article_header_crosspost_group_summary.distinct_message_count + EXCLUDED.distinct_message_count,
+			    distinct_source_group_count = article_header_crosspost_group_summary.distinct_source_group_count + EXCLUDED.distinct_source_group_count,
+			    last_seen_at = GREATEST(
+				    COALESCE(article_header_crosspost_group_summary.last_seen_at, EXCLUDED.last_seen_at),
+				    EXCLUDED.last_seen_at
+			    ),
+			    updated_at = NOW()
 			RETURNING 1
 		)
 		SELECT

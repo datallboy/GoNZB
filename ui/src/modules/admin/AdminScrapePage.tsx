@@ -189,7 +189,7 @@ export function AdminScrapePage() {
       <div className="page-card">
         <p className="eyebrow">Indexer Scrape</p>
         <h1 className="page-title">Newsgroups and Wildcards</h1>
-        <p className="muted-copy">Manage explicit scrape groups, provider discovery, wildcard rules, and effective runtime groups.</p>
+        <p className="muted-copy">Manage active scrape groups, provider discovery, wildcard rules, and cross-post discovery reports.</p>
       </div>
 
       {message ? <div className="banner">{message}</div> : null}
@@ -197,7 +197,12 @@ export function AdminScrapePage() {
 
       <div className="module-settings-group stack">
         <div className="button-row">
-          <h2 className="section-title">Explicit groups</h2>
+          <div>
+            <h2 className="section-title">Active scraped newsgroups</h2>
+            <p className="muted-copy">
+              {data.effective_groups.length.toLocaleString()} effective runtime groups. Explicit rows are manually managed; wildcard rows were added from the wildcard preview and can be removed or edited here.
+            </p>
+          </div>
           <button
             className="secondary-button"
             type="button"
@@ -206,17 +211,34 @@ export function AdminScrapePage() {
             Add group
           </button>
         </div>
+        <p className="muted-copy">Manual groups</p>
         {data.explicit_groups.map((item, index) => (
           <div className="newsgroup-row" key={`explicit-${index}`}>
             <TextInput label="Group" value={item.group_name} onChange={(value) => updateExplicit(index, { group_name: value })} />
             <TextInput label="Backfill until" value={item.backfill_until_date ?? ''} onChange={(value) => updateExplicit(index, { backfill_until_date: value })} />
+            <div className="status-pill">manual</div>
             <button className="secondary-button newsgroup-row__remove" type="button" onClick={() => setData((current) => ({ ...current, explicit_groups: current.explicit_groups.filter((_, itemIndex) => itemIndex !== index) }))}>
               Remove
             </button>
           </div>
         ))}
-        <button className="primary-button align-end" type="button" onClick={() => void save({ explicit_groups: data.explicit_groups }, 'Explicit groups saved.')}>
-          Save groups
+        {data.explicit_groups.length === 0 ? <p className="muted-copy">No manual groups configured.</p> : null}
+
+        <p className="muted-copy">Wildcard-applied groups</p>
+        {data.materialized_groups.map((item, index) => (
+          <div className="newsgroup-row" key={`materialized-${index}`}>
+            <TextInput label="Group" value={item.group_name} onChange={(value) => updateMaterialized(index, { group_name: value })} />
+            <TextInput label="Backfill until" value={item.backfill_until_date ?? ''} onChange={(value) => updateMaterialized(index, { backfill_until_date: value })} />
+            <div className="status-pill">wildcard</div>
+            <button className="secondary-button newsgroup-row__remove" type="button" onClick={() => setData((current) => ({ ...current, materialized_groups: current.materialized_groups.filter((_, itemIndex) => itemIndex !== index) }))}>
+              Remove
+            </button>
+          </div>
+        ))}
+        {data.materialized_groups.length === 0 ? <p className="muted-copy">No wildcard groups have been applied yet. Use wildcard preview below to materialize matches.</p> : null}
+
+        <button className="primary-button align-end" type="button" onClick={() => void save({ explicit_groups: data.explicit_groups, materialized_groups: data.materialized_groups }, 'Active scraped newsgroups saved.')}>
+          Save active newsgroups
         </button>
       </div>
 
@@ -307,24 +329,6 @@ export function AdminScrapePage() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      <div className="module-settings-group stack">
-        <div className="button-row">
-          <h2 className="section-title">Materialized wildcard groups</h2>
-        </div>
-        {data.materialized_groups.map((item, index) => (
-          <div className="newsgroup-row" key={`materialized-${index}`}>
-            <TextInput label="Group" value={item.group_name} onChange={(value) => updateMaterialized(index, { group_name: value })} />
-            <TextInput label="Backfill until" value={item.backfill_until_date ?? ''} onChange={(value) => updateMaterialized(index, { backfill_until_date: value })} />
-            <button className="secondary-button newsgroup-row__remove" type="button" onClick={() => setData((current) => ({ ...current, materialized_groups: current.materialized_groups.filter((_, itemIndex) => itemIndex !== index) }))}>
-              Remove
-            </button>
-          </div>
-        ))}
-        <button className="primary-button align-end" type="button" onClick={() => void save({ materialized_groups: data.materialized_groups }, 'Materialized groups saved.')}>
-          Save materialized groups
-        </button>
       </div>
 
       <div className="module-settings-group stack">

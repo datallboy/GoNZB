@@ -371,7 +371,7 @@ textarea {
 .newsgroup-row {
   display: grid;
   gap: 1rem;
-  grid-template-columns: minmax(240px, 2fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(240px, 2fr) minmax(220px, 1fr) auto auto;
   align-items: end;
 }
 
@@ -379,12 +379,26 @@ textarea {
   align-self: end;
 }
 
+.status-pill {
+  align-self: end;
+  border: 1px solid rgba(174, 216, 198, 0.18);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 0.58rem 0.8rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 @media (max-width: 860px) {
   .newsgroup-row {
     grid-template-columns: 1fr;
   }
 
-  .newsgroup-row__remove {
+  .newsgroup-row__remove,
+  .status-pill {
     justify-self: start;
   }
 }
