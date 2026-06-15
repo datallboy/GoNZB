@@ -1284,7 +1284,8 @@ func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
-		WITH candidate_rows AS (
+		WITH `+binaryInspectionCandidateStateCTE+`,
+		candidate_rows AS (
 			SELECT
 				b.id,
 				b.updated_at AS source_updated_at,
@@ -1327,7 +1328,7 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 					) OR
 					b.updated_at > bi.updated_at
 				) AS needs_rerun
-			FROM binaries b
+			FROM binary_state b
 			LEFT JOIN binary_inspections bi
 				ON bi.stage_name = 'inspect_par2'
 				AND bi.binary_id = b.id
@@ -1420,8 +1421,9 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 
 	var count int64
 	err = s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`
 		SELECT COUNT(DISTINCT b.id)
-		FROM binaries b
+		FROM binary_state b
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
