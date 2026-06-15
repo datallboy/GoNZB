@@ -14,10 +14,20 @@ var criticalIndexerIndexNames = []string{
 	"public.binaries_pkey",
 	"public.binaries_provider_id_newsgroup_id_binary_key_key",
 	"public.idx_binaries_release_family_key",
+	"public.binary_core_pkey",
+	"public.binary_observation_stats_pkey",
+	"public.binary_identity_current_pkey",
+	"public.binary_recovery_current_pkey",
+	"public.binary_lifecycle_pkey",
 }
 
 var criticalIndexerHeapNames = []string{
 	"public.binaries",
+	"public.binary_core",
+	"public.binary_observation_stats",
+	"public.binary_identity_current",
+	"public.binary_recovery_current",
+	"public.binary_lifecycle",
 }
 
 var criticalIndexerReindexNames = []string{
