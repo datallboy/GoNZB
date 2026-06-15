@@ -1906,6 +1906,34 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	}
 
 	row := s.db.QueryRowContext(ctx, `
+		WITH binary_detail_state AS (
+			SELECT
+				bc.binary_id AS id,
+				bc.provider_id,
+				bc.newsgroup_id,
+				bc.poster_id,
+				bc.binary_key,
+				bic.release_key,
+				bic.release_name,
+				bic.binary_name,
+				bic.file_name,
+				bic.file_index,
+				bic.expected_file_count,
+				bic.match_confidence,
+				bic.match_status,
+				bic.grouping_summary_kind,
+				bic.grouping_summary_status,
+				bic.grouping_summary_fallback_used,
+				bos.posted_at,
+				bos.total_parts,
+				bos.observed_parts,
+				bos.total_bytes,
+				bos.first_article_number,
+				bos.last_article_number
+			FROM binary_core bc
+			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		)
 		SELECT
 			b.id,
 			COALESCE(r.release_id, ''),
@@ -1932,7 +1960,7 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.match_status,
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(NULLIF(b.grouping_evidence_json, '{}'::jsonb), jsonb_strip_nulls(jsonb_build_object(
+				ELSE jsonb_strip_nulls(jsonb_build_object(
 					'summary', CASE
 						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
 						  OR COALESCE(b.grouping_summary_status, '') <> ''
@@ -1943,16 +1971,12 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 							'fallback_used', b.grouping_summary_fallback_used
 						)
 						ELSE NULL
-					END,
-					'par2_target_base_stem', NULLIF(b.par2_target_base_stem, ''),
-					'par2_target_file_name', NULLIF(b.par2_target_file_name, ''),
-					'par2_source_binary_id', b.par2_source_binary_id,
-					'par2_target_coverage_source', NULLIF(b.par2_target_coverage_source, '')
-				)))
+					END
+				))
 			END,
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
-		FROM binaries b
+		FROM binary_detail_state b
 		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
@@ -2047,6 +2071,20 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 	}
 
 	row := s.db.QueryRowContext(ctx, `
+		WITH binary_detail_state AS (
+			SELECT
+				bc.binary_id AS id,
+				bic.match_confidence,
+				bic.match_status,
+				bic.grouping_summary_kind,
+				bic.grouping_summary_status,
+				bic.grouping_summary_fallback_used,
+				bos.total_parts,
+				bos.observed_parts
+			FROM binary_core bc
+			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		)
 		SELECT
 			cf.id,
 			cf.release_id,
@@ -2066,7 +2104,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			COALESCE(b.match_status, ''),
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(NULLIF(b.grouping_evidence_json, '{}'::jsonb), jsonb_strip_nulls(jsonb_build_object(
+				ELSE jsonb_strip_nulls(jsonb_build_object(
 					'summary', CASE
 						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
 						  OR COALESCE(b.grouping_summary_status, '') <> ''
@@ -2077,12 +2115,8 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 							'fallback_used', b.grouping_summary_fallback_used
 						)
 						ELSE NULL
-					END,
-					'par2_target_base_stem', NULLIF(b.par2_target_base_stem, ''),
-					'par2_target_file_name', NULLIF(b.par2_target_file_name, ''),
-					'par2_source_binary_id', b.par2_source_binary_id,
-					'par2_target_coverage_source', NULLIF(b.par2_target_coverage_source, '')
-				)))
+					END
+				))
 			END,
 			COALESCE(cf.article_count, 0)
 		FROM release_catalog_files cf
@@ -2091,7 +2125,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 		  ON rf.release_id = cf.release_id
 		 AND rf.file_index = cf.file_index
 		 AND rf.file_name = cf.file_name
-		LEFT JOIN binaries b ON b.id = rf.binary_id
+		LEFT JOIN binary_detail_state b ON b.id = rf.binary_id
 		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
 		WHERE cf.id = $1`, fileID)
 
