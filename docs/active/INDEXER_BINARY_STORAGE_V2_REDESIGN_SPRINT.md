@@ -61,6 +61,7 @@ Phase A, implemented first:
 Phase B:
 
 - Move release-summary-refresh, release formation, inspect selection, yEnc selection, and catalog reads to the v2 side tables.
+- `release_summary_refresh` scheduled summary aggregate/dominant reads now use `binary_identity_current`, `binary_observation_stats`, and `binary_core` instead of behavior-bearing fields on `binaries`.
 - Stop reading behavior-bearing fields from the legacy `binaries` row.
 - Add SQL ownership tests that fail on forbidden writes.
 

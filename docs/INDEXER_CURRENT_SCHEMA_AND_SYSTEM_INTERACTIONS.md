@@ -797,7 +797,8 @@ Current audit note:
 Allowed reads:
 
 - release-family refresh queue
-- `binaries`
+- `binary_core`, `binary_identity_current`, and `binary_observation_stats` for scheduled summary aggregate/dominant refresh
+- `binaries` only for legacy compatibility helpers that have not yet moved in later binary V2 phases
 - selected release-facing rollup inputs if required by readiness logic
 
 Allowed writes:
@@ -822,6 +823,9 @@ Primary DBO entry points:
 - Phase A and Phase B helpers in `release_family_summary_store.go`
 
 Current audit note:
+
+- the scheduled queued refresh path no longer reads behavior-bearing summary fields from `binaries`
+- the next binary V2 reader migration should move release formation candidate reads before decommissioning the legacy compatibility path
 
 - refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
 - dequeue is hot/cold prioritized
