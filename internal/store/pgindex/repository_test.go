@@ -1271,7 +1271,8 @@ func TestUpsertBinarySkipsDetailedGroupingEvidenceSideTableForWeakMatches(t *tes
 	if detail == nil {
 		t.Fatalf("expected binary detail for %d", binaryID)
 	}
-	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\":true") {
+	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\":true") &&
+		!strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\": true") {
 		t.Fatalf("expected binary detail grouping evidence from inline summary, got %s", string(detail.GroupingEvidence))
 	}
 }

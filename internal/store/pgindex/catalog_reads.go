@@ -153,8 +153,8 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 			ORDER BY rf.id
 			LIMIT 1
 		) rf ON TRUE
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		LEFT JOIN newsgroups ng ON ng.id = b.newsgroup_id
+		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
@@ -209,19 +209,21 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			0::BIGINT AS id,
-			b.id AS binary_id,
+			bc.binary_id AS binary_id,
 			COALESCE(ng.group_name, '') AS group_name,
-			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS file_name,
-			COALESCE(NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), b.release_name) AS subject,
+			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), bic.release_name) AS file_name,
+			COALESCE(NULLIF(bic.binary_name, ''), NULLIF(bic.file_name, ''), bic.release_name) AS subject,
 			COALESCE(p.poster_name, '') AS poster,
-			b.posted_at,
-			b.total_bytes AS size_bytes,
-			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
-			b.file_index
-		FROM binaries b
-		LEFT JOIN newsgroups ng ON ng.id = b.newsgroup_id
-		LEFT JOIN posters p ON p.id = b.poster_id
-		WHERE b.id = $1`, binaryID)
+			bos.posted_at,
+			bos.total_bytes AS size_bytes,
+			LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
+			bic.file_index
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN posters p ON p.id = bc.poster_id
+		WHERE bc.binary_id = $1`, binaryID)
 
 	var item CatalogReleaseFile
 	var postedAt sql.NullTime
@@ -359,9 +361,9 @@ func (s *Store) ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64)
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ng.group_name
-		FROM binaries b
-		JOIN newsgroups ng ON ng.id = b.newsgroup_id
-		WHERE b.id = $1
+		FROM binary_core bc
+		JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		WHERE bc.binary_id = $1
 		ORDER BY ng.group_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary newsgroups %d: %w", binaryID, err)
