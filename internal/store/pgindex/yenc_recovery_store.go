@@ -536,10 +536,16 @@ type yencRecoveryBinarySeed struct {
 func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (yencRecoveryBinarySeed, error) {
 	var seed yencRecoveryBinarySeed
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, provider_id, newsgroup_id, release_family_key, base_stem
-		FROM binaries
-		WHERE id = $1
-		FOR UPDATE`,
+		SELECT
+			bc.binary_id,
+			bc.provider_id,
+			bc.newsgroup_id,
+			bic.release_family_key,
+			bic.base_stem
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		FOR UPDATE OF bc, bic`,
 		binaryID,
 	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem)
 	if err == sql.ErrNoRows {
@@ -554,8 +560,8 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, binaryKey string) (int64, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `
-		SELECT id
-		FROM binaries
+		SELECT binary_id
+		FROM binary_core
 		WHERE provider_id = $1
 		  AND newsgroup_id = $2
 		  AND binary_key = $3
