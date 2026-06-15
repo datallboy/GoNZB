@@ -5282,6 +5282,95 @@ func TestRefreshQueuedReleaseFamilySummariesRecomputesDeferredFamily(t *testing.
 	}
 }
 
+func TestRefreshQueuedReleaseFamilySummariesReadsBinaryV2Projections(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.v2.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "v2-summary-source",
+		ReleaseFamilyKey:  "v2-summary-family",
+		ReleaseKey:        "v2-summary-family",
+		ReleaseName:       "V2 Summary Family",
+		BinaryKey:         "v2-summary-binary",
+		BinaryName:        "v2.summary.rar",
+		FileName:          "v2.summary.rar",
+		ExpectedFileCount: 2,
+		TotalParts:        4,
+		MatchConfidence:   0.91,
+		MatchStatus:       "strong",
+		FamilyKind:        "archive_stem",
+		IsMainPayload:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_name = 'LEGACY POISON',
+		    expected_file_count = 99,
+		    total_bytes = 999999,
+		    match_confidence = 0.01,
+		    family_kind = 'legacy_poison'
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("poison legacy binary row: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES (1, $1, 'release_family', 'v2-summary-family', NOW())
+		ON CONFLICT DO NOTHING`, newsgroupID); err != nil {
+		t.Fatalf("enqueue summary refresh: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 100)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refreshed summary key, got %d", refreshed)
+	}
+
+	var (
+		releaseName             string
+		expectedFileCount       int
+		dominantFamilyKind      string
+		dominantMatchConfidence float64
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			release_name,
+			expected_file_count,
+			dominant_family_kind,
+			dominant_match_confidence
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'v2-summary-family'`, newsgroupID,
+	).Scan(&releaseName, &expectedFileCount, &dominantFamilyKind, &dominantMatchConfidence); err != nil {
+		t.Fatalf("query refreshed summary: %v", err)
+	}
+	if releaseName != "V2 Summary Family" || expectedFileCount != 2 || dominantFamilyKind != "archive_stem" || dominantMatchConfidence != 0.91 {
+		t.Fatalf("expected summary to use v2 projection values, got release_name=%q expected=%d family_kind=%q confidence=%v",
+			releaseName,
+			expectedFileCount,
+			dominantFamilyKind,
+			dominantMatchConfidence,
+		)
+	}
+}
+
 func TestRefreshQueuedReleaseFamilySummariesPrioritizesNonWeakResidue(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
