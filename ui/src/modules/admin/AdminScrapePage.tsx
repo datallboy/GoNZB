@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   applyAdminScrapeWildcards,
   getAdminScrapeConfig,
+  getAdminScrapeCrosspostPopularity,
   previewAdminScrapeWildcards,
   scanAdminScrapeProviders,
   updateAdminScrapeConfig,
@@ -51,6 +52,7 @@ export function AdminScrapePage() {
   const [previewFilter, setPreviewFilter] = useState('')
   const [previewOffset, setPreviewOffset] = useState(0)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [crosspostLoading, setCrosspostLoading] = useState(false)
 
   async function refresh(offset = previewOffset, q = previewFilter) {
     try {
@@ -149,6 +151,21 @@ export function AdminScrapePage() {
       setMessage('Wildcard matches materialized.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Wildcard apply failed')
+    }
+  }
+
+  async function loadCrosspostPopularity() {
+    setMessage(null)
+    setError(null)
+    setCrosspostLoading(true)
+    try {
+      const next = await getAdminScrapeCrosspostPopularity({ limit: 100 })
+      setData((current) => ({ ...current, crosspost_popularity: next.items ?? [] }))
+      setMessage('Cross-post popularity loaded.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cross-post popularity load failed')
+    } finally {
+      setCrosspostLoading(false)
     }
   }
 
@@ -251,7 +268,15 @@ export function AdminScrapePage() {
 
       <div className="module-settings-group stack">
         <div className="button-row">
-          <h2 className="section-title">Cross-post popularity</h2>
+          <div>
+            <h2 className="section-title">Cross-post popularity</h2>
+            <p className="muted-copy">
+              This report can be expensive on large databases, so it loads only when requested.
+            </p>
+          </div>
+          <button className="secondary-button" type="button" disabled={crosspostLoading} onClick={() => void loadCrosspostPopularity()}>
+            {crosspostLoading ? 'Loading...' : 'Load report'}
+          </button>
         </div>
         <p className="muted-copy">
           {data.crosspost_popularity.length} groups observed from cross-post telemetry in the last 30 days. Candidate rows are groups not currently in the effective scrape set.

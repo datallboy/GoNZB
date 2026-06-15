@@ -112,6 +112,28 @@ func (ctrl *IndexerScrapeAdminController) PreviewWildcardGroups(c *echo.Context)
 	})
 }
 
+func (ctrl *IndexerScrapeAdminController) CrosspostPopularity(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.SettingsAdmin == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "scrape admin api is unavailable")
+	}
+	limit, _, err := parsePaginationParams(c, 100, 500)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	runtime, err := ctrl.appCtx.SettingsAdmin.Get(c.Request().Context())
+	if err != nil {
+		return jsonError(c, settingsErrorStatus(err), err.Error())
+	}
+	indexing := runtime.Indexing
+	if indexing == nil {
+		indexing = app.DefaultRuntimeSettings().Indexing
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items": loadCrosspostPopularity(c.Request().Context(), ctrl.appCtx, indexing, limit),
+		"limit": limit,
+	})
+}
+
 func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) error {
 	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.SettingsAdmin == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "scrape admin api is unavailable")
@@ -210,7 +232,6 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 	if indexing == nil {
 		indexing = app.DefaultRuntimeSettings().Indexing
 	}
-	crossposts := loadCrosspostPopularity(ctx, appCtx, indexing)
 	stats := loadProviderInventoryStats(ctx, appCtx, indexing)
 	return map[string]any{
 		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
@@ -222,15 +243,15 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 		"effective_groups":               ensureExplicitGroups(app.EffectiveScrapeGroups(indexing)),
 		"preview_groups":                 []scrapePreviewItem{},
 		"preview_total":                  0,
-		"crosspost_popularity":           crossposts,
+		"crosspost_popularity":           []scrapeCrosspostPopularityItem{},
 	}
 }
 
-func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings) []scrapeCrosspostPopularityItem {
+func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings, limit int) []scrapeCrosspostPopularityItem {
 	if appCtx == nil || appCtx.PGIndexStore == nil {
 		return []scrapeCrosspostPopularityItem{}
 	}
-	items, err := appCtx.PGIndexStore.GetIndexerCrosspostNewsgroupPopularity(ctx, 100)
+	items, err := appCtx.PGIndexStore.GetIndexerCrosspostNewsgroupPopularity(ctx, limit)
 	if err != nil {
 		return []scrapeCrosspostPopularityItem{}
 	}

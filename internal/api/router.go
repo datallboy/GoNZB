@@ -189,6 +189,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.PUT("/scrape", indexerScrapeAdminCtrl.UpdateConfig, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 		v1AdminIndexer.POST("/scrape/actions/scan", indexerScrapeAdminCtrl.ScanProviders, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.GET("/scrape/preview", indexerScrapeAdminCtrl.PreviewWildcardGroups)
+		v1AdminIndexer.GET("/scrape/crosspost-popularity", indexerScrapeAdminCtrl.CrosspostPopularity)
 		v1AdminIndexer.POST("/scrape/actions/apply", indexerScrapeAdminCtrl.ApplyWildcardGroups, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
 		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
