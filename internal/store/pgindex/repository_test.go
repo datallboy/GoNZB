@@ -3550,6 +3550,23 @@ func TestBackfillYEncRecoveryWorkItemsQueuesRecoverableStructuredSubjects(t *tes
 		t.Fatalf("seed readiness summaries: %v", err)
 	}
 
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET family_kind = 'plain',
+		    is_main_payload = false,
+		    recovered_source = 'yenc_header',
+		    release_family_key = '',
+		    identity_strength = 'strong',
+		    expected_file_count = 0,
+		    expected_archive_file_count = 0,
+		    total_parts = 0
+		WHERE id IN ($1, $2)`,
+		opaqueBinaryID,
+		placeholderBinaryID,
+	); err != nil {
+		t.Fatalf("poison legacy binary yenc fields: %v", err)
+	}
+
 	upserted, retired, err := store.BackfillYEncRecoveryWorkItems(ctx, 10)
 	if err != nil {
 		t.Fatalf("backfill yenc recovery work items: %v", err)
