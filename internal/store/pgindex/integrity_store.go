@@ -11,6 +11,13 @@ var criticalIndexerIndexNames = []string{
 	"public.article_headers_pkey",
 	"public.article_headers_newsgroup_id_article_number_key",
 	"public.article_headers_newsgroup_id_message_id_key",
+	"public.binaries_pkey",
+	"public.binaries_provider_id_newsgroup_id_binary_key_key",
+	"public.idx_binaries_release_family_key",
+}
+
+var criticalIndexerHeapNames = []string{
+	"public.binaries",
 }
 
 var criticalIndexerReindexNames = []string{
@@ -74,7 +81,14 @@ func (s *Store) CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtensi
 
 	report := &IndexerIntegrityReport{
 		AmcheckAvailable: available,
-		Checks:           make([]IndexerIntegrityCheck, 0, len(criticalIndexerIndexNames)),
+		Checks:           make([]IndexerIntegrityCheck, 0, len(criticalIndexerIndexNames)+len(criticalIndexerHeapNames)),
+	}
+	for _, relation := range criticalIndexerHeapNames {
+		check, err := s.checkCriticalIndexerHeap(ctx, relation, available)
+		if err != nil {
+			return nil, err
+		}
+		report.Checks = append(report.Checks, check)
 	}
 	for _, relation := range criticalIndexerIndexNames {
 		check, err := s.checkCriticalIndexerRelation(ctx, relation, available)
@@ -84,6 +98,77 @@ func (s *Store) CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtensi
 		report.Checks = append(report.Checks, check)
 	}
 	return report, nil
+}
+
+func (s *Store) checkCriticalIndexerHeap(ctx context.Context, relation string, amcheckAvailable bool) (IndexerIntegrityCheck, error) {
+	check := IndexerIntegrityCheck{
+		Relation: relation,
+	}
+
+	var relkind string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT c.relkind::text
+		FROM pg_class c
+		WHERE c.oid = $1::regclass`,
+		relation,
+	).Scan(&relkind); err != nil {
+		return check, fmt.Errorf("inspect critical heap metadata %s: %w", relation, err)
+	}
+
+	check.AccessMethod = "heap"
+	check.MetadataOK = relkind == "r"
+	if !check.MetadataOK {
+		check.OK = false
+		check.Detail = "relation metadata is not a heap table"
+		return check, nil
+	}
+
+	if !amcheckAvailable {
+		check.OK = true
+		check.Detail = "metadata-only check passed; amcheck extension unavailable"
+		return check, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT blkno, offnum, attnum, msg
+		FROM verify_heapam($1::regclass, TRUE, TRUE, 'none', NULL, NULL)
+		LIMIT 1`,
+		relation,
+	)
+	if err != nil {
+		check.AmcheckRan = true
+		check.OK = false
+		check.Detail = err.Error()
+		return check, nil
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		var (
+			blkno  sql.NullInt64
+			offnum sql.NullInt64
+			attnum sql.NullInt64
+			msg    sql.NullString
+		)
+		if err := rows.Scan(&blkno, &offnum, &attnum, &msg); err != nil {
+			return check, fmt.Errorf("scan heap integrity result %s: %w", relation, err)
+		}
+		check.AmcheckRan = true
+		check.OK = false
+		check.Detail = fmt.Sprintf("heap corruption: block=%d offset=%d attribute=%d detail=%s", blkno.Int64, offnum.Int64, attnum.Int64, msg.String)
+		return check, nil
+	}
+	if err := rows.Err(); err != nil {
+		check.AmcheckRan = true
+		check.OK = false
+		check.Detail = err.Error()
+		return check, nil
+	}
+
+	check.AmcheckRan = true
+	check.OK = true
+	check.Detail = "amcheck heap verification passed"
+	return check, nil
 }
 
 func (s *Store) ReindexCriticalIndexerIndexes(ctx context.Context) (*IndexerIntegrityRepairResult, error) {
