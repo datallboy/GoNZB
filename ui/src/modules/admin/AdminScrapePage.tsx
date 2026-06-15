@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   applyAdminScrapeWildcards,
   getAdminScrapeConfig,
@@ -18,20 +18,28 @@ const emptyState: AdminScrapeConfigResponse = {
   explicit_groups: [],
   wildcard_rules: [],
   provider_group_inventory: [],
+  provider_inventory_count: 0,
+  provider_inventory_latest_scan: '',
   materialized_groups: [],
   effective_groups: [],
   preview_groups: [],
+  preview_total: 0,
   crosspost_popularity: [],
 }
+
+const previewPageSize = 50
 
 function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | null): AdminScrapeConfigResponse {
   return {
     explicit_groups: input?.explicit_groups ?? [],
     wildcard_rules: input?.wildcard_rules ?? [],
     provider_group_inventory: input?.provider_group_inventory ?? [],
+    provider_inventory_count: input?.provider_inventory_count ?? input?.provider_group_inventory?.length ?? 0,
+    provider_inventory_latest_scan: input?.provider_inventory_latest_scan ?? '',
     materialized_groups: input?.materialized_groups ?? [],
     effective_groups: input?.effective_groups ?? [],
     preview_groups: input?.preview_groups ?? [],
+    preview_total: input?.preview_total ?? input?.preview_groups?.length ?? 0,
     crosspost_popularity: input?.crosspost_popularity ?? [],
   }
 }
@@ -40,12 +48,19 @@ export function AdminScrapePage() {
   const [data, setData] = useState<AdminScrapeConfigResponse>(emptyState)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState('')
+  const [previewFilter, setPreviewFilter] = useState('')
+  const [previewOffset, setPreviewOffset] = useState(0)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
-  async function refresh() {
+  async function refresh(offset = previewOffset, q = previewFilter) {
     try {
       const next = await getAdminScrapeConfig()
-      setData(normalizeScrapeResponse(next))
+      const normalized = normalizeScrapeResponse(next)
+      setData(normalized)
+      setPreviewOffset(offset)
+      if (offset !== 0 || q.trim() !== '') {
+        await loadPreview(offset, q, false)
+      }
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load scrape config')
@@ -56,13 +71,7 @@ export function AdminScrapePage() {
     void refresh()
   }, [])
 
-  const filteredPreview = useMemo(() => {
-    const needle = filter.trim().toLowerCase()
-    if (!needle) {
-      return data.preview_groups
-    }
-    return data.preview_groups.filter((item) => item.group_name.toLowerCase().includes(needle))
-  }, [data.preview_groups, filter])
+  const previewPageEnd = Math.min(previewOffset + previewPageSize, data.preview_total ?? data.preview_groups.length)
 
   async function save(next: Partial<AdminScrapeConfigResponse>, label: string) {
     setMessage(null)
@@ -92,13 +101,40 @@ export function AdminScrapePage() {
     }
   }
 
-  async function preview() {
+  async function persistCurrentConfig() {
+    const updated = await updateAdminScrapeConfig({
+      explicit_groups: data.explicit_groups,
+      wildcard_rules: data.wildcard_rules,
+      materialized_groups: data.materialized_groups,
+    })
+    return normalizeScrapeResponse(updated)
+  }
+
+  async function loadPreview(offset = 0, q = previewFilter, showMessage = true) {
+    setPreviewLoading(true)
+    try {
+      const next = await previewAdminScrapeWildcards({ q, limit: previewPageSize, offset })
+      setData((current) => ({
+        ...current,
+        preview_groups: next.items ?? [],
+        preview_total: next.count ?? 0,
+      }))
+      setPreviewOffset(next.offset ?? offset)
+      if (showMessage) {
+        setMessage('Wildcard preview refreshed.')
+      }
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  async function preview(offset = 0) {
     setMessage(null)
     setError(null)
     try {
-      const next = await previewAdminScrapeWildcards()
-      setData((current) => ({ ...current, preview_groups: next.items ?? [] }))
-      setMessage('Wildcard preview refreshed.')
+      const saved = await persistCurrentConfig()
+      setData(saved)
+      await loadPreview(offset, previewFilter, true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Wildcard preview failed')
     }
@@ -207,7 +243,10 @@ export function AdminScrapePage() {
             Scan providers
           </button>
         </div>
-        <p className="muted-copy">{data.provider_group_inventory.length} discovered provider/group rows.</p>
+        <p className="muted-copy">
+          {(data.provider_inventory_count ?? data.provider_group_inventory.length).toLocaleString()} discovered provider/group rows from the saved inventory snapshot.
+          {data.provider_inventory_latest_scan ? ` Last synced ${new Date(data.provider_inventory_latest_scan).toLocaleString()}.` : ' Run Scan providers to refresh the saved copy.'}
+        </p>
       </div>
 
       <div className="module-settings-group stack">
@@ -248,7 +287,6 @@ export function AdminScrapePage() {
       <div className="module-settings-group stack">
         <div className="button-row">
           <h2 className="section-title">Materialized wildcard groups</h2>
-          <TextInput label="Filter" value={filter} onChange={setFilter} />
         </div>
         {data.materialized_groups.map((item, index) => (
           <div className="newsgroup-row" key={`materialized-${index}`}>
@@ -265,8 +303,20 @@ export function AdminScrapePage() {
       </div>
 
       <div className="module-settings-group stack">
-        <h2 className="section-title">Preview and effective groups</h2>
-        <p className="muted-copy">Preview matches: {filteredPreview.length}. Effective runtime groups: {data.effective_groups.length}.</p>
+        <div className="button-row">
+          <div>
+            <h2 className="section-title">Wildcard preview</h2>
+            <p className="muted-copy">
+              Showing {data.preview_groups.length > 0 ? previewOffset + 1 : 0}-{previewPageEnd} of {(data.preview_total ?? data.preview_groups.length).toLocaleString()} matches. Effective runtime groups: {data.effective_groups.length.toLocaleString()}.
+            </p>
+          </div>
+          <div className="button-row">
+            <TextInput label="Filter" value={previewFilter} onChange={setPreviewFilter} />
+            <button className="secondary-button" type="button" disabled={previewLoading} onClick={() => void preview(0)}>
+              {previewLoading ? 'Loading...' : 'Refresh preview'}
+            </button>
+          </div>
+        </div>
         <div className="table-shell">
           <table className="data-table">
             <thead>
@@ -277,15 +327,29 @@ export function AdminScrapePage() {
               </tr>
             </thead>
             <tbody>
-              {filteredPreview.map((item: ScrapePreviewGroup) => (
+              {data.preview_groups.map((item: ScrapePreviewGroup) => (
                 <tr key={item.group_name}>
                   <td>{item.group_name}</td>
                   <td>{item.provider_ids.join(', ')}</td>
                   <td>{item.rule_ids.join(', ')}</td>
                 </tr>
               ))}
+              {data.preview_groups.length === 0 ? (
+                <tr>
+                  <td colSpan={3}>No wildcard matches for the current filter and saved provider inventory.</td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <button className="secondary-button" type="button" disabled={previewOffset === 0 || previewLoading} onClick={() => void preview(Math.max(0, previewOffset - previewPageSize))}>
+            Previous
+          </button>
+          <span className="muted-copy">Page {Math.floor(previewOffset / previewPageSize) + 1}</span>
+          <button className="secondary-button" type="button" disabled={previewPageEnd >= (data.preview_total ?? 0) || previewLoading} onClick={() => void preview(previewOffset + previewPageSize)}>
+            Next
+          </button>
         </div>
       </div>
     </div>
