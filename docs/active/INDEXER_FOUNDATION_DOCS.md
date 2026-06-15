@@ -43,6 +43,14 @@ Use for:
 - the hot-query / DBO audit order before a stable release
 - the stage execution model, overlap rules, and fresh-database bootstrap profile
 
+### `docs/active/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
+
+Use for:
+
+- the active binary-storage redesign sprint after repeated `public.binaries` corruption
+- the v2 table ownership model and phased migration away from the monolithic hot binary row
+- deciding whether a binary-state field belongs to assemble, recovery, inspection, release, archive, purge, or an append-only event/summary table
+
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:

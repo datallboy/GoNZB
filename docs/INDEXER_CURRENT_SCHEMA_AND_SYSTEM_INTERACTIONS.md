@@ -20,6 +20,7 @@ Related reference docs:
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
 - `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
 - `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
+- `docs/active/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
 
 ## How To Use This Doc
 
@@ -112,6 +113,21 @@ The long-term model is:
 - `releases` and durable release-catalog tables stay enrichable and queryable
 - article/binary/grouping lineage exists to build and validate releases
 - once archive/NZB durability and required inspection are complete, temporary lineage can be purged
+
+### Rule 7: binary state is moving to v2 owned projections
+
+`binaries` is no longer the target shape for behavior-bearing mutable state.
+
+Phase A keeps `binaries` as the temporary foreign-key anchor and read compatibility surface, but new writes must also populate the v2 owned projections:
+
+- `binary_core`: assemble-owned anchor projection
+- `binary_observation_stats`: assemble-owned part/count/byte/article bounds
+- `binary_identity_current`: assemble/projector-owned current grouping identity
+- `binary_recovery_current`: recovery-owned recovered identity
+- `binary_lifecycle`: release/archive/purge-owned lifecycle state
+- `binary_projection_events`: append-only future bridge for cross-stage state changes
+
+Do not add new behavior columns or new hot indexes to `binaries`. Add the field to the owning v2 table, then migrate reads toward that table.
 
 ## Locking And Contention Guidance
 
@@ -286,7 +302,13 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
-| `binaries` | canonical fact | `assemble_*` | `recover_yenc`, `inspect_*` for explicit identity/refinement fields only | Current canonical binary identity. Behavior-bearing evidence is scalarized into columns; `grouping_evidence_json` is legacy read compatibility only. |
+| `binaries` | transitional anchor/read compatibility | `assemble_*` | `recover_yenc` during Phase A bridge only | Temporary FK anchor and legacy read surface. Do not add new behavior columns or hot indexes. |
+| `binary_core` | v2 canonical projection | `assemble_*` | none | Assemble-owned immutable/near-immutable binary anchor projection. |
+| `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
+| `binary_identity_current` | v2 canonical projection | `assemble_*` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
+| `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
+| `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `release_purge_archived_sources` | none | Archive/purge lifecycle state for binary lineage. |
+| `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep only compact inline summaries on `binaries`; full matcher traces are no longer persisted to PostgreSQL by default. |
 | `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |

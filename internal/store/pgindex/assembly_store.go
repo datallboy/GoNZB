@@ -1493,6 +1493,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordInsertDuration(time.Since(insertStarted))
 	}
+	if err := upsertBinaryStorageV2FromStagedBinaries(ctx, runner); err != nil {
+		return nil, nil, err
+	}
 	readbackStarted := time.Now()
 	rows, err := runner.QueryContext(ctx, `
 		WITH inserted AS (
@@ -2622,6 +2625,9 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate refreshed binary stats: %w", err)
+	}
+	if err := syncBinaryStorageV2ByIDs(ctx, tx, binaryIDs); err != nil {
+		return nil, err
 	}
 
 	if len(summaryKeys) == 0 {

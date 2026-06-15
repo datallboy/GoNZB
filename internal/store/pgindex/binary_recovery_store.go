@@ -56,6 +56,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 
 	newName := recoveredFileName(seed.FileName, seed.ReleaseName, seed.BinaryName, seed.FileIndex, seed.ExpectedFileCount, in.Kind, in.Extension)
 	renamePredicate := `file_name = '' OR LOWER(file_name) LIKE '%.bin' OR file_name !~ '\.[A-Za-z0-9]{1,8}$'`
+	v2SyncIDs := []int64{in.BinaryID}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binaries
 		SET recovered_kind = $2,
@@ -135,6 +136,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 				familyCount = len(siblings)
 			}
 			for idx, sibling := range siblings {
+				v2SyncIDs = append(v2SyncIDs, sibling.ID)
 				recoveredName := recoveredFileName(sibling.FileName, sibling.ReleaseName, sibling.BinaryName, idx+1, familyCount, in.Kind, in.Extension)
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE binaries
@@ -189,6 +191,10 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 				}
 			}
 		}
+	}
+
+	if err := syncBinaryStorageV2ByIDs(ctx, tx, v2SyncIDs); err != nil {
+		return err
 	}
 
 	if err := markReleaseFamilyDirty(ctx, tx, seed.ProviderID, seed.NewsgroupID, "release_family", seed.ReleaseFamilyKey); err != nil {
