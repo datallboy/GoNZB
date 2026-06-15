@@ -300,17 +300,34 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 	rows, err := s.db.QueryContext(ctx, `
 		WITH candidate_binaries AS (
 			SELECT
-				b.*,
+				bc.binary_id AS id,
+				bc.provider_id,
+				bc.newsgroup_id,
+				bic.source_release_key,
+				bic.release_key,
+				bic.release_name,
+				bic.release_family_key,
+				bic.base_stem,
+				bic.expected_file_count,
+				bic.expected_archive_file_count,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bos.posted_at,
+				bos.total_parts,
+				bos.observed_parts,
+				bos.total_bytes,
 				CASE
-					WHEN NULLIF(BTRIM(b.base_stem), '') IS NOT NULL
-					 AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
+					WHEN NULLIF(BTRIM(bic.base_stem), '') IS NOT NULL
+					 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 					 AND COUNT(*) OVER (
-						PARTITION BY b.provider_id, b.newsgroup_id, LOWER(BTRIM(b.base_stem)), GREATEST(b.expected_file_count, b.expected_archive_file_count)
+						PARTITION BY bic.provider_id, bic.newsgroup_id, LOWER(BTRIM(bic.base_stem)), GREATEST(bic.expected_file_count, bic.expected_archive_file_count)
 					 ) > 1
-					THEN LOWER(BTRIM(b.base_stem))
-					ELSE b.release_family_key
+					THEN LOWER(BTRIM(bic.base_stem))
+					ELSE bic.release_family_key
 				END AS effective_release_family_key
-			FROM binaries b
+			FROM binary_core bc
+			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		)
 		SELECT
 			b.provider_id,
