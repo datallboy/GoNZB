@@ -10,6 +10,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
 
@@ -72,8 +73,17 @@ func (ctrl *IndexerScrapeAdminController) ScanProviders(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
 	}
+	if ctrl.appCtx.PGIndexStore != nil {
+		if err := ctrl.appCtx.PGIndexStore.ReplaceIndexerProviderGroupInventory(c.Request().Context(), toPGProviderInventory(inventory)); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
 	next := app.CloneRuntimeSettings(runtime)
-	next.Indexing.ProviderGroupInventory = inventory
+	if ctrl.appCtx.PGIndexStore == nil {
+		next.Indexing.ProviderGroupInventory = inventory
+	} else {
+		next.Indexing.ProviderGroupInventory = nil
+	}
 	updated, err := ctrl.appCtx.SettingsAdmin.Update(c.Request().Context(), &app.RuntimeSettingsPatch{Indexing: next.Indexing})
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
@@ -93,7 +103,7 @@ func (ctrl *IndexerScrapeAdminController) PreviewWildcardGroups(c *echo.Context)
 	if err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	items, total := previewWildcardGroupsPage(runtime.Indexing, queryParamTrimmed(c, "q"), limit, offset)
+	items, total := previewWildcardGroupsPage(c.Request().Context(), ctrl.appCtx, runtime.Indexing, queryParamTrimmed(c, "q"), limit, offset)
 	return c.JSON(http.StatusOK, map[string]any{
 		"items":  items,
 		"count":  total,
@@ -111,7 +121,10 @@ func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) e
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
 	next := app.CloneRuntimeSettings(runtime)
-	next.Indexing.MaterializedGroups = materializeWildcardGroups(next.Indexing)
+	next.Indexing.MaterializedGroups = materializeWildcardGroups(c.Request().Context(), ctrl.appCtx, next.Indexing)
+	if ctrl.appCtx.PGIndexStore != nil {
+		next.Indexing.ProviderGroupInventory = nil
+	}
 	updated, err := ctrl.appCtx.SettingsAdmin.Update(c.Request().Context(), &app.RuntimeSettingsPatch{Indexing: next.Indexing})
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
@@ -173,6 +186,22 @@ type scrapeCrosspostPopularityItem struct {
 	LastSeenAt               *time.Time `json:"last_seen_at,omitempty"`
 }
 
+func loadProviderInventoryStats(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings) pgindex.IndexerProviderGroupInventoryStats {
+	if appCtx != nil && appCtx.PGIndexStore != nil {
+		stats, err := appCtx.PGIndexStore.GetIndexerProviderGroupInventoryStats(ctx)
+		if err == nil {
+			return stats
+		}
+	}
+	if indexing == nil {
+		return pgindex.IndexerProviderGroupInventoryStats{}
+	}
+	return pgindex.IndexerProviderGroupInventoryStats{
+		Count:      len(indexing.ProviderGroupInventory),
+		LatestScan: latestProviderInventoryScan(indexing.ProviderGroupInventory),
+	}
+}
+
 func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime *app.RuntimeSettings) map[string]any {
 	if runtime == nil {
 		runtime = app.DefaultRuntimeSettings()
@@ -182,17 +211,17 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 		indexing = app.DefaultRuntimeSettings().Indexing
 	}
 	crossposts := loadCrosspostPopularity(ctx, appCtx, indexing)
-	previewPage, previewTotal := previewWildcardGroupsPage(indexing, "", 50, 0)
+	stats := loadProviderInventoryStats(ctx, appCtx, indexing)
 	return map[string]any{
 		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
 		"wildcard_rules":                 ensureWildcardRules(indexing.WildcardRules),
 		"provider_group_inventory":       []app.IndexingProviderGroupInventoryRuntimeSettings{},
-		"provider_inventory_count":       len(indexing.ProviderGroupInventory),
-		"provider_inventory_latest_scan": latestProviderInventoryScan(indexing.ProviderGroupInventory),
+		"provider_inventory_count":       stats.Count,
+		"provider_inventory_latest_scan": stats.LatestScan,
 		"materialized_groups":            ensureMaterializedGroups(indexing.MaterializedGroups),
 		"effective_groups":               ensureExplicitGroups(app.EffectiveScrapeGroups(indexing)),
-		"preview_groups":                 ensurePreviewGroups(previewPage),
-		"preview_total":                  previewTotal,
+		"preview_groups":                 []scrapePreviewItem{},
+		"preview_total":                  0,
 		"crosspost_popularity":           crossposts,
 	}
 }
@@ -229,12 +258,19 @@ func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing 
 	return out
 }
 
-func previewWildcardGroups(indexing *app.IndexingRuntimeSettings) []scrapePreviewItem {
+func previewWildcardGroups(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings, query string) []scrapePreviewItem {
 	if indexing == nil {
 		return nil
 	}
+	inventory := indexing.ProviderGroupInventory
+	if appCtx != nil && appCtx.PGIndexStore != nil {
+		rows, err := appCtx.PGIndexStore.ListIndexerProviderGroupInventoryCandidates(ctx, query, wildcardPatternHints(indexing.WildcardRules))
+		if err == nil {
+			inventory = fromPGProviderInventory(rows)
+		}
+	}
 	aggregated := map[string]*scrapePreviewItem{}
-	for _, item := range indexing.ProviderGroupInventory {
+	for _, item := range inventory {
 		group := item.GroupName
 		if group == "" {
 			continue
@@ -267,8 +303,8 @@ func previewWildcardGroups(indexing *app.IndexingRuntimeSettings) []scrapePrevie
 	return out
 }
 
-func previewWildcardGroupsPage(indexing *app.IndexingRuntimeSettings, query string, limit, offset int) ([]scrapePreviewItem, int) {
-	all := previewWildcardGroups(indexing)
+func previewWildcardGroupsPage(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings, query string, limit, offset int) ([]scrapePreviewItem, int) {
+	all := previewWildcardGroups(ctx, appCtx, indexing, query)
 	query = strings.ToLower(strings.TrimSpace(query))
 	filtered := make([]scrapePreviewItem, 0, len(all))
 	for _, item := range all {
@@ -311,8 +347,29 @@ func containsAnyFold(items []string, needle string) bool {
 	return false
 }
 
-func materializeWildcardGroups(indexing *app.IndexingRuntimeSettings) []app.IndexingMaterializedGroupRuntimeSettings {
-	preview := previewWildcardGroups(indexing)
+func wildcardPatternHints(rules []app.IndexingWildcardRuleRuntimeSettings) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		best := ""
+		for _, part := range strings.FieldsFunc(strings.ToLower(strings.TrimSpace(rule.Pattern)), func(r rune) bool {
+			return r == '*' || r == '?' || r == '[' || r == ']' || r == '!' || r == '-' || r == '.'
+		}) {
+			if len(part) > len(best) {
+				best = part
+			}
+		}
+		if len(best) >= 2 {
+			out = appendUniqueString(out, best)
+		}
+	}
+	return out
+}
+
+func materializeWildcardGroups(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings) []app.IndexingMaterializedGroupRuntimeSettings {
+	preview := previewWildcardGroups(ctx, appCtx, indexing, "")
 	existing := make(map[string]app.IndexingMaterializedGroupRuntimeSettings, len(indexing.MaterializedGroups))
 	for _, item := range indexing.MaterializedGroups {
 		existing[item.GroupName] = item
@@ -325,6 +382,38 @@ func materializeWildcardGroups(indexing *app.IndexingRuntimeSettings) []app.Inde
 		row.ProviderIDs = append([]string(nil), item.ProviderIDs...)
 		row.RuleIDs = append([]string(nil), item.RuleIDs...)
 		out = append(out, row)
+	}
+	return out
+}
+
+func toPGProviderInventory(in []app.IndexingProviderGroupInventoryRuntimeSettings) []pgindex.IndexerProviderGroupInventoryItem {
+	out := make([]pgindex.IndexerProviderGroupInventoryItem, 0, len(in))
+	for _, item := range in {
+		out = append(out, pgindex.IndexerProviderGroupInventoryItem{
+			ProviderID:   item.ProviderID,
+			ProviderName: item.ProviderName,
+			GroupName:    item.GroupName,
+			High:         item.High,
+			Low:          item.Low,
+			Status:       item.Status,
+			ScannedAt:    item.ScannedAt,
+		})
+	}
+	return out
+}
+
+func fromPGProviderInventory(in []pgindex.IndexerProviderGroupInventoryItem) []app.IndexingProviderGroupInventoryRuntimeSettings {
+	out := make([]app.IndexingProviderGroupInventoryRuntimeSettings, 0, len(in))
+	for _, item := range in {
+		out = append(out, app.IndexingProviderGroupInventoryRuntimeSettings{
+			ProviderID:   item.ProviderID,
+			ProviderName: item.ProviderName,
+			GroupName:    item.GroupName,
+			High:         item.High,
+			Low:          item.Low,
+			Status:       item.Status,
+			ScannedAt:    item.ScannedAt,
+		})
 	}
 	return out
 }

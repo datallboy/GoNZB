@@ -18,7 +18,7 @@ const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
 )
-const expectedSchemaVersion = 6
+const expectedSchemaVersion = 7
 
 type Store struct {
 	db *sql.DB
@@ -610,7 +610,10 @@ func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, index
 		return nil
 	}
 
-	optionsJSON, err := json.Marshal(indexing)
+	indexingCopy := *indexing
+	indexingCopy.ProviderGroupInventory = nil
+
+	optionsJSON, err := json.Marshal(&indexingCopy)
 	if err != nil {
 		return fmt.Errorf("marshal usenet_indexer options: %w", err)
 	}
