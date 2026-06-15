@@ -501,6 +501,44 @@ func (r *Runner) ExecuteIndexerBackfillCrosspostGroups(batchSize, maxBatches int
 	}
 }
 
+func (r *Runner) ExecuteIndexerMaterializePosters(batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer poster materialization requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.MaterializeArticleHeaderPosters(ctx, batchSize)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance materialize-posters failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance materialize-posters: claimed=%d posters=%d refs_upserted=%d payloads_linked=%d",
+			out.Claimed,
+			out.Posters,
+			out.RefsUpserted,
+			out.PayloadsLinked,
+		)
+	}
+}
+
+func (r *Runner) ExecuteIndexerRefreshCrosspostPopularity(batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer cross-post popularity refresh requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RefreshCrosspostPopularity(ctx, batchSize)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance refresh-crosspost-popularity failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance refresh-crosspost-popularity: claimed=%d groups_refreshed=%d messages_upserted=%d sources_upserted=%d",
+			out.Claimed,
+			out.GroupsRefreshed,
+			out.MessagesUpserted,
+			out.SourcesUpserted,
+		)
+	}
+}
+
 func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
 	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer storage reclaim requires store.pg_dsn.")
 	defer cleanup()

@@ -30,6 +30,8 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
 			ScrapeLatest:                defaultStage(false, 10, 5000, 0),
 			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
+			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
+			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
 			AssembleLaneA:               defaultAssembleStage(false, 2, 5000, 1),
 			AssembleLaneB:               defaultAssembleStage(false, 10, 2500, 1),
 			RecoverYEnc:                 defaultRecoverYEncStage(false),
@@ -212,6 +214,8 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 
 	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
+	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
+	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
 	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
 	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
@@ -382,6 +386,8 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
+		effective.Indexing.PosterMaterialize = toStageConfigNoConcurrency(indexing.PosterMaterialize)
+		effective.Indexing.CrosspostPopularityRefresh = toStageConfigNoConcurrency(indexing.CrosspostPopularityRefresh)
 		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
 		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
 		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
@@ -689,6 +695,8 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		len(in.BackfillUntilDateByGroup) > 0 ||
 		in.ScrapeLatest.Enabled ||
 		in.ScrapeBackfill.Enabled ||
+		in.PosterMaterialize.Enabled ||
+		in.CrosspostPopularityRefresh.Enabled ||
 		in.AssembleLaneA.Enabled ||
 		in.AssembleLaneB.Enabled ||
 		in.RecoverYEnc.Enabled ||
@@ -822,6 +830,8 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
 		ScrapeLatest:                in.ScrapeLatest,
 		ScrapeBackfill:              in.ScrapeBackfill,
+		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
+		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
 		AssembleLaneA:               mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
 		AssembleLaneB:               mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),

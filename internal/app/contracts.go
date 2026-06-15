@@ -260,6 +260,8 @@ type UsenetIndexStore interface {
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
 	BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*pgindex.IndexerCrosspostBackfillResult, error)
+	MaterializeArticleHeaderPosters(ctx context.Context, limit int) (*pgindex.IndexerPosterMaterializationResult, error)
+	RefreshCrosspostPopularity(ctx context.Context, limit int) (*pgindex.IndexerCrosspostPopularityRefreshResult, error)
 	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
 	CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtension bool) (*pgindex.IndexerIntegrityReport, error)
 	ReindexCriticalIndexerIndexes(ctx context.Context) (*pgindex.IndexerIntegrityRepairResult, error)

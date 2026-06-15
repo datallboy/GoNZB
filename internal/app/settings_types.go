@@ -219,6 +219,8 @@ type IndexingRuntimeSettings struct {
 	MaterializedGroups          []IndexingMaterializedGroupRuntimeSettings      `json:"materialized_groups"`
 	ScrapeLatest                IndexingStageRuntimeSettings                    `json:"scrape_latest,omitempty"`
 	ScrapeBackfill              IndexingStageRuntimeSettings                    `json:"scrape_backfill,omitempty"`
+	PosterMaterialize           IndexingStageRuntimeSettings                    `json:"poster_materialize,omitempty"`
+	CrosspostPopularityRefresh  IndexingStageRuntimeSettings                    `json:"crosspost_popularity_refresh,omitempty"`
 	AssembleLaneA               IndexingStageRuntimeSettings                    `json:"assemble_lane_a,omitempty"`
 	AssembleLaneB               IndexingStageRuntimeSettings                    `json:"assemble_lane_b,omitempty"`
 	RecoverYEnc                 IndexingStageRuntimeSettings                    `json:"recover_yenc,omitempty"`

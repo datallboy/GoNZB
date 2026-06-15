@@ -2774,6 +2774,8 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 
 	sourceA := fmt.Sprintf("alt.test.crosspost.sourcea.%d", time.Now().UnixNano())
 	sourceB := fmt.Sprintf("alt.test.crosspost.sourceb.%d", time.Now().UnixNano())
+	popularTarget := fmt.Sprintf("alt.test.crosspost.popular.%d", time.Now().UnixNano())
+	extraTarget := fmt.Sprintf("alt.test.crosspost.extra.%d", time.Now().UnixNano())
 	sourceAID, err := store.EnsureNewsgroup(ctx, sourceA)
 	if err != nil {
 		t.Fatalf("ensure source A: %v", err)
@@ -2788,7 +2790,7 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 		MessageID:     "<crosspost-1@test>",
 		Subject:       "Crosspost One",
 		Poster:        "poster@test",
-		Xref:          fmt.Sprintf("Xref: news.example.com %s:101 alt.popular.target:201 alt.extra.target:301 alt.popular.target:201", sourceA),
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:101 %s:201 %s:301 %s:201", sourceA, popularTarget, extraTarget, popularTarget),
 	}}); err != nil {
 		t.Fatalf("insert source A headers: %v", err)
 	}
@@ -2797,9 +2799,14 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 		MessageID:     "<crosspost-1@test>",
 		Subject:       "Crosspost One Copy",
 		Poster:        "poster@test",
-		Xref:          fmt.Sprintf("Xref: news.example.com %s:102 alt.popular.target:202 alt.extra.target:302", sourceB),
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:102 %s:202 %s:302", sourceB, popularTarget, extraTarget),
 	}}); err != nil {
 		t.Fatalf("insert source B headers: %v", err)
+	}
+	if out, err := store.RefreshCrosspostPopularity(ctx, 1000); err != nil {
+		t.Fatalf("refresh crosspost popularity: %v", err)
+	} else if out == nil || out.GroupsRefreshed < 2 {
+		t.Fatalf("expected refreshed crosspost groups, got %+v", out)
 	}
 
 	items, err := store.GetIndexerCrosspostNewsgroupPopularity(ctx, 20)
@@ -2811,9 +2818,9 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 		byGroup[item.GroupName] = item
 	}
 
-	popular, ok := byGroup["alt.popular.target"]
+	popular, ok := byGroup[popularTarget]
 	if !ok {
-		t.Fatalf("expected alt.popular.target in popularity report, got %+v", items)
+		t.Fatalf("expected %s in popularity report, got %+v", popularTarget, items)
 	}
 	if popular.ObservedArticleCount != 2 {
 		t.Fatalf("expected observed article count 2, got %+v", popular)
@@ -2828,9 +2835,9 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 		t.Fatalf("expected last_seen_at for %+v", popular)
 	}
 
-	extra, ok := byGroup["alt.extra.target"]
+	extra, ok := byGroup[extraTarget]
 	if !ok {
-		t.Fatalf("expected alt.extra.target in popularity report, got %+v", items)
+		t.Fatalf("expected %s in popularity report, got %+v", extraTarget, items)
 	}
 	if extra.ObservedArticleCount != 2 || extra.DistinctMessageCount != 1 || extra.DistinctSourceGroupCount != 2 {
 		t.Fatalf("unexpected extra-target aggregation: %+v", extra)

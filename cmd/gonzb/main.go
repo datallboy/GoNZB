@@ -32,6 +32,8 @@ var (
 	indexerIntegrityEnsureExtension    bool
 	indexerCrosspostBackfillBatchSize  int
 	indexerCrosspostBackfillMaxBatches int
+	indexerPosterMaterializeBatchSize  int
+	indexerCrosspostRefreshBatchSize   int
 )
 
 var rootCmd = &cobra.Command{
@@ -225,6 +227,22 @@ var indexerMaintenanceBackfillCrosspostGroupsCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenanceMaterializePostersCmd = &cobra.Command{
+	Use:   "materialize-posters",
+	Short: "Materialize queued article-header posters into poster dimension rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerMaterializePosters(indexerPosterMaterializeBatchSize)
+	},
+}
+
+var indexerMaintenanceRefreshCrosspostPopularityCmd = &cobra.Command{
+	Use:   "refresh-crosspost-popularity",
+	Short: "Refresh queued cross-post popularity summaries from raw Xref observations",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerRefreshCrosspostPopularity(indexerCrosspostRefreshBatchSize)
+	},
+}
+
 var indexerReclaimStorageCmd = &cobra.Command{
 	Use:   "reclaim-storage [table...]",
 	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
@@ -389,6 +407,8 @@ func init() {
 	indexerMaintenanceCheckIntegrityCmd.Flags().BoolVar(&indexerIntegrityEnsureExtension, "ensure-extension", false, "Install the amcheck extension before running the integrity check")
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillBatchSize, "batch-size", 5000, "Number of article headers to process per batch")
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
+	indexerMaintenanceMaterializePostersCmd.Flags().IntVar(&indexerPosterMaterializeBatchSize, "batch-size", 10000, "Maximum queued poster rows to materialize")
+	indexerMaintenanceRefreshCrosspostPopularityCmd.Flags().IntVar(&indexerCrosspostRefreshBatchSize, "batch-size", 1000, "Maximum queued observed cross-post groups to refresh")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -410,6 +430,8 @@ func init() {
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceReindexCriticalCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenancePurgeHeaderPayloadsCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceBackfillCrosspostGroupsCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceMaterializePostersCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRefreshCrosspostPopularityCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)

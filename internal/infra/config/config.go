@@ -92,6 +92,8 @@ type IndexingConfig struct {
 	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
 	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
 	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
+	CrosspostPopularityRefresh  IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
 	AssembleLaneA               IndexingStageConfig        `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
 	AssembleLaneB               IndexingStageConfig        `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
 	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
@@ -467,6 +469,12 @@ func (c *Config) validate() error {
 		}
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_backfill", c.Indexing.ScrapeBackfill); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.poster_materialize", c.Indexing.PosterMaterialize); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.crosspost_popularity_refresh", c.Indexing.CrosspostPopularityRefresh); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {

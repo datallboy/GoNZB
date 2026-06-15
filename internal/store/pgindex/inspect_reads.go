@@ -756,6 +756,8 @@ type stageThroughputDefinition struct {
 var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "scrape_latest", Label: "Scrape Latest", ItemLabel: "headers"},
 	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
+	{StageName: "poster_materialize", Label: "Poster Materialize", ItemLabel: "headers"},
+	{StageName: "crosspost_popularity_refresh", Label: "Crosspost Popularity", ItemLabel: "groups"},
 	{StageName: "assemble_lane_a", Label: "Assemble Lane A", ItemLabel: "headers"},
 	{StageName: "assemble_lane_b", Label: "Assemble Lane B", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
@@ -966,6 +968,10 @@ func stageThroughputMetricKeys(stageName string) []string {
 	switch stageName {
 	case "scrape_latest", "scrape_backfill":
 		return []string{"articles_inserted", "article_headers_seen"}
+	case "poster_materialize":
+		return []string{"claimed", "refs_upserted", "payloads_linked"}
+	case "crosspost_popularity_refresh":
+		return []string{"groups_refreshed", "claimed"}
 	case "assemble_lane_a", "assemble_lane_b":
 		return []string{"processed_headers"}
 	case "recover_yenc":
