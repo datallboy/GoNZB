@@ -120,6 +120,7 @@ type IndexingStageConfig struct {
 	BatchSize               *int     `mapstructure:"batch_size" yaml:"batch_size"`
 	MaxBatches              *int     `mapstructure:"max_batches" yaml:"max_batches"`
 	Concurrency             *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	MaxEffectiveConcurrency *int     `mapstructure:"max_effective_concurrency" yaml:"max_effective_concurrency"`
 	BackoffSeconds          *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
 }
@@ -694,6 +695,9 @@ func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
 	}
 	if cfg.Concurrency != nil && *cfg.Concurrency <= 0 {
 		return fmt.Errorf("%s.concurrency must be greater than 0", name)
+	}
+	if cfg.MaxEffectiveConcurrency != nil && *cfg.MaxEffectiveConcurrency <= 0 {
+		return fmt.Errorf("%s.max_effective_concurrency must be greater than 0", name)
 	}
 	if cfg.BackoffSeconds != nil && *cfg.BackoffSeconds < 0 {
 		return fmt.Errorf("%s.backoff_seconds must be greater than or equal to 0", name)

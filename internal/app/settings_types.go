@@ -82,6 +82,7 @@ type IndexingStageRuntimeSettings struct {
 	BatchSize               int     `json:"batch_size,omitempty"`
 	MaxBatches              int     `json:"max_batches,omitempty"`
 	Concurrency             int     `json:"concurrency,omitempty"`
+	MaxEffectiveConcurrency int     `json:"max_effective_concurrency,omitempty"`
 	BackoffSeconds          int     `json:"backoff_seconds,omitempty"`
 	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
 }

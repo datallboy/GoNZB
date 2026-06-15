@@ -32,7 +32,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
 			AssembleLaneA:               defaultAssembleStage(false, 2, 5000, 1),
 			AssembleLaneB:               defaultAssembleStage(false, 10, 2500, 1),
-			RecoverYEnc:                 defaultStage(false, 10, 25, 1),
+			RecoverYEnc:                 defaultRecoverYEncStage(false),
 			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
 			Release:                     defaultReleaseStage(false),
 			ReleaseGenerateNZB:          defaultStage(false, 10, 100, 0),
@@ -104,6 +104,12 @@ func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSetting
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, interval, batch, concurrency)
 	stage.BinaryUpsertDBChunkSize = 250
+	return stage
+}
+
+func defaultRecoverYEncStage(enabled bool) IndexingStageRuntimeSettings {
+	stage := defaultStage(enabled, 10, 25, 1)
+	stage.MaxEffectiveConcurrency = 4
 	return stage
 }
 
@@ -818,7 +824,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBackfill:              in.ScrapeBackfill,
 		AssembleLaneA:               mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
 		AssembleLaneB:               mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
-		RecoverYEnc:                 mergeStageRuntimeSettings(defaultStage(false, 10, 25, 1), in.RecoverYEnc),
+		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                     in.Release,
 		ReleaseGenerateNZB:          mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
@@ -1082,6 +1088,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.Concurrency > 0 {
 		base.Concurrency = override.Concurrency
 	}
+	if override.MaxEffectiveConcurrency > 0 {
+		base.MaxEffectiveConcurrency = override.MaxEffectiveConcurrency
+	}
 	if override.BackoffSeconds > 0 {
 		base.BackoffSeconds = override.BackoffSeconds
 	}
@@ -1108,6 +1117,7 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		IntervalMinutes:         float64Value(cfg.IntervalMinutes, defaultInterval),
 		BatchSize:               intValue(cfg.BatchSize, defaultBatch),
 		MaxBatches:              intValue(cfg.MaxBatches, 0),
+		MaxEffectiveConcurrency: intValue(cfg.MaxEffectiveConcurrency, 0),
 		BackoffSeconds:          intValue(cfg.BackoffSeconds, 0),
 		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
 	}
@@ -1131,6 +1141,9 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	}
 	if in.Concurrency > 0 {
 		out.Concurrency = intPtr(in.Concurrency)
+	}
+	if in.MaxEffectiveConcurrency > 0 {
+		out.MaxEffectiveConcurrency = intPtr(in.MaxEffectiveConcurrency)
 	}
 	if in.BinaryUpsertDBChunkSize > 0 {
 		out.BinaryUpsertDBChunkSize = intPtr(in.BinaryUpsertDBChunkSize)

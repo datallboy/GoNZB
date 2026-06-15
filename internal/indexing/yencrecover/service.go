@@ -39,13 +39,12 @@ type matcher interface {
 }
 
 type Options struct {
-	BatchSize      int
-	MaxHeaderBytes int64
-	FetchTimeout   time.Duration
-	Concurrency    int
+	BatchSize               int
+	MaxHeaderBytes          int64
+	FetchTimeout            time.Duration
+	Concurrency             int
+	MaxEffectiveConcurrency int
 }
-
-const maxPrefixFetchConcurrency = 4
 
 type Service struct {
 	repo    repository
@@ -119,8 +118,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	workerCount := s.opts.Concurrency
-	if workerCount > maxPrefixFetchConcurrency {
-		workerCount = maxPrefixFetchConcurrency
+	if s.opts.MaxEffectiveConcurrency > 0 && workerCount > s.opts.MaxEffectiveConcurrency {
+		workerCount = s.opts.MaxEffectiveConcurrency
 		if s.log != nil {
 			s.log.Warn(
 				"recover_yenc: capped prefix fetch concurrency requested=%d effective=%d",
@@ -132,6 +131,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if workerCount > len(candidates) {
 		workerCount = len(candidates)
 	}
+	metrics["max_effective_concurrency"] = s.opts.MaxEffectiveConcurrency
 	metrics["effective_concurrency"] = workerCount
 	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
 	jobs := make(chan pgindex.YEncRecoveryCandidate)

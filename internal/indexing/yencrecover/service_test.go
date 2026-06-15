@@ -185,7 +185,8 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 		body:  []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.mkv\r\n=ypart begin=1 end=1024\r\n"),
 		block: make(chan struct{}),
 	}
-	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 12, MaxHeaderBytes: 256, Concurrency: 32})
+	const maxEffectiveConcurrency = 4
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 12, MaxHeaderBytes: 256, Concurrency: 32, MaxEffectiveConcurrency: maxEffectiveConcurrency})
 
 	done := make(chan struct{})
 	var (
@@ -199,7 +200,7 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if fetcher.maxActiveCount() == maxPrefixFetchConcurrency {
+		if fetcher.maxActiveCount() == maxEffectiveConcurrency {
 			break
 		}
 		select {
@@ -214,10 +215,10 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("RunOnceWithMetrics failed: %v", runErr)
 	}
-	if metrics["effective_concurrency"] != maxPrefixFetchConcurrency {
-		t.Fatalf("expected effective concurrency cap %d, got metrics=%v", maxPrefixFetchConcurrency, metrics)
+	if metrics["effective_concurrency"] != maxEffectiveConcurrency {
+		t.Fatalf("expected effective concurrency cap %d, got metrics=%v", maxEffectiveConcurrency, metrics)
 	}
-	if fetcher.maxActiveCount() > maxPrefixFetchConcurrency {
+	if fetcher.maxActiveCount() > maxEffectiveConcurrency {
 		t.Fatalf("prefix fetch concurrency exceeded cap: %d", fetcher.maxActiveCount())
 	}
 }
