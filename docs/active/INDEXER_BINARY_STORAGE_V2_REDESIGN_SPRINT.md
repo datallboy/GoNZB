@@ -73,7 +73,7 @@ Phase B remaining reader migration checklist:
 - [x] release formation binary fan-out reads.
 - [x] release reform candidate discovery reads.
 - [x] yEnc recovery work-item selection, stale-retire, seed, and target reads.
-- [ ] inspect candidate selection reads for discovery, PAR2, NFO, archive, password, and media stages.
+- [x] inspect candidate selection reads for discovery, PAR2, NFO, archive, password, and media stages.
 - [ ] catalog/detail/admin/public release reads.
 - [ ] NZB generation, archive, and purge reads.
 - [ ] maintenance/helper reads and backlog counters.
