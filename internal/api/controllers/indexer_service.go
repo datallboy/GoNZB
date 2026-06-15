@@ -64,11 +64,12 @@ type indexerStageView struct {
 }
 
 type indexerStageConfigPatch struct {
-	Enabled         *bool    `json:"enabled,omitempty"`
-	IntervalMinutes *float64 `json:"interval_minutes,omitempty"`
-	BatchSize       *int     `json:"batch_size,omitempty"`
-	Concurrency     *int     `json:"concurrency,omitempty"`
-	BackoffSeconds  *int     `json:"backoff_seconds,omitempty"`
+	Enabled                 *bool    `json:"enabled,omitempty"`
+	IntervalMinutes         *float64 `json:"interval_minutes,omitempty"`
+	BatchSize               *int     `json:"batch_size,omitempty"`
+	Concurrency             *int     `json:"concurrency,omitempty"`
+	MaxEffectiveConcurrency *int     `json:"max_effective_concurrency,omitempty"`
+	BackoffSeconds          *int     `json:"backoff_seconds,omitempty"`
 }
 
 type indexerReleaseOverridePatch struct {
@@ -1034,6 +1035,9 @@ func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageCo
 	}
 	if patch.Concurrency != nil {
 		dst.Concurrency = *patch.Concurrency
+	}
+	if patch.MaxEffectiveConcurrency != nil {
+		dst.MaxEffectiveConcurrency = *patch.MaxEffectiveConcurrency
 	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds

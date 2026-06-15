@@ -86,6 +86,7 @@ type indexerStageConfig struct {
 	BatchSize               int
 	MaxBatches              int
 	Concurrency             int
+	MaxEffectiveConcurrency int
 	Backoff                 time.Duration
 	BinaryUpsertDBChunkSize int
 }
@@ -247,10 +248,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		recoverFetcher,
 		appCtx.Logger,
 		yencrecover.Options{
-			BatchSize:      runtimeCfg.RecoverYEnc.BatchSize,
-			MaxHeaderBytes: 8192,
-			FetchTimeout:   10 * time.Second,
-			Concurrency:    runtimeCfg.RecoverYEnc.Concurrency,
+			BatchSize:               runtimeCfg.RecoverYEnc.BatchSize,
+			MaxHeaderBytes:          8192,
+			FetchTimeout:            10 * time.Second,
+			Concurrency:             runtimeCfg.RecoverYEnc.Concurrency,
+			MaxEffectiveConcurrency: runtimeCfg.RecoverYEnc.MaxEffectiveConcurrency,
 		},
 	)
 
@@ -750,6 +752,7 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		BatchSize:               in.BatchSize,
 		MaxBatches:              in.MaxBatches,
 		Concurrency:             in.Concurrency,
+		MaxEffectiveConcurrency: in.MaxEffectiveConcurrency,
 		Backoff:                 time.Duration(in.BackoffSeconds) * time.Second,
 		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
 	}

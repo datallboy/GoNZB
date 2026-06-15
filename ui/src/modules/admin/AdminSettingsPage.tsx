@@ -40,6 +40,7 @@ type StageDefinition = {
   description: string
   supportsConcurrency: boolean
   showBinaryUpsertChunk?: boolean
+  showMaxEffectiveConcurrency?: boolean
   showMaxBatches?: boolean
   defaultMaxBatches?: number
   batchHelpText?: string
@@ -53,7 +54,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
   { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
   { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
-  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'NNTP-backed BODY fetch workers.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showMaxEffectiveConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Effective concurrency may be capped below this value to avoid connection churn.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
@@ -113,7 +114,7 @@ function defaultSettings(): RuntimeSettings {
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
       assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
-      recover_yenc: stageDefaults(25, 1),
+      recover_yenc: stageDefaults(25, 1, { max_effective_concurrency: 4 }),
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
@@ -765,15 +766,26 @@ export function AdminSettingsPage() {
                             />
                           ) : null}
                         </div>
-                        {showAdvanced && definition.showBinaryUpsertChunk ? (
+                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency) ? (
                           <div className="toolbar-grid toolbar-grid--compact">
-                            <NumberField
-                              label="Binary upsert DB chunk size"
-                              min={1}
-                              value={value.binary_upsert_db_chunk_size ?? 250}
-                              helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
-                              onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
-                            />
+                            {definition.showBinaryUpsertChunk ? (
+                              <NumberField
+                                label="Binary upsert DB chunk size"
+                                min={1}
+                                value={value.binary_upsert_db_chunk_size ?? 250}
+                                helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
+                                onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
+                              />
+                            ) : null}
+                            {definition.showMaxEffectiveConcurrency ? (
+                              <NumberField
+                                label="Max effective concurrency"
+                                min={1}
+                                value={value.max_effective_concurrency ?? 4}
+                                helpText="Safety cap applied below requested concurrency. For recover yEnc this limits BODY prefix fetches, which discard NNTP connections after partial reads."
+                                onChange={(next) => updateStage(key, { max_effective_concurrency: next })}
+                              />
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
