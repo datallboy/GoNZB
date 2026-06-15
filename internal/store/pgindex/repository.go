@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -926,13 +927,12 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		return 0, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+	posterCache := make(map[string]int64, 64)
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		return ensurePostersBatch(ctx, s.db, posterCache, prepared)
+	}); err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
-
-	posterCache := make(map[string]int64, 64)
 
 	var inserted int64
 	for start := 0; start < len(prepared); start += articleHeaderInsertBatchSize {
@@ -942,64 +942,75 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		}
 		batch := prepared[start:end]
 
-		if err := ensurePostersBatch(ctx, tx, posterCache, batch); err != nil {
-			return inserted, err
-		}
+		var batchInserted int64
+		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
 
-		resolvedIDs, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
-		if err != nil {
-			return inserted, err
-		}
-
-		payloadRows := make([]payloadUpsertRow, 0, len(batch))
-		for idx, item := range batch {
-			articleHeaderID := resolvedIDs[idx]
-			if articleHeaderID <= 0 {
-				return inserted, fmt.Errorf("insert article header %d: no article header id returned", item.ArticleNumber)
+			batchInserted = 0
+			resolvedIDs, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
+			if err != nil {
+				return err
 			}
 
-			var posterID any
-			payloadPoster := item.Poster
-			if item.Poster != "" {
-				if cachedID, ok := posterCache[item.Poster]; ok && cachedID > 0 {
-					posterID = cachedID
-					payloadPoster = ""
+			payloadRows := make([]payloadUpsertRow, 0, len(batch))
+			for idx, item := range batch {
+				articleHeaderID := resolvedIDs[idx]
+				if articleHeaderID <= 0 {
+					return fmt.Errorf("insert article header %d: no article header id returned", item.ArticleNumber)
 				}
+
+				var posterID any
+				payloadPoster := item.Poster
+				if item.Poster != "" {
+					if cachedID, ok := posterCache[item.Poster]; ok && cachedID > 0 {
+						posterID = cachedID
+						payloadPoster = ""
+					}
+				}
+
+				payloadRows = append(payloadRows, payloadUpsertRow{
+					ArticleHeaderID: articleHeaderID,
+					Subject:         item.Subject,
+					PosterID:        posterID,
+					Poster:          payloadPoster,
+					Xref:            item.Xref,
+					FileName:        item.Parsed.FileName,
+					FileIndex:       item.Parsed.FileIndex,
+					FileTotal:       item.Parsed.FileTotal,
+					YEncPart:        item.Parsed.YEncPart,
+					YEncTotalParts:  item.Parsed.YEncTotalParts,
+					FileSize:        item.Parsed.FileSize,
+				})
 			}
 
-			payloadRows = append(payloadRows, payloadUpsertRow{
-				ArticleHeaderID: articleHeaderID,
-				Subject:         item.Subject,
-				PosterID:        posterID,
-				Poster:          payloadPoster,
-				Xref:            item.Xref,
-				FileName:        item.Parsed.FileName,
-				FileIndex:       item.Parsed.FileIndex,
-				FileTotal:       item.Parsed.FileTotal,
-				YEncPart:        item.Parsed.YEncPart,
-				YEncTotalParts:  item.Parsed.YEncTotalParts,
-				FileSize:        item.Parsed.FileSize,
-			})
-		}
+			if err := upsertArticleHeaderPayloadsBatch(ctx, tx, payloadRows); err != nil {
+				return err
+			}
+			if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs); err != nil {
+				return err
+			}
 
-		if err := upsertArticleHeaderPayloadsBatch(ctx, tx, payloadRows); err != nil {
-			return inserted, err
-		}
-		if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs); err != nil {
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+
+			batchInserted = int64(len(batch))
+			return nil
+		}); err != nil {
 			return inserted, err
 		}
 
-		inserted += int64(len(batch))
-	}
-
-	if err := tx.Commit(); err != nil {
-		return inserted, err
+		inserted += batchInserted
 	}
 
 	return inserted, nil
 }
 
-func ensurePostersBatch(ctx context.Context, tx *sql.Tx, posterCache map[string]int64, batch []preparedArticleHeaderInsert) error {
+func ensurePostersBatch(ctx context.Context, runner sqlExecQueryer, posterCache map[string]int64, batch []preparedArticleHeaderInsert) error {
 	posterNames := make([]string, 0, len(batch))
 	seen := make(map[string]struct{}, len(batch))
 	for _, item := range batch {
@@ -1015,6 +1026,7 @@ func ensurePostersBatch(ctx context.Context, tx *sql.Tx, posterCache map[string]
 		seen[item.Poster] = struct{}{}
 		posterNames = append(posterNames, item.Poster)
 	}
+	sort.Strings(posterNames)
 	if len(posterNames) == 0 {
 		return nil
 	}
@@ -1030,7 +1042,7 @@ func ensurePostersBatch(ctx context.Context, tx *sql.Tx, posterCache map[string]
 		args = append(args, posterName)
 	}
 	insertSQL.WriteString(" ON CONFLICT (poster_name) DO NOTHING")
-	if _, err := tx.ExecContext(ctx, insertSQL.String(), args...); err != nil {
+	if _, err := runner.ExecContext(ctx, insertSQL.String(), args...); err != nil {
 		return fmt.Errorf("ensure poster batch during header insert: %w", err)
 	}
 
@@ -1045,7 +1057,7 @@ func ensurePostersBatch(ctx context.Context, tx *sql.Tx, posterCache map[string]
 		selectArgs = append(selectArgs, posterName)
 	}
 	selectSQL.WriteString(")")
-	rows, err := tx.QueryContext(ctx, selectSQL.String(), selectArgs...)
+	rows, err := runner.QueryContext(ctx, selectSQL.String(), selectArgs...)
 	if err != nil {
 		return fmt.Errorf("load poster ids during header insert: %w", err)
 	}
