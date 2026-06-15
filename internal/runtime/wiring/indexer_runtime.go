@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/assemble"
 	"github.com/datallboy/gonzb/internal/indexing/enrich/predb"
 	"github.com/datallboy/gonzb/internal/indexing/enrich/tmdb"
+	"github.com/datallboy/gonzb/internal/indexing/ingestmaterialize"
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/archive"
 	"github.com/datallboy/gonzb/internal/indexing/inspect/discovery"
@@ -58,6 +59,8 @@ type usenetIndexerConfig struct {
 	EnrichTMDB                                      tmdb.Options
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
+	PosterMaterialize                               indexerStageConfig
+	CrosspostPopularityRefresh                      indexerStageConfig
 	AssembleLaneA                                   indexerStageConfig
 	AssembleLaneB                                   indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
@@ -306,6 +309,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	maintenanceSvc := maintenance.NewService(appCtx.PGIndexStore, appCtx.Logger, func(ctx context.Context) (int, error) {
 		return inspectpkg.CleanupStaleWorkspaceRoots(ctx, runtimeCfg.Inspect)
 	})
+	posterMaterializeSvc := ingestmaterialize.NewService(
+		appCtx.PGIndexStore,
+		ingestmaterialize.Options{BatchSize: runtimeCfg.PosterMaterialize.BatchSize},
+	)
+	crosspostPopularitySvc := ingestmaterialize.NewService(
+		appCtx.PGIndexStore,
+		ingestmaterialize.Options{BatchSize: runtimeCfg.CrosspostPopularityRefresh.BatchSize},
+	)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
@@ -328,6 +339,28 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StagePosterMaterialize,
+			Interval:    runtimeCfg.PosterMaterialize.Interval,
+			Enabled:     runtimeCfg.PosterMaterialize.Enabled,
+			BatchSize:   runtimeCfg.PosterMaterialize.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.PosterMaterialize.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(posterMaterializeSvc.RunPostersOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageCrosspostPopularityRefresh,
+			Interval:    runtimeCfg.CrosspostPopularityRefresh.Interval,
+			Enabled:     runtimeCfg.CrosspostPopularityRefresh.Enabled,
+			BatchSize:   runtimeCfg.CrosspostPopularityRefresh.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.CrosspostPopularityRefresh.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(crosspostPopularitySvc.RunCrosspostPopularityOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -680,6 +713,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		}),
 		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
+		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
+		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),
 		AssembleLaneA:              newIndexerStageConfig(indexingCfg.AssembleLaneA),
 		AssembleLaneB:              newIndexerStageConfig(indexingCfg.AssembleLaneB),
 		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),

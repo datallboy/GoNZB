@@ -108,3 +108,24 @@ Before stable schema freeze:
 - The first v2 implementation is a bridge, not the final narrow-anchor schema.
 - Partition count target is 128.
 - Public API and UI behavior should remain stable while internals move.
+
+## Scrape Ingest V2 Append Plan
+
+The scrape deadlock on poster upsert showed the same ownership problem as `binaries`: scrape was doing hot ingest plus dimension/summary materialization in the same transaction. That makes poster dimension locks and crosspost rollup locks part of the article ingest critical path.
+
+Implemented target shape:
+
+- `scrape_latest` and `scrape_backfill` insert canonical/raw ingest rows only: `article_headers`, `article_header_ingest_payloads`, `article_header_crosspost_groups`, checkpoints, and queue seeds.
+- `poster_materialize` owns `posters` and `article_header_poster_refs`.
+- `crosspost_popularity_refresh` owns `article_header_crosspost_group_summary`, `article_header_crosspost_group_messages`, and `article_header_crosspost_group_sources`.
+- `poster_materialization_queue` is seeded by scrape and claimed/completed by `poster_materialize`.
+- `crosspost_popularity_refresh_queue` is seeded by scrape/manual backfill and claimed/completed by `crosspost_popularity_refresh`.
+
+Stage prerequisites:
+
+- scrape requires provider/newsgroup config and healthy critical article-header indexes.
+- `poster_materialize` requires queued raw poster names from scrape.
+- `crosspost_popularity_refresh` requires raw `article_header_crosspost_groups`.
+- assemble may continue while these materializers lag; raw poster text remains in `article_header_ingest_payloads` and poster dimension linkage is eventually consistent.
+
+This is intentionally not a retry-loop-only fix. Retries remain useful for transient PostgreSQL conflicts, but the structural fix is removing shared dimension/summary writes from the scrape insert transaction.

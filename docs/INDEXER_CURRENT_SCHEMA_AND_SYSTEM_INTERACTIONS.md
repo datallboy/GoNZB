@@ -293,15 +293,18 @@ This matrix is the schema contract for current and near-term code changes.
 | Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
-| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional table; should trend toward less mixed ownership. |
+| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only; `poster_materialize` may fill transitional `poster_id` links | Transitional raw ingest metadata; keeps raw poster/xref text. |
+| `article_header_poster_refs` | derived/support projection | `poster_materialize` | none | Per-header poster dimension projection derived from raw payload poster text. |
+| `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
 | `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
-| `article_header_crosspost_group_summary` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Summary-backed admin popularity report; avoids live aggregation over raw crosspost rows. |
-| `article_header_crosspost_group_messages` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Exact distinct message keys used to maintain crosspost summary counts. |
-| `article_header_crosspost_group_sources` | derived/reporting telemetry | `scrape_*` | manual crosspost backfill helper only | Exact distinct source-newsgroup keys used to maintain crosspost summary counts. |
+| `crosspost_popularity_refresh_queue` | queue/work | `scrape_*` seed | `crosspost_popularity_refresh` claim/complete only | Dirty observed group queue; seeded by scrape and manual raw backfill. |
+| `article_header_crosspost_group_summary` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Summary-backed admin popularity report; avoids live aggregation over raw crosspost rows. |
+| `article_header_crosspost_group_messages` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Exact distinct message keys used to maintain crosspost summary counts. |
+| `article_header_crosspost_group_sources` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Exact distinct source-newsgroup keys used to maintain crosspost summary counts. |
 | `indexer_provider_group_inventory` | discovery/support state | scrape admin provider scan | none | Persisted provider LIST snapshot used by wildcard preview/apply; not runtime scrape selection by itself. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
-| `posters` | support dimension | scrape ingest path today | `assemble_*` via `EnsurePoster` | Shared support dimension; ownership is transitional and should be minimized in later audits. |
+| `posters` | support dimension | `poster_materialize` | `assemble_*` via `EnsurePoster` transitional only | Shared support dimension; scrape no longer writes it inline. |
 | `binaries` | transitional anchor/read compatibility | `assemble_*` | `recover_yenc` during Phase A bridge only | Temporary FK anchor and legacy read surface. Do not add new behavior columns or hot indexes. |
 | `binary_core` | v2 canonical projection | `assemble_*` | none | Assemble-owned immutable/near-immutable binary anchor projection. |
 | `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
@@ -364,9 +367,47 @@ Audit focus:
 
 - `INSERT ... ON CONFLICT` pressure on `article_headers`
 - support-table writes into `article_header_ingest_payloads`
-- poster dimension writes
+- poster materialization queue seeding, not poster dimension writes
 - duplicate-resolution and follow-up reads
 - checkpoint write frequency and lock scope
+
+### `poster_materialize`
+
+Primary hot DBO/store paths:
+
+- `MaterializeArticleHeaderPosters`
+- `poster_materialization_queue` claim/complete queries
+- `article_header_poster_refs` upserts
+
+Execution profile:
+
+- build/support materializer
+- safe to run concurrently with scrape because it claims queued work and does not touch article header insert uniqueness paths
+
+Audit focus:
+
+- queue lease cleanup and retry behavior
+- bounded poster dimension inserts
+- transition away from legacy `article_header_ingest_payloads.poster_id` linkage when downstream reads no longer require it
+
+### `crosspost_popularity_refresh`
+
+Primary hot DBO/store paths:
+
+- `RefreshCrosspostPopularity`
+- `crosspost_popularity_refresh_queue` claim/complete queries
+- summary/message/source upserts from raw `article_header_crosspost_groups`
+
+Execution profile:
+
+- derived/reporting materializer
+- not release-critical; should yield before release formation if resources are constrained
+
+Audit focus:
+
+- exact rollup recompute per dirty group batch
+- avoiding broad `COUNT(DISTINCT ...)` over all raw crosspost rows
+- keeping manual backfill bounded and queue-driven
 
 ### Assemble audit map
 
@@ -562,8 +603,8 @@ Current audit note:
 - the scrape metric/log field `articles_inserted` currently reflects resolved/processed headers through the ingest path, not guaranteed newly unique `article_headers` rows
 - `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
 - `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
-- `scrape_*` now also materializes `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
-- `scrape_*` maintains `article_header_crosspost_group_summary` plus exact distinct key tables during ingest so the admin popularity report does not run `COUNT(DISTINCT ...)` over the raw telemetry table
+- `scrape_*` now also stores raw `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
+- `scrape_*` seeds `crosspost_popularity_refresh_queue`; `crosspost_popularity_refresh` maintains the summary plus exact distinct key tables so the admin popularity report does not run `COUNT(DISTINCT ...)` over the full raw telemetry table
 - scrape integrity preflight is cached in-process for a short TTL; the critical index check remains required, but it is no longer rerun before every single scrape pass
 
 ## Scrape Configuration Ownership
@@ -583,7 +624,7 @@ Ownership rules:
 - scrape stages consume only the effective group list derived from explicit groups plus enabled materialized groups
 - saving zero effective groups is valid; scrape stages should idle rather than force persistence failure
 - historical cross-post telemetry backfill is a manual maintenance command, not part of normal scrape startup or steady-state execution
-- cross-post popularity reads the summary table; raw telemetry backfill should also update the summary tables, but migrations must not run a full raw crosspost aggregation during application startup
+- cross-post popularity reads the summary table; raw telemetry backfill should queue dirty observed groups, not update summary tables inline, and migrations must not run a full raw crosspost aggregation during application startup
 
 ## Cross-Group Release And File Rules
 

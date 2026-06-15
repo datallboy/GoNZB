@@ -23,6 +23,8 @@ type StageName string
 const (
 	StageScrapeLatest                StageName = "scrape_latest"
 	StageScrapeBackfill              StageName = "scrape_backfill"
+	StagePosterMaterialize           StageName = "poster_materialize"
+	StageCrosspostPopularityRefresh  StageName = "crosspost_popularity_refresh"
 	StageAssembleLaneA               StageName = "assemble_lane_a"
 	StageAssembleLaneB               StageName = "assemble_lane_b"
 	StageRecoverYEnc                 StageName = "recover_yenc"
