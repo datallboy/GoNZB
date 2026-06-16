@@ -215,7 +215,7 @@ func (s *Store) GetIndexerCrosspostNewsgroupPopularity(ctx context.Context, limi
 			s.last_seen_at
 		FROM article_header_crosspost_group_summary s
 		WHERE BTRIM(COALESCE(s.observed_group_name, '')) <> ''
-		ORDER BY distinct_message_count DESC, observed_article_count DESC, last_seen_at DESC NULLS LAST, s.observed_group_name ASC
+		ORDER BY observed_article_count DESC, distinct_message_count DESC, last_seen_at DESC NULLS LAST, s.observed_group_name ASC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get indexer crosspost popularity: %w", err)

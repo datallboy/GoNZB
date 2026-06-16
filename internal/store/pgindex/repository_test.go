@@ -2935,6 +2935,32 @@ func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
 	if extra.ObservedArticleCount != 2 || extra.DistinctMessageCount != 1 || extra.DistinctSourceGroupCount != 2 {
 		t.Fatalf("unexpected extra-target aggregation: %+v", extra)
 	}
+
+	var firstWatermark int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT last_refreshed_article_header_id
+		FROM article_header_crosspost_group_summary
+		WHERE observed_group_name = $1`, popularTarget).Scan(&firstWatermark); err != nil {
+		t.Fatalf("load first crosspost watermark: %v", err)
+	}
+	if firstWatermark <= 0 {
+		t.Fatalf("expected positive crosspost watermark, got %d", firstWatermark)
+	}
+	if out, err := store.RefreshCrosspostPopularity(ctx, 1000); err != nil {
+		t.Fatalf("refresh crosspost popularity with no deltas: %v", err)
+	} else if out == nil || out.GroupsRefreshed != 0 {
+		t.Fatalf("expected no refreshed groups without new deltas, got %+v", out)
+	}
+	var secondWatermark int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT last_refreshed_article_header_id
+		FROM article_header_crosspost_group_summary
+		WHERE observed_group_name = $1`, popularTarget).Scan(&secondWatermark); err != nil {
+		t.Fatalf("load second crosspost watermark: %v", err)
+	}
+	if secondWatermark != firstWatermark {
+		t.Fatalf("expected stable crosspost watermark without deltas, first=%d second=%d", firstWatermark, secondWatermark)
+	}
 }
 
 func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
