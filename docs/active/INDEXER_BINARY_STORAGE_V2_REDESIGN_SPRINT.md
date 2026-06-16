@@ -163,7 +163,8 @@ Result: Phase A/B is complete for this branch. The v2 side-table bridge is stabl
 Observed fresh-database serve soak:
 
 - all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble_lane_a`, `assemble_lane_b`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
-- scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for this soak and should be enabled for a follow-up materializer-specific soak.
+- scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for the serve soak.
+- materializer CLI validation passed after the serve soak: `materialize-posters --batch-size 10000` claimed 10,000 rows, upserted 10,000 refs, and linked 9,999 payloads; `refresh-crosspost-popularity --batch-size 1000` claimed 86 groups, refreshed 86 summaries, and upserted 634,073 message rows.
 - release outputs were produced and archived/purged: `nzb_cache` rows existed, release catalog rows existed, and `release_archive_state` reached `purged`.
 - v2 projection parity held after the soak: `binaries`, `binary_core`, `binary_identity_current`, `binary_observation_stats`, `binary_recovery_current`, and `binary_lifecycle` had matching row counts.
 - PostgreSQL logs contained no application deadlock, corruption, recovery-mode, invalid-page, or unexpected-EOF errors during the serve window.
@@ -176,3 +177,4 @@ Residual notes:
 - serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
 - the remaining direct `binaries` access is the documented temporary bridge/owner allowlist. Phase C should replace the legacy anchor with a narrow anchor or compatibility view before a final schema freeze.
 - inspection candidate selection can still perform broad v2 projection scans during bursts. It did not block writers or corrupt data in this soak, but it is the next throughput optimization target if inspection becomes the dominant load.
+- crosspost popularity refresh currently performs full-group aggregation for queued groups. It completed successfully, but the observed batch was heavy enough that a delta or smaller-batch strategy should be considered before enabling it aggressively in supervisor defaults.
