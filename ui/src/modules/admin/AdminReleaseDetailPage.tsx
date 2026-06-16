@@ -466,7 +466,7 @@ export function AdminReleaseDetailPage() {
           </div>
         </div>
         {releaseFileRows.map(({ summary, detail }) => (
-          <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`} open={summary.is_pars}>
+          <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`}>
             <summary>
               {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
             </summary>
