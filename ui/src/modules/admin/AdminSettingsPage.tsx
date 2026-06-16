@@ -15,6 +15,8 @@ import type {
 type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
+  | 'poster_materialize'
+  | 'crosspost_popularity_refresh'
   | 'assemble_lane_a'
   | 'assemble_lane_b'
   | 'recover_yenc'
@@ -52,6 +54,8 @@ type StageDefinition = {
 const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group batch at a time so large group sets stay responsive.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
+  { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
+  { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
   { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
   { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showMaxEffectiveConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Effective concurrency may be capped below this value to avoid connection churn.' },
@@ -71,7 +75,7 @@ const stageDefinitions: StageDefinition[] = [
 ]
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
-  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
+  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
   { title: 'Assemble and recovery commands', keys: ['assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb', 'release_purge_archived_sources'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
@@ -112,6 +116,8 @@ function defaultSettings(): RuntimeSettings {
       materialized_groups: [],
       scrape_latest: stageDefaults(5000, 1, { max_batches: 1 }),
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
+      poster_materialize: stageDefaults(10000),
+      crosspost_popularity_refresh: stageDefaults(1000),
       assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
       assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
       recover_yenc: stageDefaults(25, 1, { max_effective_concurrency: 4 }),
@@ -251,6 +257,8 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       materialized_groups: indexing.materialized_groups ?? [],
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
+      poster_materialize: { ...defaults.indexing!.poster_materialize, ...indexing.poster_materialize },
+      crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
       assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
       assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },

@@ -688,12 +688,12 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 				ah.article_number,
 				ah.message_id,
 				p.subject,
-				COALESCE(po.poster_name, p.poster, '') AS poster,
+				COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
 				ah.date_utc,
 				ah.bytes,
 				ah.lines,
 				p.xref,
-				COALESCE(p.poster_id, 0) AS poster_id,
+				COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
 				COALESCE(p.subject_file_name, '') AS subject_file_name,
 				COALESCE(p.subject_file_index, 0) AS subject_file_index,
 				COALESCE(p.subject_file_total, 0) AS subject_file_total,
@@ -713,7 +713,8 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 			 	OR ah.assembly_claimed_until < NOW()
 			 )
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			LEFT JOIN posters po ON po.id = p.poster_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = p.article_header_id
+			LEFT JOIN posters po ON po.id = apr.poster_id
 			WHERE BTRIM(p.subject_file_name) <> ''
 			  AND LOWER(BTRIM(p.subject_file_name)) = rb.normalized_file_name
 			ORDER BY p.article_header_id DESC
@@ -852,12 +853,12 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 			ah.article_number,
 			ah.message_id,
 			p.subject,
-			COALESCE(po.poster_name, p.poster, '') AS poster,
+			COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
 			ah.date_utc,
 			ah.bytes,
 			ah.lines,
 			p.xref,
-			COALESCE(p.poster_id, 0) AS poster_id,
+			COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
 			COALESCE(p.subject_file_name, '') AS subject_file_name,
 			COALESCE(p.subject_file_index, 0) AS subject_file_index,
 			COALESCE(p.subject_file_total, 0) AS subject_file_total,
@@ -872,7 +873,8 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		JOIN article_headers ah ON ah.id = requested.id
 		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN posters po ON po.id = p.poster_id
+		LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = p.article_header_id
+		LEFT JOIN posters po ON po.id = apr.poster_id
 		ORDER BY requested.ord ASC`, ids, ords, structuredMatches)
 	if err != nil {
 		return nil, fmt.Errorf("hydrate assembly candidates: %w", err)

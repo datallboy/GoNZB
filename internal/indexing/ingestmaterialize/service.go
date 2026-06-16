@@ -37,11 +37,10 @@ func (s *Service) RunPostersOnceWithMetrics(ctx context.Context) (map[string]any
 		return map[string]any{"batch_size": s.batchSize}, err
 	}
 	return map[string]any{
-		"batch_size":      s.batchSize,
-		"claimed":         out.Claimed,
-		"posters":         out.Posters,
-		"refs_upserted":   out.RefsUpserted,
-		"payloads_linked": out.PayloadsLinked,
+		"batch_size":    s.batchSize,
+		"claimed":       out.Claimed,
+		"posters":       out.Posters,
+		"refs_upserted": out.RefsUpserted,
 	}, nil
 }
 

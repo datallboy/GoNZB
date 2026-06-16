@@ -134,3 +134,14 @@ func TestScrapeHotPathDoesNotWriteMaterializedDimensions(t *testing.T) {
 		}
 	}
 }
+
+func TestPosterMaterializerDoesNotWriteScrapePayloads(t *testing.T) {
+	content, err := os.ReadFile(filepath.Clean("scrape_materializer_store.go"))
+	if err != nil {
+		t.Fatalf("read scrape_materializer_store.go: %v", err)
+	}
+	pattern := regexp.MustCompile(`(?is)\b(update|delete\s+from|insert\s+into)\s+(public\.)?article_header_ingest_payloads\b`)
+	if pattern.Match(content) {
+		t.Fatalf("poster materializer must not write article_header_ingest_payloads; write article_header_poster_refs instead")
+	}
+}

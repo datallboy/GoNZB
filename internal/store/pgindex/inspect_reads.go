@@ -969,7 +969,7 @@ func stageThroughputMetricKeys(stageName string) []string {
 	case "scrape_latest", "scrape_backfill":
 		return []string{"articles_inserted", "article_headers_seen"}
 	case "poster_materialize":
-		return []string{"claimed", "refs_upserted", "payloads_linked"}
+		return []string{"claimed", "refs_upserted", "posters"}
 	case "crosspost_popularity_refresh":
 		return []string{"groups_refreshed", "claimed"}
 	case "assemble_lane_a", "assemble_lane_b":

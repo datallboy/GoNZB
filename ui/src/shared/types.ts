@@ -804,6 +804,8 @@ export type IndexingRuntimeSettings = {
   materialized_groups?: ScrapeMaterializedGroup[]
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
+  poster_materialize: AdminStageConfigPatch
+  crosspost_popularity_refresh: AdminStageConfigPatch
   assemble_lane_a: AdminStageConfigPatch
   assemble_lane_b: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
