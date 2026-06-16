@@ -167,6 +167,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		ctx,
 		StageScrapeLatest,
 		StageScrapeBackfill,
+		StagePosterMaterialize,
+		StageCrosspostPopularityRefresh,
 		StageAssembleLaneA,
 		StageAssembleLaneB,
 		StageRecoverYEnc,

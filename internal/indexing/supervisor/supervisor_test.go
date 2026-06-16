@@ -67,6 +67,69 @@ func TestRunStagesOnceHonorsRequestedOrder(t *testing.T) {
 	}
 }
 
+func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
+	runs := make(chan StageName, 2)
+	record := func(name StageName) RunnerFunc {
+		return func(context.Context) error {
+			runs <- name
+			return nil
+		}
+	}
+
+	stages := []Stage{
+		{Name: StageScrapeLatest},
+		{Name: StageScrapeBackfill},
+		{Name: StagePosterMaterialize, Interval: time.Hour, Enabled: true, Runner: record(StagePosterMaterialize)},
+		{Name: StageCrosspostPopularityRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageCrosspostPopularityRefresh)},
+		{Name: StageAssembleLaneA},
+		{Name: StageAssembleLaneB},
+		{Name: StageRecoverYEnc},
+		{Name: StageReleaseSummaryRefresh},
+		{Name: StageRelease},
+		{Name: StageReleaseGenerateNZB},
+		{Name: StageReleaseArchiveNZB},
+		{Name: StageReleasePurgeArchivedSources},
+		{Name: StageInspectDiscovery},
+		{Name: StageInspectPAR2},
+		{Name: StageInspectNFO},
+		{Name: StageInspectArchive},
+		{Name: StageInspectPassword},
+		{Name: StageInspectMedia},
+		{Name: StageEnrichPreDB},
+		{Name: StageEnrichTMDB},
+		{Name: StageMaintenance},
+	}
+	svc := New(nil, stages)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.Run(ctx)
+	}()
+
+	seen := map[StageName]bool{}
+	for len(seen) < 2 {
+		select {
+		case name := <-runs:
+			seen[name] = true
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("timed out waiting for materializer stage runs, seen=%v", seen)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for supervisor shutdown")
+	}
+}
+
 func TestRunSelectedRunsStageOnStartupAndInterval(t *testing.T) {
 	runs := make(chan struct{}, 4)
 
