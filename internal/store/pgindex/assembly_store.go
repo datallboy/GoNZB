@@ -23,7 +23,8 @@ const (
 	assemblePriorityBinaryBatch            = 20
 	assemblePriorityHeaderWindowMultiplier = 40
 	assemblePriorityHeaderMinScan          = 5000
-	assemblePriorityHeaderMaxScan          = 100000
+	assemblePriorityHeaderMaxScan          = 20000
+	assembleClaimStatementTimeout          = 15 * time.Second
 	refreshBinaryStatsBatchSize            = 8000
 )
 
@@ -232,8 +233,16 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, assembleClaimStatementTimeout.Milliseconds())); err != nil {
+		return nil, fmt.Errorf("set assembly claim statement timeout: %w", err)
+	}
+
+	var lockAcquired bool
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`).Scan(&lockAcquired); err != nil {
 		return nil, fmt.Errorf("lock assembly claim selector: %w", err)
+	}
+	if !lockAcquired {
+		return nil, nil
 	}
 
 	candidates, err := s.listUnassembledArticleHeadersForLane(ctx, tx, req.Limit, req.Lane)
@@ -312,20 +321,11 @@ func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q asse
 	}
 
 	lane = strings.TrimSpace(strings.ToLower(lane))
-	laneALimit := limit
+	laneALimit := 0
 	switch lane {
 	case AssemblyClaimLaneCombined:
-		laneALimit = 1
-		if limit > 1 {
-			laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
-			if laneALimit <= 0 {
-				laneALimit = 1
-			}
-		}
 	case AssemblyClaimLaneA:
-		laneALimit = limit
 	case AssemblyClaimLaneB:
-		laneALimit = 0
 	default:
 		return nil, fmt.Errorf("unknown assembly claim lane %q", lane)
 	}
@@ -372,14 +372,11 @@ func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q asse
 	}
 
 	remaining := limit - len(selected)
-	if lane == AssemblyClaimLaneA {
-		return s.hydrateAssemblyCandidates(ctx, q, selected)
-	}
 	if remaining <= 0 {
 		return s.hydrateAssemblyCandidates(ctx, q, selected)
 	}
 
-	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, recentHeaderWindow, selectedIDs, lane == AssemblyClaimLaneB)
+	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, recentHeaderWindow, selectedIDs, false)
 	if err != nil {
 		return nil, err
 	}
