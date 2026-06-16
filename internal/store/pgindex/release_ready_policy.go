@@ -79,6 +79,20 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 
 	clauses := []string{
 		fmt.Sprintf("COALESCE(%s.search_title, '') <> ''", alias),
+		fmt.Sprintf(`(
+			EXISTS (
+				SELECT 1
+				FROM release_files rf
+				WHERE rf.release_id = %[1]s.release_id
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM release_archive_state ras
+				WHERE ras.release_id = %[1]s.release_id
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				  AND COALESCE(ras.object_key, '') <> ''
+			)
+		)`, alias),
 		fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, ''))) <> 'unknown-release'", alias),
 		fmt.Sprintf("COALESCE(%s.match_confidence, 0) >= %.4f", alias, policy.MinMatchConfidence),
 		fmt.Sprintf("COALESCE(%s.completion_pct, 0) >= %.4f", alias, policy.MinCompletionPct),

@@ -334,6 +334,9 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 	if err := syncReleaseCatalogFiles(ctx, tx, in.ReleaseID); err != nil {
 		return err
 	}
+	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, in.ReleaseID); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit archive store tx %s: %w", in.ReleaseID, err)
@@ -1095,5 +1098,52 @@ func (s *Store) getReleaseArchiveDetailSnapshot(ctx context.Context, releaseID s
 }
 
 func (s *Store) BackfillMissingReleaseArchiveDetailSnapshots(ctx context.Context, limit int) (int64, error) {
-	return 0, nil
+	if limit <= 0 {
+		limit = 500
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin missing release archive detail snapshot backfill tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT ras.release_id
+		FROM release_archive_state ras
+		LEFT JOIN release_archive_detail_snapshots ads ON ads.release_id = ras.release_id
+		WHERE ras.archive_status IN ('archived', 'purge_pending', 'purged')
+		  AND COALESCE(ras.object_key, '') <> ''
+		  AND ads.release_id IS NULL
+		  AND EXISTS (SELECT 1 FROM release_catalog_files cf WHERE cf.release_id = ras.release_id)
+		ORDER BY ras.archived_at NULLS LAST, ras.release_id
+		LIMIT $1
+		FOR UPDATE OF ras`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("list missing release archive detail snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	releaseIDs := make([]string, 0, limit)
+	for rows.Next() {
+		var releaseID string
+		if err := rows.Scan(&releaseID); err != nil {
+			return 0, fmt.Errorf("scan missing release archive detail snapshot release id: %w", err)
+		}
+		releaseIDs = append(releaseIDs, releaseID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate missing release archive detail snapshots: %w", err)
+	}
+
+	for _, releaseID := range releaseIDs {
+		if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit missing release archive detail snapshot backfill tx: %w", err)
+	}
+	return int64(len(releaseIDs)), nil
 }
