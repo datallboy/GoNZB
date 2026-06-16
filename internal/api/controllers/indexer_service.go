@@ -867,6 +867,10 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ScrapeLatest, true
 	case string(supervisor.StageScrapeBackfill):
 		return runtime.Indexing.ScrapeBackfill, true
+	case string(supervisor.StagePosterMaterialize):
+		return runtime.Indexing.PosterMaterialize, true
+	case string(supervisor.StageCrosspostPopularityRefresh):
+		return runtime.Indexing.CrosspostPopularityRefresh, true
 	case string(supervisor.StageAssembleLaneA):
 		return runtime.Indexing.AssembleLaneA, true
 	case string(supervisor.StageAssembleLaneB):
@@ -929,6 +933,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 var allIndexerStages = []string{
 	string(supervisor.StageScrapeLatest),
 	string(supervisor.StageScrapeBackfill),
+	string(supervisor.StagePosterMaterialize),
+	string(supervisor.StageCrosspostPopularityRefresh),
 	string(supervisor.StageAssembleLaneA),
 	string(supervisor.StageAssembleLaneB),
 	string(supervisor.StageRecoverYEnc),
@@ -974,6 +980,10 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ScrapeLatest, patch)
 	case string(supervisor.StageScrapeBackfill):
 		applyStagePatch(&indexing.ScrapeBackfill, patch)
+	case string(supervisor.StagePosterMaterialize):
+		applyStagePatch(&indexing.PosterMaterialize, patch)
+	case string(supervisor.StageCrosspostPopularityRefresh):
+		applyStagePatch(&indexing.CrosspostPopularityRefresh, patch)
 	case string(supervisor.StageAssembleLaneA):
 		applyStagePatch(&indexing.AssembleLaneA, patch)
 	case string(supervisor.StageAssembleLaneB):
