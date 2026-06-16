@@ -11,18 +11,17 @@ var criticalIndexerIndexNames = []string{
 	"public.article_headers_pkey",
 	"public.article_headers_newsgroup_id_article_number_key",
 	"public.article_headers_newsgroup_id_message_id_key",
-	"public.binaries_pkey",
-	"public.binaries_provider_id_newsgroup_id_binary_key_key",
-	"public.idx_binaries_release_family_key",
 	"public.binary_core_pkey",
+	"public.binary_core_provider_id_newsgroup_id_binary_key_key",
+	"public.idx_binary_core_provider_group_key",
 	"public.binary_observation_stats_pkey",
 	"public.binary_identity_current_pkey",
+	"public.idx_binary_identity_release_family",
 	"public.binary_recovery_current_pkey",
 	"public.binary_lifecycle_pkey",
 }
 
 var criticalIndexerHeapNames = []string{
-	"public.binaries",
 	"public.binary_core",
 	"public.binary_observation_stats",
 	"public.binary_identity_current",

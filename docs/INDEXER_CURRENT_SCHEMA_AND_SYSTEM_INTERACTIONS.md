@@ -118,7 +118,7 @@ The long-term model is:
 
 `binaries` is no longer the target shape for behavior-bearing mutable state.
 
-Phase A keeps `binaries` as the temporary foreign-key anchor and read compatibility surface, but new writes must also populate the v2 owned projections:
+`binary_core` is now the canonical foreign-key and cascade anchor for binary lineage. Production store code must not read, write, lock, or delete the legacy `binaries` table.
 
 - `binary_core`: assemble-owned anchor projection
 - `binary_observation_stats`: assemble-owned part/count/byte/article bounds
@@ -127,7 +127,7 @@ Phase A keeps `binaries` as the temporary foreign-key anchor and read compatibil
 - `binary_lifecycle`: release/archive/purge-owned lifecycle state
 - `binary_projection_events`: append-only future bridge for cross-stage state changes
 
-Do not add new behavior columns or new hot indexes to `binaries`. Add the field to the owning v2 table, then migrate reads toward that table.
+Do not add new behavior columns or new hot indexes to `binaries`. Add the field to the owning v2 table and keep active reads/writes on the v2 projection tables.
 
 ## Locking And Contention Guidance
 
@@ -305,15 +305,15 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | `poster_materialize` | `assemble_*` via `EnsurePoster` transitional only | Shared support dimension; scrape no longer writes it inline. |
-| `binaries` | transitional anchor/read compatibility | `assemble_*` | `recover_yenc` during Phase A bridge only | Temporary FK anchor and legacy read surface. Do not add new behavior columns or hot indexes. |
-| `binary_core` | v2 canonical projection | `assemble_*` | none | Assemble-owned immutable/near-immutable binary anchor projection. |
+| `binaries` | legacy compatibility table | none | none | Retained for migration/backward-compatibility only. Production store code must not use it. |
+| `binary_core` | v2 canonical anchor | `assemble_*` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
 | `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
 | `binary_identity_current` | v2 canonical projection | `assemble_*` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
 | `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
 | `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `release_purge_archived_sources` | none | Archive/purge lifecycle state for binary lineage. |
 | `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
 | `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
-| `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep only compact inline summaries on `binaries`; full matcher traces are no longer persisted to PostgreSQL by default. |
+| `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep compact scalar summaries in `binary_identity_current`; full matcher traces are no longer persisted to PostgreSQL by default. |
 | `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
 | `binary_inspections` | queue/work | `inspect_*` | none | Inspection stage tracking only. |
 | `binary_archive_entries` | derived/evidence | `inspect_archive` | none | Archive evidence owned by archive inspection. |
@@ -798,7 +798,6 @@ Allowed reads:
 
 - release-family refresh queue
 - `binary_core`, `binary_identity_current`, and `binary_observation_stats` for scheduled summary aggregate/dominant refresh
-- `binaries` only for legacy compatibility helpers that have not yet moved in later binary V2 phases
 - selected release-facing rollup inputs if required by readiness logic
 
 Allowed writes:
@@ -808,7 +807,7 @@ Allowed writes:
 
 Not allowed:
 
-- mutating `binaries`
+- mutating binary identity/stat/recovery projections outside their owner stages
 - mutating ingest facts
 - materializing release rows
 
@@ -824,8 +823,7 @@ Primary DBO entry points:
 
 Current audit note:
 
-- the scheduled queued refresh path no longer reads behavior-bearing summary fields from `binaries`
-- the next binary V2 reader migration should move release formation candidate reads before decommissioning the legacy compatibility path
+- the scheduled queued refresh path reads v2 projections only; production `binaries` access is rejected by ownership tests
 
 - refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
 - dequeue is hot/cold prioritized
@@ -837,7 +835,6 @@ Allowed reads:
 
 - `release_family_readiness_summaries`
 - `binary_core`, `binary_identity_current`, and `binary_observation_stats` for candidate binary fan-out
-- `binaries` only for release paths that have not yet moved in later binary V2 phases
 - inspection rollups and release-facing metadata needed for catalog formation
 
 Allowed writes:
@@ -1072,7 +1069,7 @@ Purge owns deletion of temporary source lineage and heavy build surfaces, includ
 
 - `article_headers` rows that exist only to support the purged release lineage
 - `article_header_ingest_payloads` tied only to that purged lineage
-- `binaries`
+- `binary_core`
 - `binary_parts`
 - `binary_grouping_evidence` legacy rows
 - inspection evidence tables tied only to purged binaries
@@ -1085,7 +1082,7 @@ Current delete order:
 
 1. lock and validate `release_archive_state`
 2. compute purgeable lineage binaries that are not shared with another non-purged release
-3. delete binary-owned evidence/runtime rows by deleting the owning `binaries` rows
+3. delete binary-owned evidence/runtime rows by deleting the owning `binary_core` rows
 4. delete release-scoped transitional rows:
    - `release_files`
    - `release_newsgroups`

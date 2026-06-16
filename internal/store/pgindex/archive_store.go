@@ -559,12 +559,12 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 			}
 			result.DeletedRowsByTable[table] = count
 		}
-		deleted, err := execDeleteCount(ctx, tx, `DELETE FROM binaries WHERE id IN (`+filter+`)`, args...)
+		deleted, err := execDeleteCount(ctx, tx, `DELETE FROM binary_core WHERE binary_id IN (`+filter+`)`, args...)
 		if err != nil {
-			return nil, fmt.Errorf("delete binaries for %s: %w", releaseID, err)
+			return nil, fmt.Errorf("delete binary core rows for %s: %w", releaseID, err)
 		}
 		result.DeletedBinaryRows = deleted
-		result.DeletedRowsByTable["binaries"] = deleted
+		result.DeletedRowsByTable["binary_core"] = deleted
 	}
 
 	deletedReleaseFiles, err := execDeleteCount(ctx, tx, `

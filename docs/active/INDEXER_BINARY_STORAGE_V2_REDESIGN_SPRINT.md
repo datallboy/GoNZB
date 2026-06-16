@@ -12,14 +12,13 @@ PostgreSQL SQL should not physically corrupt heap or index pages by itself. The 
 
 ## Current Touch Audit
 
-Current direct `binaries` write surfaces:
+Resolved direct `binaries` write surfaces:
 
-- `assemble_lane_a` and `assemble_lane_b` insert binaries, update existing identity/stat columns, refresh binary stats, and mark release-family summaries dirty.
-- `recover_yenc` updates recovered identity fields, can merge binary parts into another binary, and deletes merged source binaries.
-- `binary_recovery` updates recovered kind/extension/source/confidence and can rename sibling binary filenames.
-- `indexer_maintenance` historically backfilled grouping summaries from old evidence JSON into `binaries`.
-- `release_purge_archived_sources` deletes terminal binary rows after NZB generation and archive state allows purge.
-- tests still directly update/delete `binaries` in many places and need to be converted as the store boundary hardens.
+- `assemble_lane_a` and `assemble_lane_b` now create/update `binary_core`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, and `binary_lifecycle` directly.
+- `recover_yenc` now promotes recovered identity into `binary_core`, `binary_identity_current`, `binary_observation_stats`, and `binary_recovery_current`; merge cleanup deletes the source `binary_core` row.
+- `binary_recovery` now updates `binary_recovery_current` and canonicalized filenames in `binary_identity_current`, `release_files`, and `binary_parts`.
+- `release_purge_archived_sources` now deletes terminal binary lineage through `binary_core`, which is the canonical cascade anchor.
+- production store ownership tests now reject direct SQL access to `binaries`; migration files and tests remain the only tolerated references.
 
 Current read-heavy surfaces:
 
@@ -79,14 +78,11 @@ Phase B remaining reader migration checklist:
 - [x] maintenance/helper reads and backlog counters.
 - [x] ownership tests expanded to reject new legacy behavior-field reads/writes once each path migrates.
 
-Remaining intentional temporary `binaries` anchor touches:
+Remaining intentional temporary `binaries` references:
 
-- assemble owns the legacy anchor bridge until Phase C replaces `binaries` with a narrow anchor or compatibility view.
-- `binary_storage_v2.go` reads the legacy bridge only to dual-write projections during the transition.
-- `recover_yenc` and `binary_recovery` still update/merge through the legacy anchor and must be decomposed before Phase C.
-- inspection claim/start/finish paths still lock/check the legacy anchor row for FK and stale-binary safety; candidate selection no longer depends on behavior-bearing legacy columns.
-- release purge deletes `binaries` as the temporary FK cascade root only after archive durability, durable catalog retention, and purge preflight pass.
-- release-summary compatibility helpers still contain legacy query variants and should be covered by the final ownership scanner cleanup.
+- migration files still create and carry the legacy table so older dev databases can migrate forward.
+- tests may still create or mutate legacy rows where they exercise migration/backward-compatibility setup.
+- production store code must not read, write, lock, or delete `binaries`.
 
 Phase C:
 
@@ -112,7 +108,7 @@ Add enforcement in code and CI:
 - Split store access behind narrow interfaces: scrape, assemble, recovery, inspection, release, archive, purge, and maintenance.
 - Add a table ownership policy in migrations and mirror it in a Go test.
 - Add SQL scanner tests that reject `INSERT`, `UPDATE`, or `DELETE` against tables outside an allowed owner list.
-- Treat direct writes to legacy `binaries` outside the temporary bridge as failures.
+- Treat direct production reads or writes to legacy `binaries` as failures.
 - Remove test helpers that mutate `binaries` directly unless they are specifically testing the bridge.
 
 ## Validation Plan
@@ -175,7 +171,7 @@ Residual notes:
 
 - stage failures recorded during the final window were caused by the intentional Ctrl-C shutdown and had `context canceled` errors.
 - serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
-- the remaining direct `binaries` access is the documented temporary bridge/owner allowlist. Phase C must replace the legacy anchor with a narrow anchor or compatibility view before this branch is closed.
+- direct production `binaries` access has been removed; remaining references are migration/test compatibility only.
 - inspection candidate selection can still perform broad v2 projection scans during bursts. It did not block writers or corrupt data in this soak, but it is the next throughput optimization target if inspection becomes the dominant load.
 - crosspost popularity refresh currently performs full-group aggregation for queued groups. It completed successfully, but the observed batch was heavy enough that a delta or smaller-batch strategy should be considered before enabling it aggressively in supervisor defaults.
 
@@ -185,17 +181,17 @@ This branch cannot close until Phase C is complete.
 
 - [x] Replace `binaries` as the schema-level foreign-key root with `binary_core`.
 - [x] Move child-table foreign keys away from legacy `binaries`.
-- [ ] Stop assemble from inserting/updating `binaries`; write canonical binary state directly to `binary_core`, `binary_observation_stats`, and `binary_identity_current`.
-- [ ] Stop release-summary compatibility helpers from reading `binaries`.
-- [ ] Stop inspection claim/start/finish and recovery helpers from checking/locking `binaries`.
-- [ ] Stop recovery and purge from updating/deleting `binaries`.
-- [ ] Remove or freeze `binaries` as a compatibility view/table after all production code paths stop using it.
-- Remove behavior-bearing legacy binary columns from active read/write paths.
-- Remove `binary_storage_v2.go` legacy projection backfill dependency after canonical writes land directly in v2 tables.
-- Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete legacy `binaries`.
-- Move inspection claim/start/finish FK safety to the new canonical binary anchor.
-- Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
-- Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
+- [x] Stop assemble from inserting/updating `binaries`; write canonical binary state directly to `binary_core`, `binary_observation_stats`, and `binary_identity_current`.
+- [x] Stop release-summary compatibility helpers from reading `binaries`.
+- [x] Stop inspection claim/start/finish and recovery helpers from checking/locking `binaries`.
+- [x] Stop recovery and purge from updating/deleting `binaries`.
+- [x] Remove behavior-bearing legacy binary columns from active read/write paths.
+- [x] Remove `binary_storage_v2.go` legacy projection backfill dependency after canonical writes land directly in v2 tables.
+- [x] Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete legacy `binaries`.
+- [x] Move inspection claim/start/finish FK safety to the new canonical binary anchor.
+- [x] Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
+- [x] Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
+- [ ] Remove or freeze `binaries` as a compatibility view/table in a later schema-squash cleanup after test fixtures and old-database compatibility are retired.
 
 ## Crosspost Popularity Refresh Redesign
 

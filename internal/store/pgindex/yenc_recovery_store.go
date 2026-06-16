@@ -471,8 +471,8 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 			if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, in.BinaryID); err != nil {
-				return fmt.Errorf("delete merged yenc source binary %d: %w", in.BinaryID, err)
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_core WHERE binary_id = $1`, in.BinaryID); err != nil {
+				return fmt.Errorf("delete merged yenc source binary core %d: %w", in.BinaryID, err)
 			}
 		}
 
@@ -581,8 +581,18 @@ func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, n
 
 func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int64, in YEncHeaderRecoveryRecord) error {
 	groupingSummaryKind, groupingSummaryStatus, groupingSummaryFallbackUsed := groupingSummaryScalars(sanitizeStringMap(in.GroupingEvidence))
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_core
+		SET binary_key = $2,
+		    updated_at = NOW()
+		WHERE binary_id = $1`,
+		binaryID,
+		in.BinaryKey,
+	); err != nil {
+		return fmt.Errorf("update yenc recovered binary core %d: %w", binaryID, err)
+	}
 	_, err := tx.ExecContext(ctx, `
-		UPDATE binaries
+		UPDATE binary_identity_current
 		SET source_release_key = $2,
 		    release_family_key = $3,
 		    file_set_key = $4,
@@ -597,22 +607,17 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    is_main_payload = $13,
 		    release_key = $14,
 		    release_name = $15,
-		    binary_key = $16,
-		    binary_name = $17,
-		    file_name = $18,
-		    file_index = CASE WHEN $19 > 0 THEN $19 ELSE file_index END,
-		    expected_file_count = GREATEST(expected_file_count, $20),
-		    total_parts = GREATEST(total_parts, $21),
-		    match_confidence = GREATEST(match_confidence, $22),
-		    match_status = $23,
-		    grouping_summary_kind = $24,
-		    grouping_summary_status = $25,
-		    grouping_summary_fallback_used = $26,
-		    recovered_source = 'yenc_header',
-		    recovered_confidence = GREATEST(recovered_confidence, $22),
-		    recovered_at = NOW(),
+		    binary_name = $16,
+		    file_name = $17,
+		    file_index = CASE WHEN $18 > 0 THEN $18 ELSE file_index END,
+		    expected_file_count = GREATEST(expected_file_count, $19),
+		    match_confidence = GREATEST(match_confidence, $20),
+		    match_status = $21,
+		    grouping_summary_kind = $22,
+		    grouping_summary_status = $23,
+		    grouping_summary_fallback_used = $24,
 		    updated_at = NOW()
-		WHERE id = $1`,
+		WHERE binary_id = $1`,
 		binaryID,
 		in.SourceReleaseKey,
 		in.ReleaseFamilyKey,
@@ -628,12 +633,10 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		in.IsMainPayload,
 		in.ReleaseKey,
 		in.ReleaseName,
-		in.BinaryKey,
 		in.BinaryName,
 		in.FileName,
 		in.FileIndex,
 		in.ExpectedFileCount,
-		in.TotalParts,
 		in.MatchConfidence,
 		in.MatchStatus,
 		groupingSummaryKind,
@@ -641,7 +644,31 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		groupingSummaryFallbackUsed,
 	)
 	if err != nil {
-		return fmt.Errorf("update yenc recovered binary %d: %w", binaryID, err)
+		return fmt.Errorf("update yenc recovered binary identity %d: %w", binaryID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET total_parts = GREATEST(total_parts, $2),
+		    updated_at = NOW()
+		WHERE binary_id = $1`,
+		binaryID,
+		in.TotalParts,
+	); err != nil {
+		return fmt.Errorf("update yenc recovered binary stats %d: %w", binaryID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_recovery_current
+		SET recovered_source = 'yenc_header',
+		    recovered_confidence = GREATEST(recovered_confidence, $2),
+		    recovered_file_name = $3,
+		    recovered_at = NOW(),
+		    updated_at = NOW()
+		WHERE binary_id = $1`,
+		binaryID,
+		in.MatchConfidence,
+		in.FileName,
+	); err != nil {
+		return fmt.Errorf("update yenc recovered binary recovery %d: %w", binaryID, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_parts
