@@ -77,7 +77,7 @@ Phase B remaining reader migration checklist:
 - [x] catalog/detail/admin/public release reads.
 - [x] NZB generation, archive, and purge reads.
 - [x] maintenance/helper reads and backlog counters.
-- [ ] ownership tests expanded to reject new legacy behavior-field reads/writes once each path migrates.
+- [x] ownership tests expanded to reject new legacy behavior-field reads/writes once each path migrates.
 
 Remaining intentional temporary `binaries` anchor touches:
 
