@@ -8,10 +8,13 @@ import (
 	"testing"
 )
 
-func TestBinaryStorageV2WritesStayBehindBridge(t *testing.T) {
+func TestBinaryStorageV2WritesStayInExplicitOwners(t *testing.T) {
 	allowedWriterFiles := map[string]bool{
-		"assembly_store.go":    true,
-		"binary_storage_v2.go": true,
+		"archive_store.go":         true,
+		"assembly_store.go":        true,
+		"binary_recovery_store.go": true,
+		"release_store.go":         true,
+		"yenc_recovery_store.go":   true,
 	}
 	tables := []string{
 		"binary_core",
@@ -45,22 +48,13 @@ func TestBinaryStorageV2WritesStayBehindBridge(t *testing.T) {
 				continue
 			}
 			if !allowedWriterFiles[name] {
-				t.Fatalf("%s writes a binary storage v2 table outside the bridge; update ownership policy before adding this write", name)
+				t.Fatalf("%s writes a binary storage v2 table outside the explicit owner allowlist; update ownership policy before adding this write", name)
 			}
 		}
 	}
 }
 
-func TestLegacyBinaryAnchorAccessStaysInTemporaryBridgeFiles(t *testing.T) {
-	allowedFiles := map[string]bool{
-		"archive_store.go":                true,
-		"assembly_store.go":               true,
-		"binary_recovery_store.go":        true,
-		"binary_storage_v2.go":            true,
-		"inspection_store.go":             true,
-		"release_family_summary_store.go": true,
-		"yenc_recovery_store.go":          true,
-	}
+func TestLegacyBinaryAnchorIsNotUsedByProductionStoreCode(t *testing.T) {
 	pattern := regexp.MustCompile(`(?is)\b(from|join|update|delete\s+from|insert\s+into)\s+(public\.)?binaries\b`)
 
 	entries, err := os.ReadDir(".")
@@ -76,19 +70,13 @@ func TestLegacyBinaryAnchorAccessStaysInTemporaryBridgeFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if pattern.Match(content) && !allowedFiles[name] {
-			t.Fatalf("%s accesses legacy binaries outside the temporary bridge allowlist; move the path to binary v2 projections or update ownership policy explicitly", name)
+		if pattern.Match(content) {
+			t.Fatalf("%s accesses legacy binaries; use binary_core and stage-owned v2 projections instead", name)
 		}
 	}
 }
 
-func TestLegacyBinaryWritesStayInTemporaryOwners(t *testing.T) {
-	allowedWriterFiles := map[string]bool{
-		"archive_store.go":         true,
-		"assembly_store.go":        true,
-		"binary_recovery_store.go": true,
-		"yenc_recovery_store.go":   true,
-	}
+func TestLegacyBinaryWritesAreRemovedFromProductionStoreCode(t *testing.T) {
 	pattern := regexp.MustCompile(`(?is)\b(insert\s+into|update|delete\s+from)\s+(public\.)?binaries\b`)
 
 	entries, err := os.ReadDir(".")
@@ -104,8 +92,8 @@ func TestLegacyBinaryWritesStayInTemporaryOwners(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if pattern.Match(content) && !allowedWriterFiles[name] {
-			t.Fatalf("%s writes legacy binaries outside the temporary owner allowlist; split the write into a stage-owned v2 table first", name)
+		if pattern.Match(content) {
+			t.Fatalf("%s writes legacy binaries; split the write into stage-owned v2 tables first", name)
 		}
 	}
 }

@@ -364,24 +364,20 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 
 	dominantQuery := `
 		SELECT
-			COALESCE(b.family_kind, ''),
-			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''),
-			COALESCE(b.match_confidence, 0)
-		FROM binaries b
+			COALESCE(bic.family_kind, ''),
+			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), ''),
+			COALESCE(bic.match_confidence, 0)
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		WHERE ` + whereClause + `
 		ORDER BY
-			CASE
-				WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
-				ELSE 1
-			END ASC,
-			CASE
-				WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
-				ELSE 1
-			END ASC,
-			b.observed_parts DESC,
-			b.total_bytes DESC,
-			b.match_confidence DESC,
-			b.id ASC
+			CASE WHEN (bic.is_main_payload OR NOT bic.is_auxiliary) THEN 0 ELSE 1 END ASC,
+			CASE WHEN bos.total_parts > 0 AND bos.observed_parts = bos.total_parts THEN 0 ELSE 1 END ASC,
+			bos.observed_parts DESC,
+			bos.total_bytes DESC,
+			bic.match_confidence DESC,
+			bc.binary_id ASC
 		LIMIT 1`
 	if err := tx.QueryRowContext(ctx, dominantQuery, key.ProviderID, key.NewsgroupID, key.FamilyKey).Scan(
 		&dominantFamilyKind,
@@ -581,35 +577,44 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				r.newsgroup_id,
 				r.key_kind,
 				r.family_key,
-				COALESCE(MAX(b.source_release_key), '') AS source_release_key,
-				COALESCE(MAX(b.release_key), '') AS release_key,
-				COALESCE(MAX(b.release_name), '') AS release_name,
-				COUNT(b.id)::INTEGER AS binary_count,
+				COALESCE(MAX(bic.source_release_key), '') AS source_release_key,
+				COALESCE(MAX(bic.release_key), '') AS release_key,
+				COALESCE(MAX(bic.release_name), '') AS release_name,
+				COUNT(bic.binary_id)::INTEGER AS binary_count,
 				COALESCE(SUM(
 					CASE
-						WHEN b.observed_parts = b.total_parts AND b.total_parts > 0 THEN 1
+						WHEN bos.observed_parts = bos.total_parts AND bos.total_parts > 0 THEN 1
 						ELSE 0
 					END
 				), 0)::INTEGER AS complete_binary_count,
 				COALESCE(SUM(
 					CASE
-						WHEN (b.is_main_payload OR NOT b.is_auxiliary)
-						 AND b.observed_parts = b.total_parts
-						 AND b.total_parts > 0 THEN 1
+						WHEN (bic.is_main_payload OR NOT bic.is_auxiliary)
+						 AND bos.observed_parts = bos.total_parts
+						 AND bos.total_parts > 0 THEN 1
 						ELSE 0
 					END
 				), 0)::INTEGER AS complete_main_payload_binary_count,
-				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
-				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-				COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
-				COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-				MIN(b.posted_at) AS earliest_posted_at
+				COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
+				COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+				COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
+				COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+				COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
+				MIN(bos.posted_at) AS earliest_posted_at
 			FROM requested r
-			LEFT JOIN binaries b
-			  ON b.provider_id = r.provider_id
-			 AND b.newsgroup_id = r.newsgroup_id
-			 AND b.release_family_key = r.family_key
+			LEFT JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.newsgroup_id = r.newsgroup_id
+			 AND (
+				(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
+				OR
+				(r.key_kind = 'base_stem'
+				 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+				 AND BTRIM(bic.base_stem) <> ''
+				 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
+			 )
+			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
 		),
 		dominant AS (
@@ -627,31 +632,34 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 					r.newsgroup_id,
 					r.key_kind,
 					r.family_key,
-					b.family_kind,
-					b.file_name,
-					b.binary_name,
-					b.match_confidence,
+					bic.family_kind,
+					bic.file_name,
+					bic.binary_name,
+					bic.match_confidence,
 					ROW_NUMBER() OVER (
 						PARTITION BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
 						ORDER BY
-							CASE
-								WHEN (b.is_main_payload OR NOT b.is_auxiliary) THEN 0
-								ELSE 1
-							END ASC,
-							CASE
-								WHEN b.total_parts > 0 AND b.observed_parts = b.total_parts THEN 0
-								ELSE 1
-							END ASC,
-							b.observed_parts DESC,
-							b.total_bytes DESC,
-							b.match_confidence DESC,
-							b.id ASC
+							CASE WHEN (COALESCE(bic.is_main_payload, FALSE) OR NOT COALESCE(bic.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
+							CASE WHEN COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) = COALESCE(bos.total_parts, 0) THEN 0 ELSE 1 END ASC,
+							COALESCE(bos.observed_parts, 0) DESC,
+							COALESCE(bos.total_bytes, 0) DESC,
+							COALESCE(bic.match_confidence, 0) DESC,
+							COALESCE(bc.binary_id, 0) ASC
 					) AS row_num
 				FROM requested r
-				LEFT JOIN binaries b
-				  ON b.provider_id = r.provider_id
-				 AND b.newsgroup_id = r.newsgroup_id
-				 AND b.release_family_key = r.family_key
+				LEFT JOIN binary_identity_current bic
+				  ON bic.provider_id = r.provider_id
+				 AND bic.newsgroup_id = r.newsgroup_id
+				 AND (
+					(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
+					OR
+					(r.key_kind = 'base_stem'
+					 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+					 AND BTRIM(bic.base_stem) <> ''
+					 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
+				 )
+				LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
+				LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 			) ranked
 			WHERE row_num = 1
 		)
@@ -1637,22 +1645,23 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 	var shape releaseFamilyShape
 	if err := runner.QueryRowContext(ctx, `
 		SELECT
-			COALESCE(BOOL_AND(LOWER(COALESCE(b.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
-			COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0)::INTEGER AS max_expected_any_file_count,
-			COUNT(*) FILTER (WHERE b.file_index > 0)::INTEGER AS indexed_file_count,
-			COUNT(*) FILTER (WHERE BTRIM(COALESCE(b.base_stem, '')) <> '')::INTEGER AS base_stem_file_count,
-			COUNT(DISTINCT LOWER(BTRIM(COALESCE(b.base_stem, '')))) FILTER (
-				WHERE BTRIM(COALESCE(b.base_stem, '')) <> ''
+			COALESCE(BOOL_AND(LOWER(COALESCE(bic.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
+			COALESCE(MAX(GREATEST(bic.expected_file_count, bic.expected_archive_file_count)), 0)::INTEGER AS max_expected_any_file_count,
+			COUNT(*) FILTER (WHERE bic.file_index > 0)::INTEGER AS indexed_file_count,
+			COUNT(*) FILTER (WHERE BTRIM(COALESCE(bic.base_stem, '')) <> '')::INTEGER AS base_stem_file_count,
+			COUNT(DISTINCT LOWER(BTRIM(COALESCE(bic.base_stem, '')))) FILTER (
+				WHERE BTRIM(COALESCE(bic.base_stem, '')) <> ''
 			)::INTEGER AS distinct_base_stem_count,
 			COALESCE(BOOL_OR(
-				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~
+				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~
 				'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
 			), FALSE) AS has_usable_file_identity
-		FROM binaries b
-		WHERE b.provider_id = $1
-		  AND b.newsgroup_id = $2
-		  AND b.release_family_key = $3
-		  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`,
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		WHERE bc.provider_id = $1
+		  AND bc.newsgroup_id = $2
+		  AND bic.release_family_key = $3
+		  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)`,
 		key.ProviderID,
 		key.NewsgroupID,
 		key.FamilyKey,
@@ -1671,35 +1680,37 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 
 func isReleaseCandidateRecoverPending(ctx context.Context, runner sqlExecQueryRower, key releaseFamilySummaryKey) (bool, error) {
 	matchClause := `
-			b.provider_id = $1
-			AND b.newsgroup_id = $2
-			AND b.release_family_key = $3`
+			bc.provider_id = $1
+			AND bc.newsgroup_id = $2
+			AND bic.release_family_key = $3`
 	if key.KeyKind == ReleaseCandidateKeyKindBaseStem {
 		matchClause = `
-			b.provider_id = $1
-			AND b.newsgroup_id = $2
-			AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
-			AND BTRIM(COALESCE(b.base_stem, '')) <> ''
-			AND LOWER(BTRIM(b.base_stem)) = $3`
+			bc.provider_id = $1
+			AND bc.newsgroup_id = $2
+			AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+			AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
+			AND LOWER(BTRIM(bic.base_stem)) = $3`
 	}
 
 	query := `
 		SELECT EXISTS (
 			SELECT 1
-			FROM binaries b
+			FROM binary_core bc
+			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
 			JOIN LATERAL (
 				SELECT bp.article_header_id
 				FROM binary_parts bp
-				WHERE bp.binary_id = b.id
+				WHERE bp.binary_id = bc.binary_id
 				ORDER BY bp.part_number, bp.id
 				LIMIT 1
 			) bp ON TRUE
 			JOIN article_header_ingest_payloads p
 			  ON p.article_header_id = bp.article_header_id
 			WHERE ` + matchClause + `
-			  AND b.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-			  AND b.is_main_payload = TRUE
-			  AND COALESCE(b.recovered_source, '') <> 'yenc_header'
+			  AND bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
+			  AND bic.is_main_payload = TRUE
+			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
 ` + yencRecoverySubjectFileNamePredicate + `
 		)`
 
@@ -1720,32 +1731,30 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	}
 
 	values, args := releaseFamilySummaryBatchValues(keys)
-	matchClause := `
-			b.provider_id = $1
-			AND b.newsgroup_id = $2
-			AND b.release_family_key = $3`
-	_ = matchClause
 
 	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
 		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
 			VALUES %s
 		)
-		SELECT DISTINCT b.provider_id, b.file_set_key
+		SELECT DISTINCT bc.provider_id, bic.file_set_key
 		FROM requested r
-		JOIN binaries b
-		  ON b.provider_id = r.provider_id
-		 AND b.newsgroup_id = r.newsgroup_id
-		 AND (
-			(r.key_kind = 'release_family' AND b.release_family_key = r.family_key)
-			OR
-			(r.key_kind = 'base_stem'
-			 AND GREATEST(b.expected_file_count, b.expected_archive_file_count) > 1
-			 AND BTRIM(COALESCE(b.base_stem, '')) <> ''
-			 AND LOWER(BTRIM(b.base_stem)) = r.family_key)
-		 )
-		WHERE COALESCE(b.recovered_source, '') = 'yenc_header'
-		  AND BTRIM(b.file_set_key) <> ''
-		  AND b.posted_at IS NOT NULL`,
+		JOIN binary_core bc
+		  ON bc.provider_id = r.provider_id
+		 AND bc.newsgroup_id = r.newsgroup_id
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+		WHERE COALESCE(brc.recovered_source, '') = 'yenc_header'
+		  AND (
+		  	(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
+		  	OR
+		  	(r.key_kind = 'base_stem'
+		  	 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+		  	 AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
+		  	 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
+		  )
+		  AND BTRIM(bic.file_set_key) <> ''
+		  AND bos.posted_at IS NOT NULL`,
 		values), args...)
 	if err != nil {
 		return fmt.Errorf("list impacted recovered file sets for summary key batch count=%d: %w", len(keys), err)
@@ -1840,38 +1849,43 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			SELECT
 				$1::BIGINT AS provider_id,
 				r.file_set_key,
-				COALESCE(MIN(b.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
-				COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), r.file_set_key) AS source_release_key,
+				COALESCE(MIN(bc.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
+				COALESCE(MAX(NULLIF(BTRIM(bic.source_release_key), '')), r.file_set_key) AS source_release_key,
 				r.file_set_key AS release_key,
-				COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), r.file_set_key) AS release_name,
-				COUNT(b.id)::INTEGER AS binary_count,
+				COALESCE(MAX(NULLIF(BTRIM(bic.release_name), '')), r.file_set_key) AS release_name,
+				COUNT(bic.binary_id)::INTEGER AS binary_count,
 				COUNT(*) FILTER (
-					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+					WHERE bos.total_parts > 0 AND bos.observed_parts = bos.total_parts
 				)::INTEGER AS complete_binary_count,
 				COUNT(*) FILTER (
-					WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-					  AND b.total_parts > 0
-					  AND b.observed_parts = b.total_parts
+					WHERE (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+					  AND bos.total_parts > 0
+					  AND bos.observed_parts = bos.total_parts
 				)::INTEGER AS complete_main_payload_binary_count,
-				COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
-				COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-				COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
-				COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-				COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-				MIN(b.posted_at) AS earliest_posted_at,
-				MAX(b.posted_at) AS latest_posted_at,
-				MAX(b.updated_at) AS max_updated_at,
-				COUNT(DISTINCT b.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
+				COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
+				COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+				COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
+				COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+				COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
+				MIN(bos.posted_at) AS earliest_posted_at,
+				MAX(bos.posted_at) AS latest_posted_at,
+				MAX(GREATEST(bic.updated_at, bos.updated_at, brc.updated_at)) AS max_updated_at,
+				COUNT(DISTINCT bc.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
 				COUNT(*) FILTER (
-					WHERE b.is_main_payload = TRUE OR b.is_auxiliary = FALSE
+					WHERE bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE
 				)::INTEGER AS main_payload_binary_count
 			FROM requested r
-			LEFT JOIN binaries b
-			  ON b.provider_id = $1
-			 AND b.file_set_key = r.file_set_key
-			 AND COALESCE(b.recovered_source, '') = 'yenc_header'
-			 AND BTRIM(b.file_set_key) <> ''
-			 AND b.posted_at IS NOT NULL
+			LEFT JOIN binary_identity_current bic
+			  ON bic.provider_id = $1
+			 AND bic.file_set_key = r.file_set_key
+			 AND BTRIM(bic.file_set_key) <> ''
+			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.binary_id = bic.binary_id
+			 AND COALESCE(brc.recovered_source, '') = 'yenc_header'
+			WHERE bos.posted_at IS NOT NULL
+			  AND brc.binary_id IS NOT NULL
 			GROUP BY r.file_set_key
 		),
 		scored AS (
@@ -2073,37 +2087,40 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 		SELECT
 			$1::BIGINT AS provider_id,
 			$2::TEXT AS file_set_key,
-			COALESCE(MIN(b.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
-			COALESCE(MAX(NULLIF(BTRIM(b.source_release_key), '')), $2) AS source_release_key,
+			COALESCE(MIN(bc.newsgroup_id), 0)::BIGINT AS representative_newsgroup_id,
+			COALESCE(MAX(NULLIF(BTRIM(bic.source_release_key), '')), $2) AS source_release_key,
 			$2 AS release_key,
-			COALESCE(MAX(NULLIF(BTRIM(b.release_name), '')), $2) AS release_name,
-			COUNT(*)::INTEGER AS binary_count,
+			COALESCE(MAX(NULLIF(BTRIM(bic.release_name), '')), $2) AS release_name,
+			COUNT(bic.binary_id)::INTEGER AS binary_count,
 			COUNT(*) FILTER (
-				WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+				WHERE bos.total_parts > 0 AND bos.observed_parts = bos.total_parts
 			)::INTEGER AS complete_binary_count,
 			COUNT(*) FILTER (
-				WHERE (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
-				  AND b.total_parts > 0
-				  AND b.observed_parts = b.total_parts
+				WHERE (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+				  AND bos.total_parts > 0
+				  AND bos.observed_parts = bos.total_parts
 			)::INTEGER AS complete_main_payload_binary_count,
-			COALESCE(MAX(b.expected_file_count), 0)::INTEGER AS expected_file_count,
-			COALESCE(MAX(b.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-			COALESCE(BOOL_OR(b.expected_file_count > 0), FALSE) AS has_expected_file_count,
-			COALESCE(BOOL_OR(b.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes,
-			MIN(b.posted_at) AS earliest_posted_at,
-			MAX(b.posted_at) AS latest_posted_at,
-			MAX(b.updated_at) AS max_updated_at,
-			COUNT(DISTINCT b.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
+			COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
+			COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+			COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
+			COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
+			MIN(bos.posted_at) AS earliest_posted_at,
+			MAX(bos.posted_at) AS latest_posted_at,
+			MAX(GREATEST(bic.updated_at, bos.updated_at, brc.updated_at)) AS max_updated_at,
+			COUNT(DISTINCT bc.newsgroup_id)::INTEGER AS distinct_newsgroup_count,
 			COUNT(*) FILTER (
-				WHERE b.is_main_payload = TRUE OR b.is_auxiliary = FALSE
+				WHERE bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE
 			)::INTEGER AS main_payload_binary_count
-		FROM binaries b
-		WHERE b.provider_id = $1
-		  AND b.file_set_key = $2
-		  AND COALESCE(b.recovered_source, '') = 'yenc_header'
-		  AND BTRIM(b.file_set_key) <> ''
-		  AND b.posted_at IS NOT NULL`,
+		FROM binary_identity_current bic
+		JOIN binary_core bc ON bc.binary_id = bic.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+		WHERE bic.provider_id = $1
+		  AND bic.file_set_key = $2
+		  AND COALESCE(brc.recovered_source, '') = 'yenc_header'
+		  AND BTRIM(bic.file_set_key) <> ''
+		  AND bos.posted_at IS NOT NULL`,
 		providerID,
 		fileSetKey,
 	).Scan(

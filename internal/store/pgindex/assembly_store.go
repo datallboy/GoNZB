@@ -2648,10 +2648,6 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate refreshed binary stats: %w", err)
 	}
-	if err := syncBinaryStorageV2ByIDs(ctx, tx, binaryIDs); err != nil {
-		return nil, err
-	}
-
 	if len(summaryKeys) == 0 {
 		// Some lane-B binaries can legitimately exist before they have enough
 		// identity to materialize release-family/base-stem summary keys. The

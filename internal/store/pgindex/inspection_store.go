@@ -122,7 +122,7 @@ func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspe
 
 func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (bool, error) {
 	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binaries WHERE id = $1)`, binaryID).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binary_core WHERE binary_id = $1)`, binaryID).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check binary existence %d: %w", binaryID, err)
 	}
 	return exists, nil
@@ -1410,11 +1410,11 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 				req.requested_release_id,
 				req.source_updated_at,
 				req.lookup_binary_id,
-				b.id AS locked_binary_id
+				bc.binary_id AS locked_binary_id
 			FROM requested req
-			JOIN binaries b
-			  ON b.id = req.binary_id
-			FOR KEY SHARE OF b
+			JOIN binary_core bc
+			  ON bc.binary_id = req.binary_id
+			FOR KEY SHARE OF bc
 		)
 		INSERT INTO binary_inspections (
 			stage_name,
@@ -1503,9 +1503,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 
 	_, err := s.db.ExecContext(ctx, `
 		WITH locked_binary AS (
-			SELECT b.id
-			FROM binaries b
-			WHERE b.id = $2
+			SELECT bc.binary_id
+			FROM binary_core bc
+			WHERE bc.binary_id = $2
 			FOR KEY SHARE
 		)
 		INSERT INTO binary_inspections (
@@ -1522,9 +1522,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			source_updated_at,
 			updated_at
 		)
-		SELECT
+			SELECT
 			$1,
-			lb.id,
+			lb.binary_id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -2334,7 +2334,7 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 	result.MainTargetCount = len(targets)
 
 	// PAR2 target rows are already persisted in binary_par2_targets. Do not fan
-	// out inspection writes into binaries; assemble owns that hot table.
+	// out inspection writes into binary identity/stat projections; assemble owns them.
 	return result, nil
 }
 
@@ -2577,7 +2577,7 @@ func (s *Store) applyBinaryPAR2TargetCoverageInTx(ctx context.Context, tx *sql.T
 	result.MainTargetCount = len(targets)
 
 	// PAR2 target rows are already persisted in binary_par2_targets. Do not fan
-	// out inspection writes into binaries; assemble owns that hot table.
+	// out inspection writes into binary identity/stat projections; assemble owns them.
 	return result, nil
 }
 
@@ -2797,7 +2797,7 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 		)
 		SELECT
 			$1,
-			b.id,
+			bc.binary_id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -2821,8 +2821,8 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 			$8,
 			$9,
 			NOW()
-		FROM binaries b
-		WHERE b.id = $2
+		FROM binary_core bc
+		WHERE bc.binary_id = $2
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
 		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = EXCLUDED.status,
