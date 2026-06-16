@@ -56,6 +56,18 @@ func TestResolveReleaseCategoryConsoleSwitch(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseCategorySteinbergCubaseAsPC0Day(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification:    "archive",
+		Title:             "Steinberg Cubase Pro 15 0 21 x64 Multilingual",
+		SourceTitle:       "Steinberg Cubase Pro 15.0.21 (x64) Multilingual",
+		DeobfuscatedTitle: "Steinberg.Cubase.Pro.15.0.21.(x64).Multilingual",
+	})
+	if got.ID != PC0Day {
+		t.Fatalf("expected PC0Day, got %+v", got)
+	}
+}
+
 func TestResolveReleaseCategoryXXXByPosterHint(t *testing.T) {
 	got := ResolveReleaseCategory(ReleaseAttributes{
 		Classification: "audio",
