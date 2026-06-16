@@ -238,6 +238,62 @@ func TestRunStageOnceSkipsWhenStageGateBlocks(t *testing.T) {
 	}
 }
 
+func TestRunStageOnceSerializesAssembleLanes(t *testing.T) {
+	startedA := make(chan struct{})
+	releaseA := make(chan struct{})
+	doneA := make(chan error, 1)
+	var ranB bool
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageAssembleLaneA,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				close(startedA)
+				<-releaseA
+				return nil
+			}),
+		},
+		{
+			Name:     StageAssembleLaneB,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				ranB = true
+				return nil
+			}),
+		},
+	})
+
+	go func() {
+		doneA <- svc.RunStageOnce(context.Background(), StageAssembleLaneA)
+	}()
+
+	select {
+	case <-startedA:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for lane A to start")
+	}
+
+	if err := svc.RunStageOnce(context.Background(), StageAssembleLaneB); err != nil {
+		t.Fatalf("run lane B while lane A active: %v", err)
+	}
+	if ranB {
+		t.Fatal("lane B runner should not execute while lane A holds the assemble write lane")
+	}
+
+	close(releaseA)
+	select {
+	case err := <-doneA:
+		if err != nil {
+			t.Fatalf("lane A returned error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for lane A to finish")
+	}
+}
+
 func TestRunStageOnceSuppressesRepeatedBlockedWarnings(t *testing.T) {
 	log := &fakeSupervisorLogger{}
 	svc := New(log, []Stage{

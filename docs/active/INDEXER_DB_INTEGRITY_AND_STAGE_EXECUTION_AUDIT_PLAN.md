@@ -31,6 +31,37 @@ Working decisions already locked:
 
 ## Current DB Corruption Follow-up Findings
 
+Observed on `2026-06-16` after a full laptop freeze/reboot:
+
+- PostgreSQL came back through normal crash recovery and later accepted connections.
+- checksums were enabled and `pg_stat_get_db_checksum_failures()` reported `0` failures for `gonzb`.
+- Postgres replayed roughly `14.6GB` of WAL before becoming consistent, showing the indexer had generated a large write burst before the host froze.
+- previous-boot kernel logs show a host kernel failure, not a PostgreSQL logical error:
+  - `Oops: general protection fault`
+  - `CPU: 7 ... Comm: postgres`
+  - kernel `7.0.9-arch1-1`
+  - `RIP: lookup_swap_cgroup_id+0x30/0x50`
+  - stack trace through `swap_pte_batch`, `unmap_page_range`, `exit_mmap`, and `do_exit`
+  - followed by `Fixing recursive fault but reboot is needed!`, RCU stalls, and a soft lockup
+- Docker health checks timed out only after the kernel fault, consistent with system-wide lockup.
+- app logs immediately before the lockup showed overlapping heavy assemble write bursts:
+  - repeated `assemble_lane_b` 10k-header batches
+  - simultaneous `assemble_lane_a` 2.5k-header batches
+  - two lane-A `binary_refresh_summary_mark_ms` spikes around `19-20s`
+
+Interpretation:
+
+- SQL/query shape can create enough memory/WAL/write pressure to expose host bugs, but normal application SQL should not be able to corrupt PostgreSQL storage or crash the kernel directly.
+- This incident is best treated as two separate hardening tracks:
+  - host mitigation: avoid the bleeding-edge `7.0.9-arch1-1` kernel for heavy local Postgres/Docker write workloads; prefer an LTS/stable kernel before another full soak
+  - application mitigation: reduce write bursts so local/laptop profiles do not generate large concurrent WAL spikes
+
+Immediate landed application mitigation:
+
+- `assemble_lane_a` and `assemble_lane_b` are now mutually exclusive within one supervisor process.
+- Both lanes may remain enabled, but only one assemble write lane can execute at a time.
+- This preserves the lane split while preventing overlapping writes into the v2 binary assembly tables from one `serve` process.
+
 Observed on `2026-06-12` during the repeated corruption investigation:
 
 - PostgreSQL reported `compressed pglz data is corrupt` while `indexer_maintenance` read old `binary_grouping_evidence.payload_json`

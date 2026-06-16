@@ -112,6 +112,8 @@ type Supervisor struct {
 	stageGate         StageGateFunc
 	blockedMu         sync.Mutex
 	blockedLogs       map[StageName]blockedStageLogState
+	stageGroupMu      sync.Mutex
+	activeStageGroups map[string]StageName
 }
 
 const blockedStageLogInterval = 60 * time.Second
@@ -159,6 +161,7 @@ func New(log logger, stages []Stage, options ...Options) *Supervisor {
 		heartbeatInterval: opts.HeartbeatInterval,
 		stageGate:         opts.StageGate,
 		blockedLogs:       make(map[StageName]blockedStageLogState),
+		activeStageGroups: make(map[string]StageName),
 	}
 }
 
@@ -283,6 +286,17 @@ func (s *Supervisor) executeStage(ctx context.Context, stage Stage, trigger stri
 		s.clearBlockedStageLog(stage.Name)
 	}
 
+	if group, ok := exclusiveStageGroup(stage.Name); ok {
+		release, active := s.tryClaimStageGroup(group, stage.Name)
+		if !active {
+			if s.log != nil && s.shouldLogBlockedStage(stage.Name, fmt.Sprintf("%s write lane already active", group)) {
+				s.log.Warn("index stage blocked stage=%s trigger=%s reason=%s write lane already active", stage.Name, trigger, group)
+			}
+			return nil
+		}
+		defer release()
+	}
+
 	if s.tracker == nil {
 		return stage.Runner.Run(ctx)
 	}
@@ -378,6 +392,36 @@ func (s *Supervisor) clearBlockedStageLog(name StageName) {
 	s.blockedMu.Lock()
 	defer s.blockedMu.Unlock()
 	delete(s.blockedLogs, name)
+}
+
+func (s *Supervisor) tryClaimStageGroup(group string, stageName StageName) (func(), bool) {
+	s.stageGroupMu.Lock()
+	if _, ok := s.activeStageGroups[group]; ok {
+		s.stageGroupMu.Unlock()
+		return nil, false
+	}
+	s.activeStageGroups[group] = stageName
+	s.stageGroupMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.stageGroupMu.Lock()
+			if s.activeStageGroups[group] == stageName {
+				delete(s.activeStageGroups, group)
+			}
+			s.stageGroupMu.Unlock()
+		})
+	}, true
+}
+
+func exclusiveStageGroup(name StageName) (string, bool) {
+	switch name {
+	case StageAssembleLaneA, StageAssembleLaneB:
+		return "assemble", true
+	default:
+		return "", false
+	}
 }
 
 func (s *Supervisor) heartbeatStageRun(ctx context.Context, runID int64, errCh chan<- error) {
