@@ -445,31 +445,33 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 			FROM pending_structured ps
 			JOIN LATERAL (
 				SELECT
-					b.id AS binary_id,
-					b.is_main_payload,
-					b.observed_parts,
+					bc.binary_id,
+					bic.is_main_payload,
+					bos.observed_parts,
 					CASE
-						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+						WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
 						ELSE 0
 					END AS completion_ratio
-				FROM binaries b
-				WHERE b.provider_id = ps.provider_id
-				  AND b.newsgroup_id = ps.newsgroup_id
-				  AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = ps.normalized_file_name
-				  AND b.total_parts > 0
-				  AND b.observed_parts < b.total_parts
-				  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+				FROM binary_core bc
+				JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+				JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+				WHERE bc.provider_id = ps.provider_id
+				  AND bc.newsgroup_id = ps.newsgroup_id
+				  AND LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) = ps.normalized_file_name
+				  AND bos.total_parts > 0
+				  AND bos.observed_parts < bos.total_parts
+				  AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
 				ORDER BY
 					CASE
-						WHEN b.is_main_payload THEN 0
+						WHEN bic.is_main_payload THEN 0
 						ELSE 1
 					END ASC,
 					CASE
-						WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+						WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
 						ELSE 0
 					END DESC,
-					b.observed_parts DESC,
-					b.id DESC
+					bos.observed_parts DESC,
+					bc.binary_id DESC
 				LIMIT 1
 			) b ON true
 		),
@@ -539,38 +541,40 @@ func (s *Store) listPriorityAssemblyBinaries(ctx context.Context, limit int) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		WITH ranked AS (
 			SELECT
-				b.id AS binary_id,
-				b.provider_id,
-				b.newsgroup_id,
-				LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) AS normalized_file_name,
-				b.is_main_payload,
-				b.observed_parts,
+				bc.binary_id,
+				bc.provider_id,
+				bc.newsgroup_id,
+				LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) AS normalized_file_name,
+				bic.is_main_payload,
+				bos.observed_parts,
 				CASE
-					WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+					WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
 					ELSE 0
 				END AS completion_ratio,
-				GREATEST(b.total_parts - b.observed_parts, 0) AS missing_parts,
+				GREATEST(bos.total_parts - bos.observed_parts, 0) AS missing_parts,
 				ROW_NUMBER() OVER (
 					PARTITION BY
-						b.provider_id,
-						b.newsgroup_id,
-						LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))))
+						bc.provider_id,
+						bc.newsgroup_id,
+						LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))))
 					ORDER BY
 						CASE
-							WHEN b.is_main_payload THEN 0
+							WHEN bic.is_main_payload THEN 0
 							ELSE 1
 						END ASC,
 						CASE
-							WHEN b.total_parts > 0 THEN b.observed_parts::DOUBLE PRECISION / b.total_parts::DOUBLE PRECISION
+							WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
 							ELSE 0
 						END DESC,
-						b.observed_parts DESC,
-						b.id DESC
+						bos.observed_parts DESC,
+						bc.binary_id DESC
 				) AS file_rank
-			FROM binaries b
-			WHERE b.total_parts > 0
-			  AND b.observed_parts < b.total_parts
-			  AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+			FROM binary_core bc
+			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			WHERE bos.total_parts > 0
+			  AND bos.observed_parts < bos.total_parts
+			  AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
 		)
 		SELECT
 			binary_id,
@@ -790,13 +794,17 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 		  AND NOT EXISTS (
 		  	SELECT 1
 		  	FROM article_header_ingest_payloads p
-		  	JOIN binaries b
-		  	  ON b.provider_id = rp.provider_id
-		  	 AND b.newsgroup_id = rp.newsgroup_id
-		  	 AND LOWER(BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
-		  	 AND b.total_parts > 0
-		  	 AND b.observed_parts < b.total_parts
-		  	 AND BTRIM(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''))) <> ''
+		  	JOIN binary_core bc
+		  	  ON bc.provider_id = rp.provider_id
+		  	 AND bc.newsgroup_id = rp.newsgroup_id
+		  	JOIN binary_identity_current bic
+		  	  ON bic.binary_id = bc.binary_id
+		  	 AND LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
+		  	JOIN binary_observation_stats bos
+		  	  ON bos.binary_id = bc.binary_id
+		  	 AND bos.total_parts > 0
+		  	 AND bos.observed_parts < bos.total_parts
+		  	 AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
 		  	WHERE p.article_header_id = rp.id
 		  	  AND BTRIM(p.subject_file_name) <> ''
 		  )`
@@ -1338,92 +1346,99 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	upsertQueryStarted := time.Now()
 	updateStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
-		UPDATE binaries b
-		SET poster_id = COALESCE(r.poster_id, b.poster_id),
-		    source_release_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.source_release_key ELSE b.source_release_key END,
-		    release_family_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_family_key ELSE b.release_family_key END,
-		    file_set_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_set_key ELSE b.file_set_key END,
-		    file_family_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_family_key ELSE b.file_family_key END,
-		    identity_strength = CASE WHEN r.match_confidence >= b.match_confidence THEN r.identity_strength ELSE b.identity_strength END,
-		    identity_reason = CASE WHEN r.match_confidence >= b.match_confidence THEN r.identity_reason ELSE b.identity_reason END,
-		    subject_set_token = CASE WHEN r.match_confidence >= b.match_confidence THEN r.subject_set_token ELSE b.subject_set_token END,
-		    subject_set_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.subject_set_kind ELSE b.subject_set_kind END,
-		    family_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.family_kind ELSE b.family_kind END,
-		    base_stem = CASE WHEN r.match_confidence >= b.match_confidence THEN r.base_stem ELSE b.base_stem END,
-		    is_auxiliary = CASE WHEN r.match_confidence >= b.match_confidence THEN r.is_auxiliary ELSE b.is_auxiliary END,
-		    is_main_payload = CASE WHEN r.match_confidence >= b.match_confidence THEN r.is_main_payload ELSE b.is_main_payload END,
-		    release_key = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_key ELSE b.release_key END,
-		    release_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.release_name ELSE b.release_name END,
-		    binary_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.binary_name ELSE b.binary_name END,
-		    file_name = CASE WHEN r.match_confidence >= b.match_confidence THEN r.file_name ELSE b.file_name END,
-		    file_index = CASE
-		    	WHEN r.match_confidence >= b.match_confidence AND r.file_index > 0 THEN r.file_index
-		    	ELSE b.file_index
+		UPDATE binary_core bc
+		SET poster_id = COALESCE(r.poster_id, bc.poster_id),
+		    original_binary_name = CASE
+		    	WHEN bc.original_binary_name = '' THEN r.binary_name
+		    	ELSE bc.original_binary_name
 		    END,
-		    expected_file_count = GREATEST(b.expected_file_count, r.expected_file_count),
-		    total_parts = GREATEST(b.total_parts, r.total_parts),
-		    posted_at = COALESCE(b.posted_at, r.posted_at),
-		    match_confidence = GREATEST(b.match_confidence, r.match_confidence),
-		    match_status = CASE
-		    	WHEN r.match_confidence >= b.match_confidence THEN r.match_status
-		    	ELSE b.match_status
-		    END,
-		    grouping_summary_kind = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_kind ELSE b.grouping_summary_kind END,
-		    grouping_summary_status = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_status ELSE b.grouping_summary_status END,
-		    grouping_summary_fallback_used = CASE WHEN r.match_confidence >= b.match_confidence THEN r.grouping_summary_fallback_used ELSE b.grouping_summary_fallback_used END,
 		    updated_at = NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		WHERE b.id = e.binary_id
+		WHERE bc.binary_id = e.binary_id
 		  AND (
-		  	b.poster_id IS DISTINCT FROM COALESCE(r.poster_id, b.poster_id)
-		  	OR (
-		  		r.match_confidence >= b.match_confidence
-		  		AND (
-		  			b.source_release_key IS DISTINCT FROM r.source_release_key
-		  			OR b.release_family_key IS DISTINCT FROM r.release_family_key
-		  			OR b.file_set_key IS DISTINCT FROM r.file_set_key
-		  			OR b.file_family_key IS DISTINCT FROM r.file_family_key
-		  			OR b.identity_strength IS DISTINCT FROM r.identity_strength
-		  			OR b.identity_reason IS DISTINCT FROM r.identity_reason
-		  			OR b.subject_set_token IS DISTINCT FROM r.subject_set_token
-		  			OR b.subject_set_kind IS DISTINCT FROM r.subject_set_kind
-		  			OR b.family_kind IS DISTINCT FROM r.family_kind
-		  			OR b.base_stem IS DISTINCT FROM r.base_stem
-		  			OR b.is_auxiliary IS DISTINCT FROM r.is_auxiliary
-		  			OR b.is_main_payload IS DISTINCT FROM r.is_main_payload
-		  			OR b.release_key IS DISTINCT FROM r.release_key
-		  			OR b.release_name IS DISTINCT FROM r.release_name
-		  			OR b.binary_name IS DISTINCT FROM r.binary_name
-		  			OR b.file_name IS DISTINCT FROM r.file_name
-		  			OR (r.file_index > 0 AND b.file_index IS DISTINCT FROM r.file_index)
-		  		)
-		  	)
-		  	OR b.expected_file_count < r.expected_file_count
-		  	OR b.total_parts < r.total_parts
-		  	OR (b.posted_at IS NULL AND r.posted_at IS NOT NULL)
-		  	OR b.match_confidence < r.match_confidence
-		  	OR (
-		  		r.match_confidence >= b.match_confidence
-		  		AND (
-		  			b.match_status IS DISTINCT FROM r.match_status
-		  			OR b.grouping_summary_kind IS DISTINCT FROM r.grouping_summary_kind
-		  			OR b.grouping_summary_status IS DISTINCT FROM r.grouping_summary_status
-		  			OR b.grouping_summary_fallback_used IS DISTINCT FROM r.grouping_summary_fallback_used
-		  		)
-		  	)
+		  	bc.poster_id IS DISTINCT FROM COALESCE(r.poster_id, bc.poster_id)
+		  	OR (bc.original_binary_name = '' AND r.binary_name <> '')
 		  )`); err != nil {
-		return nil, nil, fmt.Errorf("update binaries batch: %w", err)
+		return nil, nil, fmt.Errorf("update binary_core batch: %w", err)
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordUpdateDuration(time.Since(updateStarted))
 	}
 	insertStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
-		INSERT INTO binaries (
+		INSERT INTO binary_core (
 			provider_id,
 			newsgroup_id,
 			poster_id,
+			binary_key,
+			original_binary_name,
+			created_at,
+			updated_at
+		)
+		SELECT
+			r.provider_id,
+			r.newsgroup_id,
+			r.poster_id,
+			r.binary_key,
+			r.binary_name,
+			NOW(),
+			NOW()
+		FROM tmp_upsert_binaries r
+		LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		WHERE e.binary_id IS NULL
+		ORDER BY
+			r.provider_id,
+			r.newsgroup_id,
+			r.binary_key
+		ON CONFLICT (provider_id, newsgroup_id, binary_key) DO NOTHING`); err != nil {
+		return nil, nil, fmt.Errorf("insert binary_core batch: %w", err)
+	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordInsertDuration(time.Since(insertStarted))
+	}
+	if err := stageExistingBinaryChunk(ctx, runner); err != nil {
+		return nil, nil, err
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO binary_observation_stats (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			total_parts,
+			observed_parts,
+			total_bytes,
+			first_article_number,
+			last_article_number,
+			posted_at,
+			refreshed_at,
+			updated_at
+		)
+		SELECT
+			e.binary_id,
+			r.provider_id,
+			r.newsgroup_id,
+			r.total_parts,
+			0,
+			0,
+			0,
+			0,
+			r.posted_at,
+			NOW(),
+			NOW()
+		FROM tmp_upsert_binaries r
+		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		ON CONFLICT (binary_id) DO UPDATE
+		SET total_parts = GREATEST(binary_observation_stats.total_parts, EXCLUDED.total_parts),
+		    posted_at = COALESCE(binary_observation_stats.posted_at, EXCLUDED.posted_at),
+		    updated_at = NOW()`); err != nil {
+		return nil, nil, fmt.Errorf("upsert binary_observation_stats batch: %w", err)
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO binary_identity_current (
+			binary_id,
+			provider_id,
+			newsgroup_id,
 			source_release_key,
 			release_family_key,
 			file_set_key,
@@ -1434,17 +1449,15 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			subject_set_kind,
 			family_kind,
 			base_stem,
-			is_auxiliary,
-			is_main_payload,
 			release_key,
 			release_name,
-			binary_key,
 			binary_name,
 			file_name,
 			file_index,
 			expected_file_count,
-			total_parts,
-			posted_at,
+			expected_archive_file_count,
+			is_auxiliary,
+			is_main_payload,
 			match_confidence,
 			match_status,
 			grouping_summary_kind,
@@ -1453,9 +1466,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			updated_at
 		)
 		SELECT
+			e.binary_id,
 			r.provider_id,
 			r.newsgroup_id,
-			r.poster_id,
 			r.source_release_key,
 			r.release_family_key,
 			r.file_set_key,
@@ -1466,17 +1479,15 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.subject_set_kind,
 			r.family_kind,
 			r.base_stem,
-			r.is_auxiliary,
-			r.is_main_payload,
 			r.release_key,
 			r.release_name,
-			r.binary_key,
 			r.binary_name,
 			r.file_name,
 			r.file_index,
 			r.expected_file_count,
-			r.total_parts,
-			r.posted_at,
+			0,
+			r.is_auxiliary,
+			r.is_main_payload,
 			r.match_confidence,
 			r.match_status,
 			r.grouping_summary_kind,
@@ -1484,82 +1495,90 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.grouping_summary_fallback_used,
 			NOW()
 		FROM tmp_upsert_binaries r
-		LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		WHERE e.binary_id IS NULL
-		ORDER BY
+		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		ON CONFLICT (binary_id) DO UPDATE
+		SET source_release_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.source_release_key ELSE binary_identity_current.source_release_key END,
+		    release_family_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.release_family_key ELSE binary_identity_current.release_family_key END,
+		    file_set_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.file_set_key ELSE binary_identity_current.file_set_key END,
+		    file_family_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.file_family_key ELSE binary_identity_current.file_family_key END,
+		    identity_strength = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.identity_strength ELSE binary_identity_current.identity_strength END,
+		    identity_reason = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.identity_reason ELSE binary_identity_current.identity_reason END,
+		    subject_set_token = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.subject_set_token ELSE binary_identity_current.subject_set_token END,
+		    subject_set_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.subject_set_kind ELSE binary_identity_current.subject_set_kind END,
+		    family_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.family_kind ELSE binary_identity_current.family_kind END,
+		    base_stem = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.base_stem ELSE binary_identity_current.base_stem END,
+		    release_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.release_key ELSE binary_identity_current.release_key END,
+		    release_name = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.release_name ELSE binary_identity_current.release_name END,
+		    binary_name = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.binary_name ELSE binary_identity_current.binary_name END,
+		    file_name = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.file_name ELSE binary_identity_current.file_name END,
+		    file_index = CASE
+		    	WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence AND EXCLUDED.file_index > 0 THEN EXCLUDED.file_index
+		    	ELSE binary_identity_current.file_index
+		    END,
+		    expected_file_count = GREATEST(binary_identity_current.expected_file_count, EXCLUDED.expected_file_count),
+		    is_auxiliary = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.is_auxiliary ELSE binary_identity_current.is_auxiliary END,
+		    is_main_payload = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.is_main_payload ELSE binary_identity_current.is_main_payload END,
+		    match_confidence = GREATEST(binary_identity_current.match_confidence, EXCLUDED.match_confidence),
+		    match_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.match_status ELSE binary_identity_current.match_status END,
+		    grouping_summary_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_kind ELSE binary_identity_current.grouping_summary_kind END,
+		    grouping_summary_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_status ELSE binary_identity_current.grouping_summary_status END,
+		    grouping_summary_fallback_used = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_fallback_used ELSE binary_identity_current.grouping_summary_fallback_used END,
+		    updated_at = NOW()`); err != nil {
+		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO binary_recovery_current (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			updated_at
+		)
+		SELECT
+			e.binary_id,
 			r.provider_id,
 			r.newsgroup_id,
-			r.binary_key`); err != nil {
-		return nil, nil, fmt.Errorf("upsert binaries batch: %w", err)
+			NOW()
+		FROM tmp_upsert_binaries r
+		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		ON CONFLICT (binary_id) DO NOTHING`); err != nil {
+		return nil, nil, fmt.Errorf("upsert binary_recovery_current seed batch: %w", err)
 	}
-	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
-		telemetry.recordInsertDuration(time.Since(insertStarted))
-	}
-	if err := upsertBinaryStorageV2FromStagedBinaries(ctx, runner); err != nil {
-		return nil, nil, err
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO binary_lifecycle (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			lifecycle_status,
+			updated_at
+		)
+		SELECT
+			e.binary_id,
+			r.provider_id,
+			r.newsgroup_id,
+			'active',
+			NOW()
+		FROM tmp_upsert_binaries r
+		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
+		ON CONFLICT (binary_id) DO NOTHING`); err != nil {
+		return nil, nil, fmt.Errorf("upsert binary_lifecycle seed batch: %w", err)
 	}
 	readbackStarted := time.Now()
 	rows, err := runner.QueryContext(ctx, `
-		WITH inserted AS (
-			SELECT
-				r.ordinal,
-				b.id,
-				b.release_family_key,
-				b.base_stem,
-				b.expected_file_count,
-				r.provider_id,
-				r.newsgroup_id
-			FROM tmp_upsert_binaries r
-			LEFT JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-			JOIN binaries b
-			  ON b.provider_id = r.provider_id
-			 AND b.newsgroup_id = r.newsgroup_id
-			 AND b.binary_key = r.binary_key
-			WHERE e.binary_id IS NULL
-		)
 		SELECT
-			persisted.ordinal,
-			persisted.id,
-			persisted.existing_release_family_key,
-			persisted.existing_base_stem,
-			persisted.existing_expected_file_count,
-			persisted.release_family_key,
-			persisted.base_stem,
-			persisted.expected_file_count,
-			persisted.provider_id,
-			persisted.newsgroup_id
-		FROM (
-			SELECT
-				e.ordinal,
-				e.binary_id AS id,
-				e.existing_release_family_key,
-				e.existing_base_stem,
-				e.existing_expected_file_count,
-				b.release_family_key,
-				b.base_stem,
-				b.expected_file_count,
-				r.provider_id,
-				r.newsgroup_id
-			FROM tmp_existing_binaries e
-			JOIN tmp_upsert_binaries r ON r.ordinal = e.ordinal
-			JOIN binaries b ON b.id = e.binary_id
-
-			UNION ALL
-
-			SELECT
-				i.ordinal,
-				i.id,
-				'' AS existing_release_family_key,
-				'' AS existing_base_stem,
-				0 AS existing_expected_file_count,
-				i.release_family_key,
-				i.base_stem,
-				i.expected_file_count,
-				i.provider_id,
-				i.newsgroup_id
-			FROM inserted i
-		) persisted
-		ORDER BY persisted.ordinal`)
+			e.ordinal,
+			e.binary_id,
+			e.existing_release_family_key,
+			e.existing_base_stem,
+			e.existing_expected_file_count,
+			bic.release_family_key,
+			bic.base_stem,
+			bic.expected_file_count,
+			r.provider_id,
+			r.newsgroup_id
+		FROM tmp_existing_binaries e
+		JOIN tmp_upsert_binaries r ON r.ordinal = e.ordinal
+		JOIN binary_identity_current bic ON bic.binary_id = e.binary_id
+		ORDER BY e.ordinal`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
 	}
@@ -1914,19 +1933,21 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 	if runner == nil {
 		return fmt.Errorf("binary upsert tx is required")
 	}
+	_, _ = runner.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_existing_binaries`)
 	if _, err := runner.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_existing_binaries ON COMMIT DROP AS
 		SELECT
 			r.ordinal,
-			b.id AS binary_id,
-			b.release_family_key AS existing_release_family_key,
-			b.base_stem AS existing_base_stem,
-			b.expected_file_count AS existing_expected_file_count
+			bc.binary_id,
+			COALESCE(bic.release_family_key, '') AS existing_release_family_key,
+			COALESCE(bic.base_stem, '') AS existing_base_stem,
+			COALESCE(bic.expected_file_count, 0) AS existing_expected_file_count
 		FROM tmp_upsert_binaries r
-		JOIN binaries b
-		  ON b.provider_id = r.provider_id
-		 AND b.newsgroup_id = r.newsgroup_id
-		 AND b.binary_key = r.binary_key`); err != nil {
+		JOIN binary_core bc
+		  ON bc.provider_id = r.provider_id
+		 AND bc.newsgroup_id = r.newsgroup_id
+		 AND bc.binary_key = r.binary_key
+		LEFT JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id`); err != nil {
 		return fmt.Errorf("stage existing binary upsert rows: %w", err)
 	}
 	if _, err := runner.ExecContext(ctx, `
@@ -2298,9 +2319,9 @@ func existingBinaryIDsForPartRecords(ctx context.Context, tx *sql.Tx, records []
 		WITH requested(id) AS (
 			VALUES %s
 		)
-		SELECT b.id
-		FROM binaries b
-		JOIN requested r ON r.id = b.id`, strings.Join(values, ",")), args...)
+		SELECT bc.binary_id
+		FROM binary_core bc
+		JOIN requested r ON r.id = bc.binary_id`, strings.Join(values, ",")), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query existing binary ids for part upsert: %w", err)
 	}
@@ -2531,11 +2552,11 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			VALUES %s
 		),
 		locked_binaries AS MATERIALIZED (
-			SELECT b.id
-			FROM binaries b
-			JOIN requested r ON r.binary_id = b.id
-			ORDER BY b.id
-			FOR UPDATE
+			SELECT bos.binary_id
+			FROM binary_observation_stats bos
+			JOIN requested r ON r.binary_id = bos.binary_id
+			ORDER BY bos.binary_id
+			FOR UPDATE OF bos
 		),
 		part_rows AS MATERIALIZED (
 			SELECT
@@ -2543,7 +2564,7 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 				bp.segment_bytes,
 				bp.article_header_id
 			FROM locked_binaries lb
-			JOIN binary_parts bp ON bp.binary_id = lb.id
+			JOIN binary_parts bp ON bp.binary_id = lb.binary_id
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT
@@ -2566,31 +2587,30 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			GROUP BY p.binary_id
 		),
 		updated AS (
-			UPDATE binaries b
+			UPDATE binary_observation_stats bos
 			SET observed_parts = agg.observed_parts,
 			    total_bytes = agg.total_bytes,
 			    first_article_number = agg.first_article_number,
 			    last_article_number = agg.last_article_number,
-			    posted_at = COALESCE(agg.posted_at, b.posted_at),
+			    posted_at = COALESCE(agg.posted_at, bos.posted_at),
+			    refreshed_at = NOW(),
 			    updated_at = NOW()
 			FROM agg
-			WHERE b.id = agg.binary_id
+			WHERE bos.binary_id = agg.binary_id
 			RETURNING
-				b.provider_id,
-				b.newsgroup_id,
-				b.release_family_key,
-				b.base_stem,
-				b.expected_file_count,
-				b.expected_archive_file_count
+				bos.binary_id,
+				bos.provider_id,
+				bos.newsgroup_id
 		)
 		SELECT
-			provider_id,
-			newsgroup_id,
-			release_family_key,
-			base_stem,
-			expected_file_count,
-			expected_archive_file_count
-		FROM updated`, values.String()), args...)
+			u.provider_id,
+			u.newsgroup_id,
+			COALESCE(bic.release_family_key, ''),
+			COALESCE(bic.base_stem, ''),
+			COALESCE(bic.expected_file_count, 0),
+			COALESCE(bic.expected_archive_file_count, 0)
+		FROM updated u
+		JOIN binary_identity_current bic ON bic.binary_id = u.binary_id`, values.String()), args...)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
 	}
