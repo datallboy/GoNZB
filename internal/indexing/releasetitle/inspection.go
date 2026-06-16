@@ -49,10 +49,14 @@ func ShouldAdoptInspectionTitle(sourceTitle string, candidate InspectionTitle) b
 	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
 		return false
 	}
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	if sourceTitle != "" && looksReadableTitle(sourceTitle) && !looksObfuscatedTitle(sourceTitle) && !titlesLookRelated(candidate.DisplayTitle, sourceTitle) {
+		return false
+	}
 	if candidate.Confidence >= 0.82 {
 		return true
 	}
-	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedTitle(sourceTitle) || !looksReadableTitle(sourceTitle))
+	return candidate.Confidence >= 0.70 && (sourceTitle == "" || looksObfuscatedTitle(sourceTitle) || !looksReadableTitle(sourceTitle))
 }
 
 func NormalizeSearchTitle(v string) string {

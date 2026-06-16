@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -1829,6 +1830,76 @@ func TestRunOncePrefersInspectArchiveEntryForObfuscatedTitles(t *testing.T) {
 	}
 	if got.IdentityStatus != "identified" {
 		t.Fatalf("expected identified identity status, got %q", got.IdentityStatus)
+	}
+}
+
+func TestRunOnceKeepsReadableSourceWhenArchiveEntryIsUnrelated(t *testing.T) {
+	baseTime := time.Date(2026, 4, 7, 1, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+			ReleaseName: "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.vol150+144",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"steinberg cubase pro 15 0 21 x64 multilingual": {{
+				BinaryID:          51,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseKey:        "steinberg cubase pro 15 0 21 x64 multilingual",
+				ReleaseFamilyKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+				SourceReleaseKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+				ReleaseName:       "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.vol150+144",
+				FileName:          "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.rar",
+				Poster:            "poster-a",
+				PostedAt:          ptrTime(baseTime),
+				FileIndex:         1,
+				ExpectedFileCount: 1,
+				TotalParts:        274,
+				ObservedParts:     274,
+				TotalBytes:        108_465_617,
+				MatchConfidence:   0.86,
+				MatchStatus:       "matched",
+				IsMainPayload:     true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			51: {{ArticleHeaderID: 501, PartNumber: 1}},
+		},
+		titleCandidatesByBinaryID: map[int64][]pgindex.ReleaseTitleCandidate{
+			51: {{
+				BinaryID:   51,
+				Source:     "archive_entry",
+				Value:      "Activation.Manager.Unlocker.b14.exe",
+				Confidence: 0.98,
+			}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+
+	got := repo.upsertedReleases[0]
+	if got.Title != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
+		t.Fatalf("expected readable source title to be retained, got %q", got.Title)
+	}
+	if got.SourceTitle != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
+		t.Fatalf("expected source title to drop par volume suffix, got %q", got.SourceTitle)
+	}
+	if got.TitleSource != "source" {
+		t.Fatalf("expected source title source, got %q", got.TitleSource)
+	}
+	if got.DeobfuscatedTitle != "Steinberg.Cubase.Pro.15.0.21.(x64).Multilingual" {
+		t.Fatalf("expected source deobfuscated title, got %q", got.DeobfuscatedTitle)
+	}
+	if got.CategoryID != newsnab.PC0Day {
+		t.Fatalf("expected PC0Day category, got %d %s", got.CategoryID, got.Category)
 	}
 }
 
