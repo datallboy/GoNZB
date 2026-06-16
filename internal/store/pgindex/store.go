@@ -19,8 +19,19 @@ type Store struct {
 	yencSeedScanConsecutiveEmpty int
 }
 
-// NewStore now opens PostgreSQL by DSN and runs migrations.
+// NewStore opens PostgreSQL by DSN and runs application-owned migrations.
 func NewStore(dsn string) (*Store, error) {
+	return newStore(dsn, true)
+}
+
+// NewMaintenanceStore opens PostgreSQL by DSN for privileged maintenance-only
+// commands. It validates the existing schema but intentionally does not run
+// migrations; runtime migrations belong to the normal application role.
+func NewMaintenanceStore(dsn string) (*Store, error) {
+	return newStore(dsn, false)
+}
+
+func newStore(dsn string, runMigrations bool) (*Store, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("pg dsn is required")
 	}
@@ -53,10 +64,12 @@ func NewStore(dsn string) (*Store, error) {
 
 	s := &Store{db: db}
 
-	// run module migrations on startup.
-	if err := s.RunMigrations(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("run pgindex migrations: %w", err)
+	if runMigrations {
+		// run module migrations on startup.
+		if err := s.RunMigrations(); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("run pgindex migrations: %w", err)
+		}
 	}
 
 	if err := s.ValidateSchema(context.Background()); err != nil {

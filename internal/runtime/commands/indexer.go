@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
+	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -584,18 +586,18 @@ func (r *Runner) ExecuteIndexerRepairRuntime() {
 }
 
 func (r *Runner) ExecuteIndexerCheckIntegrity(ensureExtension bool) {
-	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer integrity check requires store.pg_dsn.")
+	store, log, ctx, cleanup := r.setupIndexerMaintenanceStoreCommand("Usenet/NZB Indexer integrity check requires store.pg_maintenance_dsn. Stop serve/supervisor first, then run this command with privileged maintenance credentials.")
 	defer cleanup()
 
-	report, err := appCtx.PGIndexStore.CheckCriticalIndexerIntegrity(ctx, ensureExtension)
+	report, err := store.CheckCriticalIndexerIntegrity(ctx, ensureExtension)
 	if err != nil {
-		appCtx.Logger.Fatal("indexer maintenance check-integrity failed: %v", err)
+		log.Fatal("indexer maintenance check-integrity failed: %v", err)
 	}
 	if report == nil {
-		appCtx.Logger.Fatal("indexer maintenance check-integrity failed: no report returned")
+		log.Fatal("indexer maintenance check-integrity failed: no report returned")
 	}
 	for _, check := range report.Checks {
-		appCtx.Logger.Info(
+		log.Info(
 			"indexer integrity: relation=%s access_method=%s metadata_ok=%t amcheck_ran=%t ok=%t detail=%s",
 			check.Relation,
 			check.AccessMethod,
@@ -606,25 +608,25 @@ func (r *Runner) ExecuteIndexerCheckIntegrity(ensureExtension bool) {
 		)
 	}
 	if report.HasFailures() {
-		appCtx.Logger.Fatal("indexer integrity failed: %s", report.FailureSummary())
+		log.Fatal("indexer integrity failed: %s", report.FailureSummary())
 	}
-	appCtx.Logger.Info("indexer integrity check completed")
+	log.Info("indexer integrity check completed")
 }
 
 func (r *Runner) ExecuteIndexerReindexCritical() {
-	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer critical reindex requires store.pg_dsn.")
+	store, log, ctx, cleanup := r.setupIndexerMaintenanceStoreCommand("Usenet/NZB Indexer critical reindex requires store.pg_maintenance_dsn. Stop serve/supervisor first, then run this command with privileged maintenance credentials.")
 	defer cleanup()
 
-	out, err := appCtx.PGIndexStore.ReindexCriticalIndexerIndexes(ctx)
+	out, err := store.ReindexCriticalIndexerIndexes(ctx)
 	if err != nil {
-		appCtx.Logger.Fatal("indexer maintenance reindex-critical failed: %v", err)
+		log.Fatal("indexer maintenance reindex-critical failed: %v", err)
 	}
 	if out != nil {
 		for _, relation := range out.Reindexed {
-			appCtx.Logger.Info("indexer integrity repair: reindexed=%s", relation)
+			log.Info("indexer integrity repair: reindexed=%s", relation)
 		}
 	}
-	appCtx.Logger.Info("indexer critical reindex completed")
+	log.Info("indexer critical reindex completed")
 }
 
 func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {
@@ -669,6 +671,31 @@ func (r *Runner) setupIndexerStoreCommand(notConfiguredMessage string) (*app.Con
 	return appCtx, ctx, func() {
 		stop()
 		appCtx.Close()
+	}
+}
+
+func (r *Runner) setupIndexerMaintenanceStoreCommand(notConfiguredMessage string) (*pgindex.Store, *logger.Logger, context.Context, func()) {
+	cfg, log := r.loadRuntimeConfig()
+	dsn := strings.TrimSpace(cfg.Store.PGMaintenanceDSN)
+	if dsn == "" {
+		log.Fatal("%s", notConfiguredMessage)
+	}
+
+	store, err := pgindex.NewMaintenanceStore(dsn)
+	if err != nil {
+		log.Fatal("failed to initialize pg maintenance store: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	return store, log, ctx, func() {
+		stop()
+		if err := store.Close(); err != nil {
+			log.Warn("error closing pg maintenance store: %v", err)
+		}
+		if err := log.Close(); err != nil {
+			// The logger may already be closed by fatal paths; ignore close errors.
+			_ = err
+		}
 	}
 }
 
