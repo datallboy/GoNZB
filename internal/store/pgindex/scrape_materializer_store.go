@@ -363,8 +363,7 @@ func linkArticleHeaderPayloadPosterIDs(ctx context.Context, tx *sql.Tx, rows []c
 	query.WriteString(`
 		)
 		UPDATE article_header_ingest_payloads aip
-		SET poster_id = i.poster_id,
-		    updated_at = NOW()
+		SET poster_id = i.poster_id
 		FROM input_rows i
 		WHERE aip.article_header_id = i.article_header_id
 		  AND aip.poster_id IS DISTINCT FROM i.poster_id`)
