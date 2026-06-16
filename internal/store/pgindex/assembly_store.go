@@ -21,9 +21,9 @@ const (
 	assemblePriorityBinaryMinScan          = 1000
 	assemblePriorityBinaryMaxScan          = 2000
 	assemblePriorityBinaryBatch            = 20
-	assemblePriorityHeaderWindowMultiplier = 40
-	assemblePriorityHeaderMinScan          = 5000
-	assemblePriorityHeaderMaxScan          = 20000
+	assemblePriorityHeaderWindowMultiplier = 2
+	assemblePriorityHeaderMinScan          = 500
+	assemblePriorityHeaderMaxScan          = 2000
 	assembleClaimStatementTimeout          = 15 * time.Second
 	refreshBinaryStatsBatchSize            = 8000
 )
@@ -128,6 +128,7 @@ const (
 )
 
 type assemblyQueryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
@@ -321,11 +322,19 @@ func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q asse
 	}
 
 	lane = strings.TrimSpace(strings.ToLower(lane))
-	laneALimit := 0
+	laneALimit := limit
 	switch lane {
 	case AssemblyClaimLaneCombined:
+		laneALimit = 1
+		if limit > 1 {
+			laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
+			if laneALimit <= 0 {
+				laneALimit = 1
+			}
+		}
 	case AssemblyClaimLaneA:
 	case AssemblyClaimLaneB:
+		laneALimit = 0
 	default:
 		return nil, fmt.Errorf("unknown assembly claim lane %q", lane)
 	}
@@ -352,22 +361,23 @@ func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q asse
 	selectedIDs := make(map[int64]struct{}, limit)
 
 	if laneALimit > 0 {
-		priorityIDs, err := s.listPriorityAssemblyHeaderIDs(ctx, q, laneALimit, priorityHeaderWindow)
+		priorityIDs, err := s.listPriorityAssemblyHeaderIDsWithFallback(ctx, q, laneALimit, priorityHeaderWindow)
 		if err != nil {
-			return nil, err
-		}
-		for _, id := range priorityIDs {
-			if len(selected) >= laneALimit {
-				break
+			priorityIDs = nil
+		} else {
+			for _, id := range priorityIDs {
+				if len(selected) >= laneALimit {
+					break
+				}
+				if _, exists := selectedIDs[id]; exists {
+					continue
+				}
+				selectedIDs[id] = struct{}{}
+				selected = append(selected, assemblyCandidateSelection{
+					ID:                              id,
+					StructuredIdentityBinaryMatched: true,
+				})
 			}
-			if _, exists := selectedIDs[id]; exists {
-				continue
-			}
-			selectedIDs[id] = struct{}{}
-			selected = append(selected, assemblyCandidateSelection{
-				ID:                              id,
-				StructuredIdentityBinaryMatched: true,
-			})
 		}
 	}
 
@@ -399,6 +409,27 @@ type assemblyCandidateSelection struct {
 	StructuredIdentityBinaryMatched bool
 }
 
+func (s *Store) listPriorityAssemblyHeaderIDsWithFallback(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]int64, error) {
+	tx, inTx := q.(*sql.Tx)
+	if !inTx {
+		return s.listPriorityAssemblyHeaderIDs(ctx, q, limit, pendingWindow)
+	}
+
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT assembly_priority_selector`); err != nil {
+		return nil, err
+	}
+	out, err := s.listPriorityAssemblyHeaderIDs(ctx, q, limit, pendingWindow)
+	if err != nil {
+		_, _ = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT assembly_priority_selector`)
+		_, _ = tx.ExecContext(ctx, `RELEASE SAVEPOINT assembly_priority_selector`)
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT assembly_priority_selector`); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -408,78 +439,66 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 	}
 
 	rows, err := q.QueryContext(ctx, `
-		WITH recent_pending AS (
+		WITH candidate_binaries AS (
 			SELECT
-				ah.id,
-				ah.provider_id,
-				ah.newsgroup_id
-			FROM article_headers ah
-			WHERE ah.assembled_at IS NULL
-			  AND (
-			  	ah.assembly_claimed_until IS NULL
-			  	OR ah.assembly_claimed_until < NOW()
-			  )
-			ORDER BY ah.id DESC
-			LIMIT $2
-		),
-		pending_structured AS (
-			SELECT
-				rp.id,
-				rp.provider_id,
-				rp.newsgroup_id,
-				LOWER(BTRIM(p.subject_file_name)) AS normalized_file_name
-			FROM recent_pending rp
-			JOIN article_header_ingest_payloads p ON p.article_header_id = rp.id
-			WHERE BTRIM(p.subject_file_name) <> ''
-		),
-		matched AS (
-			SELECT
-				ps.id,
-				b.binary_id,
-				b.is_main_payload,
-				b.observed_parts,
-				b.completion_ratio
-			FROM pending_structured ps
-			JOIN LATERAL (
+				ranked.binary_id,
+				ranked.provider_id,
+				ranked.newsgroup_id,
+				ranked.normalized_file_name,
+				ranked.is_main_payload,
+				ranked.observed_parts,
+				ranked.completion_ratio,
+				ROW_NUMBER() OVER () AS binary_rank
+			FROM (
 				SELECT
-					bc.binary_id,
+					bic.binary_id,
+					bic.provider_id,
+					bic.newsgroup_id,
+					LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) AS normalized_file_name,
 					bic.is_main_payload,
 					bos.observed_parts,
 					CASE
 						WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
 						ELSE 0
 					END AS completion_ratio
-				FROM binary_core bc
-				JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-				JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-				WHERE bc.provider_id = ps.provider_id
-				  AND bc.newsgroup_id = ps.newsgroup_id
-				  AND LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) = ps.normalized_file_name
-				  AND bos.total_parts > 0
-				  AND bos.observed_parts < bos.total_parts
-				  AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
+				FROM binary_identity_current bic
+				JOIN binary_observation_stats bos
+				  ON bos.binary_id = bic.binary_id
+				 AND bos.total_parts > 0
+				 AND bos.observed_parts < bos.total_parts
+				WHERE BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
 				ORDER BY
-					CASE
-						WHEN bic.is_main_payload THEN 0
-						ELSE 1
-					END ASC,
-					CASE
-						WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
-						ELSE 0
-					END DESC,
 					bos.observed_parts DESC,
-					bc.binary_id DESC
-				LIMIT 1
-			) b ON true
+					bic.binary_id DESC
+				LIMIT $2
+			) ranked
 		),
 		selected AS (
 			SELECT
-				id,
-				binary_id,
-				is_main_payload,
-				observed_parts,
-				completion_ratio
-			FROM matched
+				matches.id,
+				cb.binary_id,
+				cb.is_main_payload,
+				cb.observed_parts,
+				cb.completion_ratio,
+				cb.binary_rank
+			FROM candidate_binaries cb
+			JOIN LATERAL (
+				SELECT ah.id
+				FROM article_header_ingest_payloads p
+				JOIN article_headers ah
+				  ON ah.id = p.article_header_id
+				 AND ah.provider_id = cb.provider_id
+				 AND ah.newsgroup_id = cb.newsgroup_id
+				 AND ah.assembled_at IS NULL
+				 AND (
+				 	ah.assembly_claimed_until IS NULL
+				 	OR ah.assembly_claimed_until < NOW()
+				 )
+				WHERE LOWER(BTRIM(p.subject_file_name)) = cb.normalized_file_name
+				  AND BTRIM(p.subject_file_name) <> ''
+				ORDER BY ah.id DESC
+				LIMIT 1
+			) matches ON true
 			ORDER BY
 				CASE
 					WHEN is_main_payload THEN 0
@@ -755,6 +774,37 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 	}
 	if pendingWindow < limit {
 		pendingWindow = limit
+	}
+
+	if len(excludeIDs) == 0 && !excludeStructuredMatches {
+		rows, err := q.QueryContext(ctx, `
+			SELECT ah.id
+			FROM article_headers ah
+			WHERE ah.assembled_at IS NULL
+			  AND (
+			  	ah.assembly_claimed_until IS NULL
+			  	OR ah.assembly_claimed_until < NOW()
+			  )
+			ORDER BY ah.id DESC
+			LIMIT $1`, limit)
+		if err != nil {
+			return nil, fmt.Errorf("list recent unassembled header ids: %w", err)
+		}
+		defer rows.Close()
+
+		out := make([]int64, 0, limit)
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return nil, fmt.Errorf("scan recent unassembled header id: %w", err)
+			}
+			out = append(out, id)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate recent unassembled header ids: %w", err)
+		}
+
+		return out, nil
 	}
 
 	args := []any{limit, pendingWindow}
