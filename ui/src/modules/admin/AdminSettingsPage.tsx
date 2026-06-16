@@ -805,171 +805,188 @@ export function AdminSettingsPage() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Release candidate selection and matching">
+        <SettingsSection title="Release settings">
           <div className="banner">
-            Release settings below affect three different parts of the pipeline. Candidate selection decides which release families are worth processing now. Public-ready policy decides when a release is exposed publicly and becomes eligible for background NZB generation. Matching settings affect how article headers are grouped into binaries during assemble.
+            Release settings are grouped by how risky they are to change. Core settings affect release formation, public-ready settings decide what appears in the public index and NZB generation queue, and advanced settings tune edge-case matching, reform, and source retention.
           </div>
-          <div className="toolbar-grid">
-            <NumberField
-              label="Minimum expected file coverage %"
-              min={0}
-              max={100}
-              value={indexing.release.min_expected_file_coverage_pct}
-              helpText="Used during release candidate selection. When a family has an expected file count, this percent of expected files must be complete before release prioritizes the family for formation."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
-            />
-            <NumberField
-              label="Auto reform batch size"
-              min={0}
-              max={5000}
-              value={indexing.release.auto_reform_batch_size}
-              helpText="Bounded background reform sweep per normal release run. Use this to automatically revisit stale or suspicious existing releases like stray PAR2-only fragments without manual --reform runs."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, auto_reform_batch_size: value } })}
-            />
-            <NumberField
-              label="Minimum confidence"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.release.min_confidence}
-              helpText="Final release persistence gate. Lower values allow weaker release identities to be saved after clustering."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
-            />
-            <NumberField
-              label="Minimum completion %"
-              min={0}
-              max={100}
-              value={indexing.release.min_completion_pct}
-              helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
-            />
-            <CheckboxField
-              label="Require expected file count for contextual obfuscated releases"
-              helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
-              checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
-            />
-            <NumberField
-              label="Public min match confidence"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.release.public_min_match_confidence}
-              helpText="Minimum release identity confidence required before the release becomes public and eligible for background NZB generation."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_match_confidence: value } })}
-            />
-            <NumberField
-              label="Public min completion %"
-              min={0}
-              max={100}
-              value={indexing.release.public_min_completion_pct}
-              helpText="Minimum completion threshold for public visibility and background NZB generation eligibility."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_completion_pct: value } })}
-            />
-            <TextField
-              label="Public min identity status"
-              value={indexing.release.public_min_identity_status}
-              helpText="Allowed values: probable or identified. Probable matches the existing public-ready behavior."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_identity_status: value } })}
-            />
-            <CheckboxField
-              label="Public require inspection"
-              helpText="Requires at least one inspection-derived media or evidence signal before a release becomes public-ready and NZB generation-eligible."
-              checked={Boolean(indexing.release.public_require_inspection)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_inspection: value } })}
-            />
-            <CheckboxField
-              label="Public require enrichment"
-              helpText="Requires external match/enrichment evidence before a release becomes public-ready and NZB generation-eligible."
-              checked={Boolean(indexing.release.public_require_enrichment)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_enrichment: value } })}
-            />
-            <CheckboxField
-              label="Public require payload complete"
-              helpText="If an archive-style release expects payload volumes, require the payload archive set itself to be complete before the release becomes public or NZB-generation eligible."
-              checked={Boolean(indexing.release.public_require_payload_complete)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_payload_complete: value } })}
-            />
-            <CheckboxField
-              label="Public require all expected files complete"
-              helpText="Stricter gate. When enabled, missing sidecars like base PAR2, NFO, or SFV can keep the release non-public until the full expected file count is reached."
-              checked={Boolean(indexing.release.public_require_expected_file_count_complete)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_expected_file_count_complete: value } })}
-            />
-            <CheckboxField
-              label="Public require PAR2 present"
-              helpText="Presence-only gate. Requires at least one PAR2 file to exist before public visibility and NZB generation."
-              checked={Boolean(indexing.release.public_require_par2)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_par2: value } })}
-            />
-            <CheckboxField
-              label="Public require NFO present"
-              helpText="Presence-only gate. Requires at least one NFO file to exist before public visibility and NZB generation."
-              checked={Boolean(indexing.release.public_require_nfo)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_nfo: value } })}
-            />
-            <CheckboxField
-              label="Public require SFV present"
-              helpText="Presence-only gate. Requires at least one SFV file to exist before public visibility and NZB generation."
-              checked={Boolean(indexing.release.public_require_sfv)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_sfv: value } })}
-            />
-            <CheckboxField
-              label="Retain archived sources until all expected files complete"
-              helpText="Prevents purge while the release still appears to be missing expected auxiliary files. Useful when late PAR2/NFO/SFV sidecars often arrive after the first public snapshot."
-              checked={Boolean(indexing.release.retain_until_expected_file_count_complete)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_until_expected_file_count_complete: value } })}
-            />
-            <CheckboxField
-              label="Retain archived sources until PAR2 present"
-              helpText="Presence-only purge hold. Keeps release sources from purging until at least one PAR2 file exists."
-              checked={Boolean(indexing.release.retain_require_par2)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_par2: value } })}
-            />
-            <CheckboxField
-              label="Retain archived sources until NFO present"
-              helpText="Presence-only purge hold. Keeps release sources from purging until at least one NFO file exists."
-              checked={Boolean(indexing.release.retain_require_nfo)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_nfo: value } })}
-            />
-            <CheckboxField
-              label="Retain archived sources until SFV present"
-              helpText="Presence-only purge hold. Keeps release sources from purging until at least one SFV file exists."
-              checked={Boolean(indexing.release.retain_require_sfv)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_sfv: value } })}
-            />
-            <CheckboxField
-              label="Reopen archived NZB when release snapshot changes"
-              helpText="When later file discoveries change a formed release, mark the archived NZB stale so generation/archive can rebuild it from the newer release snapshot."
-              checked={Boolean(indexing.release.reopen_archived_nzb_on_release_change)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, reopen_archived_nzb_on_release_change: value } })}
-            />
-            <NumberField
-              label="High confidence threshold"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.match.high_confidence_threshold}
-              helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
-            />
-            <NumberField
-              label="Probable confidence threshold"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.match.probable_confidence_threshold}
-              helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
-            />
-            <NumberField
-              label="Article bucket size"
-              min={1}
-              value={indexing.match.article_bucket_size}
-              helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
-            />
-          </div>
+          <ReleaseSettingsPanel title="Core Formation" description="Controls when a candidate family can become a persisted release. Keep these conservative unless release formation is demonstrably missing valid complete families.">
+            <div className="toolbar-grid">
+              <NumberField
+                label="Minimum confidence"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.release.min_confidence}
+                helpText="Final release persistence gate. Lower values save weaker/internal release identities; public-ready confidence still controls public exposure."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
+              />
+              <NumberField
+                label="Minimum completion %"
+                min={0}
+                max={100}
+                value={indexing.release.min_completion_pct}
+                helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
+              />
+              <NumberField
+                label="Minimum expected file coverage %"
+                min={0}
+                max={100}
+                value={indexing.release.min_expected_file_coverage_pct}
+                helpText="Candidate-selection gate. When a family has an expected file count, this percent of expected files must be complete before release formation prioritizes it."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Public-Ready Policy" description="Controls what can appear publicly and become eligible for background NZB generation. These gates should stay stricter than formation gates.">
+            <div className="toolbar-grid">
+              <NumberField
+                label="Public min match confidence"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.release.public_min_match_confidence}
+                helpText="Minimum release identity confidence required before the release becomes public and eligible for background NZB generation."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_match_confidence: value } })}
+              />
+              <NumberField
+                label="Public min completion %"
+                min={0}
+                max={100}
+                value={indexing.release.public_min_completion_pct}
+                helpText="Minimum completion threshold for public visibility and background NZB generation eligibility."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_completion_pct: value } })}
+              />
+              <TextField
+                label="Public min identity status"
+                value={indexing.release.public_min_identity_status}
+                helpText="Allowed values: probable or identified. Probable matches the existing public-ready behavior."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_identity_status: value } })}
+              />
+              <CheckboxField
+                label="Public require inspection"
+                helpText="Requires at least one inspection-derived media or evidence signal before a release becomes public-ready and NZB generation-eligible."
+                checked={Boolean(indexing.release.public_require_inspection)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_inspection: value } })}
+              />
+              <CheckboxField
+                label="Public require payload complete"
+                helpText="If an archive-style release expects payload volumes, require the payload archive set itself to be complete before the release becomes public or NZB-generation eligible."
+                checked={Boolean(indexing.release.public_require_payload_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_payload_complete: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Advanced Matching And Reform" description="Use when investigating over-grouping, under-grouping, stale releases, or obfuscated families." collapsed>
+            <div className="toolbar-grid">
+              <NumberField
+                label="Auto reform batch size"
+                min={0}
+                max={5000}
+                value={indexing.release.auto_reform_batch_size}
+                helpText="Bounded background reform sweep per normal release run. Use this to automatically revisit stale or suspicious existing releases like stray PAR2-only fragments without manual --reform runs."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, auto_reform_batch_size: value } })}
+              />
+              <CheckboxField
+                label="Require expected file count for contextual obfuscated releases"
+                helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
+                checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+              />
+              <NumberField
+                label="High confidence threshold"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.match.high_confidence_threshold}
+                helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
+              />
+              <NumberField
+                label="Probable confidence threshold"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.match.probable_confidence_threshold}
+                helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
+              />
+              <NumberField
+                label="Article bucket size"
+                min={1}
+                value={indexing.match.article_bucket_size}
+                helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Advanced Public And Retention Gates" description="Optional strictness gates and source-retention holds. These can intentionally delay public visibility, NZB generation, or purge." collapsed>
+            <div className="toolbar-grid">
+              <CheckboxField
+                label="Public require enrichment"
+                helpText="Requires external match/enrichment evidence before a release becomes public-ready and NZB generation-eligible."
+                checked={Boolean(indexing.release.public_require_enrichment)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_enrichment: value } })}
+              />
+              <CheckboxField
+                label="Public require all expected files complete"
+                helpText="Stricter gate. When enabled, missing sidecars like base PAR2, NFO, or SFV can keep the release non-public until the full expected file count is reached."
+                checked={Boolean(indexing.release.public_require_expected_file_count_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_expected_file_count_complete: value } })}
+              />
+              <CheckboxField
+                label="Public require PAR2 present"
+                helpText="Presence-only gate. Requires at least one PAR2 file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_par2)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_par2: value } })}
+              />
+              <CheckboxField
+                label="Public require NFO present"
+                helpText="Presence-only gate. Requires at least one NFO file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_nfo)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_nfo: value } })}
+              />
+              <CheckboxField
+                label="Public require SFV present"
+                helpText="Presence-only gate. Requires at least one SFV file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_sfv)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_sfv: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until all expected files complete"
+                helpText="Prevents purge while the release still appears to be missing expected auxiliary files. Useful when late PAR2/NFO/SFV sidecars often arrive after the first public snapshot."
+                checked={Boolean(indexing.release.retain_until_expected_file_count_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_until_expected_file_count_complete: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until PAR2 present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one PAR2 file exists."
+                checked={Boolean(indexing.release.retain_require_par2)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_par2: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until NFO present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one NFO file exists."
+                checked={Boolean(indexing.release.retain_require_nfo)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_nfo: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until SFV present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one SFV file exists."
+                checked={Boolean(indexing.release.retain_require_sfv)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_sfv: value } })}
+              />
+              <CheckboxField
+                label="Reopen archived NZB when release snapshot changes"
+                helpText="When later file discoveries change a formed release, mark the archived NZB stale so generation/archive can rebuild it from the newer release snapshot."
+                checked={Boolean(indexing.release.reopen_archived_nzb_on_release_change)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, reopen_archived_nzb_on_release_change: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
         </SettingsSection>
 
         <SettingsSection title="Database storage guard">
@@ -1228,6 +1245,28 @@ function SettingsSection({
       {locked && lockedMessage ? <div className="banner">{lockedMessage}</div> : null}
       {children}
     </div>
+  )
+}
+
+function ReleaseSettingsPanel({
+  title,
+  description,
+  collapsed,
+  children,
+}: {
+  title: string
+  description: string
+  collapsed?: boolean
+  children: ReactNode
+}) {
+  return (
+    <details className="release-settings-panel stack" open={!collapsed}>
+      <summary>
+        <span>{title}</span>
+        <small>{description}</small>
+      </summary>
+      {children}
+    </details>
   )
 }
 
