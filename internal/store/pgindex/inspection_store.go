@@ -16,6 +16,7 @@ import (
 
 const inspectionReplaceInsertBatchSize = 200
 const par2CoverageUpdateChunkSize = 15000
+const releaseTitleCandidateLookupChunk = 10000
 
 var (
 	par2CoverageSplitArchiveRE = regexp.MustCompile(`(?i)\.(?:7z|zip)\.0*(\d+)$`)
@@ -157,70 +158,85 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 		return nil, nil
 	}
 
-	placeholders := make([]string, 0, len(binaryIDs))
-	args := make([]any, 0, len(binaryIDs))
-	for idx, binaryID := range binaryIDs {
-		placeholders = append(placeholders, fmt.Sprintf("$%d", idx+1))
-		args = append(args, binaryID)
-	}
-	filter := strings.Join(placeholders, ",")
-
 	out := make([]ReleaseTitleCandidate, 0, len(binaryIDs)*3)
-	appendRows := func(query string, source string, confidence float64) error {
-		rows, err := s.db.QueryContext(ctx, query, args...)
-		if err != nil {
-			return err
+	for start := 0; start < len(binaryIDs); start += releaseTitleCandidateLookupChunk {
+		end := start + releaseTitleCandidateLookupChunk
+		if end > len(binaryIDs) {
+			end = len(binaryIDs)
 		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var item ReleaseTitleCandidate
-			item.Source = source
-			item.Confidence = confidence
-			if err := rows.Scan(&item.BinaryID, &item.Value); err != nil {
-				return err
-			}
-			item.Value = strings.TrimSpace(item.Value)
-			if item.Value == "" {
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, binaryID := range binaryIDs[start:end] {
+			if binaryID <= 0 {
 				continue
 			}
-			out = append(out, item)
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
 		}
-		return rows.Err()
-	}
+		if len(args) == 0 {
+			continue
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return nil, fmt.Errorf("release title candidate lookup chunk has %d bind parameters", len(args))
+		}
+		filter := strings.Join(placeholders, ",")
 
-	if err := appendRows(`
-		SELECT binary_id, summary_json->>'archive_entry'
-		FROM binary_inspections
-		WHERE stage_name = 'inspect_media'
-		  AND binary_id IN (`+filter+`)
-		  AND COALESCE(summary_json->>'archive_entry', '') <> ''`,
-		"archive_entry", 0.98); err != nil {
-		return nil, fmt.Errorf("list inspect_media title candidates: %w", err)
-	}
+		appendRows := func(query string, source string, confidence float64) error {
+			rows, err := s.db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
 
-	if err := appendRows(`
-		SELECT binary_id, entry_name
-		FROM binary_archive_entries
-		WHERE binary_id IN (`+filter+`)
-		  AND is_dir = FALSE
-		  AND (
-			media_type IN ('video', 'audio')
-			OR lower(entry_name) ~ '\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
-		  )`,
-		"archive_entry", 0.92); err != nil {
-		return nil, fmt.Errorf("list archive entry title candidates: %w", err)
-	}
+			for rows.Next() {
+				var item ReleaseTitleCandidate
+				item.Source = source
+				item.Confidence = confidence
+				if err := rows.Scan(&item.BinaryID, &item.Value); err != nil {
+					return err
+				}
+				item.Value = strings.TrimSpace(item.Value)
+				if item.Value == "" {
+					continue
+				}
+				out = append(out, item)
+			}
+			return rows.Err()
+		}
 
-	if err := appendRows(`
-		SELECT binary_id, text_value
-		FROM binary_text_evidence
-		WHERE stage_name = 'inspect_nfo'
-		  AND evidence_kind = 'nfo_text'
-		  AND binary_id IN (`+filter+`)
-		  AND text_value <> ''`,
-		"nfo", 0.84); err != nil {
-		return nil, fmt.Errorf("list nfo title candidates: %w", err)
+		if err := appendRows(`
+			SELECT binary_id, summary_json->>'archive_entry'
+			FROM binary_inspections
+			WHERE stage_name = 'inspect_media'
+			  AND binary_id IN (`+filter+`)
+			  AND COALESCE(summary_json->>'archive_entry', '') <> ''`,
+			"archive_entry", 0.98); err != nil {
+			return nil, fmt.Errorf("list inspect_media title candidates: %w", err)
+		}
+
+		if err := appendRows(`
+			SELECT binary_id, entry_name
+			FROM binary_archive_entries
+			WHERE binary_id IN (`+filter+`)
+			  AND is_dir = FALSE
+			  AND (
+				media_type IN ('video', 'audio')
+				OR lower(entry_name) ~ '\.(mkv|mp4|avi|ts|flac|mp3|m4a)$'
+			  )`,
+			"archive_entry", 0.92); err != nil {
+			return nil, fmt.Errorf("list archive entry title candidates: %w", err)
+		}
+
+		if err := appendRows(`
+			SELECT binary_id, text_value
+			FROM binary_text_evidence
+			WHERE stage_name = 'inspect_nfo'
+			  AND evidence_kind = 'nfo_text'
+			  AND binary_id IN (`+filter+`)
+			  AND text_value <> ''`,
+			"nfo", 0.84); err != nil {
+			return nil, fmt.Errorf("list nfo title candidates: %w", err)
+		}
 	}
 
 	return out, nil

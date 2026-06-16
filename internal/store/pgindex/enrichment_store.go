@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const enrichmentInsertBatchSize = 200
+const (
+	enrichmentInsertBatchSize = 200
+	predbEntryIDLookupChunk   = 10000
+)
 
 type preparedPredbEntry struct {
 	NormalizedTitle string
@@ -179,33 +182,42 @@ func loadPredbEntryIDsTx(ctx context.Context, tx *sql.Tx, normalizedTitles []str
 		return map[string]int64{}, nil
 	}
 
-	placeholders := make([]string, 0, len(normalizedTitles))
-	args := make([]any, 0, len(normalizedTitles))
-	for _, normalized := range normalizedTitles {
-		args = append(args, normalized)
-		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT normalized_title, id
-		FROM predb_entries
-		WHERE normalized_title IN (`+strings.Join(placeholders, ",")+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	out := make(map[string]int64, len(normalizedTitles))
-	for rows.Next() {
-		var normalized string
-		var entryID int64
-		if err := rows.Scan(&normalized, &entryID); err != nil {
+	for start := 0; start < len(normalizedTitles); start += predbEntryIDLookupChunk {
+		end := start + predbEntryIDLookupChunk
+		if end > len(normalizedTitles) {
+			end = len(normalizedTitles)
+		}
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, normalized := range normalizedTitles[start:end] {
+			args = append(args, normalized)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return nil, fmt.Errorf("predb entry id lookup chunk has %d bind parameters", len(args))
+		}
+		rows, err := tx.QueryContext(ctx, `
+			SELECT normalized_title, id
+			FROM predb_entries
+			WHERE normalized_title IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
 			return nil, err
 		}
-		out[normalized] = entryID
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		for rows.Next() {
+			var normalized string
+			var entryID int64
+			if err := rows.Scan(&normalized, &entryID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[normalized] = entryID
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
 	return out, nil
 }
