@@ -22,7 +22,7 @@ func TestDownloaderBootstrapDoesNotRequireNNTPServer(t *testing.T) {
 func TestReleaseExpectedFileCoverageValidation(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 	cfg.Modules.UsenetIndexer.Enabled = true
-	cfg.Store.PGDSN = "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
+	cfg.Store.PGDSN = "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable"
 	cfg.Indexing.Release.MinExpectedFileCoveragePct = func() *float64 { v := 101.0; return &v }()
 
 	if err := cfg.ValidateEffective(); err == nil {
