@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -148,6 +149,35 @@ func normalizeBinaryIdentity(in *BinaryRecord) {
 	}
 	// Keep legacy release_key as a compatibility mirror of release_family_key during cutover.
 	in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+	in.SourceReleaseKey = normalizeBinaryIdentityKey(in.SourceReleaseKey)
+	in.ReleaseFamilyKey = normalizeBinaryIdentityKey(in.ReleaseFamilyKey)
+	in.ReleaseKey = normalizeBinaryIdentityKey(in.ReleaseKey)
+	in.FileSetKey = normalizeBinaryIdentityKey(in.FileSetKey)
+	in.FileFamilyKey = normalizeBinaryIdentityKey(in.FileFamilyKey)
+	in.SubjectSetToken = normalizeBinaryIdentityKey(in.SubjectSetToken)
+	in.BaseStem = normalizeBinaryIdentityKey(in.BaseStem)
+}
+
+func normalizeBinaryIdentityKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	lastSpace := true
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func shouldDeferPromotableBinaryIdentity(in *BinaryRecord) bool {
