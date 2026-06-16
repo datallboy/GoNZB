@@ -3,8 +3,11 @@ package pgindex
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var criticalIndexerIndexNames = []string{
@@ -145,6 +148,11 @@ func (s *Store) checkCriticalIndexerHeap(ctx context.Context, relation string, a
 		relation,
 	)
 	if err != nil {
+		if isPostgresInsufficientPrivilege(err) {
+			check.OK = true
+			check.Detail = "metadata-only check passed; amcheck heap verification unavailable to current database role"
+			return check, nil
+		}
 		check.AmcheckRan = true
 		check.OK = false
 		check.Detail = err.Error()
@@ -200,13 +208,25 @@ func (s *Store) ensureAMCheckExtension(ctx context.Context, ensure bool) (bool, 
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'amcheck')`).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check amcheck extension: %w", err)
 	}
-	if exists || !ensure {
-		return exists, nil
+	if !exists && ensure {
+		if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS amcheck`); err != nil {
+			return false, fmt.Errorf("create amcheck extension: %w", err)
+		}
+		exists = true
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS amcheck`); err != nil {
-		return false, fmt.Errorf("create amcheck extension: %w", err)
+	if !exists {
+		return false, nil
 	}
-	return true, nil
+
+	var isSuperuser bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT rolsuper
+		FROM pg_roles
+		WHERE rolname = current_user`,
+	).Scan(&isSuperuser); err != nil {
+		return false, fmt.Errorf("check amcheck role capability: %w", err)
+	}
+	return isSuperuser, nil
 }
 
 func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation string, amcheckAvailable bool) (IndexerIntegrityCheck, error) {
@@ -248,6 +268,11 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 	}
 
 	if _, err := s.db.ExecContext(ctx, `SELECT bt_index_check($1::regclass, FALSE)`, relation); err != nil {
+		if isPostgresInsufficientPrivilege(err) {
+			check.OK = true
+			check.Detail = "metadata-only check passed; amcheck index verification unavailable to current database role"
+			return check, nil
+		}
 		check.AmcheckRan = true
 		check.OK = false
 		check.Detail = err.Error()
@@ -258,4 +283,9 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 	check.OK = true
 	check.Detail = "amcheck passed"
 	return check, nil
+}
+
+func isPostgresInsufficientPrivilege(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
 }

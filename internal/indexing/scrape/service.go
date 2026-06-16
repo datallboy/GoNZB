@@ -257,7 +257,7 @@ func (s *Service) warnAmcheckUnavailableOnce() {
 		return
 	}
 	s.amcheckWarned = true
-	s.log.Warn("scrape integrity preflight: amcheck extension is not installed; proceeding with metadata-only checks. Install with: gonzb indexer maintenance check-integrity --ensure-extension")
+	s.log.Warn("scrape integrity preflight: amcheck verification is unavailable to the current database role; proceeding with metadata-only checks. Run maintenance integrity checks with a privileged database role for full amcheck coverage")
 }
 
 func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, groups []string, metrics *runMetrics) error {
