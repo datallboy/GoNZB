@@ -176,7 +176,7 @@ func (s *Store) ListIndexerProviderGroupInventoryCandidates(ctx context.Context,
 	return out, nil
 }
 
-func (s *Store) ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int) (IndexerProviderGroupInventoryPage, error) {
+func (s *Store) ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int, sortKey, direction string) (IndexerProviderGroupInventoryPage, error) {
 	out := IndexerProviderGroupInventoryPage{Limit: limit, Offset: offset}
 	if s == nil || s.db == nil {
 		return out, fmt.Errorf("pgindex store is not initialized")
@@ -205,12 +205,13 @@ func (s *Store) ListIndexerProviderGroupInventoryPage(ctx context.Context, query
 	args = append(args, limit, offset)
 	limitParam := len(args) - 1
 	offsetParam := len(args)
+	orderBy := providerInventoryOrderBy(sortKey, direction)
 	sqlText := fmt.Sprintf(`
 		SELECT provider_id, provider_name, group_name, high, low, status, scanned_at
 		FROM indexer_provider_group_inventory
 		%s
-		ORDER BY lower(group_name), provider_id
-		LIMIT $%d OFFSET $%d`, where, limitParam, offsetParam)
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, where, orderBy, limitParam, offsetParam)
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return out, fmt.Errorf("list provider group inventory page: %w", err)
@@ -231,4 +232,27 @@ func (s *Store) ListIndexerProviderGroupInventoryPage(ctx context.Context, query
 		return out, fmt.Errorf("iterate provider group inventory page: %w", err)
 	}
 	return out, nil
+}
+
+func providerInventoryOrderBy(sortKey, direction string) string {
+	dir := "ASC"
+	if strings.EqualFold(strings.TrimSpace(direction), "desc") {
+		dir = "DESC"
+	}
+	switch strings.ToLower(strings.TrimSpace(sortKey)) {
+	case "provider_name":
+		return fmt.Sprintf("lower(provider_name) %s, lower(group_name) ASC, provider_id ASC", dir)
+	case "status":
+		return fmt.Sprintf("status %s, lower(group_name) ASC, provider_id ASC", dir)
+	case "high":
+		return fmt.Sprintf("high %s, lower(group_name) ASC, provider_id ASC", dir)
+	case "scanned_at":
+		return fmt.Sprintf("scanned_at %s, lower(group_name) ASC, provider_id ASC", dir)
+	case "estimated_articles":
+		return fmt.Sprintf("(GREATEST(high - low + 1, 0)) %s, lower(group_name) ASC, provider_id ASC", dir)
+	case "group_name":
+		fallthrough
+	default:
+		return fmt.Sprintf("lower(group_name) %s, provider_id ASC", dir)
+	}
 }

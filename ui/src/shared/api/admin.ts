@@ -63,7 +63,7 @@ export function scanAdminScrapeProviders() {
   return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape/actions/scan', { method: 'POST' })
 }
 
-export function getAdminScrapeProviderInventory(params?: { q?: string; limit?: number; offset?: number }) {
+export function getAdminScrapeProviderInventory(params?: { q?: string; limit?: number; offset?: number; sort?: string; direction?: string }) {
   const query = new URLSearchParams()
   if (params?.q) {
     query.set('q', params.q)
@@ -73,6 +73,12 @@ export function getAdminScrapeProviderInventory(params?: { q?: string; limit?: n
   }
   if (params?.offset) {
     query.set('offset', String(params.offset))
+  }
+  if (params?.sort) {
+    query.set('sort', params.sort)
+  }
+  if (params?.direction) {
+    query.set('direction', params.direction)
   }
   const suffix = query.toString()
   return apiRequest<{ items: AdminScrapeConfigResponse['provider_group_inventory']; count: number; limit: number; offset: number }>(`/api/v1/admin/indexer/scrape/provider-inventory${suffix ? `?${suffix}` : ''}`)
