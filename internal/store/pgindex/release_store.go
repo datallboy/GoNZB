@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -1462,6 +1463,12 @@ func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, fi
 	}
 	defer tx.Rollback()
 
+	if existing, ok, err := loadExistingReleaseSnapshotQuality(ctx, tx, in.ProviderID, in.GroupName); err != nil {
+		return "", err
+	} else if ok && releaseSnapshotWouldDowngrade(existing, in) {
+		return existing.ReleaseID, tx.Commit()
+	}
+
 	releaseID, err := upsertReleaseWithRunner(ctx, tx, in)
 	if err != nil {
 		return "", err
@@ -1479,4 +1486,61 @@ func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, fi
 		return "", err
 	}
 	return releaseID, nil
+}
+
+type releaseSnapshotQuality struct {
+	ReleaseID         string
+	FileCount         int
+	ExpectedFileCount int
+	CompletionPct     float64
+	SizeBytes         int64
+}
+
+func loadExistingReleaseSnapshotQuality(ctx context.Context, tx *sql.Tx, providerID int64, groupName string) (releaseSnapshotQuality, bool, error) {
+	var out releaseSnapshotQuality
+	if providerID <= 0 || strings.TrimSpace(groupName) == "" {
+		return out, false, nil
+	}
+	err := tx.QueryRowContext(ctx, `
+		SELECT release_id, file_count, expected_file_count, completion_pct, size_bytes
+		FROM releases
+		WHERE provider_id = $1
+		  AND group_name = $2
+		FOR UPDATE`,
+		providerID,
+		strings.TrimSpace(groupName),
+	).Scan(&out.ReleaseID, &out.FileCount, &out.ExpectedFileCount, &out.CompletionPct, &out.SizeBytes)
+	if err == nil {
+		return out, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, false, nil
+	}
+	return out, false, fmt.Errorf("load existing release snapshot quality provider=%d group=%q: %w", providerID, groupName, err)
+}
+
+func releaseSnapshotWouldDowngrade(existing releaseSnapshotQuality, incoming ReleaseRecord) bool {
+	if strings.TrimSpace(existing.ReleaseID) == "" || existing.FileCount <= 0 {
+		return false
+	}
+	if incoming.FileCount <= 0 {
+		return true
+	}
+
+	expectedFiles := existing.ExpectedFileCount
+	if incoming.ExpectedFileCount > expectedFiles {
+		expectedFiles = incoming.ExpectedFileCount
+	}
+
+	completionDrop := incoming.CompletionPct+0.01 < existing.CompletionPct
+	fileDrop := incoming.FileCount < existing.FileCount
+	sizeDrop := incoming.SizeBytes > 0 && existing.SizeBytes > 0 && incoming.SizeBytes < existing.SizeBytes
+
+	if expectedFiles > 1 && completionDrop && (fileDrop || sizeDrop) {
+		return true
+	}
+	if expectedFiles > 1 && fileDrop && sizeDrop && incoming.CompletionPct < 100 {
+		return true
+	}
+	return false
 }

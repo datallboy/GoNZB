@@ -3090,6 +3090,95 @@ func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
 	}
 }
 
+func TestPersistReleaseSnapshotDoesNotReplaceBetterSnapshotWithFragment(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("release-group-downgrade-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	strong := ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-downgrade-strong-%d", now.UnixNano()),
+		GUID:              fmt.Sprintf("guid-downgrade-strong-%d", now.UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "strong-source",
+		ReleaseFamilyKey:  "strong-family",
+		ReleaseKey:        "strong-family",
+		GroupName:         groupName,
+		Title:             "Strong Snapshot",
+		SearchTitle:       "strong snapshot",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		SizeBytes:         599_392_993,
+		PostedAt:          &now,
+		FileCount:         18,
+		ExpectedFileCount: 18,
+		CompletionPct:     98,
+		MatchConfidence:   0.86,
+		IdentityStatus:    "probable",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: &now,
+	}
+	files := make([]ReleaseFileRecord, 0, 18)
+	for i := 1; i <= 18; i++ {
+		files = append(files, ReleaseFileRecord{
+			FileName:  fmt.Sprintf("strong.part%02d.rar", i),
+			SizeBytes: 1024,
+			FileIndex: i,
+		})
+	}
+	releaseID, err := store.PersistReleaseSnapshot(ctx, strong, files, nil)
+	if err != nil {
+		t.Fatalf("persist strong snapshot: %v", err)
+	}
+
+	weak := strong
+	weak.ReleaseID = fmt.Sprintf("rel-downgrade-weak-%d", now.UnixNano())
+	weak.GUID = fmt.Sprintf("guid-downgrade-weak-%d", now.UnixNano())
+	weak.SourceReleaseKey = "weak-source"
+	weak.SizeBytes = 8_143_389
+	weak.FileCount = 2
+	weak.CompletionPct = 7.43
+	gotReleaseID, err := store.PersistReleaseSnapshot(ctx, weak, []ReleaseFileRecord{
+		{FileName: "strong.part01.rar", SizeBytes: 7_403_203, FileIndex: 1},
+		{FileName: "strong.part02.rar", SizeBytes: 740_186, FileIndex: 2},
+	}, nil)
+	if err != nil {
+		t.Fatalf("persist weak snapshot: %v", err)
+	}
+	if gotReleaseID != releaseID {
+		t.Fatalf("expected existing release id %s, got %s", releaseID, gotReleaseID)
+	}
+
+	var fileCount int
+	var completion float64
+	var sizeBytes int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT file_count, completion_pct, size_bytes
+		FROM releases
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&fileCount, &completion, &sizeBytes); err != nil {
+		t.Fatalf("load release after weak snapshot: %v", err)
+	}
+	if fileCount != 18 || completion != 98 || sizeBytes != 599_392_993 {
+		t.Fatalf("expected strong snapshot to remain, got file_count=%d completion=%.2f size=%d", fileCount, completion, sizeBytes)
+	}
+
+	var storedFiles int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_files
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&storedFiles); err != nil {
+		t.Fatalf("count release files after weak snapshot: %v", err)
+	}
+	if storedFiles != 18 {
+		t.Fatalf("expected 18 release files to remain, got %d", storedFiles)
+	}
+}
+
 func TestListReleaseCandidatesPrefersExpectedFileCountEvidenceWithinFormableFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

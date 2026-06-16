@@ -1964,6 +1964,99 @@ func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsLowCoverageClusterFromReadyFamily(t *testing.T) {
+	familyKey := "fowylkl3g0x60d5wy1uc2b1athf8eswz9"
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:              1,
+			NewsgroupID:             2,
+			KeyKind:                 pgindex.ReleaseCandidateKeyKindBaseStem,
+			ReleaseFamilyKey:        familyKey,
+			ReleaseKey:              familyKey,
+			ReleaseName:             "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+			ExpectedFileCount:       18,
+			ExpectedFileCoveragePct: 98,
+			ReadinessBucket:         "actionable",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			familyKey: {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part01.rar",
+					FileIndex:         2,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     10,
+					TotalBytes:        7_403_203,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+				{
+					BinaryID:          2,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part02.rar",
+					FileIndex:         3,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     1,
+					TotalBytes:        740_186,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+				{
+					BinaryID:          3,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part03.rar",
+					FileIndex:         4,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     74,
+					TotalBytes:        54_784_580,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                         10,
+		ReleaseMinConfidence:              0.55,
+		ReleaseMinExpectedFileCoveragePct: 80,
+	})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if len(repo.upsertedReleases) != 0 {
+		t.Fatalf("expected low-coverage split cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	}
+	if len(repo.deletedStaleCalls) != 0 {
+		t.Fatalf("expected no stale delete when no replacement was formed, got %+v", repo.deletedStaleCalls)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected candidate ack after skip, got %+v", repo.ackedCandidates)
+	}
+}
+
 func TestRunOncePAR2BackedReleaseBoostsAvailabilityAboveCompletion(t *testing.T) {
 	baseTime := time.Date(2026, 4, 9, 20, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
