@@ -842,8 +842,10 @@ Current audit note:
 
 - the scheduled queued refresh path reads v2 projections only; production `binaries` access is rejected by ownership tests
 - Phase B is not a simple summary copy: it also materializes ready candidates and recovered-file-set candidates. The recovered-file-set discovery path is split by key kind so release-family keys use `idx_binary_identity_release_family` instead of scanning the full yEnc recovery projection.
+- base-stem recovered-file-set discovery uses `idx_binary_identity_base_stem_file_set_refresh` so base-stem keys seek into `binary_identity_current` instead of filtering full provider/newsgroup slices.
+- Phase B recovered-file-set candidate sync computes the file-set aggregate once per provider/key batch from `binary_identity_current`, `binary_observation_stats`, `binary_core`, and `binary_recovery_current`, then performs stale candidate deletes and candidate upserts in the same statement. This avoids repeated scans of the same recovered file-set input.
 - The missing-summary dequeue branch first takes an ordered queue window, then probes summaries by primary key. This avoids scanning all readiness summaries when most queued keys have no summary row yet.
-- 2026-06-16 soak: release-summary refresh remained stable under concurrent scrape/assemble/recovery, but recovered-file-set sync is still the next throughput audit target because small batches can spend multiple seconds there.
+- 2026-06-16 soak: release-summary refresh remained stable under concurrent scrape/assemble/recovery. Follow-up validation after the combined Phase B statement processed 3,481 queued summaries in about 988 ms, with recovered-file-set sync at about 228 ms.
 
 - refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
 - dequeue is hot/cold prioritized

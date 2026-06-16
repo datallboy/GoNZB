@@ -525,6 +525,10 @@ Schema / overlap findings:
   - `release_family_readiness_summaries`
   - `release_ready_candidates`
 - Phase B recovered-file-set discovery originally scanned the yEnc recovery projection for each refresh batch because key-kind matching was expressed as one `OR` predicate and `COALESCE(recovered_source, '')`. It now splits release-family and base-stem branches and uses direct `recovered_source = 'yenc_header'` predicates so indexed binary identity lookups drive the scan.
+- 2026-06-16 follow-up: Phase B recovered-file-set candidate sync was v2-table based, but it recomputed the same `binary_identity_current` / `binary_observation_stats` / `binary_recovery_current` aggregate separately for stale recovered-candidate deletion, stale ready-candidate deletion, recovered-candidate upsert, and ready-candidate upsert. It now computes the aggregate once in materialized CTEs and performs both deletes plus both upserts in one statement.
+- Live validation after the combined-statement change processed 3,481 queued summaries in about 988 ms, with recovered-file-set sync at about 228 ms. Earlier soak runs showed recovered-file-set sync frequently taking 1.3 to 3.1 seconds for comparable scheduled work.
+- 2026-06-16 follow-up: live EXPLAIN showed the recovered-file-set base-stem discovery branch using `idx_binary_identity_release_family` only on `(provider_id, newsgroup_id)` and filtering about 134k rows per requested base-stem key. Migration 58 adds `idx_binary_identity_base_stem_file_set_refresh`, and the query now matches that partial predicate directly. Validation with known base-stem keys used the new index and completed in about 0.15 ms.
+- Post-fix soak showed small release-refresh batches at 20-683 ms recovered-file-set sync and larger 7k-10k batches at 1.1-2.4 seconds, proportional to real work rather than the prior small-batch pathological scan.
 - missing-summary dequeue originally used a broad anti-join that scanned all readiness summaries and all queued rows. It now takes an ordered queue window first and probes summaries by primary key.
 - other stages may enqueue dirty keys only
 - maintenance cleanup must defer while refresh backlog exists; code already reflects this
@@ -533,6 +537,7 @@ Remaining refresh-specific follow-up:
 
 - verify on the rebuilt DB whether Phase A remains the dominant cost once assemble/recover start producing real backlog
 - if it does, the next likely optimization is workload shaping by family fanout/cardinality, not schema growth
+- crosspost popularity refresh is a separate observed hotspot; live sampling caught a scheduled `WITH requested(observed_group_name)` refresh active for about 35 seconds. It should be redesigned as incremental rollup work before being treated as stable background maintenance.
 
 ## Pass 5 Findings: Release
 
