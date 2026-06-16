@@ -685,6 +685,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	clusters := clusterBinaries(candidate, binaries)
 	keepGroupNames := make([]string, 0, len(clusters))
 	outcome := candidateOutcome{}
+	preserveExistingOnSkippedLowCoverage := false
 	clusterTitleCandidates := make([][]pgindex.ReleaseTitleCandidate, len(clusters))
 
 	start = time.Now()
@@ -718,6 +719,13 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			case fragmentReasonContextualWeak:
 				outcome.skippedContextualWeak++
 			}
+			continue
+		}
+		if candidate.ExpectedFileCount > 1 &&
+			record.ExpectedFileCount > 1 &&
+			record.CompletionPct < s.opts.ReleaseMinExpectedFileCoveragePct {
+			outcome.skippedCompletion++
+			preserveExistingOnSkippedLowCoverage = true
 			continue
 		}
 		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
@@ -764,9 +772,11 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	}
 
 	start = time.Now()
-	for _, cleanupKey := range staleReleaseCleanupKeys(candidate, familyKey) {
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, cleanupKey, keepGroupNames); err != nil {
-			return outcome, fmt.Errorf("delete stale release groups for %s: %w", cleanupKey, err)
+	if len(keepGroupNames) > 0 || !preserveExistingOnSkippedLowCoverage {
+		for _, cleanupKey := range staleReleaseCleanupKeys(candidate, familyKey) {
+			if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, cleanupKey, keepGroupNames); err != nil {
+				return outcome, fmt.Errorf("delete stale release groups for %s: %w", cleanupKey, err)
+			}
 		}
 	}
 	if timings != nil {
