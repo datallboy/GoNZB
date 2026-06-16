@@ -153,18 +153,14 @@ export function AdminReleaseDetailPage() {
     archiveState === 'archived' ||
     archiveState === 'purge_pending' ||
     archiveState === 'purged'
-  const hasBinaryDetail =
-    (data.binaries ?? []).length > 0 &&
-    (data.binaries ?? []).some(
-      (binary) =>
-        binary.parts.length > 0 ||
-        binary.inspections.length > 0 ||
-        binary.artifacts.length > 0 ||
-        binary.archive_entries.length > 0 ||
-        binary.media_streams.length > 0 ||
-        binary.text_evidence.length > 0 ||
-        binary.par2_sets.length > 0,
-    )
+  const hasBinaryDetail = (data.binaries ?? []).length > 0
+  const fileDetails = data.files ?? []
+  const releaseFileRows = (data.release.files ?? []).map((summary) => {
+    const detail =
+      fileDetails.find((item) => item.file_id > 0 && item.file_id === summary.file_id) ??
+      fileDetails.find((item) => item.file_name === summary.file_name && item.file_index === summary.file_index)
+    return { summary, detail }
+  })
 
   return (
     <div className="page-section stack">
@@ -469,33 +465,39 @@ export function AdminReleaseDetailPage() {
             <p className="muted-copy">Catalog view of the release payload. Expand a file to review its article segments.</p>
           </div>
         </div>
-        {(data.files ?? []).map((file) => (
-          <details className="detail-block" key={file.file_id} open={file.is_pars}>
+        {releaseFileRows.map(({ summary, detail }) => (
+          <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`} open={summary.is_pars}>
             <summary>
-              {file.file_name} · {formatBytes(file.size_bytes)} · {fileKindLabel(file.file_name, file.is_pars)}
+              {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
             </summary>
             <div className="stack">
               <div className="muted-row">
-                <span>Index {file.file_index}</span>
+                <span>Index {summary.file_index}</span>
                 <span>
-                  Parts {file.observed_parts} / {file.total_parts}
+                  Parts {summary.observed_parts} / {summary.total_parts}
                 </span>
-                <span>Articles {file.article_count}</span>
-                <span>Posted {formatDateTime(file.posted_at)}</span>
+                <span>Articles {summary.article_count}</span>
+                <span>Posted {formatDateTime(summary.posted_at)}</span>
               </div>
               <div className="muted-row">
-                <span>Binary {file.binary_id}</span>
-                <span>{file.match_status || 'unmatched'}</span>
-                <span>{file.poster || 'Unknown poster'}</span>
-                <span>{file.newsgroups.join(', ') || 'No groups recorded'}</span>
+                <span>Binary {summary.binary_id || detail?.binary_id || 'not linked'}</span>
+                <span>{summary.match_status || 'unmatched'}</span>
+                <span>{summary.poster || detail?.poster || 'Unknown poster'}</span>
+                <span>{detail?.newsgroups.join(', ') || 'No groups recorded'}</span>
               </div>
-              {file.file_name.toLowerCase().endsWith('.nzb') ? (
+              {summary.binary_id <= 0 ? (
+                <div className="banner">
+                  Catalog-only file. The source binary link is not currently available, so article segments and binary inspection details may be unavailable.
+                </div>
+              ) : null}
+              {summary.file_name.toLowerCase().endsWith('.nzb') ? (
                 <div className="banner">
                   Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
                 </div>
               ) : null}
-              <details className="detail-block detail-block--nested">
-                <summary>Article Segments ({file.articles.length})</summary>
+              {detail ? (
+                <details className="detail-block detail-block--nested">
+                  <summary>Article Segments ({detail.articles.length})</summary>
                 <div className="table-shell">
                   <table className="data-table">
                     <thead>
@@ -506,8 +508,8 @@ export function AdminReleaseDetailPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {file.articles.map((article) => (
-                        <tr key={`${file.file_id}-${article.message_id}-${article.part_number}`}>
+                        {detail.articles.map((article) => (
+                          <tr key={`${detail.file_id}-${article.message_id}-${article.part_number}`}>
                           <td>{article.part_number}</td>
                           <td className="mono-cell">{article.message_id}</td>
                           <td>{formatBytes(article.bytes)}</td>
@@ -516,11 +518,14 @@ export function AdminReleaseDetailPage() {
                     </tbody>
                   </table>
                 </div>
-              </details>
-              <details className="detail-block detail-block--nested">
-                <summary>Grouping Evidence</summary>
-                <pre className="json-block">{stringifyJSON(file.grouping_evidence_json)}</pre>
-              </details>
+                </details>
+              ) : null}
+              {detail ? (
+                <details className="detail-block detail-block--nested">
+                  <summary>Grouping Evidence</summary>
+                  <pre className="json-block">{stringifyJSON(detail.grouping_evidence_json)}</pre>
+                </details>
+              ) : null}
             </div>
           </details>
         ))}

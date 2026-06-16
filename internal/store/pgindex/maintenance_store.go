@@ -43,7 +43,7 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		result.ClearedStageLeases = repair.ClearedStaleLeases
 	}
 
-	if upserted, retired, err := s.BackfillYEncRecoveryWorkItems(ctx, 5000); err != nil {
+	if upserted, retired, err := s.maybeBackfillYEncRecoveryWorkItems(ctx, yencRecoveryWorkItemSeedLimit); err != nil {
 		return nil, err
 	} else {
 		result.YEncWorkItemsUpserted = upserted

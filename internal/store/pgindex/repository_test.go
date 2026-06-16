@@ -9506,6 +9506,49 @@ func TestIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
 	}
 }
 
+func TestCatalogOnlyLiveReleaseIsNotPublicVisible(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("catalogonly%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		FileName:  fmt.Sprintf("%s.mkv", token),
+		SizeBytes: 900_000_000,
+		FileIndex: 1,
+		Subject:   "subject-one",
+		Poster:    "poster-one",
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("delete live release files: %v", err)
+	}
+
+	adminDetail, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get admin release detail: %v", err)
+	}
+	if adminDetail == nil {
+		t.Fatalf("expected admin detail for %s", releaseID)
+	}
+	if len(adminDetail.Files) != 1 {
+		t.Fatalf("expected retained catalog file summary, got %d", len(adminDetail.Files))
+	}
+	if adminDetail.Release.PublicVisible {
+		t.Fatalf("catalog-only live release should not be public visible")
+	}
+
+	publicDetail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public release detail: %v", err)
+	}
+	if publicDetail != nil {
+		t.Fatalf("expected catalog-only live release to be hidden from public detail")
+	}
+}
+
 func TestClaimReleasePurgeCandidatesRequiresDurableCatalogAndCompletedMediaInspect(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

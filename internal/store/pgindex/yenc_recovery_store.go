@@ -45,29 +45,42 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 	if readyCount > yencRecoverySeedScanLowYieldThreshold {
 		s.clearYEncRecoverySeedScanBackoff()
 	}
-	if readyCount < limit {
-		if readyCount <= yencRecoverySeedScanLowYieldThreshold && s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
-			return s.listReadyYEncRecoveryCandidates(ctx, limit)
+	if readyCount == 0 {
+		if _, _, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit); seedErr != nil {
+			return nil, seedErr
 		}
-		shortfall := limit - readyCount
-		seedLimit := shortfall * 4
-		if seedLimit < shortfall {
-			seedLimit = shortfall
-		}
-		if seedLimit < limit {
-			seedLimit = limit
-		}
-		if seedLimit > yencRecoveryWorkItemSeedLimit {
-			seedLimit = yencRecoveryWorkItemSeedLimit
-		}
-		upserted, _, err := s.BackfillYEncRecoveryWorkItems(ctx, seedLimit)
-		if err != nil {
-			return nil, err
-		}
-		s.recordYEncRecoverySeedScanResult(time.Now(), readyCount, upserted)
 	}
 
 	return s.listReadyYEncRecoveryCandidates(ctx, limit)
+}
+
+func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (int64, int64, error) {
+	if limit <= 0 {
+		limit = yencRecoveryWorkItemSeedLimit
+	}
+	if s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
+		return 0, 0, nil
+	}
+	readyCount, err := s.countReadyYEncRecoveryCandidates(ctx, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if readyCount > 0 {
+		if readyCount > yencRecoverySeedScanLowYieldThreshold {
+			s.clearYEncRecoverySeedScanBackoff()
+		}
+		return 0, 0, nil
+	}
+	seedLimit := limit
+	if seedLimit > yencRecoveryWorkItemSeedLimit {
+		seedLimit = yencRecoveryWorkItemSeedLimit
+	}
+	upserted, retired, err := s.BackfillYEncRecoveryWorkItems(ctx, seedLimit)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.recordYEncRecoverySeedScanResult(time.Now(), readyCount, upserted)
+	return upserted, retired, nil
 }
 
 func (s *Store) shouldBackoffYEncRecoverySeedScan(now time.Time) bool {
