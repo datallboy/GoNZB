@@ -74,7 +74,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 			Priority:      1,
 		}},
 		Store: config.StoreConfig{
-			PGDSN: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable",
+			PGDSN: "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable",
 		},
 		Modules: config.ModulesConfig{
 			UsenetIndexer: config.ModuleToggle{Enabled: true},

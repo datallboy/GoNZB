@@ -71,7 +71,8 @@ type StoreConfig struct {
 	SearchPersistenceEnabled bool   `mapstructure:"search_persistence_enabled" yaml:"search_persistence_enabled"`
 
 	// PostgreSQL DSN for Usenet/NZB Indexer module.
-	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
+	PGDSN            string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
+	PGMaintenanceDSN string `mapstructure:"pg_maintenance_dsn" yaml:"pg_maintenance_dsn"`
 }
 type APIConfig struct {
 	Key                string   `mapstructure:"key" yaml:"key"`
@@ -282,6 +283,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("store.search_persistence_enabled", true)
 
 	v.SetDefault("store.pg_dsn", "")
+	v.SetDefault("store.pg_maintenance_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
 	v.SetDefault("indexing.scrape_latest.enabled", false)
