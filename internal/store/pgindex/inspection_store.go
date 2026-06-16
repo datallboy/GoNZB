@@ -2338,14 +2338,14 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 		}
 		var releaseID any
 		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+			releaseID = strings.TrimSpace(sanitizeUTF8(row.ReleaseID))
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
 			releaseID,
 			stageName,
-			strings.TrimSpace(row.EvidenceKind),
-			row.TextValue,
+			strings.TrimSpace(sanitizeUTF8(row.EvidenceKind)),
+			sanitizeUTF8(row.TextValue),
 			string(tokensJSON),
 			string(metadataJSON),
 			time.Now().UTC(),
