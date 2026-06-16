@@ -153,3 +153,26 @@ Stage prerequisites:
 - assemble may continue while these materializers lag; raw poster text remains in `article_header_ingest_payloads` and poster dimension linkage is eventually consistent.
 
 This is intentionally not a retry-loop-only fix. Retries remain useful for transient PostgreSQL conflicts, but the structural fix is removing shared dimension/summary writes from the scrape insert transaction.
+
+## Phase A/B Closeout Validation
+
+Validation date: 2026-06-15
+
+Result: Phase A/B is complete for this branch. The v2 side-table bridge is stable enough to close the write-contention/table-separation branch, with Phase C retained as a future narrow-anchor/partitioning target.
+
+Observed fresh-database serve soak:
+
+- all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble_lane_a`, `assemble_lane_b`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
+- scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for this soak and should be enabled for a follow-up materializer-specific soak.
+- release outputs were produced and archived/purged: `nzb_cache` rows existed, release catalog rows existed, and `release_archive_state` reached `purged`.
+- v2 projection parity held after the soak: `binaries`, `binary_core`, `binary_identity_current`, `binary_observation_stats`, `binary_recovery_current`, and `binary_lifecycle` had matching row counts.
+- PostgreSQL logs contained no application deadlock, corruption, recovery-mode, invalid-page, or unexpected-EOF errors during the serve window.
+- `pg_amcheck -U postgres -d gonzb --schema=public` completed with no corruption output after the soak.
+- `go test ./...` passed after the closeout guard changes.
+
+Residual notes:
+
+- stage failures recorded during the final window were caused by the intentional Ctrl-C shutdown and had `context canceled` errors.
+- serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
+- the remaining direct `binaries` access is the documented temporary bridge/owner allowlist. Phase C should replace the legacy anchor with a narrow anchor or compatibility view before a final schema freeze.
+- inspection candidate selection can still perform broad v2 projection scans during bursts. It did not block writers or corrupt data in this soak, but it is the next throughput optimization target if inspection becomes the dominant load.
