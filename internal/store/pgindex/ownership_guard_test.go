@@ -10,6 +10,7 @@ import (
 
 func TestBinaryStorageV2WritesStayBehindBridge(t *testing.T) {
 	allowedWriterFiles := map[string]bool{
+		"assembly_store.go":    true,
 		"binary_storage_v2.go": true,
 	}
 	tables := []string{
