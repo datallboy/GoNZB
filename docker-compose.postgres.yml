@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17
+    image: postgres:17.10
     container_name: gonzb-postgres
     restart: unless-stopped
     shm_size: 2gb
