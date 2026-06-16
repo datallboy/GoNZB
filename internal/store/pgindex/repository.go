@@ -1173,10 +1173,114 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		return nil, fmt.Errorf("iterate article header ids batch: %w", err)
 	}
 	if count != len(batch) {
-		return nil, fmt.Errorf("insert article headers batch: resolved %d ids for %d rows", count, len(batch))
+		resolvedIDs, count, err = resolveArticleHeaderIDsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs)
+		if err != nil {
+			return nil, err
+		}
+		if count != len(batch) {
+			return nil, fmt.Errorf("insert article headers batch: resolved %d ids for %d rows", count, len(batch))
+		}
 	}
 
 	return resolvedIDs, nil
+}
+
+func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert, resolvedIDs []int64) ([]int64, int, error) {
+	if len(resolvedIDs) != len(batch) {
+		resolvedIDs = make([]int64, len(batch))
+	}
+
+	query := strings.Builder{}
+	query.WriteString(`
+		WITH requested (
+			ord,
+			provider_id,
+			newsgroup_id,
+			article_number,
+			message_id
+		) AS (VALUES `)
+
+	args := make([]any, 0, len(batch)*5)
+	for idx, item := range batch {
+		if idx > 0 {
+			query.WriteString(",")
+		}
+		query.WriteString("(")
+		fmt.Fprintf(&query, "$%d::integer,", len(args)+1)
+		args = append(args, idx)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, providerID)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, newsgroupID)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, item.ArticleNumber)
+		fmt.Fprintf(&query, "$%d::text", len(args)+1)
+		args = append(args, item.MessageID)
+		query.WriteString(")")
+	}
+
+	query.WriteString(`
+		),
+		candidates AS (
+			SELECT
+				r.ord,
+				ah.id,
+				0 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.newsgroup_id = r.newsgroup_id
+			 AND ah.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				ah.id,
+				1 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.newsgroup_id = r.newsgroup_id
+			 AND ah.message_id = r.message_id
+		),
+		resolved AS (
+			SELECT DISTINCT ON (ord)
+				ord,
+				id
+			FROM candidates
+			ORDER BY ord, match_rank, id
+		)
+		SELECT
+			ord,
+			id
+		FROM resolved
+		ORDER BY ord`)
+
+	rows, err := tx.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("resolve article header ids batch: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var (
+			ord int
+			id  int64
+		)
+		if err := rows.Scan(&ord, &id); err != nil {
+			return nil, 0, fmt.Errorf("scan resolved article header ids batch: %w", err)
+		}
+		if ord < 0 || ord >= len(batch) {
+			return nil, 0, fmt.Errorf("scan resolved article header ids batch: invalid ord %d", ord)
+		}
+		resolvedIDs[ord] = id
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate resolved article header ids batch: %w", err)
+	}
+
+	return resolvedIDs, count, nil
 }
 
 func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []payloadUpsertRow) error {

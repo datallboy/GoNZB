@@ -1871,6 +1871,61 @@ func TestInsertArticleHeadersBatchResolvesExistingRowsWithoutPerRowProbe(t *test
 	}
 }
 
+func TestResolveArticleHeaderIDsBatchFindsCommittedConflictRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.batch.resolve.conflict.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<scrape-resolve-conflict-%d@test>", time.Now().UnixNano())
+	if inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 9001,
+		MessageID:     messageID,
+		Subject:       `Conflict Resolve [1/1] - "resolve.rar" yEnc (1/4)`,
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         1,
+	}}); err != nil {
+		t.Fatalf("seed article header: %v", err)
+	} else if inserted != 1 {
+		t.Fatalf("expected one seed insert, got %d", inserted)
+	}
+
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	resolved, count, err := resolveArticleHeaderIDsBatch(ctx, tx, 1, newsgroupID, []preparedArticleHeaderInsert{{
+		ArticleNumber: 9001,
+		MessageID:     messageID,
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         1,
+	}}, []int64{0})
+	if err != nil {
+		t.Fatalf("resolve article header ids fallback: %v", err)
+	}
+	if count != 1 || len(resolved) != 1 || resolved[0] <= 0 {
+		t.Fatalf("expected one resolved id, count=%d ids=%v", count, resolved)
+	}
+}
+
 func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecompute(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
