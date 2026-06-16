@@ -15,6 +15,36 @@ import (
 
 func ptrTime(v time.Time) *time.Time { return &v }
 
+func ensureTestPoster(t *testing.T, store *Store, ctx context.Context, posterName string) (int64, error) {
+	t.Helper()
+	posterName = strings.TrimSpace(posterName)
+	if posterName == "" {
+		return 0, nil
+	}
+
+	var id int64
+	err := store.DB().QueryRowContext(ctx, `
+		WITH inserted AS (
+			INSERT INTO posters (poster_name)
+			VALUES ($1)
+			ON CONFLICT (poster_name) DO NOTHING
+			RETURNING id
+		)
+		SELECT id
+		FROM inserted
+		UNION ALL
+		SELECT p.id
+		FROM posters p
+		WHERE p.poster_name = $1
+		LIMIT 1`,
+		posterName,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure test poster %q: %w", posterName, err)
+	}
+	return id, nil
+}
+
 func TestInspectCandidateFilterPasswordRequiresEncryptedRelease(t *testing.T) {
 	filter, err := inspectCandidateFilter("inspect_password", false)
 	if err != nil {
@@ -1288,7 +1318,7 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 
 	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -1508,7 +1538,7 @@ func TestRefreshBinaryStatsAllowsBlankSummaryKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-refresh-blankkeys-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-refresh-blankkeys-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -2228,7 +2258,7 @@ func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	}
 
 	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6215,7 +6245,7 @@ func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinarie
 	}
 
 	posterName := fmt.Sprintf("poster-priority-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6318,7 +6348,7 @@ func TestListUnassembledArticleHeadersPrefersNearCompleteMainPayloadMatches(t *t
 	}
 
 	posterName := fmt.Sprintf("poster-completion-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6493,7 +6523,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *t
 	}
 
 	posterName := fmt.Sprintf("poster-archive-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6604,7 +6634,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRA
 	}
 
 	posterName := fmt.Sprintf("poster-archive-nofallthrough-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6718,7 +6748,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2PrefersManifestOverVolumes(t *
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-manifest-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-manifest-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6792,7 +6822,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDet
 	}
 
 	posterName := fmt.Sprintf("poster-archive-retry-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6893,7 +6923,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedProbeErrorR
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-retryrow-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-retryrow-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -6998,7 +7028,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMissingArti
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-missingarticles-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-missingarticles-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7104,7 +7134,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMetadataOnl
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-metadataonly-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-metadataonly-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7210,7 +7240,7 @@ func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-recoverable-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-recoverable-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7318,7 +7348,7 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 
 	posterName := fmt.Sprintf("poster-media-retry-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7443,7 +7473,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-retry-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-retry-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7523,7 +7553,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedMissingArticlePr
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-missingarticle-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-missingarticle-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7599,7 +7629,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolume
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-zero-targets-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-zero-targets-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7677,7 +7707,7 @@ func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueB
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-discovery-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-discovery-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7743,7 +7773,7 @@ func TestListBinaryInspectionCandidatesInspectMediaToleratesScalarArchiveEntries
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-media-scalar-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-media-scalar-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7815,7 +7845,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsVolumesWhenManifestAlread
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-targets-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-targets-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -7919,7 +7949,7 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
 	posterName := fmt.Sprintf("poster-dashboard-stats-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -8453,7 +8483,7 @@ func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-releasefiles-%d@example.com", now.UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-releasefiles-%d@example.com", now.UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -8620,7 +8650,7 @@ func TestDeleteAuxiliaryOnlySiblingReleasesKeepsPrimaryRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-aux-sibling-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-aux-sibling-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}

@@ -1087,37 +1087,6 @@ func (s *Store) EstimateUnassembledArticleHeaders(ctx context.Context) (int64, e
 	return int64(estimated + 0.5), nil
 }
 
-// CHANGED: normalize posters into a dimension table.
-func (s *Store) EnsurePoster(ctx context.Context, posterName string) (int64, error) {
-	posterName = strings.TrimSpace(posterName)
-	if posterName == "" {
-		return 0, nil
-	}
-
-	var id int64
-	err := s.db.QueryRowContext(ctx, `
-		WITH inserted AS (
-			INSERT INTO posters (poster_name)
-			VALUES ($1)
-			ON CONFLICT (poster_name) DO NOTHING
-			RETURNING id
-		)
-		SELECT id
-		FROM inserted
-		UNION ALL
-		SELECT p.id
-		FROM posters p
-		WHERE p.poster_name = $1
-		LIMIT 1`,
-		posterName,
-	).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("ensure poster %q: %w", posterName, err)
-	}
-
-	return id, nil
-}
-
 // CHANGED: create/update a binary grouping row.
 func (s *Store) UpsertBinary(ctx context.Context, in BinaryRecord) (int64, error) {
 	ids, err := s.UpsertBinaries(ctx, []BinaryRecord{in})
