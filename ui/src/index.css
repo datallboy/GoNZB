@@ -739,9 +739,49 @@ textarea {
   overflow-x: auto;
 }
 
+.scrape-table-panel {
+  gap: 0.85rem;
+}
+
+.scrape-table-panel__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.scrape-table-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  align-items: end;
+  min-width: min(100%, 420px);
+}
+
+.scrape-table-panel__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.scrape-table-shell {
+  max-height: 520px;
+  border: 1px solid rgba(174, 216, 198, 0.08);
+  border-radius: 16px;
+  background: rgba(5, 14, 21, 0.22);
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.data-table--compact th,
+.data-table--compact td {
+  padding: 0.62rem 0.55rem;
 }
 
 .public-data-table td,
@@ -763,6 +803,40 @@ textarea {
   font-size: 0.82rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.table-sort-button {
+  all: unset;
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.table-sort-button:hover {
+  color: var(--accent-strong);
+}
+
+.table-input {
+  width: min(100%, 280px);
+  border: 1px solid rgba(174, 216, 198, 0.16);
+  border-radius: 10px;
+  background: rgba(2, 8, 12, 0.48);
+  color: var(--text-main);
+  padding: 0.48rem 0.55rem;
+}
+
+.status-pill--table {
+  align-self: auto;
+  display: inline-flex;
+  padding: 0.32rem 0.55rem;
+  font-size: 0.7rem;
+}
+
+.secondary-button--small {
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
 }
 
 .table-link {
@@ -1012,6 +1086,9 @@ textarea {
 
   .page-hero,
   .page-header,
+  .scrape-table-panel__header,
+  .scrape-table-panel__meta,
+  .scrape-table-panel__actions,
   .pagination-row,
   .list-row,
   .catalog-hero,
