@@ -1104,7 +1104,10 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM releases
 			WHERE provider_id = $1
-			  AND release_family_key = $2`,
+			  AND (
+			  	release_family_key = $2
+			  	OR source_release_key = $2
+			  )`,
 			providerID,
 			releaseFamilyKey,
 		)
@@ -1126,7 +1129,10 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 	query := `
 		DELETE FROM releases
 		WHERE provider_id = $1
-		  AND release_family_key = $2
+		  AND (
+		  	release_family_key = $2
+		  	OR source_release_key = $2
+		  )
 		  AND group_name NOT IN (` + strings.Join(placeholders, ",") + `)`
 
 	_, err := s.db.ExecContext(ctx, query, args...)

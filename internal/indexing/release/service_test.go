@@ -1070,11 +1070,32 @@ func TestRunOnceUsesReleaseFamilyKeyForCandidateWork(t *testing.T) {
 	if len(repo.upsertedReleases) != 1 {
 		t.Fatalf("expected one release to be formed, got %d", len(repo.upsertedReleases))
 	}
-	if len(repo.deletedStaleCalls) != 1 {
-		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	if len(repo.deletedStaleCalls) != 2 {
+		t.Fatalf("expected two stale-delete calls, got %d", len(repo.deletedStaleCalls))
 	}
 	if repo.deletedStaleCalls[0].releaseKey != "family key" {
 		t.Fatalf("expected stale delete to use family key, got %q", repo.deletedStaleCalls[0].releaseKey)
+	}
+	if repo.deletedStaleCalls[1].releaseKey != "matcher trace key" {
+		t.Fatalf("expected stale delete to also use source key, got %q", repo.deletedStaleCalls[1].releaseKey)
+	}
+}
+
+func TestStaleReleaseCleanupKeysDedupesFamilyAndSourceKeys(t *testing.T) {
+	keys := staleReleaseCleanupKeys(pgindex.ReleaseCandidate{
+		KeyKind:          pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		SourceReleaseKey: "directory opus 13 23",
+	}, "directory opus 13.23")
+	if len(keys) != 2 || keys[0] != "directory opus 13.23" || keys[1] != "directory opus 13 23" {
+		t.Fatalf("expected family and source cleanup keys, got %#v", keys)
+	}
+
+	keys = staleReleaseCleanupKeys(pgindex.ReleaseCandidate{
+		KeyKind:          pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		SourceReleaseKey: "same key",
+	}, "same key")
+	if len(keys) != 1 || keys[0] != "same key" {
+		t.Fatalf("expected duplicate keys to collapse, got %#v", keys)
 	}
 }
 

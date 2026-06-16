@@ -764,8 +764,10 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	}
 
 	start = time.Now()
-	if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, keepGroupNames); err != nil {
-		return outcome, fmt.Errorf("delete stale release groups for %s: %w", familyKey, err)
+	for _, cleanupKey := range staleReleaseCleanupKeys(candidate, familyKey) {
+		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, cleanupKey, keepGroupNames); err != nil {
+			return outcome, fmt.Errorf("delete stale release groups for %s: %w", cleanupKey, err)
+		}
 	}
 	if timings != nil {
 		timings.deleteStale += time.Since(start)
@@ -791,6 +793,27 @@ func candidateFamilyKey(candidate pgindex.ReleaseCandidate) string {
 		return key
 	}
 	return strings.TrimSpace(candidate.ReleaseKey)
+}
+
+func staleReleaseCleanupKeys(candidate pgindex.ReleaseCandidate, familyKey string) []string {
+	keys := make([]string, 0, 2)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range keys {
+			if existing == value {
+				return
+			}
+		}
+		keys = append(keys, value)
+	}
+	add(familyKey)
+	if candidate.KeyKind != pgindex.ReleaseCandidateKeyKindRecoveredFileSet {
+		add(candidate.SourceReleaseKey)
+	}
+	return keys
 }
 
 func buildDeferredReleaseAck(candidate pgindex.ReleaseCandidate, familyKey string) *pgindex.ReleaseCandidateAck {
