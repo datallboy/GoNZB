@@ -27,6 +27,7 @@ const (
 	assembleClaimStatementTimeout          = 15 * time.Second
 	refreshBinaryStatsBatchSize            = 8000
 	binaryCompletionKeySyncChunkSize       = 8000
+	binaryPartUpsertBatchRecords           = 5000
 )
 
 // unassembled header row used by Milestone 6 assembly service.
@@ -2289,9 +2290,8 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		}
 		defer rollbackTx(tx)
 
-		const maxBinaryPartBatchRecords = 8000
-		for start := 0; start < len(records); start += maxBinaryPartBatchRecords {
-			end := start + maxBinaryPartBatchRecords
+		for start := 0; start < len(records); start += binaryPartUpsertBatchRecords {
+			end := start + binaryPartUpsertBatchRecords
 			if end > len(records) {
 				end = len(records)
 			}

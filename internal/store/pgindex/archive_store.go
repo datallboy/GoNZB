@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const archivePurgeBinaryIDStageChunk = 10000
+
 type ReleaseArchiveState struct {
 	ReleaseID          string     `json:"release_id"`
 	ArchiveStatus      string     `json:"archive_status"`
@@ -543,7 +545,9 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 	result.SkippedSharedBinaryRows = totalLineageBinaries - int64(len(binaryIDs))
 
 	if len(binaryIDs) > 0 {
-		filter, args := bigintFilter(binaryIDs, 1)
+		if err := stageReleasePurgeBinaryIDs(ctx, tx, binaryIDs); err != nil {
+			return nil, fmt.Errorf("stage purgeable binary ids for %s: %w", releaseID, err)
+		}
 		for _, table := range []string{
 			"binary_parts",
 			"binary_grouping_evidence",
@@ -556,13 +560,16 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 			"binary_par2_targets",
 			"yenc_recovery_work_items",
 		} {
-			count, err := countRowsByBinaryIDs(ctx, tx, table, filter, args...)
+			count, err := countRowsByStagedBinaryIDs(ctx, tx, table)
 			if err != nil {
 				return nil, fmt.Errorf("count %s rows for %s: %w", table, releaseID, err)
 			}
 			result.DeletedRowsByTable[table] = count
 		}
-		deleted, err := execDeleteCount(ctx, tx, `DELETE FROM binary_core WHERE binary_id IN (`+filter+`)`, args...)
+		deleted, err := execDeleteCount(ctx, tx, `
+			DELETE FROM binary_core bc
+			USING tmp_release_purge_binary_ids staged
+			WHERE staged.binary_id = bc.binary_id`)
 		if err != nil {
 			return nil, fmt.Errorf("delete binary core rows for %s: %w", releaseID, err)
 		}
@@ -721,22 +728,57 @@ func execDeleteCount(ctx context.Context, runner interface {
 	return rows, nil
 }
 
-func bigintFilter(ids []int64, start int) (string, []any) {
-	placeholders := make([]string, 0, len(ids))
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		placeholders = append(placeholders, fmt.Sprintf("$%d", start+i))
-		args = append(args, id)
+func stageReleasePurgeBinaryIDs(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS tmp_release_purge_binary_ids (
+			binary_id BIGINT PRIMARY KEY
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create purge binary id temp table: %w", err)
 	}
-	return strings.Join(placeholders, ","), args
+	if _, err := tx.ExecContext(ctx, `TRUNCATE tmp_release_purge_binary_ids`); err != nil {
+		return fmt.Errorf("clear purge binary id temp table: %w", err)
+	}
+
+	for start := 0; start < len(binaryIDs); start += archivePurgeBinaryIDStageChunk {
+		end := start + archivePurgeBinaryIDStageChunk
+		if end > len(binaryIDs) {
+			end = len(binaryIDs)
+		}
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, binaryID := range binaryIDs[start:end] {
+			if binaryID <= 0 {
+				continue
+			}
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("($%d)", len(args)))
+		}
+		if len(args) == 0 {
+			continue
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return fmt.Errorf("purge binary id stage chunk has %d bind parameters", len(args))
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tmp_release_purge_binary_ids (binary_id)
+			VALUES `+strings.Join(placeholders, ",")+`
+			ON CONFLICT (binary_id) DO NOTHING`, args...); err != nil {
+			return fmt.Errorf("insert purge binary id stage chunk: %w", err)
+		}
+	}
+	return nil
 }
 
-func countRowsByBinaryIDs(ctx context.Context, runner interface {
+func countRowsByStagedBinaryIDs(ctx context.Context, runner interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, table, filter string, args ...any) (int64, error) {
+}, table string) (int64, error) {
 	var count int64
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE binary_id IN (%s)`, table, filter)
-	if err := runner.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM %s target
+		JOIN tmp_release_purge_binary_ids staged
+		  ON staged.binary_id = target.binary_id`, table)
+	if err := runner.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil

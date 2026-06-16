@@ -69,6 +69,10 @@ const (
 	ReleaseCandidateKeyKindReleaseFamily    = "release_family"
 	ReleaseCandidateKeyKindBaseStem         = "base_stem"
 	ReleaseCandidateKeyKindRecoveredFileSet = "recovered_file_set"
+	binaryPartArticleLookupChunk            = 10000
+	releaseFileBinaryIDDeleteChunk          = 10000
+	releaseFileInsertBatchSize              = 4000
+	releaseNewsgroupInsertBatchSize         = 10000
 )
 
 type ReleaseCandidateSelectionOptions struct {
@@ -748,8 +752,7 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 	}
 
 	seen := make(map[int64]struct{}, len(binaryIDs))
-	args := make([]any, 0, len(binaryIDs))
-	placeholders := make([]string, 0, len(binaryIDs))
+	uniqueIDs := make([]int64, 0, len(binaryIDs))
 	for _, binaryID := range binaryIDs {
 		if binaryID <= 0 {
 			continue
@@ -758,35 +761,51 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 			continue
 		}
 		seen[binaryID] = struct{}{}
-		args = append(args, binaryID)
-		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		uniqueIDs = append(uniqueIDs, binaryID)
 		out[binaryID] = nil
 	}
-	if len(args) == 0 {
+	if len(uniqueIDs) == 0 {
 		return out, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT binary_id, article_header_id, part_number
-		FROM binary_parts
-		WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
-		ORDER BY binary_id, part_number`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list binary part articles batch: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var binaryID int64
-		var item ReleaseFileArticleRecord
-		if err := rows.Scan(&binaryID, &item.ArticleHeaderID, &item.PartNumber); err != nil {
-			return nil, fmt.Errorf("scan binary part article: %w", err)
+	for start := 0; start < len(uniqueIDs); start += binaryPartArticleLookupChunk {
+		end := start + binaryPartArticleLookupChunk
+		if end > len(uniqueIDs) {
+			end = len(uniqueIDs)
 		}
-		out[binaryID] = append(out[binaryID], item)
-	}
+		args := make([]any, 0, end-start)
+		placeholders := make([]string, 0, end-start)
+		for _, binaryID := range uniqueIDs[start:end] {
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return nil, fmt.Errorf("binary part article lookup chunk has %d bind parameters", len(args))
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT binary_id, article_header_id, part_number
+			FROM binary_parts
+			WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			ORDER BY binary_id, part_number`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list binary part articles batch: %w", err)
+		}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate binary part articles: %w", err)
+		for rows.Next() {
+			var binaryID int64
+			var item ReleaseFileArticleRecord
+			if err := rows.Scan(&binaryID, &item.ArticleHeaderID, &item.PartNumber); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan binary part article: %w", err)
+			}
+			out[binaryID] = append(out[binaryID], item)
+		}
+
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate binary part articles: %w", err)
+		}
+		rows.Close()
 	}
 
 	return out, nil
@@ -1268,51 +1287,66 @@ func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, rel
 		seenBinaryIDs[f.BinaryID] = struct{}{}
 		binaryIDs = append(binaryIDs, f.BinaryID)
 	}
-	if len(binaryIDs) > 0 {
-		args := make([]any, 0, len(binaryIDs)+1)
-		args = append(args, releaseID)
-		placeholders := make([]string, 0, len(binaryIDs))
-		for idx, binaryID := range binaryIDs {
-			placeholders = append(placeholders, fmt.Sprintf("$%d", idx+2))
-			args = append(args, binaryID)
+	for start := 0; start < len(binaryIDs); start += releaseFileBinaryIDDeleteChunk {
+		end := start + releaseFileBinaryIDDeleteChunk
+		if end > len(binaryIDs) {
+			end = len(binaryIDs)
 		}
-		filter := strings.Join(placeholders, ",")
+		args := make([]any, 0, end-start+1)
+		args = append(args, releaseID)
+		placeholders := make([]string, 0, end-start)
+		for _, binaryID := range binaryIDs[start:end] {
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return fmt.Errorf("release file stale-delete chunk has %d bind parameters", len(args))
+		}
 		if _, err := runner.ExecContext(ctx, `
 			DELETE FROM release_files
 			WHERE release_id <> $1
-			  AND binary_id IN (`+filter+`)`, args...); err != nil {
+			  AND binary_id IN (`+strings.Join(placeholders, ",")+`)`, args...); err != nil {
 			return fmt.Errorf("delete stale cross-release files for %s: %w", releaseID, err)
 		}
 	}
 
-	args := make([]any, 0, len(files)*10)
-	placeholders := make([]string, 0, len(files))
-	for _, f := range files {
-		var postedAt any
-		if f.PostedAt != nil {
-			postedAt = f.PostedAt.UTC()
+	for start := 0; start < len(files); start += releaseFileInsertBatchSize {
+		end := start + releaseFileInsertBatchSize
+		if end > len(files) {
+			end = len(files)
 		}
-		base := len(args)
-		args = append(args,
-			releaseID,
-			nullIfZero(f.BinaryID),
-			strings.TrimSpace(f.FileName),
-			f.SizeBytes,
-			f.FileIndex,
-			f.IsPars,
-			strings.TrimSpace(f.Subject),
-			strings.TrimSpace(f.Poster),
-			postedAt,
-			time.Now().UTC(),
-		)
-		placeholders = append(placeholders, fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-			base+1, base+2, base+3, base+4, base+5,
-			base+6, base+7, base+8, base+9, base+10,
-		))
-	}
+		batch := files[start:end]
+		args := make([]any, 0, len(batch)*10)
+		placeholders := make([]string, 0, len(batch))
+		now := time.Now().UTC()
+		for _, f := range batch {
+			var postedAt any
+			if f.PostedAt != nil {
+				postedAt = f.PostedAt.UTC()
+			}
+			base := len(args)
+			args = append(args,
+				releaseID,
+				nullIfZero(f.BinaryID),
+				strings.TrimSpace(f.FileName),
+				f.SizeBytes,
+				f.FileIndex,
+				f.IsPars,
+				strings.TrimSpace(f.Subject),
+				strings.TrimSpace(f.Poster),
+				postedAt,
+				now,
+			)
+			placeholders = append(placeholders, fmt.Sprintf(
+				"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5,
+				base+6, base+7, base+8, base+9, base+10,
+			))
+		}
 
-	if len(placeholders) > 0 {
+		if len(args) > postgresBindParameterSoftLimit {
+			return fmt.Errorf("release file insert chunk has %d bind parameters", len(args))
+		}
 		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO release_files (
 				release_id,
@@ -1375,9 +1409,8 @@ func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer
 		return fmt.Errorf("delete release_newsgroups for %s: %w", releaseID, err)
 	}
 
-	args := make([]any, 0, len(newsgroupIDs)*2)
-	placeholders := make([]string, 0, len(newsgroupIDs))
 	seen := make(map[int64]struct{}, len(newsgroupIDs))
+	uniqueIDs := make([]int64, 0, len(newsgroupIDs))
 	for _, newsgroupID := range newsgroupIDs {
 		if newsgroupID <= 0 {
 			continue
@@ -1386,12 +1419,24 @@ func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer
 			continue
 		}
 		seen[newsgroupID] = struct{}{}
-		base := len(args)
-		args = append(args, releaseID, newsgroupID)
-		placeholders = append(placeholders, fmt.Sprintf("($%d,$%d)", base+1, base+2))
+		uniqueIDs = append(uniqueIDs, newsgroupID)
 	}
 
-	if len(placeholders) > 0 {
+	for start := 0; start < len(uniqueIDs); start += releaseNewsgroupInsertBatchSize {
+		end := start + releaseNewsgroupInsertBatchSize
+		if end > len(uniqueIDs) {
+			end = len(uniqueIDs)
+		}
+		args := make([]any, 0, (end-start)*2)
+		placeholders := make([]string, 0, end-start)
+		for _, newsgroupID := range uniqueIDs[start:end] {
+			base := len(args)
+			args = append(args, releaseID, newsgroupID)
+			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d)", base+1, base+2))
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return fmt.Errorf("release newsgroup insert chunk has %d bind parameters", len(args))
+		}
 		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO release_newsgroups (release_id, newsgroup_id)
 			VALUES `+strings.Join(placeholders, ","),

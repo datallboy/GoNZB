@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const yencRecoveryWorkItemSeedLimit = 5000
+const (
+	yencRecoveryWorkItemSeedLimit = 5000
+	yencRecoveryWorkItemSyncChunk = 10000
+)
 const yencRecoverySubjectFileNamePredicate = `
 			  AND (
 			  	p.article_header_id IS NULL OR
@@ -247,11 +250,32 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 	}
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 
+	var totalUpserted int64
+	var totalRetired int64
+	for start := 0; start < len(unique); start += yencRecoveryWorkItemSyncChunk {
+		end := start + yencRecoveryWorkItemSyncChunk
+		if end > len(unique) {
+			end = len(unique)
+		}
+		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end])
+		if err != nil {
+			return 0, 0, err
+		}
+		totalUpserted += upserted
+		totalRetired += retired
+	}
+	return totalUpserted, totalRetired, nil
+}
+
+func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64) (int64, int64, error) {
 	values := make([]string, 0, len(unique))
 	args := make([]any, 0, len(unique))
 	for i, binaryID := range unique {
 		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
 		args = append(args, binaryID)
+	}
+	if len(args) > postgresBindParameterSoftLimit {
+		return 0, 0, fmt.Errorf("yenc recovery work item sync chunk has %d bind parameters", len(args))
 	}
 
 	var upserted int64

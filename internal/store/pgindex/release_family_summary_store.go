@@ -25,7 +25,7 @@ const (
 	releaseFamilySummaryRefreshHotCap        = 1000
 	releaseFamilySummaryRefreshColdCap       = 1000
 	releaseFamilySummaryRefreshQueryBatchCap = 100
-	releaseFamilySummaryMergeRowsMax         = 2500
+	releaseFamilySummaryMergeRowsMax         = 2000
 )
 
 type releaseSummaryRefreshMode int
