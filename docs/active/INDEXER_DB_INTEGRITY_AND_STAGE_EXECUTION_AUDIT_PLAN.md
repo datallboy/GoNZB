@@ -524,6 +524,8 @@ Schema / overlap findings:
 - `release_summary_refresh` remains the only heavy writer of:
   - `release_family_readiness_summaries`
   - `release_ready_candidates`
+- Phase B recovered-file-set discovery originally scanned the yEnc recovery projection for each refresh batch because key-kind matching was expressed as one `OR` predicate and `COALESCE(recovered_source, '')`. It now splits release-family and base-stem branches and uses direct `recovered_source = 'yenc_header'` predicates so indexed binary identity lookups drive the scan.
+- missing-summary dequeue originally used a broad anti-join that scanned all readiness summaries and all queued rows. It now takes an ordered queue window first and probes summaries by primary key.
 - other stages may enqueue dirty keys only
 - maintenance cleanup must defer while refresh backlog exists; code already reflects this
 

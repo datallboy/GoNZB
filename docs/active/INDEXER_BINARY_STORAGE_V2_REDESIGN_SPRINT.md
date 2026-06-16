@@ -143,7 +143,8 @@ Implemented target shape:
 - `scrape_latest` and `scrape_backfill` insert canonical/raw ingest rows only: `article_headers`, `article_header_ingest_payloads`, `article_header_crosspost_groups`, checkpoints, and queue seeds.
 - scrape also seeds downstream-owned selector/support work surfaces derived from the same header row when they are required to avoid downstream hot joins, such as `article_header_assembly_keys`.
 - `poster_materialize` owns `posters` and `article_header_poster_refs`.
-- `crosspost_popularity_refresh` owns `article_header_crosspost_group_summary`, `article_header_crosspost_group_messages`, and `article_header_crosspost_group_sources`.
+- `crosspost_popularity_refresh` owns `article_header_crosspost_group_summary`.
+- `article_header_crosspost_group_messages` and `article_header_crosspost_group_sources` were removed by migration 055. Exact per-message materialization created a large write-amplified reporting table and is no longer part of the target schema.
 - `poster_materialization_queue` is seeded by scrape and claimed/completed by `poster_materialize`.
 - `crosspost_popularity_refresh_queue` is seeded by scrape/manual backfill and claimed/completed by `crosspost_popularity_refresh`.
 
@@ -206,10 +207,10 @@ The current refresh is correct but too heavy for aggressive steady-state schedul
 Recommended direction:
 
 - keep scrape writing only raw `article_header_crosspost_groups` and dirty queue rows
-- replace full-group refresh with batch-local delta ingestion keyed by newly observed raw rows
+- current mitigation refreshes summary rows directly from raw crosspost observations and stops touching the exact distinct helper tables
+- a future high-scale version should replace full-group summary recompute with batch-local delta ingestion keyed by newly observed raw rows
 - add processed/high-water state, such as `(observed_group_name, last_article_header_id)` or a claimed raw-row queue, so each raw observation is rolled up once
-- keep exact distinct helper tables, but insert only new `(observed_group_name, message_id)` and `(observed_group_name, source_newsgroup_id)` keys from the delta batch
-- update summary counters from inserted delta counts, not from `COUNT(*)`/`COUNT(DISTINCT ...)` over all historical raw rows
+- update summary counters from inserted delta counts or bounded raw windows, not from a continuously growing exact-distinct helper table
 - keep a manual full-rebuild command for repair/report regeneration, not normal scheduled execution
 
 This preserves ownership boundaries: scrape owns raw observations, `crosspost_popularity_refresh` owns reporting tables, and no release-critical stage depends on the report.

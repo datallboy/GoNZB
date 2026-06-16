@@ -20,10 +20,15 @@ type IndexerPosterMaterializationResult struct {
 }
 
 type IndexerCrosspostPopularityRefreshResult struct {
-	Claimed          int64 `json:"claimed"`
-	GroupsRefreshed  int64 `json:"groups_refreshed"`
+	Claimed                  int64 `json:"claimed"`
+	GroupsRefreshed          int64 `json:"groups_refreshed"`
+	DistinctMessagesObserved int64 `json:"distinct_messages_observed"`
+	DistinctSourcesObserved  int64 `json:"distinct_sources_observed"`
+
+	// Deprecated: exact distinct helper rows are no longer materialized.
 	MessagesUpserted int64 `json:"messages_upserted"`
-	SourcesUpserted  int64 `json:"sources_upserted"`
+	// Deprecated: exact distinct helper rows are no longer materialized.
+	SourcesUpserted int64 `json:"sources_upserted"`
 }
 
 func normalizePosterKey(posterName string) string {
@@ -380,8 +385,8 @@ func (s *Store) RefreshCrosspostPopularity(ctx context.Context, limit int) (*Ind
 			return err
 		}
 		out.GroupsRefreshed = refreshed
-		out.MessagesUpserted = messages
-		out.SourcesUpserted = sources
+		out.DistinctMessagesObserved = messages
+		out.DistinctSourcesObserved = sources
 		if err := finishCrosspostPopularityGroups(ctx, tx, groups); err != nil {
 			return err
 		}
@@ -462,56 +467,15 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 			FROM article_header_crosspost_groups g
 			JOIN requested r ON r.observed_group_name = g.observed_group_name
 		),
-		message_ins AS (
-			INSERT INTO article_header_crosspost_group_messages (
-				observed_group_name,
-				message_id,
-				first_seen_at
-			)
-			SELECT
-				observed_group_name,
-				message_id,
-				MIN(observed_at)
-			FROM raw_filtered
-			WHERE message_id IS NOT NULL
-			GROUP BY observed_group_name, message_id
-			ON CONFLICT (observed_group_name, message_id) DO NOTHING
-			RETURNING 1
-		),
-		source_ins AS (
-			INSERT INTO article_header_crosspost_group_sources (
-				observed_group_name,
-				source_newsgroup_id,
-				first_seen_at
-			)
-			SELECT
-				observed_group_name,
-				source_newsgroup_id,
-				MIN(observed_at)
-			FROM raw_filtered
-			GROUP BY observed_group_name, source_newsgroup_id
-			ON CONFLICT (observed_group_name, source_newsgroup_id) DO NOTHING
-			RETURNING 1
-		),
 		raw_agg AS (
 			SELECT
 				observed_group_name,
 				COUNT(*)::bigint AS observed_article_count,
+				COUNT(DISTINCT message_id) FILTER (WHERE message_id IS NOT NULL)::bigint AS distinct_message_count,
+				COUNT(DISTINCT source_newsgroup_id)::bigint AS distinct_source_group_count,
 				MAX(observed_at) AS last_seen_at
 			FROM raw_filtered
 			GROUP BY observed_group_name
-		),
-		msg_agg AS (
-			SELECT m.observed_group_name, COUNT(*)::bigint AS distinct_message_count
-			FROM article_header_crosspost_group_messages m
-			JOIN requested r ON r.observed_group_name = m.observed_group_name
-			GROUP BY m.observed_group_name
-		),
-		source_agg AS (
-			SELECT s.observed_group_name, COUNT(*)::bigint AS distinct_source_group_count
-			FROM article_header_crosspost_group_sources s
-			JOIN requested r ON r.observed_group_name = s.observed_group_name
-			GROUP BY s.observed_group_name
 		),
 		summary_upsert AS (
 			INSERT INTO article_header_crosspost_group_summary (
@@ -525,14 +489,12 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 			SELECT
 				r.observed_group_name,
 				COALESCE(a.observed_article_count, 0),
-				COALESCE(m.distinct_message_count, 0),
-				COALESCE(s.distinct_source_group_count, 0),
+				COALESCE(a.distinct_message_count, 0),
+				COALESCE(a.distinct_source_group_count, 0),
 				a.last_seen_at,
 				NOW()
 			FROM requested r
 			LEFT JOIN raw_agg a ON a.observed_group_name = r.observed_group_name
-			LEFT JOIN msg_agg m ON m.observed_group_name = r.observed_group_name
-			LEFT JOIN source_agg s ON s.observed_group_name = r.observed_group_name
 			WHERE COALESCE(a.observed_article_count, 0) > 0
 			ON CONFLICT (observed_group_name) DO UPDATE
 			SET observed_article_count = EXCLUDED.observed_article_count,
@@ -544,8 +506,8 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 		)
 		SELECT
 			COALESCE((SELECT COUNT(*)::bigint FROM summary_upsert), 0),
-			COALESCE((SELECT COUNT(*)::bigint FROM message_ins), 0),
-			COALESCE((SELECT COUNT(*)::bigint FROM source_ins), 0)`)
+			COALESCE((SELECT SUM(distinct_message_count)::bigint FROM raw_agg), 0),
+			COALESCE((SELECT SUM(distinct_source_group_count)::bigint FROM raw_agg), 0)`)
 	var refreshed, messages, sources int64
 	if err := tx.QueryRowContext(ctx, query.String(), args...).Scan(&refreshed, &messages, &sources); err != nil {
 		return 0, 0, 0, fmt.Errorf("refresh crosspost popularity groups: %w", err)

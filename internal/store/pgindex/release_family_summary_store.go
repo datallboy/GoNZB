@@ -1735,26 +1735,44 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
 		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
 			VALUES %s
+		),
+		release_family_matches AS (
+			SELECT DISTINCT bc.provider_id, bic.file_set_key
+			FROM requested r
+			JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.newsgroup_id = r.newsgroup_id
+			 AND bic.release_family_key = r.family_key
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			JOIN binary_recovery_current brc
+			  ON brc.binary_id = bic.binary_id
+			 AND brc.recovered_source = 'yenc_header'
+			WHERE r.key_kind = 'release_family'
+			  AND BTRIM(bic.file_set_key) <> ''
+			  AND bos.posted_at IS NOT NULL
+		),
+		base_stem_matches AS (
+			SELECT DISTINCT bc.provider_id, bic.file_set_key
+			FROM requested r
+			JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.newsgroup_id = r.newsgroup_id
+			 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			JOIN binary_recovery_current brc
+			  ON brc.binary_id = bic.binary_id
+			 AND brc.recovered_source = 'yenc_header'
+			WHERE r.key_kind = 'base_stem'
+			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+			  AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
+			  AND BTRIM(bic.file_set_key) <> ''
+			  AND bos.posted_at IS NOT NULL
 		)
-		SELECT DISTINCT bc.provider_id, bic.file_set_key
-		FROM requested r
-		JOIN binary_core bc
-		  ON bc.provider_id = r.provider_id
-		 AND bc.newsgroup_id = r.newsgroup_id
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-		JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
-		WHERE COALESCE(brc.recovered_source, '') = 'yenc_header'
-		  AND (
-		  	(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
-		  	OR
-		  	(r.key_kind = 'base_stem'
-		  	 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
-		  	 AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
-		  	 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
-		  )
-		  AND BTRIM(bic.file_set_key) <> ''
-		  AND bos.posted_at IS NOT NULL`,
+		SELECT provider_id, file_set_key FROM release_family_matches
+		UNION
+		SELECT provider_id, file_set_key FROM base_stem_matches`,
 		values), args...)
 	if err != nil {
 		return fmt.Errorf("list impacted recovered file sets for summary key batch count=%d: %w", len(keys), err)
@@ -1875,17 +1893,16 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 					WHERE bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE
 				)::INTEGER AS main_payload_binary_count
 			FROM requested r
-			LEFT JOIN binary_identity_current bic
+			JOIN binary_identity_current bic
 			  ON bic.provider_id = $1
 			 AND bic.file_set_key = r.file_set_key
 			 AND BTRIM(bic.file_set_key) <> ''
-			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			JOIN binary_recovery_current brc
 			  ON brc.binary_id = bic.binary_id
-			 AND COALESCE(brc.recovered_source, '') = 'yenc_header'
+			 AND brc.recovered_source = 'yenc_header'
 			WHERE bos.posted_at IS NOT NULL
-			  AND brc.binary_id IS NOT NULL
 			GROUP BY r.file_set_key
 		),
 		scored AS (
@@ -2999,7 +3016,24 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 		},
 		{
 			query: `
-				WITH candidate_rows AS (
+				WITH ordered_queue AS MATERIALIZED (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key,
+						q.queued_at
+					FROM release_family_summary_refresh_queue q
+					ORDER BY
+						q.queued_at,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					LIMIT $2
+				),
+				candidate_rows AS (
 					SELECT
 						q.ctid,
 						q.provider_id,
@@ -3007,13 +3041,16 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 						q.key_kind,
 						q.family_key
 					FROM release_family_summary_refresh_queue q
-					LEFT JOIN release_family_readiness_summaries s
-					  ON s.provider_id = q.provider_id
-					 AND s.newsgroup_id = q.newsgroup_id
-					 AND s.key_kind = q.key_kind
-					 AND s.family_key = q.family_key
-					WHERE s.family_key IS NULL
-					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
+					JOIN ordered_queue oq ON oq.ctid = q.ctid
+					WHERE NOT EXISTS (
+						SELECT 1
+						FROM release_family_readiness_summaries s
+						WHERE s.provider_id = oq.provider_id
+						  AND s.newsgroup_id = oq.newsgroup_id
+						  AND s.key_kind = oq.key_kind
+						  AND s.family_key = oq.family_key
+					)
+					ORDER BY oq.queued_at, oq.provider_id, oq.newsgroup_id, oq.key_kind, oq.family_key
 					LIMIT $1
 					FOR UPDATE OF q SKIP LOCKED
 				),
@@ -3025,7 +3062,7 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 				)
 				SELECT provider_id, newsgroup_id, key_kind, family_key
 				FROM dequeued`,
-			args: []any{limit},
+			args: []any{limit, releaseFamilySummaryRefreshBatch},
 		},
 	}
 

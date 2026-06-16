@@ -53,10 +53,10 @@ func (s *Service) RunCrosspostPopularityOnceWithMetrics(ctx context.Context) (ma
 		return map[string]any{"batch_size": s.batchSize}, err
 	}
 	return map[string]any{
-		"batch_size":        s.batchSize,
-		"claimed":           out.Claimed,
-		"groups_refreshed":  out.GroupsRefreshed,
-		"messages_upserted": out.MessagesUpserted,
-		"sources_upserted":  out.SourcesUpserted,
+		"batch_size":                 s.batchSize,
+		"claimed":                    out.Claimed,
+		"groups_refreshed":           out.GroupsRefreshed,
+		"distinct_messages_observed": out.DistinctMessagesObserved,
+		"distinct_sources_observed":  out.DistinctSourcesObserved,
 	}, nil
 }

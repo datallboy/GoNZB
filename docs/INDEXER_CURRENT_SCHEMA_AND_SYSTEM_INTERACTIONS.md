@@ -299,9 +299,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
 | `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
 | `crosspost_popularity_refresh_queue` | queue/work | `scrape_*` seed | `crosspost_popularity_refresh` claim/complete only | Dirty observed group queue; seeded by scrape and manual raw backfill. |
-| `article_header_crosspost_group_summary` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Summary-backed admin popularity report; avoids live aggregation over raw crosspost rows. |
-| `article_header_crosspost_group_messages` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Exact distinct message keys used to maintain crosspost summary counts. |
-| `article_header_crosspost_group_sources` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Exact distinct source-newsgroup keys used to maintain crosspost summary counts. |
+| `article_header_crosspost_group_summary` | derived/reporting telemetry | `crosspost_popularity_refresh` | none | Summary-backed admin popularity report refreshed from raw crosspost observations. |
 | `indexer_provider_group_inventory` | discovery/support state | scrape admin provider scan | none | Persisted provider LIST snapshot used by wildcard preview/apply; not runtime scrape selection by itself. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
@@ -398,7 +396,7 @@ Primary hot DBO/store paths:
 
 - `RefreshCrosspostPopularity`
 - `crosspost_popularity_refresh_queue` claim/complete queries
-- summary/message/source upserts from raw `article_header_crosspost_groups`
+- summary upsert from raw `article_header_crosspost_groups`
 
 Execution profile:
 
@@ -606,7 +604,7 @@ Current audit note:
 - `InsertArticleHeaders` duplicate resolution must remain split by article-number and message-id match branches; combining them into one `OR` join defeats the unique indexes and forces a broad scan at scale
 - `scrape_runs` is not a sufficient source by itself to distinguish latest versus backfill mode; operator-facing mode reporting must continue to use stage/runtime surfaces, not only scrape run history
 - `scrape_*` now also stores raw `article_header_crosspost_groups` from observed `Xref` memberships during ingest; those rows are discovery telemetry and must not be reused as per-file provenance
-- `scrape_*` seeds `crosspost_popularity_refresh_queue`; `crosspost_popularity_refresh` maintains the summary plus exact distinct key tables so the admin popularity report does not run `COUNT(DISTINCT ...)` over the full raw telemetry table
+- `scrape_*` seeds `crosspost_popularity_refresh_queue`; `crosspost_popularity_refresh` maintains only `article_header_crosspost_group_summary` from raw observations. The former exact distinct helper tables are deprecated because they created a large write-amplified telemetry surface.
 - scrape integrity preflight is cached in-process for a short TTL; the critical index check remains required, but it is no longer rerun before every single scrape pass
 
 ## Scrape Configuration Ownership
@@ -837,6 +835,8 @@ Primary DBO entry points:
 Current audit note:
 
 - the scheduled queued refresh path reads v2 projections only; production `binaries` access is rejected by ownership tests
+- Phase B is not a simple summary copy: it also materializes ready candidates and recovered-file-set candidates. The recovered-file-set discovery path is split by key kind so release-family keys use `idx_binary_identity_release_family` instead of scanning the full yEnc recovery projection.
+- The missing-summary dequeue branch first takes an ordered queue window, then probes summaries by primary key. This avoids scanning all readiness summaries when most queued keys have no summary row yet.
 
 - refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
 - dequeue is hot/cold prioritized

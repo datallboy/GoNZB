@@ -529,11 +529,11 @@ func (r *Runner) ExecuteIndexerRefreshCrosspostPopularity(batchSize int) {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance refresh-crosspost-popularity: claimed=%d groups_refreshed=%d messages_upserted=%d sources_upserted=%d",
+			"indexer maintenance refresh-crosspost-popularity: claimed=%d groups_refreshed=%d distinct_messages_observed=%d distinct_sources_observed=%d",
 			out.Claimed,
 			out.GroupsRefreshed,
-			out.MessagesUpserted,
-			out.SourcesUpserted,
+			out.DistinctMessagesObserved,
+			out.DistinctSourcesObserved,
 		)
 	}
 }
