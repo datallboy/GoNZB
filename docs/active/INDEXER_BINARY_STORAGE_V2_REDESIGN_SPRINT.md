@@ -183,8 +183,13 @@ Residual notes:
 
 This branch cannot close until Phase C is complete.
 
-- Replace `binaries` as the canonical table with a narrow v2 anchor or compatibility view.
-- Move foreign keys and source lineage joins away from legacy `binaries`.
+- [x] Replace `binaries` as the schema-level foreign-key root with `binary_core`.
+- [x] Move child-table foreign keys away from legacy `binaries`.
+- [ ] Stop assemble from inserting/updating `binaries`; write canonical binary state directly to `binary_core`, `binary_observation_stats`, and `binary_identity_current`.
+- [ ] Stop release-summary compatibility helpers from reading `binaries`.
+- [ ] Stop inspection claim/start/finish and recovery helpers from checking/locking `binaries`.
+- [ ] Stop recovery and purge from updating/deleting `binaries`.
+- [ ] Remove or freeze `binaries` as a compatibility view/table after all production code paths stop using it.
 - Remove behavior-bearing legacy binary columns from active read/write paths.
 - Remove `binary_storage_v2.go` legacy projection backfill dependency after canonical writes land directly in v2 tables.
 - Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete legacy `binaries`.
