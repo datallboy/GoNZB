@@ -26,6 +26,8 @@ type binaryRecoverySeed struct {
 	IsMainPayload     bool
 }
 
+const maxArchiveFamilyRecoverySiblings = 4096
+
 var binaryRecoveryUnsafeRE = regexp.MustCompile(`[^A-Za-z0-9._ -]+`)
 
 func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord) error {
@@ -302,10 +304,12 @@ func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryReco
 		  AND bc.newsgroup_id = $2
 		  AND bic.release_family_key = $3
 		  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-		ORDER BY CASE WHEN bic.file_index > 0 THEN bic.file_index ELSE 2147483647 END, bc.binary_id`,
+		ORDER BY CASE WHEN bic.file_index > 0 THEN bic.file_index ELSE 2147483647 END, bc.binary_id
+		LIMIT $4`,
 		seed.ProviderID,
 		seed.NewsgroupID,
 		seed.ReleaseFamilyKey,
+		maxArchiveFamilyRecoverySiblings+1,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load binary recovery siblings %d/%d %q: %w", seed.ProviderID, seed.NewsgroupID, seed.ReleaseFamilyKey, err)
@@ -395,8 +399,18 @@ func shouldApplyArchiveFamilyRecovery(seed binaryRecoverySeed, siblings []binary
 	if len(siblings) <= 1 {
 		return false
 	}
+	if len(siblings) > maxArchiveFamilyRecoverySiblings {
+		return false
+	}
 	if seed.ExpectedFileCount > 1 {
-		return true
+		allowed := seed.ExpectedFileCount * 2
+		if allowed < seed.ExpectedFileCount+50 {
+			allowed = seed.ExpectedFileCount + 50
+		}
+		if allowed > maxArchiveFamilyRecoverySiblings {
+			allowed = maxArchiveFamilyRecoverySiblings
+		}
+		return len(siblings) <= allowed
 	}
 
 	opaque := 0
