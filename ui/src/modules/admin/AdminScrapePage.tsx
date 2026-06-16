@@ -3,6 +3,7 @@ import {
   applyAdminScrapeWildcards,
   getAdminScrapeConfig,
   getAdminScrapeCrosspostPopularity,
+  getAdminScrapeProviderInventory,
   previewAdminScrapeWildcards,
   scanAdminScrapeProviders,
   updateAdminScrapeConfig,
@@ -32,6 +33,7 @@ const emptyState: AdminScrapeConfigResponse = {
 
 const previewPageSize = 50
 const defaultTablePageSize = 10
+const providerInventoryPageSize = 25
 
 type SortDirection = 'asc' | 'desc'
 
@@ -77,6 +79,10 @@ export function AdminScrapePage() {
   const [previewFilter, setPreviewFilter] = useState('')
   const [previewOffset, setPreviewOffset] = useState(0)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [inventoryLoading, setInventoryLoading] = useState(false)
+  const [providerInventoryRows, setProviderInventoryRows] = useState<ScrapeProviderInventoryItem[]>([])
+  const [providerInventoryTotal, setProviderInventoryTotal] = useState(0)
+  const [providerInventoryOffset, setProviderInventoryOffset] = useState(0)
   const [crosspostLoading, setCrosspostLoading] = useState(false)
 
   const [activeFilter, setActiveFilter] = useState('')
@@ -88,7 +94,6 @@ export function AdminScrapePage() {
   const [ruleSort, setRuleSort] = useState<SortState<WildcardSortKey>>({ key: 'pattern', direction: 'asc' })
 
   const [inventoryFilter, setInventoryFilter] = useState('')
-  const [inventoryPage, setInventoryPage] = useState(0)
   const [inventorySort, setInventorySort] = useState<SortState<ProviderSortKey>>({ key: 'group_name', direction: 'asc' })
 
   const [crosspostFilter, setCrosspostFilter] = useState('')
@@ -112,12 +117,13 @@ export function AdminScrapePage() {
 
   useEffect(() => {
     void refresh()
+    void loadProviderInventory(0, '')
   }, [])
 
   const activeRows = buildActiveRows(data)
   const activeTable = tableView(activeRows, activeFilter, activeSort, activePage, defaultTablePageSize, activeSearchText, compareActiveRows)
   const ruleTable = tableView(data.wildcard_rules, ruleFilter, ruleSort, rulePage, defaultTablePageSize, ruleSearchText, compareWildcardRules)
-  const inventoryTable = tableView(data.provider_group_inventory, inventoryFilter, inventorySort, inventoryPage, defaultTablePageSize, inventorySearchText, compareProviderInventory)
+  const inventoryTable = serverTableView(providerInventoryRows, providerInventoryTotal, providerInventoryOffset, providerInventoryPageSize, inventorySort, compareProviderInventory)
   const crosspostTable = tableView(data.crosspost_popularity, crosspostFilter, crosspostSort, crosspostPage, defaultTablePageSize, crosspostSearchText, compareCrosspostRows)
 
   const previewTotal = data.preview_total ?? data.preview_groups.length
@@ -145,9 +151,24 @@ export function AdminScrapePage() {
     try {
       const next = await scanAdminScrapeProviders()
       setData(normalizeScrapeResponse(next))
+      await loadProviderInventory(0, inventoryFilter)
       setMessage('Provider inventory refreshed.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Provider scan failed')
+    }
+  }
+
+  async function loadProviderInventory(offset = 0, q = inventoryFilter) {
+    setInventoryLoading(true)
+    try {
+      const next = await getAdminScrapeProviderInventory({ q, limit: providerInventoryPageSize, offset })
+      setProviderInventoryRows(next.items ?? [])
+      setProviderInventoryTotal(next.count ?? 0)
+      setProviderInventoryOffset(next.offset ?? offset)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Provider inventory load failed')
+    } finally {
+      setInventoryLoading(false)
     }
   }
 
@@ -313,9 +334,33 @@ export function AdminScrapePage() {
         </table>
       </TablePanel>
 
-      <TablePanel
-        title="Wildcard rules"
-        description="Rules are persisted before preview runs so the saved provider inventory can resolve matches."
+      <div className="module-settings-group stack scrape-table-panel">
+        <div className="scrape-table-panel__header">
+          <div>
+            <h2 className="section-title">Newsgroup discovery preview</h2>
+            <p className="muted-copy">
+              Search saved provider inventory with wildcard rules, preview matching groups, then apply the preview to the active scraped newsgroups list.
+            </p>
+          </div>
+          <div className="scrape-table-panel__actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setData((current) => ({ ...current, wildcard_rules: [...current.wildcard_rules, { id: `rule-${current.wildcard_rules.length + 1}`, pattern: '', enabled: true }] }))}
+            >
+              Add wildcard
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void save({ wildcard_rules: data.wildcard_rules }, 'Wildcard rules saved.')}>Save wildcards</button>
+            <button className="secondary-button" type="button" disabled={previewLoading} onClick={() => void preview(0)}>
+              {previewLoading ? 'Loading...' : 'Save & preview'}
+            </button>
+            <button className="primary-button" type="button" onClick={() => void applyWildcards()}>Apply preview to active groups</button>
+          </div>
+        </div>
+
+        <TablePanel
+          title="Wildcard rules"
+          description="Patterns use shell-style wildcards, for example alt.binaries.newznb* or *book*. Disabled rules stay saved but are ignored by preview/apply."
         filter={ruleFilter}
         onFilter={(value) => {
           setRuleFilter(value)
@@ -323,20 +368,6 @@ export function AdminScrapePage() {
         }}
         pagination={ruleTable}
         onPage={setRulePage}
-        actions={
-          <>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => setData((current) => ({ ...current, wildcard_rules: [...current.wildcard_rules, { id: `rule-${current.wildcard_rules.length + 1}`, pattern: '', enabled: true }] }))}
-            >
-              Add rule
-            </button>
-            <button className="secondary-button" type="button" onClick={() => void save({ wildcard_rules: data.wildcard_rules }, 'Wildcard rules saved.')}>Save rules</button>
-            <button className="secondary-button" type="button" onClick={() => void preview()}>Preview matches</button>
-            <button className="primary-button" type="button" onClick={() => void applyWildcards()}>Apply wildcard matches</button>
-          </>
-        }
       >
         <table className="data-table data-table--compact">
           <thead>
@@ -362,7 +393,62 @@ export function AdminScrapePage() {
             <EmptyRow visible={ruleTable.total === 0} colSpan={4} message="No wildcard rules match the current filter." />
           </tbody>
         </table>
-      </TablePanel>
+        </TablePanel>
+
+        <div className="scrape-table-panel">
+          <div className="scrape-table-panel__header">
+            <div>
+              <h3 className="section-title">Preview matches</h3>
+              <p className="muted-copy">
+                Showing {data.preview_groups.length > 0 ? previewOffset + 1 : 0}-{previewPageEnd} of {previewTotal.toLocaleString()} matching groups. Cross-post popularity appears when the group has telemetry loaded below.
+              </p>
+            </div>
+            <div className="scrape-table-panel__actions">
+              <TextInput label="Search inventory" value={previewFilter} onChange={setPreviewFilter} />
+              <button className="secondary-button" type="button" disabled={previewLoading} onClick={() => void preview(0)}>
+                {previewLoading ? 'Loading...' : 'Refresh preview'}
+              </button>
+            </div>
+          </div>
+          <div className="table-shell scrape-table-shell">
+            <table className="data-table data-table--compact">
+              <thead>
+                <tr>
+                  <th>Group</th>
+                  <th>Providers</th>
+                  <th>Rules</th>
+                  <th>Cross-post messages</th>
+                  <th>Cross-post articles</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.preview_groups.map((item: ScrapePreviewGroup) => {
+                  const popularity = findCrosspostPopularity(data.crosspost_popularity, item.group_name)
+                  return (
+                    <tr key={item.group_name}>
+                      <td>{item.group_name}</td>
+                      <td>{item.provider_ids.join(', ')}</td>
+                      <td>{item.rule_ids.join(', ')}</td>
+                      <td>{popularity ? formatNumber(popularity.distinct_message_count) : 'unknown'}</td>
+                      <td>{popularity ? formatNumber(popularity.observed_article_count) : 'unknown'}</td>
+                    </tr>
+                  )
+                })}
+                <EmptyRow visible={data.preview_groups.length === 0} colSpan={5} message="Save and preview wildcard rules to see matching groups from saved provider inventory." />
+              </tbody>
+            </table>
+          </div>
+          <div className="pagination-row">
+            <button className="secondary-button" type="button" disabled={previewOffset === 0 || previewLoading} onClick={() => void preview(Math.max(0, previewOffset - previewPageSize))}>
+              Previous
+            </button>
+            <span className="muted-copy">Page {Math.floor(previewOffset / previewPageSize) + 1}</span>
+            <button className="secondary-button" type="button" disabled={previewPageEnd >= previewTotal || previewLoading} onClick={() => void preview(previewOffset + previewPageSize)}>
+              Next
+            </button>
+          </div>
+        </div>
+      </div>
 
       <TablePanel
         title="Provider inventory"
@@ -370,11 +456,18 @@ export function AdminScrapePage() {
         filter={inventoryFilter}
         onFilter={(value) => {
           setInventoryFilter(value)
-          setInventoryPage(0)
+          void loadProviderInventory(0, value)
         }}
         pagination={inventoryTable}
-        onPage={setInventoryPage}
-        actions={<button className="primary-button" type="button" onClick={() => void rescan()}>Scan providers</button>}
+        onPage={(page) => void loadProviderInventory(page * providerInventoryPageSize, inventoryFilter)}
+        actions={
+          <>
+            <button className="secondary-button" type="button" disabled={inventoryLoading} onClick={() => void loadProviderInventory(0, inventoryFilter)}>
+              {inventoryLoading ? 'Loading...' : 'Search'}
+            </button>
+            <button className="primary-button" type="button" onClick={() => void rescan()}>Scan providers</button>
+          </>
+        }
       >
         <table className="data-table data-table--compact">
           <thead>
@@ -382,6 +475,7 @@ export function AdminScrapePage() {
               <SortableHeader label="Group" sortKey="group_name" sort={inventorySort} onSort={setInventorySort} />
               <SortableHeader label="Provider" sortKey="provider_name" sort={inventorySort} onSort={setInventorySort} />
               <SortableHeader label="Status" sortKey="status" sort={inventorySort} onSort={setInventorySort} />
+              <SortableHeader label="Est. articles" sortKey="high" sort={inventorySort} onSort={setInventorySort} />
               <SortableHeader label="High" sortKey="high" sort={inventorySort} onSort={setInventorySort} />
               <SortableHeader label="Scanned" sortKey="scanned_at" sort={inventorySort} onSort={setInventorySort} />
             </tr>
@@ -392,11 +486,12 @@ export function AdminScrapePage() {
                 <td>{item.group_name}</td>
                 <td>{item.provider_name || item.provider_id}</td>
                 <td>{item.status || 'available'}</td>
+                <td>{formatNumber(estimatedInventoryArticles(item))}</td>
                 <td>{formatNumber(item.high)}</td>
                 <td>{formatDate(item.scanned_at)}</td>
               </tr>
             ))}
-            <EmptyRow visible={inventoryTable.total === 0} colSpan={5} message="No provider inventory rows match the current filter." />
+            <EmptyRow visible={inventoryTable.total === 0} colSpan={6} message="No provider inventory rows match the current filter." />
           </tbody>
         </table>
       </TablePanel>
@@ -440,52 +535,6 @@ export function AdminScrapePage() {
         </table>
       </TablePanel>
 
-      <div className="module-settings-group stack scrape-table-panel">
-        <div className="scrape-table-panel__header">
-          <div>
-            <h2 className="section-title">Wildcard preview</h2>
-            <p className="muted-copy">
-              Showing {data.preview_groups.length > 0 ? previewOffset + 1 : 0}-{previewPageEnd} of {previewTotal.toLocaleString()} matches. Effective runtime groups: {data.effective_groups.length.toLocaleString()}.
-            </p>
-          </div>
-          <div className="scrape-table-panel__actions">
-            <TextInput label="Filter provider inventory" value={previewFilter} onChange={setPreviewFilter} />
-            <button className="secondary-button" type="button" disabled={previewLoading} onClick={() => void preview(0)}>
-              {previewLoading ? 'Loading...' : 'Refresh preview'}
-            </button>
-          </div>
-        </div>
-        <div className="table-shell scrape-table-shell">
-          <table className="data-table data-table--compact">
-            <thead>
-              <tr>
-                <th>Group</th>
-                <th>Providers</th>
-                <th>Rules</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.preview_groups.map((item: ScrapePreviewGroup) => (
-                <tr key={item.group_name}>
-                  <td>{item.group_name}</td>
-                  <td>{item.provider_ids.join(', ')}</td>
-                  <td>{item.rule_ids.join(', ')}</td>
-                </tr>
-              ))}
-              <EmptyRow visible={data.preview_groups.length === 0} colSpan={3} message="No wildcard matches for the current filter and saved provider inventory." />
-            </tbody>
-          </table>
-        </div>
-        <div className="pagination-row">
-          <button className="secondary-button" type="button" disabled={previewOffset === 0 || previewLoading} onClick={() => void preview(Math.max(0, previewOffset - previewPageSize))}>
-            Previous
-          </button>
-          <span className="muted-copy">Page {Math.floor(previewOffset / previewPageSize) + 1}</span>
-          <button className="secondary-button" type="button" disabled={previewPageEnd >= previewTotal || previewLoading} onClick={() => void preview(previewOffset + previewPageSize)}>
-            Next
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -636,6 +685,31 @@ function tableView<Row, Key extends string>(
   }
 }
 
+function serverTableView<Row, Key extends string>(
+  rows: Row[],
+  total: number,
+  offset: number,
+  pageSize: number,
+  sort: SortState<Key>,
+  compare: (a: Row, b: Row, sort: SortState<Key>) => number,
+): TableView<Row> {
+  const sorted = [...rows].sort((a, b) => compare(a, b, sort))
+  const safeTotal = Math.max(0, total)
+  const safePageSize = Math.max(1, pageSize)
+  const page = Math.floor(Math.max(0, offset) / safePageSize)
+  const pageCount = Math.max(1, Math.ceil(safeTotal / safePageSize))
+  const start = Math.min(Math.max(0, offset), safeTotal)
+  const end = Math.min(start + sorted.length, safeTotal)
+  return {
+    rows: sorted,
+    total: safeTotal,
+    page,
+    pageCount,
+    start,
+    end,
+  }
+}
+
 function buildActiveRows(data: AdminScrapeConfigResponse): ActiveGroupRow[] {
   const explicit = data.explicit_groups.map((item, index) => ({
     source: 'manual' as const,
@@ -664,10 +738,6 @@ function activeSearchText(row: ActiveGroupRow) {
 
 function ruleSearchText(row: ScrapeWildcardRule) {
   return [row.id, row.pattern, row.enabled ? 'enabled' : 'disabled'].join(' ')
-}
-
-function inventorySearchText(row: ScrapeProviderInventoryItem) {
-  return [row.group_name, row.provider_name, row.provider_id, row.status].join(' ')
 }
 
 function crosspostSearchText(row: ScrapeCrosspostPopularityItem) {
@@ -752,6 +822,18 @@ function compareBoolean(a: boolean, b: boolean) {
 
 function formatNumber(value: number) {
   return Number.isFinite(value) ? value.toLocaleString() : '0'
+}
+
+function estimatedInventoryArticles(item: ScrapeProviderInventoryItem) {
+  if (!Number.isFinite(item.high) || !Number.isFinite(item.low) || item.high < item.low) {
+    return 0
+  }
+  return item.high - item.low + 1
+}
+
+function findCrosspostPopularity(items: ScrapeCrosspostPopularityItem[], groupName: string) {
+  const needle = groupName.trim().toLowerCase()
+  return items.find((item) => item.group_name.trim().toLowerCase() === needle)
 }
 
 function formatDate(value?: string) {
