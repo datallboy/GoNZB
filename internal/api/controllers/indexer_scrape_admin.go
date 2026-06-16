@@ -121,8 +121,10 @@ func (ctrl *IndexerScrapeAdminController) ProviderInventory(c *echo.Context) err
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 	query := queryParamTrimmed(c, "q")
+	sortKey := queryParamTrimmed(c, "sort")
+	direction := queryParamTrimmed(c, "direction")
 	if ctrl.appCtx.PGIndexStore != nil {
-		page, err := ctrl.appCtx.PGIndexStore.ListIndexerProviderGroupInventoryPage(c.Request().Context(), query, limit, offset)
+		page, err := ctrl.appCtx.PGIndexStore.ListIndexerProviderGroupInventoryPage(c.Request().Context(), query, limit, offset, sortKey, direction)
 		if err != nil {
 			return jsonError(c, http.StatusInternalServerError, err.Error())
 		}
@@ -142,7 +144,7 @@ func (ctrl *IndexerScrapeAdminController) ProviderInventory(c *echo.Context) err
 	if indexing == nil {
 		indexing = app.DefaultRuntimeSettings().Indexing
 	}
-	items, total := providerInventoryPage(indexing.ProviderGroupInventory, query, limit, offset)
+	items, total := providerInventoryPage(indexing.ProviderGroupInventory, query, limit, offset, sortKey, direction)
 	return c.JSON(http.StatusOK, map[string]any{
 		"items":  items,
 		"count":  total,
@@ -173,7 +175,7 @@ func (ctrl *IndexerScrapeAdminController) CrosspostPopularity(c *echo.Context) e
 	})
 }
 
-func providerInventoryPage(items []app.IndexingProviderGroupInventoryRuntimeSettings, query string, limit, offset int) ([]app.IndexingProviderGroupInventoryRuntimeSettings, int) {
+func providerInventoryPage(items []app.IndexingProviderGroupInventoryRuntimeSettings, query string, limit, offset int, sortKey, direction string) ([]app.IndexingProviderGroupInventoryRuntimeSettings, int) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	filtered := make([]app.IndexingProviderGroupInventoryRuntimeSettings, 0, len(items))
 	for _, item := range items {
@@ -186,8 +188,15 @@ func providerInventoryPage(items []app.IndexingProviderGroupInventoryRuntimeSett
 		filtered = append(filtered, item)
 	}
 	slices.SortFunc(filtered, func(a, b app.IndexingProviderGroupInventoryRuntimeSettings) int {
-		if cmp := strings.Compare(strings.ToLower(a.GroupName), strings.ToLower(b.GroupName)); cmp != 0 {
+		cmp := compareProviderInventoryRuntimeSettings(a, b, sortKey)
+		if strings.EqualFold(strings.TrimSpace(direction), "desc") {
+			cmp = -cmp
+		}
+		if cmp != 0 {
 			return cmp
+		}
+		if tie := strings.Compare(strings.ToLower(a.GroupName), strings.ToLower(b.GroupName)); tie != 0 {
+			return tie
 		}
 		return strings.Compare(strings.ToLower(a.ProviderID), strings.ToLower(b.ProviderID))
 	})
@@ -200,6 +209,43 @@ func providerInventoryPage(items []app.IndexingProviderGroupInventoryRuntimeSett
 		end = total
 	}
 	return filtered[offset:end], total
+}
+
+func compareProviderInventoryRuntimeSettings(a, b app.IndexingProviderGroupInventoryRuntimeSettings, sortKey string) int {
+	switch strings.ToLower(strings.TrimSpace(sortKey)) {
+	case "provider_name":
+		return strings.Compare(strings.ToLower(a.ProviderName), strings.ToLower(b.ProviderName))
+	case "status":
+		return strings.Compare(strings.ToLower(a.Status), strings.ToLower(b.Status))
+	case "high":
+		return compareInt64(a.High, b.High)
+	case "scanned_at":
+		return strings.Compare(a.ScannedAt, b.ScannedAt)
+	case "estimated_articles":
+		return compareInt64(estimatedProviderInventoryArticles(a.High, a.Low), estimatedProviderInventoryArticles(b.High, b.Low))
+	case "group_name":
+		fallthrough
+	default:
+		return strings.Compare(strings.ToLower(a.GroupName), strings.ToLower(b.GroupName))
+	}
+}
+
+func estimatedProviderInventoryArticles(high, low int64) int64 {
+	if high < low {
+		return 0
+	}
+	return high - low + 1
+}
+
+func compareInt64(a, b int64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) error {

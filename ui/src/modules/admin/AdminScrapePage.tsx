@@ -54,7 +54,7 @@ type ActiveGroupRow = {
 
 type ActiveGroupSortKey = 'group_name' | 'source' | 'backfill_until_date' | 'enabled'
 type WildcardSortKey = 'id' | 'pattern' | 'enabled'
-type ProviderSortKey = 'group_name' | 'provider_name' | 'status' | 'high' | 'scanned_at'
+type ProviderSortKey = 'group_name' | 'provider_name' | 'status' | 'estimated_articles' | 'high' | 'scanned_at'
 type CrosspostSortKey = 'group_name' | 'status' | 'distinct_message_count' | 'observed_article_count' | 'distinct_source_group_count' | 'last_seen_at'
 
 function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | null): AdminScrapeConfigResponse {
@@ -94,7 +94,7 @@ export function AdminScrapePage() {
   const [ruleSort, setRuleSort] = useState<SortState<WildcardSortKey>>({ key: 'pattern', direction: 'asc' })
 
   const [inventoryFilter, setInventoryFilter] = useState('')
-  const [inventorySort, setInventorySort] = useState<SortState<ProviderSortKey>>({ key: 'group_name', direction: 'asc' })
+  const [inventorySort, setInventorySort] = useState<SortState<ProviderSortKey>>({ key: 'estimated_articles', direction: 'desc' })
 
   const [crosspostFilter, setCrosspostFilter] = useState('')
   const [crosspostPage, setCrosspostPage] = useState(0)
@@ -123,7 +123,7 @@ export function AdminScrapePage() {
   const activeRows = buildActiveRows(data)
   const activeTable = tableView(activeRows, activeFilter, activeSort, activePage, defaultTablePageSize, activeSearchText, compareActiveRows)
   const ruleTable = tableView(data.wildcard_rules, ruleFilter, ruleSort, rulePage, defaultTablePageSize, ruleSearchText, compareWildcardRules)
-  const inventoryTable = serverTableView(providerInventoryRows, providerInventoryTotal, providerInventoryOffset, providerInventoryPageSize, inventorySort, compareProviderInventory)
+  const inventoryTable = serverTableView(providerInventoryRows, providerInventoryTotal, providerInventoryOffset, providerInventoryPageSize)
   const crosspostTable = tableView(data.crosspost_popularity, crosspostFilter, crosspostSort, crosspostPage, defaultTablePageSize, crosspostSearchText, compareCrosspostRows)
 
   const previewTotal = data.preview_total ?? data.preview_groups.length
@@ -151,17 +151,17 @@ export function AdminScrapePage() {
     try {
       const next = await scanAdminScrapeProviders()
       setData(normalizeScrapeResponse(next))
-      await loadProviderInventory(0, inventoryFilter)
+      await loadProviderInventory(0, inventoryFilter, inventorySort)
       setMessage('Provider inventory refreshed.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Provider scan failed')
     }
   }
 
-  async function loadProviderInventory(offset = 0, q = inventoryFilter) {
+  async function loadProviderInventory(offset = 0, q = inventoryFilter, sort = inventorySort) {
     setInventoryLoading(true)
     try {
-      const next = await getAdminScrapeProviderInventory({ q, limit: providerInventoryPageSize, offset })
+      const next = await getAdminScrapeProviderInventory({ q, limit: providerInventoryPageSize, offset, sort: sort.key, direction: sort.direction })
       setProviderInventoryRows(next.items ?? [])
       setProviderInventoryTotal(next.count ?? 0)
       setProviderInventoryOffset(next.offset ?? offset)
@@ -170,6 +170,11 @@ export function AdminScrapePage() {
     } finally {
       setInventoryLoading(false)
     }
+  }
+
+  function updateInventorySort(sort: SortState<ProviderSortKey>) {
+    setInventorySort(sort)
+    void loadProviderInventory(0, inventoryFilter, sort)
   }
 
   async function persistCurrentConfig() {
@@ -456,13 +461,13 @@ export function AdminScrapePage() {
         filter={inventoryFilter}
         onFilter={(value) => {
           setInventoryFilter(value)
-          void loadProviderInventory(0, value)
+          void loadProviderInventory(0, value, inventorySort)
         }}
         pagination={inventoryTable}
-        onPage={(page) => void loadProviderInventory(page * providerInventoryPageSize, inventoryFilter)}
+        onPage={(page) => void loadProviderInventory(page * providerInventoryPageSize, inventoryFilter, inventorySort)}
         actions={
           <>
-            <button className="secondary-button" type="button" disabled={inventoryLoading} onClick={() => void loadProviderInventory(0, inventoryFilter)}>
+            <button className="secondary-button" type="button" disabled={inventoryLoading} onClick={() => void loadProviderInventory(0, inventoryFilter, inventorySort)}>
               {inventoryLoading ? 'Loading...' : 'Search'}
             </button>
             <button className="primary-button" type="button" onClick={() => void rescan()}>Scan providers</button>
@@ -472,12 +477,12 @@ export function AdminScrapePage() {
         <table className="data-table data-table--compact">
           <thead>
             <tr>
-              <SortableHeader label="Group" sortKey="group_name" sort={inventorySort} onSort={setInventorySort} />
-              <SortableHeader label="Provider" sortKey="provider_name" sort={inventorySort} onSort={setInventorySort} />
-              <SortableHeader label="Status" sortKey="status" sort={inventorySort} onSort={setInventorySort} />
-              <SortableHeader label="Est. articles" sortKey="high" sort={inventorySort} onSort={setInventorySort} />
-              <SortableHeader label="High" sortKey="high" sort={inventorySort} onSort={setInventorySort} />
-              <SortableHeader label="Scanned" sortKey="scanned_at" sort={inventorySort} onSort={setInventorySort} />
+              <SortableHeader label="Group" sortKey="group_name" sort={inventorySort} onSort={updateInventorySort} />
+              <SortableHeader label="Provider" sortKey="provider_name" sort={inventorySort} onSort={updateInventorySort} />
+              <SortableHeader label="Status" sortKey="status" sort={inventorySort} onSort={updateInventorySort} />
+              <SortableHeader label="Est. articles" sortKey="estimated_articles" sort={inventorySort} onSort={updateInventorySort} />
+              <SortableHeader label="High" sortKey="high" sort={inventorySort} onSort={updateInventorySort} />
+              <SortableHeader label="Scanned" sortKey="scanned_at" sort={inventorySort} onSort={updateInventorySort} />
             </tr>
           </thead>
           <tbody>
@@ -685,23 +690,20 @@ function tableView<Row, Key extends string>(
   }
 }
 
-function serverTableView<Row, Key extends string>(
+function serverTableView<Row>(
   rows: Row[],
   total: number,
   offset: number,
   pageSize: number,
-  sort: SortState<Key>,
-  compare: (a: Row, b: Row, sort: SortState<Key>) => number,
 ): TableView<Row> {
-  const sorted = [...rows].sort((a, b) => compare(a, b, sort))
   const safeTotal = Math.max(0, total)
   const safePageSize = Math.max(1, pageSize)
   const page = Math.floor(Math.max(0, offset) / safePageSize)
   const pageCount = Math.max(1, Math.ceil(safeTotal / safePageSize))
   const start = Math.min(Math.max(0, offset), safeTotal)
-  const end = Math.min(start + sorted.length, safeTotal)
+  const end = Math.min(start + rows.length, safeTotal)
   return {
-    rows: sorted,
+    rows,
     total: safeTotal,
     page,
     pageCount,
@@ -769,23 +771,6 @@ function compareWildcardRules(a: ScrapeWildcardRule, b: ScrapeWildcardRule, sort
     case 'pattern':
     default:
       return compareText(a.pattern, b.pattern) * direction
-  }
-}
-
-function compareProviderInventory(a: ScrapeProviderInventoryItem, b: ScrapeProviderInventoryItem, sort: SortState<ProviderSortKey>) {
-  const direction = sort.direction === 'asc' ? 1 : -1
-  switch (sort.key) {
-    case 'provider_name':
-      return compareText(a.provider_name || a.provider_id, b.provider_name || b.provider_id) * direction
-    case 'status':
-      return compareText(a.status, b.status) * direction
-    case 'high':
-      return compareNumber(a.high, b.high) * direction
-    case 'scanned_at':
-      return compareText(a.scanned_at ?? '', b.scanned_at ?? '') * direction
-    case 'group_name':
-    default:
-      return compareText(a.group_name, b.group_name) * direction
   }
 }
 
