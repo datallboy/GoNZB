@@ -161,7 +161,7 @@ This is intentionally not a retry-loop-only fix. Retries remain useful for trans
 
 Validation date: 2026-06-15
 
-Result: Phase A/B is complete, but this branch is not complete while Phase C remains open. The v2 side-table bridge passed the write-contention soak, but the legacy `binaries` anchor must still be replaced before this sprint can close.
+Result: Phase A/B is complete. Phase C is partially complete: active production paths are off the legacy `binaries` hot table, but hash partitioning is not implemented and the compatibility table/view cleanup remains open.
 
 Observed fresh-database serve soak:
 
@@ -199,6 +199,7 @@ This branch cannot close until Phase C is complete.
 - [x] Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
 - [x] Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
 - [ ] Remove or freeze `binaries` as a compatibility view/table in a later schema-squash cleanup after test fixtures and old-database compatibility are retired.
+- [ ] Implement PostgreSQL declarative hash partitioning for high-volume tables or explicitly defer it to the schema-squash release plan with a documented migration strategy.
 
 ## Crosspost Popularity Refresh Redesign
 
