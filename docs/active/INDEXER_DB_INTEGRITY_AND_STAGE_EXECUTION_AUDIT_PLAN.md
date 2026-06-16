@@ -62,6 +62,29 @@ Immediate landed application mitigation:
 - Both lanes may remain enabled, but only one assemble write lane can execute at a time.
 - This preserves the lane split while preventing overlapping writes into the v2 binary assembly tables from one `serve` process.
 
+Release-summary-refresh follow-up on `2026-06-16`:
+
+- live backlog was roughly `1.8M` rows in `release_family_summary_refresh_queue`.
+- completed runs showed 10k summaries taking `3-31 minutes`, with `summary_refresh_dequeue_duration_ms` dominating.
+- EXPLAIN showed the old hot dequeue branch scanning most of the refresh queue in `queued_at` order for old `fragment_only` / weak readiness buckets:
+  - `fragment_only` query scanned roughly `1.8M` queue rows and probed readiness for each row, returning only a handful of matches.
+  - `weak_single_binary` query scanned roughly `1.8M` queue rows and returned no matches.
+- the live backlog was dominated by queued `release_family` keys that did not yet have readiness-summary rows, so the useful path was the missing-summary oldest-queue branch.
+
+Landed release-summary-refresh fix:
+
+- hot dequeue now prioritizes:
+  - existing actionable summaries
+  - oldest queued keys with no summary yet
+  - rare `base_stem` rows
+- hot dequeue no longer scans old weak/fragment readiness buckets before processing missing-summary work.
+- added a partial queue index for `base_stem` keys so that branch does not parallel-scan the full queue.
+- live validation after migration `060`:
+  - `indexer release refresh-summaries --once`
+  - processed `10,000` queued summaries in `2.44s`
+  - dequeue dropped to `235ms`
+  - prior comparable runs were minutes, with dequeue dominating.
+
 Observed on `2026-06-12` during the repeated corruption investigation:
 
 - PostgreSQL reported `compressed pglz data is corrupt` while `indexer_maintenance` read old `binary_grouping_evidence.payload_json`

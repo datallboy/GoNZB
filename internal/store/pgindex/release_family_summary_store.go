@@ -2968,61 +2968,6 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 		},
 		{
 			query: `
-				WITH candidate_rows AS (
-					SELECT
-						q.ctid,
-						q.provider_id,
-						q.newsgroup_id,
-						q.key_kind,
-						q.family_key
-					FROM release_family_readiness_summaries s
-					JOIN release_family_summary_refresh_queue q
-					  ON q.provider_id = s.provider_id
-					 AND q.newsgroup_id = s.newsgroup_id
-					 AND q.key_kind = s.key_kind
-					 AND q.family_key = s.family_key
-					WHERE s.readiness_bucket = $2
-					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
-					LIMIT $1
-					FOR UPDATE OF q SKIP LOCKED
-				),
-				dequeued AS (
-					DELETE FROM release_family_summary_refresh_queue q
-					USING candidate_rows c
-					WHERE q.ctid = c.ctid
-					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
-				)
-				SELECT provider_id, newsgroup_id, key_kind, family_key
-				FROM dequeued`,
-			args: []any{limit, releaseReadinessFragmentOnly},
-		},
-		{
-			query: `
-				WITH candidate_rows AS (
-					SELECT
-						q.ctid,
-						q.provider_id,
-						q.newsgroup_id,
-						q.key_kind,
-						q.family_key
-					FROM release_family_summary_refresh_queue q
-					WHERE q.key_kind = 'base_stem'
-					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.family_key
-					LIMIT $1
-					FOR UPDATE OF q SKIP LOCKED
-				),
-				dequeued AS (
-					DELETE FROM release_family_summary_refresh_queue q
-					USING candidate_rows c
-					WHERE q.ctid = c.ctid
-					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
-				)
-				SELECT provider_id, newsgroup_id, key_kind, family_key
-				FROM dequeued`,
-			args: []any{limit},
-		},
-		{
-			query: `
 				WITH ordered_queue AS MATERIALIZED (
 					SELECT
 						q.ctid,
@@ -3070,6 +3015,31 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 				SELECT provider_id, newsgroup_id, key_kind, family_key
 				FROM dequeued`,
 			args: []any{limit, releaseFamilySummaryRefreshBatch},
+		},
+		{
+			query: `
+				WITH candidate_rows AS (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					FROM release_family_summary_refresh_queue q
+					WHERE q.key_kind = 'base_stem'
+					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.family_key
+					LIMIT $1
+					FOR UPDATE OF q SKIP LOCKED
+				),
+				dequeued AS (
+					DELETE FROM release_family_summary_refresh_queue q
+					USING candidate_rows c
+					WHERE q.ctid = c.ctid
+					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
+				)
+				SELECT provider_id, newsgroup_id, key_kind, family_key
+				FROM dequeued`,
+			args: []any{limit},
 		},
 	}
 
