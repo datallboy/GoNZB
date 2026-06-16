@@ -230,7 +230,6 @@ type UsenetIndexStore interface {
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
 	RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error
-	EnsurePoster(ctx context.Context, posterName string) (int64, error)
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error

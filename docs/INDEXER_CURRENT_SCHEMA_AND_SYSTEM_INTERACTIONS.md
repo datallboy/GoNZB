@@ -304,7 +304,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `indexer_provider_group_inventory` | discovery/support state | scrape admin provider scan | none | Persisted provider LIST snapshot used by wildcard preview/apply; not runtime scrape selection by itself. |
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
-| `posters` | support dimension | `poster_materialize` | `assemble_*` via `EnsurePoster` transitional only | Shared support dimension; scrape no longer writes it inline. |
+| `posters` | support dimension | `poster_materialize` | none | Shared support dimension; scrape and assemble do not write it inline. |
 | `binaries` | legacy compatibility table | none | none | Retained for migration/backward-compatibility only. Production store code must not use it. |
 | `binary_core` | v2 canonical anchor | `assemble_*` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
 | `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
@@ -676,7 +676,7 @@ Primary DBO entry points:
 - `listPriorityAssemblyHeaderIDs`
 - `listRecentUnassembledHeaderIDs`
 - `hydrateAssemblyCandidates`
-- `EnsurePoster`
+- materialized poster refs when available; raw ingest poster text as read-only fallback evidence
 - `UpsertBinaries`
 - `UpsertBinaryParts`
 - binary refresh/update helpers in `assembly_store.go`
@@ -705,7 +705,7 @@ Current audit note:
 - two helper functions in `assembly_store.go` are currently unused by the active assemble service:
   - `listPriorityAssemblyBinaries`
   - `listPendingHeadersForProgressBinaries`
-- `EnsurePoster` must avoid `ON CONFLICT DO UPDATE` row rewrites for existing posters
+- assemble must not write `posters`; poster dimension writes belong to `poster_materialize`
 - `RefreshBinaryStatsBatch` should join `article_headers` once when aggregating part/header stats, not reread it through repeated correlated subselects
 
 ### `recover_yenc`

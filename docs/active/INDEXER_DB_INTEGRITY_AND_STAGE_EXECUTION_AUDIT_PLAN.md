@@ -347,7 +347,6 @@ Hot assemble-owned store paths confirmed:
 - `listPriorityAssemblyHeaderIDs`
 - `listRecentUnassembledHeaderIDs`
 - `hydrateAssemblyCandidates`
-- `EnsurePoster`
 - `UpsertBinaries`
 - `UpsertBinaryParts`
 - `RefreshBinaryStatsBatch`
@@ -388,10 +387,11 @@ Measured live query-shape findings on the fresh scrape backlog:
 
 Hot-path inefficiencies found:
 
-- `EnsurePoster` was doing `ON CONFLICT DO UPDATE` even for existing poster rows
-  - this rewrote an existing poster row every time assemble had to resolve a cache miss locally
+- assemble previously called `EnsurePoster` for raw-only poster names
+  - this kept poster dimension writes in the assemble hot path
   - fix landed:
-    - switch to `INSERT ... DO NOTHING RETURNING` plus indexed fallback read
+    - assemble now preserves already materialized `poster_id` values but does not write `posters`
+    - raw payload poster text remains read-only weak matcher evidence when `poster_materialize` lags
 - `RefreshBinaryStatsBatch` was rereading `article_headers` twice per `binary_parts` row through correlated subqueries
   - fix landed:
     - join `article_headers` once inside the materialized part/header intermediate
@@ -404,7 +404,7 @@ Hot-path inefficiencies found:
   - it sets `article_headers.assembled_at`
 - this means scrape/assemble overlap is not just “operationally discouraged”; it is structurally high-risk:
   - both stages write `article_headers`
-  - both stages can write or depend on `posters`
+  - poster writes are now isolated to `poster_materialize`, so poster no longer adds scrape/assemble write overlap
   - scrape should stay isolated from assemble during bootstrap and heavy regroup work
 - claim selection is serialized globally with:
   - `pg_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`
@@ -415,7 +415,7 @@ Hot-path inefficiencies found:
 
 ### Changes landed from Pass 2
 
-- `EnsurePoster` no longer rewrites an existing `posters` row on every conflict
+- assemble no longer writes `posters`; `poster_materialize` owns poster dimension writes
 - `RefreshBinaryStatsBatch` no longer rereads `article_headers` twice per part row when computing aggregate binary stats
 
 ### Remaining assemble-specific follow-up

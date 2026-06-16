@@ -124,6 +124,31 @@ func TestScrapeHotPathDoesNotWriteMaterializedDimensions(t *testing.T) {
 	}
 }
 
+func TestPosterDimensionWritesStayInMaterializer(t *testing.T) {
+	allowedWriterFiles := map[string]bool{
+		"scrape_materializer_store.go": true,
+	}
+	pattern := regexp.MustCompile(`(?is)\b(insert\s+into|update|delete\s+from)\s+(public\.)?posters\b`)
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read pgindex dir: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Clean(name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if pattern.Match(content) && !allowedWriterFiles[name] {
+			t.Fatalf("%s writes posters outside poster_materialize ownership", name)
+		}
+	}
+}
+
 func TestPosterMaterializerDoesNotWriteScrapePayloads(t *testing.T) {
 	content, err := os.ReadFile(filepath.Clean("scrape_materializer_store.go"))
 	if err != nil {
