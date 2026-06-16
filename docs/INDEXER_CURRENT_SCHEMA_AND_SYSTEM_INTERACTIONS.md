@@ -294,6 +294,7 @@ This matrix is the schema contract for current and near-term code changes.
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional raw ingest metadata; keeps raw poster/xref text. Poster materialization must not write back to this table. |
+| `article_header_assembly_keys` | queue/work selector projection | `assemble_*` | `scrape_*` seed only | Header-derived normalized filename keys for assemble lane A. Scrape seeds from parsed subjects; assemble completes/deletes keys after binary part assignment. |
 | `article_header_poster_refs` | derived/support projection | `poster_materialize` | none | Per-header poster dimension projection derived from raw payload poster text. |
 | `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
 | `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
@@ -309,6 +310,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `binary_core` | v2 canonical anchor | `assemble_*` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
 | `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
 | `binary_identity_current` | v2 canonical projection | `assemble_*` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
+| `binary_completion_keys` | derived selector projection | `assemble_*` | `recover_yenc` after recovered identity/stat changes only | Binary-derived incomplete normalized filename keys for assemble lane A. Keeps the hot selector off broad identity/stat joins. |
 | `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
 | `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `release_purge_archived_sources` | none | Archive/purge lifecycle state for binary lineage. |
 | `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
@@ -647,12 +649,19 @@ Downloader-safety invariant:
 Allowed reads:
 
 - `article_headers`
-- `article_header_ingest_payloads`
+- `article_header_assembly_keys`
+- `binary_completion_keys`
+- `article_header_ingest_payloads` as raw fallback evidence during candidate hydration/recovery support
 - runtime/stage config
 
 Allowed writes:
 
-- `binaries`
+- `binary_core`
+- `binary_observation_stats`
+- `binary_identity_current`
+- `binary_completion_keys`
+- `binary_recovery_current` seeding
+- `binary_lifecycle` seeding
 - `binary_parts`
 - `yenc_recovery_work_items` seeding
 - release-family refresh queue enqueue only
@@ -684,6 +693,9 @@ Primary DBO entry points:
 Current audit note:
 
 - lane A is a structured-completion selector that tries to feed incomplete binaries with matching normalized file identity
+- lane A candidate selection now reads `binary_completion_keys` and `article_header_assembly_keys`; it no longer scans `binary_identity_current`, `binary_observation_stats`, or `article_header_ingest_payloads` in the claim selector
+- `article_header_assembly_keys` is an assemble-owned work surface seeded by scrape; assemble deletes keys when the corresponding headers are claimed into binary parts
+- assemble/recover own `binary_completion_keys` and refresh it only when binary identity/stats change
 - lane B is the recent general backlog selector and can exclude structured-progress matches
 - current service usage defers release-summary recomputation and only enqueues dirty family keys
 - the store still supports inline release-summary recomputation when callers do not set the defer flag
@@ -702,6 +714,7 @@ Current audit note:
   - `par2_source_binary_id`
   - `par2_target_coverage_source`
 - `grouping_evidence_json` is no longer a hot write target; admin/detail reads synthesize compatible JSON from scalar columns when needed
+- helper functions in `assembly_store.go` that rank incomplete binaries must use `binary_completion_keys`, not broad v2 identity/stat scans
 - two helper functions in `assembly_store.go` are currently unused by the active assemble service:
   - `listPriorityAssemblyBinaries`
   - `listPendingHeadersForProgressBinaries`

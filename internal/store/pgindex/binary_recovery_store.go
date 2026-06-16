@@ -57,6 +57,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 	newName := recoveredFileName(seed.FileName, seed.ReleaseName, seed.BinaryName, seed.FileIndex, seed.ExpectedFileCount, in.Kind, in.Extension)
 	renamePredicate := `file_name = '' OR LOWER(file_name) LIKE '%.bin' OR file_name !~ '\.[A-Za-z0-9]{1,8}$'`
 	recoveryRenamePredicate := `recovered_file_name = '' OR LOWER(recovered_file_name) LIKE '%.bin' OR recovered_file_name !~ '\.[A-Za-z0-9]{1,8}$'`
+	completionKeyIDs := make([]int64, 0, 1)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_recovery_current
 		SET recovered_kind = $2,
@@ -94,6 +95,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		); err != nil {
 			return fmt.Errorf("update binary recovery identity %d: %w", in.BinaryID, err)
 		}
+		completionKeyIDs = append(completionKeyIDs, in.BinaryID)
 	}
 
 	if in.Canonicalize {
@@ -196,6 +198,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 				); err != nil {
 					return fmt.Errorf("update sibling binary recovery identity %d: %w", sibling.ID, err)
 				}
+				completionKeyIDs = append(completionKeyIDs, sibling.ID)
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE release_files
 					SET file_name = $2
@@ -220,6 +223,9 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		}
 	}
 
+	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, completionKeyIDs); err != nil {
+		return err
+	}
 	if err := markReleaseFamilyDirty(ctx, tx, seed.ProviderID, seed.NewsgroupID, "release_family", seed.ReleaseFamilyKey); err != nil {
 		return err
 	}

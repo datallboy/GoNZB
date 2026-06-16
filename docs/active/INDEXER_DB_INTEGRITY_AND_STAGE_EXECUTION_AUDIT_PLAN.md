@@ -239,7 +239,8 @@ Effective now:
 
 Rationale:
 
-- `article_header_ingest_payloads` still feeds assemble lane A and yEnc recovery
+- `article_header_ingest_payloads` still feeds yEnc recovery and raw fallback evidence
+- assemble lane A now uses `article_header_assembly_keys` for claim-time normalized filename matching instead of scanning payload rows
 - auto-purging payloads before downstream backlog drains can reduce release formation quality and regroup potential
 - intentional source purge remains the only automated destructive lineage cleanup path after NZB generation/archive/purge eligibility
 
@@ -417,6 +418,10 @@ Hot-path inefficiencies found:
 
 - assemble no longer writes `posters`; `poster_materialize` owns poster dimension writes
 - `RefreshBinaryStatsBatch` no longer rereads `article_headers` twice per part row when computing aggregate binary stats
+- lane A claim selection no longer derives incomplete binary/header filename matches from broad joins over `binary_identity_current`, `binary_observation_stats`, and `article_header_ingest_payloads`
+- scrape now seeds `article_header_assembly_keys` inline from already parsed subject filenames; this is an assemble-owned work surface completed/deleted by assemble after binary part assignment
+- assemble/recover now materialize `binary_completion_keys` when binary identity/stats change; this is binary-owner state and avoids a separate stage that would only move the same heavy selector elsewhere
+- stale `article_header_assembly_keys` rows must not accumulate; migration `054` removes historical completed keys and assemble deletes newly completed keys inline
 
 ### Remaining assemble-specific follow-up
 

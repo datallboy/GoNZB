@@ -41,6 +41,7 @@ Target table ownership:
 - `binary_identity_current`: assemble/projector-owned current grouping identity for release family, file set, file family, expected counts, match confidence, subject-set identity, auxiliary/main-payload flags, and grouping summary scalars.
 - `binary_recovery_current`: recovery-owned current recovered kind, extension, source, confidence, recovered filename, and recovery timestamp.
 - `binary_lifecycle`: release/archive/purge-owned lifecycle state for release linkage, archive state, purge eligibility, and terminal timestamps.
+- `binary_completion_keys`: assemble-owned lane-A selector projection for incomplete normalized file identities; yEnc recovery may refresh rows after recovered identity/stat changes.
 - `binary_projection_events`: append-only future event stream for identity, recovery, inspection, and lifecycle changes.
 - `release_family_dirty_queue`: the only trigger surface for release summary refresh; no raw binary scans should be needed to discover changed families.
 
@@ -60,6 +61,10 @@ Phase A, implemented first:
 Phase B:
 
 - Move release-summary-refresh, release formation, inspect selection, yEnc selection, and catalog reads to the v2 side tables.
+- Move assemble lane-A claim-time completion matching to compact selector projections:
+  - `article_header_assembly_keys` is assemble-owned, seeded from already parsed subject filenames during scrape ingest, and completed/deleted by assemble.
+  - `binary_completion_keys` is assemble-owned and refreshed when binary identity/stats change.
+  - this avoids stale header-key scans while keeping scrape as a seed writer rather than owner of assemble progress.
 - `release_summary_refresh` scheduled summary aggregate/dominant reads now use `binary_identity_current`, `binary_observation_stats`, and `binary_core` instead of behavior-bearing fields on `binaries`.
 - release formation binary fan-out (`ListBinariesForReleaseCandidate`) now uses the same v2 projection tables instead of behavior-bearing fields on `binaries`.
 - release reform candidate discovery (`ListExistingReleaseCandidates`) now derives candidate binaries from the v2 projection tables.
@@ -136,6 +141,7 @@ The scrape deadlock on poster upsert showed the same ownership problem as `binar
 Implemented target shape:
 
 - `scrape_latest` and `scrape_backfill` insert canonical/raw ingest rows only: `article_headers`, `article_header_ingest_payloads`, `article_header_crosspost_groups`, checkpoints, and queue seeds.
+- scrape also seeds downstream-owned selector/support work surfaces derived from the same header row when they are required to avoid downstream hot joins, such as `article_header_assembly_keys`.
 - `poster_materialize` owns `posters` and `article_header_poster_refs`.
 - `crosspost_popularity_refresh` owns `article_header_crosspost_group_summary`, `article_header_crosspost_group_messages`, and `article_header_crosspost_group_sources`.
 - `poster_materialization_queue` is seeded by scrape and claimed/completed by `poster_materialize`.

@@ -441,37 +441,21 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 	rows, err := q.QueryContext(ctx, `
 		WITH candidate_binaries AS (
 			SELECT
-				ranked.binary_id,
-				ranked.provider_id,
-				ranked.newsgroup_id,
-				ranked.normalized_file_name,
-				ranked.is_main_payload,
-				ranked.observed_parts,
-				ranked.completion_ratio,
+				binary_id,
+				provider_id,
+				newsgroup_id,
+				normalized_file_name,
+				is_main_payload,
+				observed_parts,
+				completion_ratio,
 				ROW_NUMBER() OVER () AS binary_rank
-			FROM (
-				SELECT
-					bic.binary_id,
-					bic.provider_id,
-					bic.newsgroup_id,
-					LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) AS normalized_file_name,
-					bic.is_main_payload,
-					bos.observed_parts,
-					CASE
-						WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
-						ELSE 0
-					END AS completion_ratio
-				FROM binary_identity_current bic
-				JOIN binary_observation_stats bos
-				  ON bos.binary_id = bic.binary_id
-				 AND bos.total_parts > 0
-				 AND bos.observed_parts < bos.total_parts
-				WHERE BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
-				ORDER BY
-					bos.observed_parts DESC,
-					bic.binary_id DESC
-				LIMIT $2
-			) ranked
+			FROM binary_completion_keys
+			ORDER BY
+				is_main_payload DESC,
+				completion_ratio DESC,
+				observed_parts DESC,
+				binary_id DESC
+			LIMIT $2
 		),
 		selected AS (
 			SELECT
@@ -484,19 +468,18 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 			FROM candidate_binaries cb
 			JOIN LATERAL (
 				SELECT ah.id
-				FROM article_header_ingest_payloads p
+				FROM article_header_assembly_keys hk
 				JOIN article_headers ah
-				  ON ah.id = p.article_header_id
-				 AND ah.provider_id = cb.provider_id
-				 AND ah.newsgroup_id = cb.newsgroup_id
-				 AND ah.assembled_at IS NULL
-				 AND (
-				 	ah.assembly_claimed_until IS NULL
-				 	OR ah.assembly_claimed_until < NOW()
-				 )
-				WHERE LOWER(BTRIM(p.subject_file_name)) = cb.normalized_file_name
-				  AND BTRIM(p.subject_file_name) <> ''
-				ORDER BY ah.id DESC
+				  ON ah.id = hk.article_header_id
+				WHERE hk.provider_id = cb.provider_id
+				  AND hk.newsgroup_id = cb.newsgroup_id
+				  AND hk.normalized_file_name = cb.normalized_file_name
+				  AND ah.assembled_at IS NULL
+				  AND (
+					ah.assembly_claimed_until IS NULL
+					OR ah.assembly_claimed_until < NOW()
+				  )
+				ORDER BY hk.article_header_id DESC
 				LIMIT 1
 			) matches ON true
 			ORDER BY
@@ -557,40 +540,23 @@ func (s *Store) listPriorityAssemblyBinaries(ctx context.Context, limit int) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		WITH ranked AS (
 			SELECT
-				bc.binary_id,
-				bc.provider_id,
-				bc.newsgroup_id,
-				LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) AS normalized_file_name,
-				bic.is_main_payload,
-				bos.observed_parts,
-				CASE
-					WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
-					ELSE 0
-				END AS completion_ratio,
-				GREATEST(bos.total_parts - bos.observed_parts, 0) AS missing_parts,
+				binary_id,
+				provider_id,
+				newsgroup_id,
+				normalized_file_name,
+				is_main_payload,
+				observed_parts,
+				completion_ratio,
+				GREATEST(total_parts - observed_parts, 0) AS missing_parts,
 				ROW_NUMBER() OVER (
-					PARTITION BY
-						bc.provider_id,
-						bc.newsgroup_id,
-						LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))))
+					PARTITION BY provider_id, newsgroup_id, normalized_file_name
 					ORDER BY
-						CASE
-							WHEN bic.is_main_payload THEN 0
-							ELSE 1
-						END ASC,
-						CASE
-							WHEN bos.total_parts > 0 THEN bos.observed_parts::DOUBLE PRECISION / bos.total_parts::DOUBLE PRECISION
-							ELSE 0
-						END DESC,
-						bos.observed_parts DESC,
-						bc.binary_id DESC
+						is_main_payload DESC,
+						completion_ratio DESC,
+						observed_parts DESC,
+						binary_id DESC
 				) AS file_rank
-			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			WHERE bos.total_parts > 0
-			  AND bos.observed_parts < bos.total_parts
-			  AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
+			FROM binary_completion_keys
 		)
 		SELECT
 			binary_id,
@@ -601,10 +567,7 @@ func (s *Store) listPriorityAssemblyBinaries(ctx context.Context, limit int) ([]
 		FROM ranked
 		WHERE file_rank = 1
 		ORDER BY
-			CASE
-				WHEN is_main_payload THEN 0
-				ELSE 1
-			END ASC,
+			is_main_payload DESC,
 			completion_ratio DESC,
 			observed_parts DESC,
 			binary_id DESC
@@ -1573,10 +1536,13 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.newsgroup_id,
 			'active',
 			NOW()
-		FROM tmp_upsert_binaries r
+	FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
 		ON CONFLICT (binary_id) DO NOTHING`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_lifecycle seed batch: %w", err)
+	}
+	if err := syncBinaryCompletionKeysForStagedBinaries(ctx, runner); err != nil {
+		return nil, nil, err
 	}
 	readbackStarted := time.Now()
 	rows, err := runner.QueryContext(ctx, `
@@ -1974,6 +1940,147 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 	return nil
 }
 
+func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlExecQueryer) error {
+	if runner == nil {
+		return fmt.Errorf("binary completion key runner is required")
+	}
+	if _, err := runner.ExecContext(ctx, `
+		DELETE FROM binary_completion_keys bck
+		USING tmp_existing_binaries e
+		WHERE bck.binary_id = e.binary_id`); err != nil {
+		return fmt.Errorf("delete staged binary completion keys: %w", err)
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO binary_completion_keys (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			normalized_file_name,
+			is_main_payload,
+			observed_parts,
+			total_parts,
+			completion_ratio,
+			updated_at
+		)
+		SELECT
+			bic.binary_id,
+			bic.provider_id,
+			bic.newsgroup_id,
+			lower(btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, '')))),
+			bic.is_main_payload,
+			bos.observed_parts,
+			bos.total_parts,
+			CASE
+				WHEN bos.total_parts > 0 THEN bos.observed_parts::double precision / bos.total_parts::double precision
+				ELSE 0
+			END,
+			NOW()
+		FROM tmp_existing_binaries e
+		JOIN binary_identity_current bic ON bic.binary_id = e.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = e.binary_id
+		WHERE bos.total_parts > 0
+		  AND bos.observed_parts < bos.total_parts
+		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
+		ON CONFLICT (binary_id) DO UPDATE
+		SET provider_id = EXCLUDED.provider_id,
+		    newsgroup_id = EXCLUDED.newsgroup_id,
+		    normalized_file_name = EXCLUDED.normalized_file_name,
+		    is_main_payload = EXCLUDED.is_main_payload,
+		    observed_parts = EXCLUDED.observed_parts,
+		    total_parts = EXCLUDED.total_parts,
+		    completion_ratio = EXCLUDED.completion_ratio,
+		    updated_at = NOW()`); err != nil {
+		return fmt.Errorf("upsert staged binary completion keys: %w", err)
+	}
+	return nil
+}
+
+func syncBinaryCompletionKeysForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if tx == nil {
+		return fmt.Errorf("binary completion key tx is required")
+	}
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+
+	var values strings.Builder
+	args := make([]any, 0, len(binaryIDs))
+	seen := make(map[int64]struct{}, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[binaryID]; ok {
+			continue
+		}
+		seen[binaryID] = struct{}{}
+		if values.Len() > 0 {
+			values.WriteByte(',')
+		}
+		fmt.Fprintf(&values, "($%d::bigint)", len(args)+1)
+		args = append(args, binaryID)
+	}
+	if len(args) == 0 {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id) AS (
+			VALUES %s
+		)
+		DELETE FROM binary_completion_keys bck
+		USING requested r
+		WHERE bck.binary_id = r.binary_id`, values.String()), args...); err != nil {
+		return fmt.Errorf("delete binary completion keys: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id) AS (
+			VALUES %s
+		)
+		INSERT INTO binary_completion_keys (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			normalized_file_name,
+			is_main_payload,
+			observed_parts,
+			total_parts,
+			completion_ratio,
+			updated_at
+		)
+		SELECT
+			bic.binary_id,
+			bic.provider_id,
+			bic.newsgroup_id,
+			lower(btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, '')))),
+			bic.is_main_payload,
+			bos.observed_parts,
+			bos.total_parts,
+			CASE
+				WHEN bos.total_parts > 0 THEN bos.observed_parts::double precision / bos.total_parts::double precision
+				ELSE 0
+			END,
+			NOW()
+		FROM requested r
+		JOIN binary_identity_current bic ON bic.binary_id = r.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = r.binary_id
+		WHERE bos.total_parts > 0
+		  AND bos.observed_parts < bos.total_parts
+		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
+		ON CONFLICT (binary_id) DO UPDATE
+		SET provider_id = EXCLUDED.provider_id,
+		    newsgroup_id = EXCLUDED.newsgroup_id,
+		    normalized_file_name = EXCLUDED.normalized_file_name,
+		    is_main_payload = EXCLUDED.is_main_payload,
+		    observed_parts = EXCLUDED.observed_parts,
+		    total_parts = EXCLUDED.total_parts,
+		    completion_ratio = EXCLUDED.completion_ratio,
+		    updated_at = NOW()`, values.String()), args...); err != nil {
+		return fmt.Errorf("upsert binary completion keys: %w", err)
+	}
+	return nil
+}
+
 func groupingSummaryScalars(evidence map[string]any) (kind, status string, fallbackUsed bool) {
 	if len(evidence) == 0 {
 		return "", "", false
@@ -2301,6 +2408,17 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
 		return fmt.Errorf("mark %d article headers assembled: %w", len(headerIDs), err)
 	}
+	query = fmt.Sprintf(`
+		WITH claimed_headers(id) AS (
+			VALUES %s
+		)
+		DELETE FROM article_header_assembly_keys hk
+		USING claimed_headers
+		WHERE hk.article_header_id = claimed_headers.id`,
+		strings.Join(headerValues, ","))
+	if _, err := tx.ExecContext(ctx, query, headerArgs...); err != nil {
+		return fmt.Errorf("complete %d article header assembly keys: %w", len(headerIDs), err)
+	}
 
 	return nil
 }
@@ -2509,6 +2627,10 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64) 
 	}
 	statsUpdateDuration := time.Since(statsUpdateStarted)
 	sortReleaseFamilySummaryKeys(summaryKeys)
+
+	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, binaryIDs); err != nil {
+		return err
+	}
 
 	deferredSummaryRefresh := deferReleaseFamilySummaryRefreshFromContext(ctx)
 	summaryMarkStarted := time.Now()
