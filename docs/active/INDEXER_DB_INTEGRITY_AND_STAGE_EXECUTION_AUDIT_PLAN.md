@@ -537,7 +537,7 @@ Remaining refresh-specific follow-up:
 
 - verify on the rebuilt DB whether Phase A remains the dominant cost once assemble/recover start producing real backlog
 - if it does, the next likely optimization is workload shaping by family fanout/cardinality, not schema growth
-- crosspost popularity refresh is a separate observed hotspot; live sampling caught a scheduled `WITH requested(observed_group_name)` refresh active for about 35 seconds. It should be redesigned as incremental rollup work before being treated as stable background maintenance.
+- crosspost popularity refresh was a separate observed hotspot; live sampling caught a scheduled `WITH requested(observed_group_name)` refresh active for about 35-40 seconds. The scheduled path now uses an incremental per-group watermark (`last_refreshed_article_header_id`) and the `(observed_group_name, article_header_id)` index instead of recomputing all historical raw rows.
 
 ## Pass 5 Findings: Release
 

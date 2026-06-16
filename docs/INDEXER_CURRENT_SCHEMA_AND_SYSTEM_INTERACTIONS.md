@@ -396,7 +396,7 @@ Primary hot DBO/store paths:
 
 - `RefreshCrosspostPopularity`
 - `crosspost_popularity_refresh_queue` claim/complete queries
-- summary upsert from raw `article_header_crosspost_groups`
+- incremental summary upsert from raw `article_header_crosspost_groups`
 
 Execution profile:
 
@@ -405,9 +405,15 @@ Execution profile:
 
 Audit focus:
 
-- exact rollup recompute per dirty group batch
+- incremental watermark refresh via `article_header_crosspost_group_summary.last_refreshed_article_header_id`
 - avoiding broad `COUNT(DISTINCT ...)` over all raw crosspost rows
 - keeping manual backfill bounded and queue-driven
+
+Current audit note:
+
+- `crosspost_popularity_refresh` must not recompute popularity from all historical `article_header_crosspost_groups` rows during scheduled operation.
+- The stage advances each summary row's `last_refreshed_article_header_id` and scans only rows with a higher `article_header_id` through `idx_article_header_crosspost_groups_group_article`.
+- Observed article count and `last_seen_at` are exact for processed raw rows. Distinct message/source counters are incremental popularity counters, not an exact global distinct rebuild. Exact global rebuilds, if needed for diagnostics, should be a manual maintenance command rather than the scheduled stage shape.
 
 ### Assemble audit map
 

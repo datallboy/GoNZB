@@ -458,14 +458,30 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 	}
 	query.WriteString(`
 		),
-		raw_filtered AS MATERIALIZED (
+		current_summary AS MATERIALIZED (
+			SELECT
+				r.observed_group_name,
+				COALESCE(s.observed_article_count, 0)::bigint AS observed_article_count,
+				COALESCE(s.distinct_message_count, 0)::bigint AS distinct_message_count,
+				COALESCE(s.distinct_source_group_count, 0)::bigint AS distinct_source_group_count,
+				s.last_seen_at,
+				COALESCE(s.last_refreshed_article_header_id, 0)::bigint AS last_refreshed_article_header_id
+			FROM requested r
+			LEFT JOIN article_header_crosspost_group_summary s
+			  ON s.observed_group_name = r.observed_group_name
+		),
+		raw_delta AS MATERIALIZED (
 			SELECT
 				g.observed_group_name,
+				g.article_header_id,
 				NULLIF(BTRIM(g.message_id), '') AS message_id,
 				g.source_newsgroup_id,
 				g.observed_at
 			FROM article_header_crosspost_groups g
-			JOIN requested r ON r.observed_group_name = g.observed_group_name
+			JOIN current_summary s
+			  ON s.observed_group_name = g.observed_group_name
+			 AND g.article_header_id > s.last_refreshed_article_header_id
+			WHERE BTRIM(g.observed_group_name) <> ''
 		),
 		raw_agg AS (
 			SELECT
@@ -473,8 +489,9 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 				COUNT(*)::bigint AS observed_article_count,
 				COUNT(DISTINCT message_id) FILTER (WHERE message_id IS NOT NULL)::bigint AS distinct_message_count,
 				COUNT(DISTINCT source_newsgroup_id)::bigint AS distinct_source_group_count,
-				MAX(observed_at) AS last_seen_at
-			FROM raw_filtered
+				MAX(observed_at) AS last_seen_at,
+				MAX(article_header_id)::bigint AS last_refreshed_article_header_id
+			FROM raw_delta
 			GROUP BY observed_group_name
 		),
 		summary_upsert AS (
@@ -484,23 +501,30 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 				distinct_message_count,
 				distinct_source_group_count,
 				last_seen_at,
+				last_refreshed_article_header_id,
 				updated_at
 			)
 			SELECT
 				r.observed_group_name,
-				COALESCE(a.observed_article_count, 0),
-				COALESCE(a.distinct_message_count, 0),
-				COALESCE(a.distinct_source_group_count, 0),
-				a.last_seen_at,
+				s.observed_article_count + COALESCE(a.observed_article_count, 0),
+				s.distinct_message_count + COALESCE(a.distinct_message_count, 0),
+				s.distinct_source_group_count + COALESCE(a.distinct_source_group_count, 0),
+				GREATEST(COALESCE(s.last_seen_at, TIMESTAMPTZ 'epoch'), COALESCE(a.last_seen_at, TIMESTAMPTZ 'epoch')),
+				GREATEST(s.last_refreshed_article_header_id, COALESCE(a.last_refreshed_article_header_id, 0)),
 				NOW()
 			FROM requested r
-			LEFT JOIN raw_agg a ON a.observed_group_name = r.observed_group_name
+			JOIN current_summary s ON s.observed_group_name = r.observed_group_name
+			JOIN raw_agg a ON a.observed_group_name = r.observed_group_name
 			WHERE COALESCE(a.observed_article_count, 0) > 0
 			ON CONFLICT (observed_group_name) DO UPDATE
 			SET observed_article_count = EXCLUDED.observed_article_count,
 			    distinct_message_count = EXCLUDED.distinct_message_count,
 			    distinct_source_group_count = EXCLUDED.distinct_source_group_count,
-			    last_seen_at = EXCLUDED.last_seen_at,
+			    last_seen_at = NULLIF(EXCLUDED.last_seen_at, TIMESTAMPTZ 'epoch'),
+			    last_refreshed_article_header_id = GREATEST(
+			        article_header_crosspost_group_summary.last_refreshed_article_header_id,
+			        EXCLUDED.last_refreshed_article_header_id
+			    ),
 			    updated_at = NOW()
 			RETURNING 1
 		)

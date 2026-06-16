@@ -243,8 +243,7 @@ Recommended direction:
 
 - keep scrape writing only raw `article_header_crosspost_groups` and dirty queue rows
 - current mitigation refreshes summary rows directly from raw crosspost observations and stops touching the exact distinct helper tables
-- a future high-scale version should replace full-group summary recompute with batch-local delta ingestion keyed by newly observed raw rows
-- add processed/high-water state, such as `(observed_group_name, last_article_header_id)` or a claimed raw-row queue, so each raw observation is rolled up once
+- implemented high-scale shape: `article_header_crosspost_group_summary.last_refreshed_article_header_id` records the per-group high-water mark, and `idx_article_header_crosspost_groups_group_article` lets refresh scan only newly observed raw rows
 - update summary counters from inserted delta counts or bounded raw windows, not from a continuously growing exact-distinct helper table
 - keep a manual full-rebuild command for repair/report regeneration, not normal scheduled execution
 
