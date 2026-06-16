@@ -14,10 +14,9 @@ type posterMaterializationQueueRow struct {
 }
 
 type IndexerPosterMaterializationResult struct {
-	Claimed        int64 `json:"claimed"`
-	Posters        int64 `json:"posters"`
-	RefsUpserted   int64 `json:"refs_upserted"`
-	PayloadsLinked int64 `json:"payloads_linked"`
+	Claimed      int64 `json:"claimed"`
+	Posters      int64 `json:"posters"`
+	RefsUpserted int64 `json:"refs_upserted"`
 }
 
 type IndexerCrosspostPopularityRefreshResult struct {
@@ -159,12 +158,6 @@ func (s *Store) MaterializeArticleHeaderPosters(ctx context.Context, limit int) 
 			return err
 		}
 		out.RefsUpserted = refsUpserted
-
-		payloadsLinked, err := linkArticleHeaderPayloadPosterIDs(ctx, tx, claimed, posterIDs)
-		if err != nil {
-			return err
-		}
-		out.PayloadsLinked = payloadsLinked
 
 		if err := finishPosterMaterializationRows(ctx, tx, claimed); err != nil {
 			return err
@@ -333,43 +326,6 @@ func upsertArticleHeaderPosterRefs(ctx context.Context, tx *sql.Tx, rows []claim
 	res, err := tx.ExecContext(ctx, query.String(), args...)
 	if err != nil {
 		return 0, fmt.Errorf("upsert article header poster refs: %w", err)
-	}
-	affected, _ := res.RowsAffected()
-	return affected, nil
-}
-
-func linkArticleHeaderPayloadPosterIDs(ctx context.Context, tx *sql.Tx, rows []claimedPosterMaterializationRow, posterIDs map[string]int64) (int64, error) {
-	var query strings.Builder
-	args := make([]any, 0, len(rows)*2)
-	query.WriteString(`
-		WITH input_rows (article_header_id, poster_id) AS (
-			VALUES `)
-	written := 0
-	for _, row := range rows {
-		posterID := posterIDs[row.PosterName]
-		if posterID <= 0 {
-			continue
-		}
-		if written > 0 {
-			query.WriteString(",")
-		}
-		fmt.Fprintf(&query, "($%d::bigint,$%d::bigint)", len(args)+1, len(args)+2)
-		args = append(args, row.ArticleHeaderID, posterID)
-		written++
-	}
-	if written == 0 {
-		return 0, nil
-	}
-	query.WriteString(`
-		)
-		UPDATE article_header_ingest_payloads aip
-		SET poster_id = i.poster_id
-		FROM input_rows i
-		WHERE aip.article_header_id = i.article_header_id
-		  AND aip.poster_id IS DISTINCT FROM i.poster_id`)
-	res, err := tx.ExecContext(ctx, query.String(), args...)
-	if err != nil {
-		return 0, fmt.Errorf("link article header payload poster ids: %w", err)
 	}
 	affected, _ := res.RowsAffected()
 	return affected, nil

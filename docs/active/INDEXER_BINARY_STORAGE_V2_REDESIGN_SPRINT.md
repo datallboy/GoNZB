@@ -158,13 +158,13 @@ This is intentionally not a retry-loop-only fix. Retries remain useful for trans
 
 Validation date: 2026-06-15
 
-Result: Phase A/B is complete for this branch. The v2 side-table bridge is stable enough to close the write-contention/table-separation branch, with Phase C retained as a future narrow-anchor/partitioning target.
+Result: Phase A/B is complete, but this branch is not complete while Phase C remains open. The v2 side-table bridge passed the write-contention soak, but the legacy `binaries` anchor must still be replaced before this sprint can close.
 
 Observed fresh-database serve soak:
 
 - all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble_lane_a`, `assemble_lane_b`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
 - scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for the serve soak.
-- materializer CLI validation passed after the serve soak: `materialize-posters --batch-size 10000` claimed 10,000 rows, upserted 10,000 refs, and linked 9,999 payloads; `refresh-crosspost-popularity --batch-size 1000` claimed 86 groups, refreshed 86 summaries, and upserted 634,073 message rows.
+- materializer CLI validation passed after the serve soak: `materialize-posters --batch-size 10000` claimed 10,000 rows and upserted 10,000 refs; `refresh-crosspost-popularity --batch-size 1000` claimed 86 groups, refreshed 86 summaries, and upserted 634,073 message rows.
 - release outputs were produced and archived/purged: `nzb_cache` rows existed, release catalog rows existed, and `release_archive_state` reached `purged`.
 - v2 projection parity held after the soak: `binaries`, `binary_core`, `binary_identity_current`, `binary_observation_stats`, `binary_recovery_current`, and `binary_lifecycle` had matching row counts.
 - PostgreSQL logs contained no application deadlock, corruption, recovery-mode, invalid-page, or unexpected-EOF errors during the serve window.
@@ -175,6 +175,34 @@ Residual notes:
 
 - stage failures recorded during the final window were caused by the intentional Ctrl-C shutdown and had `context canceled` errors.
 - serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
-- the remaining direct `binaries` access is the documented temporary bridge/owner allowlist. Phase C should replace the legacy anchor with a narrow anchor or compatibility view before a final schema freeze.
+- the remaining direct `binaries` access is the documented temporary bridge/owner allowlist. Phase C must replace the legacy anchor with a narrow anchor or compatibility view before this branch is closed.
 - inspection candidate selection can still perform broad v2 projection scans during bursts. It did not block writers or corrupt data in this soak, but it is the next throughput optimization target if inspection becomes the dominant load.
 - crosspost popularity refresh currently performs full-group aggregation for queued groups. It completed successfully, but the observed batch was heavy enough that a delta or smaller-batch strategy should be considered before enabling it aggressively in supervisor defaults.
+
+## Phase C Required Work
+
+This branch cannot close until Phase C is complete.
+
+- Replace `binaries` as the canonical table with a narrow v2 anchor or compatibility view.
+- Move foreign keys and source lineage joins away from legacy `binaries`.
+- Remove behavior-bearing legacy binary columns from active read/write paths.
+- Remove `binary_storage_v2.go` legacy projection backfill dependency after canonical writes land directly in v2 tables.
+- Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete legacy `binaries`.
+- Move inspection claim/start/finish FK safety to the new canonical binary anchor.
+- Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
+- Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
+
+## Crosspost Popularity Refresh Redesign
+
+The current refresh is correct but too heavy for aggressive steady-state scheduling because it re-aggregates all raw rows for each dirty observed group. The better long-term shape is an incremental rollup, not a giant maintenance query and not inline scrape summary writes.
+
+Recommended direction:
+
+- keep scrape writing only raw `article_header_crosspost_groups` and dirty queue rows
+- replace full-group refresh with batch-local delta ingestion keyed by newly observed raw rows
+- add processed/high-water state, such as `(observed_group_name, last_article_header_id)` or a claimed raw-row queue, so each raw observation is rolled up once
+- keep exact distinct helper tables, but insert only new `(observed_group_name, message_id)` and `(observed_group_name, source_newsgroup_id)` keys from the delta batch
+- update summary counters from inserted delta counts, not from `COUNT(*)`/`COUNT(DISTINCT ...)` over all historical raw rows
+- keep a manual full-rebuild command for repair/report regeneration, not normal scheduled execution
+
+This preserves ownership boundaries: scrape owns raw observations, `crosspost_popularity_refresh` owns reporting tables, and no release-critical stage depends on the report.

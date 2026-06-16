@@ -293,7 +293,7 @@ This matrix is the schema contract for current and near-term code changes.
 | Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
-| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only; `poster_materialize` may fill transitional `poster_id` links | Transitional raw ingest metadata; keeps raw poster/xref text. |
+| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional raw ingest metadata; keeps raw poster/xref text. Poster materialization must not write back to this table. |
 | `article_header_poster_refs` | derived/support projection | `poster_materialize` | none | Per-header poster dimension projection derived from raw payload poster text. |
 | `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
 | `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
@@ -388,7 +388,7 @@ Audit focus:
 
 - queue lease cleanup and retry behavior
 - bounded poster dimension inserts
-- transition away from legacy `article_header_ingest_payloads.poster_id` linkage when downstream reads no longer require it
+- downstream reads should use `article_header_poster_refs`, not write back to `article_header_ingest_payloads.poster_id`
 
 ### `crosspost_popularity_refresh`
 

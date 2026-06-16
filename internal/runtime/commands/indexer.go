@@ -511,11 +511,10 @@ func (r *Runner) ExecuteIndexerMaterializePosters(batchSize int) {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance materialize-posters: claimed=%d posters=%d refs_upserted=%d payloads_linked=%d",
+			"indexer maintenance materialize-posters: claimed=%d posters=%d refs_upserted=%d",
 			out.Claimed,
 			out.Posters,
 			out.RefsUpserted,
-			out.PayloadsLinked,
 		)
 	}
 }

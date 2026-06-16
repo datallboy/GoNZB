@@ -2,6 +2,8 @@ export const stageOptions = [
   { value: '', label: 'All stages' },
   { value: 'scrape_latest', label: 'Scrape Latest' },
   { value: 'scrape_backfill', label: 'Scrape Backfill' },
+  { value: 'poster_materialize', label: 'Poster Materialize' },
+  { value: 'crosspost_popularity_refresh', label: 'Crosspost Popularity' },
   { value: 'assemble_lane_a', label: 'Assemble Lane A' },
   { value: 'assemble_lane_b', label: 'Assemble Lane B' },
   { value: 'recover_yenc', label: 'Recover yEnc' },
