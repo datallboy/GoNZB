@@ -106,6 +106,39 @@ Use PostgreSQL declarative hash partitioning once read paths are off the legacy 
 - Use fillfactor 100 for append-mostly tables and 80 for mutable projection/work tables.
 - Set per-table autovacuum thresholds on mutable projection/work tables.
 
+### Partitioning Decision Notes
+
+Hash partitioning is not primarily a correctness fix. PostgreSQL should not corrupt heap pages because a table is large. Partitioning is a scale and operability tool that reduces the blast radius and working set of the hottest tables.
+
+Expected benefits:
+
+- smaller per-partition heap and index files, which improves cache locality and reduces B-tree depth on large ingest/assemble tables
+- partition pruning for provider/newsgroup-scoped queries, which are the natural shape of scrape, assemble, yEnc recovery, binary inspection, and most release-family refresh work
+- per-partition autovacuum/reindex/analyze behavior, so one hot provider/group slice does not force maintenance work over the full table
+- safer operational recovery, because a damaged or bloated partition is smaller to reindex, detach, inspect, or rebuild than a monolithic multi-billion-row table
+- better write distribution across relation files when multiple provider/group slices are active
+
+Limits and risks:
+
+- partitioning will not fix bad query shapes; broad queries without partition predicates still touch many partitions
+- partitioning will not by itself prevent corruption; checksums, clean shutdown, stable storage, amcheck, and low write amplification still matter
+- PostgreSQL unique constraints on partitioned tables must include the partition key, so current `id`-only primary keys and foreign keys cannot be kept unchanged for tables partitioned by `(provider_id, newsgroup_id)`
+- current high-volume FKs reference `article_headers(id)` and `binary_core(binary_id)` only; a colocated partitioned design needs child tables to carry and reference `(provider_id, newsgroup_id, id)` or another partition-aware key
+- 128 partitions is likely appropriate for server-scale deployments, but may be excessive for laptop/dev datasets; partition count should be configurable at migration/squash time or start lower, such as 32 or 64, if operational overhead is too high
+
+Target schema-squash approach:
+
+- Do not bolt partitioning onto the current live schema with an incremental migration unless data preservation becomes a requirement. This alpha branch can use a fresh database/schema-squash path.
+- Keep global surrogate IDs for application ergonomics only if needed, but make partitioned table primary/foreign keys include the partition keys:
+  - `article_headers`: primary key candidate `(provider_id, newsgroup_id, id)` and unique `(provider_id, newsgroup_id, article_number)`
+  - article child tables: carry `provider_id`, `newsgroup_id`, and `article_header_id`; FK to `article_headers(provider_id, newsgroup_id, id)`
+  - `binary_core`: primary key candidate `(provider_id, newsgroup_id, binary_id)` and unique `(provider_id, newsgroup_id, binary_key)`
+  - binary child tables: carry `provider_id`, `newsgroup_id`, and `binary_id`; FK to `binary_core(provider_id, newsgroup_id, binary_id)`
+- Partition append-mostly raw facts first: `article_headers`, `article_header_ingest_payloads`, `article_header_crosspost_groups`, and `binary_parts`.
+- Partition mutable binary projections next: `binary_core`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, `binary_completion_keys`, and yEnc work tables.
+- Keep small control tables unpartitioned: `indexer_stage_state`, `indexer_stage_runs`, runtime settings, provider/group config, category tables, and low-cardinality admin tables.
+- Evaluate release tables separately. `release_family_readiness_summaries` is currently large enough to matter, but it is keyed by provider/newsgroup/family and should only be partitioned if release refresh and release formation keep provider/newsgroup predicates in their hot paths.
+
 ## Enforcement Plan
 
 Add enforcement in code and CI:
