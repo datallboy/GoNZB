@@ -39,6 +39,20 @@ func (s *Store) DatabaseStorageStatus(ctx context.Context) (*DatabaseStorageStat
 	if err := s.db.QueryRowContext(ctx, `SELECT pg_database_size(current_database())`).Scan(&status.DatabaseBytes); err != nil {
 		return nil, fmt.Errorf("read current database size: %w", err)
 	}
+
+	var isSuperuser bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT rolsuper
+		FROM pg_roles
+		WHERE rolname = current_user`,
+	).Scan(&isSuperuser); err != nil {
+		return nil, fmt.Errorf("check postgres storage guard role capability: %w", err)
+	}
+	if !isSuperuser {
+		status.FilesystemVisible = false
+		return status, nil
+	}
+
 	if err := s.db.QueryRowContext(ctx, `SELECT current_setting('data_directory')`).Scan(&status.DataDirectory); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("postgres data directory is unavailable")
