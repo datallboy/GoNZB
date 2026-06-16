@@ -212,7 +212,8 @@ Residual notes:
 - stage failures recorded during the final window were caused by the intentional Ctrl-C shutdown and had `context canceled` errors.
 - serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
 - direct production `binaries` access has been removed; remaining references are migration/test compatibility only.
-- inspection candidate selection can still perform broad v2 projection scans during bursts. It did not block writers or corrupt data in this soak, but it is the next throughput optimization target if inspection becomes the dominant load.
+- inspection candidate selection was re-audited on 2026-06-16. `inspect_discovery` no longer performs a full v2 projection scan; the selector now starts from `idx_binary_identity_inspect_discovery_backlog`. The measured selector dropped from about 6.4s to about 7.5ms on the current dataset. `inspect_par2` now starts from v2 PAR2 identity/recovery indexes and dropped from about 2.5s to about 0.7s while preserving existing PAR2 set-state eligibility logic.
+- release-summary recovered-file-set sync remains the next throughput audit target. It stayed stable during the 2026-06-16 soak, but some small refresh batches still spent multiple seconds in recovered-file-set materialization.
 - crosspost popularity refresh currently performs full-group aggregation for queued groups. It completed successfully, but the observed batch was heavy enough that a delta or smaller-batch strategy should be considered before enabling it aggressively in supervisor defaults.
 
 ## Phase C Required Work
@@ -232,7 +233,7 @@ This branch cannot close until Phase C is complete.
 - [x] Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
 - [x] Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
 - [ ] Remove or freeze `binaries` as a compatibility view/table in a later schema-squash cleanup after test fixtures and old-database compatibility are retired.
-- [ ] Implement PostgreSQL declarative hash partitioning for high-volume tables or explicitly defer it to the schema-squash release plan with a documented migration strategy.
+- [x] Explicitly defer PostgreSQL declarative hash partitioning to a schema-squash release plan until the v2 schema and query shapes prove stable at larger scale.
 
 ## Crosspost Popularity Refresh Redesign
 

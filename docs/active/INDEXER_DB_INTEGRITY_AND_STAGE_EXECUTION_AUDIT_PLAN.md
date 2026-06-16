@@ -860,6 +860,20 @@ These are the baseline methods the audit should start from. The audit may expand
 - `ClaimBinaryInspectionCandidates`
 - stage-specific evidence upsert/update methods in `inspection_store.go`
 
+2026-06-16 throughput audit:
+
+- `inspect_discovery` was the worst remaining selector after the binary v2 rewrite. `EXPLAIN ANALYZE` showed a broad binary projection scan and top-N sort over millions of joined rows, taking about 6.4s for a 100-row candidate batch.
+- The old legacy `binaries` discovery backlog index had not been recreated for the v2 projection. Migration 056 adds `idx_binary_identity_inspect_discovery_backlog`, and the selector now drives from `binary_identity_current` before joining core/stat/recovery rows. The same dataset planned as an index-driven nested-loop path and measured about 7.5ms.
+- `inspect_par2` was also still using the broad binary projection CTE. Migration 057 adds v2 PAR2 identity/recovery backlog indexes, and the PAR2 selector now builds a small candidate source before applying existing set-state eligibility. The same dataset improved from about 2.5s to about 0.7s.
+- These changes do not alter inspection ownership. Inspection still writes `binary_inspections` and stage-owned evidence tables only; it does not mutate upstream binary identity/stat/recovery facts.
+
+2026-06-16 post-change serve soak:
+
+- all enabled supervisor stages ran under concurrent scrape/assemble/recovery/release/inspect load for a short write-heavy soak
+- PostgreSQL logs contained no deadlocks, invalid-page/checksum/recovery-mode errors, or unexpected EOFs except cancellation/EOF entries caused by the planned `timeout` shutdown
+- post-soak integrity check reported `amcheck` success for critical binary heaps and indexes
+- release-summary recovered-file-set sync remains the next query audit target; some small batches still spent multiple seconds in Phase B recovered-file-set materialization
+
 ### Archive / purge
 
 - `MarkReleaseArchiveStored`

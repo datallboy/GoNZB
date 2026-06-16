@@ -810,6 +810,61 @@ binary_state AS (
 	LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
 )`
 
+const binaryInspectionPAR2CandidateStateCTE = `
+candidate_source AS (
+	SELECT bic.binary_id
+	FROM binary_identity_current bic
+	WHERE LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2'
+	UNION
+	SELECT brc.binary_id
+	FROM binary_recovery_current brc
+	WHERE brc.recovered_kind = 'par2'
+	   OR brc.recovered_extension = '.par2'
+),
+binary_state AS (
+	SELECT
+		bc.binary_id AS id,
+		bc.provider_id,
+		bc.newsgroup_id,
+		bc.poster_id,
+		bc.binary_key,
+		bic.release_family_key,
+		bic.base_stem,
+		bic.release_key,
+		bic.release_name,
+		bic.binary_name,
+		bic.file_name,
+		bic.file_index,
+		bic.expected_file_count,
+		bic.expected_archive_file_count,
+		bic.is_auxiliary,
+		bic.is_main_payload,
+		bic.match_confidence,
+		bic.match_status,
+		bos.posted_at,
+		bos.total_bytes,
+		bos.total_parts,
+		bos.observed_parts,
+		bos.first_article_number,
+		bos.last_article_number,
+		COALESCE(brc.recovered_kind, '') AS recovered_kind,
+		COALESCE(brc.recovered_extension, '') AS recovered_extension,
+		COALESCE(brc.recovered_source, '') AS recovered_source,
+		COALESCE(brc.recovered_confidence, 0) AS recovered_confidence,
+		COALESCE(brc.recovered_file_name, '') AS recovered_file_name,
+		GREATEST(
+			bc.updated_at,
+			bic.updated_at,
+			bos.updated_at,
+			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+		) AS updated_at
+	FROM candidate_source cs
+	JOIN binary_core bc ON bc.binary_id = cs.binary_id
+	JOIN binary_identity_current bic ON bic.binary_id = cs.binary_id
+	JOIN binary_observation_stats bos ON bos.binary_id = cs.binary_id
+	LEFT JOIN binary_recovery_current brc ON brc.binary_id = cs.binary_id
+)`
+
 func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
 	stageName = strings.TrimSpace(stageName)
 	if stageName == "" {
@@ -884,7 +939,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 
 	if stageName == "inspect_par2" {
 		query := `
-			WITH ` + binaryInspectionCandidateStateCTE + `,
+			WITH ` + binaryInspectionPAR2CandidateStateCTE + `,
 			candidate_rows AS (
 				SELECT
 					b.id,
@@ -1027,48 +1082,68 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 
 	if stageName == "inspect_discovery" {
 		query := `
-			WITH ` + binaryInspectionCandidateStateCTE + `
 			SELECT
 				$1 AS stage_name,
-				b.id AS binary_id,
+				bic.binary_id AS binary_id,
 				'' AS release_id,
-				b.provider_id,
+				bc.provider_id,
 				'' AS title,
 				'' AS source_title,
 				'' AS deobfuscated_title,
-				COALESCE(NULLIF(b.release_family_key, ''), NULLIF(b.base_stem, ''), '') AS group_name,
-				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS file_name,
-				b.binary_name,
-				b.release_name,
+				COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), '') AS group_name,
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS file_name,
+				bic.binary_name,
+				bic.release_name,
 				COALESCE(p.poster_name, '') AS poster,
-				b.posted_at,
-				b.total_bytes,
-				b.total_parts,
-				b.match_confidence,
-				b.updated_at AS source_updated_at,
+				bos.posted_at,
+				bos.total_bytes,
+				bos.total_parts,
+				bic.match_confidence,
+				GREATEST(
+					bc.updated_at,
+					bic.updated_at,
+					bos.updated_at,
+					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+				) AS source_updated_at,
 				COALESCE(bi.status, '') AS current_status,
 				bi.updated_at AS current_updated_at,
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
-			FROM binary_state b
-			LEFT JOIN posters p ON p.id = b.poster_id
+			FROM binary_identity_current bic
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			LEFT JOIN posters p ON p.id = bc.poster_id
 			LEFT JOIN binary_inspections bi
 				ON bi.stage_name = $1
-				AND bi.binary_id = b.id
-			WHERE COALESCE(b.recovered_extension, '') = ''
-			  AND (b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)
+				AND bi.binary_id = bic.binary_id
+			WHERE COALESCE(brc.recovered_extension, '') = ''
+			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 			  AND (
-				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.bin' OR
-				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
 			  )
 			  AND (
-				` + rerunPredicate + `
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					bi.inspection_claimed_until IS NOT NULL AND
+					bi.inspection_claimed_until < NOW()
+				) OR
+				GREATEST(
+					bc.updated_at,
+					bic.updated_at,
+					bos.updated_at,
+					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+				) > bi.updated_at OR
+				` + errorRerunPredicate + `
 			  )
 			  AND (
 				bi.inspection_claimed_until IS NULL OR
 				bi.inspection_claimed_until < NOW()
 			  )
-			ORDER BY b.updated_at DESC, b.id DESC
+			ORDER BY bic.updated_at DESC, bic.binary_id DESC
 			LIMIT $2`
 		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
 	}

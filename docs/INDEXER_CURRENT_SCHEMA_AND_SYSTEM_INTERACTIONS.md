@@ -766,7 +766,10 @@ Current audit note:
 
 Allowed reads:
 
-- `binaries`
+- `binary_core`
+- `binary_identity_current`
+- `binary_observation_stats`
+- `binary_recovery_current`
 - `binary_parts`
 - `article_headers`
 - `releases`
@@ -801,6 +804,9 @@ Primary DBO entry points:
 Current audit note:
 
 - inspect stages are acceptably isolated behind `binary_inspections` plus stage-owned evidence tables
+- `inspect_discovery` and `inspect_par2` use v2 projection selector indexes rather than broad scans over the old `binaries` table or full binary projections
+- `inspect_discovery` now drives candidate selection from `binary_identity_current` with `idx_binary_identity_inspect_discovery_backlog`
+- `inspect_par2` now builds a small candidate source from `idx_binary_identity_inspect_par2_backlog` and `idx_binary_recovery_inspect_par2_backlog`, then applies the existing PAR2 set-state logic
 - they remain downstream/steady-state stages and should stay disabled during bootstrap and regroup
 
 ### `release_summary_refresh`
@@ -837,6 +843,7 @@ Current audit note:
 - the scheduled queued refresh path reads v2 projections only; production `binaries` access is rejected by ownership tests
 - Phase B is not a simple summary copy: it also materializes ready candidates and recovered-file-set candidates. The recovered-file-set discovery path is split by key kind so release-family keys use `idx_binary_identity_release_family` instead of scanning the full yEnc recovery projection.
 - The missing-summary dequeue branch first takes an ordered queue window, then probes summaries by primary key. This avoids scanning all readiness summaries when most queued keys have no summary row yet.
+- 2026-06-16 soak: release-summary refresh remained stable under concurrent scrape/assemble/recovery, but recovered-file-set sync is still the next throughput audit target because small batches can spend multiple seconds there.
 
 - refresh is split into committed Phase A summary recompute plus Phase B candidate materialization
 - dequeue is hot/cold prioritized
