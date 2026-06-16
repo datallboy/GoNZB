@@ -26,6 +26,7 @@ const (
 	assemblePriorityHeaderMaxScan          = 2000
 	assembleClaimStatementTimeout          = 15 * time.Second
 	refreshBinaryStatsBatchSize            = 8000
+	binaryCompletionKeySyncChunkSize       = 8000
 )
 
 // unassembled header row used by Milestone 6 assembly service.
@@ -2003,8 +2004,7 @@ func syncBinaryCompletionKeysForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, b
 		return nil
 	}
 
-	var values strings.Builder
-	args := make([]any, 0, len(binaryIDs))
+	unique := make([]int64, 0, len(binaryIDs))
 	seen := make(map[int64]struct{}, len(binaryIDs))
 	for _, binaryID := range binaryIDs {
 		if binaryID <= 0 {
@@ -2014,14 +2014,38 @@ func syncBinaryCompletionKeysForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, b
 			continue
 		}
 		seen[binaryID] = struct{}{}
+		unique = append(unique, binaryID)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
+
+	for start := 0; start < len(unique); start += binaryCompletionKeySyncChunkSize {
+		end := start + binaryCompletionKeySyncChunkSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		if err := syncBinaryCompletionKeyChunkInTx(ctx, tx, unique[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+
+	var values strings.Builder
+	args := make([]any, 0, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
 		if values.Len() > 0 {
 			values.WriteByte(',')
 		}
 		fmt.Fprintf(&values, "($%d::bigint)", len(args)+1)
 		args = append(args, binaryID)
-	}
-	if len(args) == 0 {
-		return nil
 	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
