@@ -691,6 +691,9 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 	); err != nil {
 		return fmt.Errorf("update yenc recovered release files %d: %w", binaryID, err)
 	}
+	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, []int64{binaryID}); err != nil {
+		return err
+	}
 	return nil
 }
 
