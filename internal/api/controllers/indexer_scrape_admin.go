@@ -112,6 +112,45 @@ func (ctrl *IndexerScrapeAdminController) PreviewWildcardGroups(c *echo.Context)
 	})
 }
 
+func (ctrl *IndexerScrapeAdminController) ProviderInventory(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.SettingsAdmin == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "scrape admin api is unavailable")
+	}
+	limit, offset, err := parsePaginationParams(c, 50, 500)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	query := queryParamTrimmed(c, "q")
+	if ctrl.appCtx.PGIndexStore != nil {
+		page, err := ctrl.appCtx.PGIndexStore.ListIndexerProviderGroupInventoryPage(c.Request().Context(), query, limit, offset)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]any{
+			"items":  page.Items,
+			"count":  page.Count,
+			"limit":  page.Limit,
+			"offset": page.Offset,
+		})
+	}
+
+	runtime, err := ctrl.appCtx.SettingsAdmin.Get(c.Request().Context())
+	if err != nil {
+		return jsonError(c, settingsErrorStatus(err), err.Error())
+	}
+	indexing := runtime.Indexing
+	if indexing == nil {
+		indexing = app.DefaultRuntimeSettings().Indexing
+	}
+	items, total := providerInventoryPage(indexing.ProviderGroupInventory, query, limit, offset)
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":  items,
+		"count":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
 func (ctrl *IndexerScrapeAdminController) CrosspostPopularity(c *echo.Context) error {
 	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.SettingsAdmin == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "scrape admin api is unavailable")
@@ -132,6 +171,35 @@ func (ctrl *IndexerScrapeAdminController) CrosspostPopularity(c *echo.Context) e
 		"items": loadCrosspostPopularity(c.Request().Context(), ctrl.appCtx, indexing, limit),
 		"limit": limit,
 	})
+}
+
+func providerInventoryPage(items []app.IndexingProviderGroupInventoryRuntimeSettings, query string, limit, offset int) ([]app.IndexingProviderGroupInventoryRuntimeSettings, int) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	filtered := make([]app.IndexingProviderGroupInventoryRuntimeSettings, 0, len(items))
+	for _, item := range items {
+		if query != "" &&
+			!strings.Contains(strings.ToLower(item.GroupName), query) &&
+			!strings.Contains(strings.ToLower(item.ProviderID), query) &&
+			!strings.Contains(strings.ToLower(item.ProviderName), query) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	slices.SortFunc(filtered, func(a, b app.IndexingProviderGroupInventoryRuntimeSettings) int {
+		if cmp := strings.Compare(strings.ToLower(a.GroupName), strings.ToLower(b.GroupName)); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(strings.ToLower(a.ProviderID), strings.ToLower(b.ProviderID))
+	})
+	total := len(filtered)
+	if offset >= total {
+		return []app.IndexingProviderGroupInventoryRuntimeSettings{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return filtered[offset:end], total
 }
 
 func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) error {

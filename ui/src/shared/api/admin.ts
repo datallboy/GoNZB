@@ -63,6 +63,21 @@ export function scanAdminScrapeProviders() {
   return apiRequest<AdminScrapeConfigResponse>('/api/v1/admin/indexer/scrape/actions/scan', { method: 'POST' })
 }
 
+export function getAdminScrapeProviderInventory(params?: { q?: string; limit?: number; offset?: number }) {
+  const query = new URLSearchParams()
+  if (params?.q) {
+    query.set('q', params.q)
+  }
+  if (params?.limit) {
+    query.set('limit', String(params.limit))
+  }
+  if (params?.offset) {
+    query.set('offset', String(params.offset))
+  }
+  const suffix = query.toString()
+  return apiRequest<{ items: AdminScrapeConfigResponse['provider_group_inventory']; count: number; limit: number; offset: number }>(`/api/v1/admin/indexer/scrape/provider-inventory${suffix ? `?${suffix}` : ''}`)
+}
+
 export function previewAdminScrapeWildcards(params?: { q?: string; limit?: number; offset?: number }) {
   const query = new URLSearchParams()
   if (params?.q) {

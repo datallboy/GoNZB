@@ -9,18 +9,25 @@ import (
 )
 
 type IndexerProviderGroupInventoryItem struct {
-	ProviderID   string
-	ProviderName string
-	GroupName    string
-	High         int64
-	Low          int64
-	Status       string
-	ScannedAt    string
+	ProviderID   string `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	GroupName    string `json:"group_name"`
+	High         int64  `json:"high"`
+	Low          int64  `json:"low"`
+	Status       string `json:"status"`
+	ScannedAt    string `json:"scanned_at,omitempty"`
 }
 
 type IndexerProviderGroupInventoryStats struct {
 	Count      int
 	LatestScan string
+}
+
+type IndexerProviderGroupInventoryPage struct {
+	Items  []IndexerProviderGroupInventoryItem
+	Count  int
+	Limit  int
+	Offset int
 }
 
 const providerGroupInventoryInsertBatchSize = 500
@@ -165,6 +172,63 @@ func (s *Store) ListIndexerProviderGroupInventoryCandidates(ctx context.Context,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate provider group inventory candidates: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int) (IndexerProviderGroupInventoryPage, error) {
+	out := IndexerProviderGroupInventoryPage{Limit: limit, Offset: offset}
+	if s == nil || s.db == nil {
+		return out, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out.Limit = limit
+	out.Offset = offset
+
+	where := ""
+	args := make([]any, 0, 3)
+	if q := strings.ToLower(strings.TrimSpace(query)); q != "" {
+		args = append(args, "%"+q+"%")
+		where = fmt.Sprintf("WHERE lower(group_name) LIKE $%d OR lower(provider_id) LIKE $%d OR lower(provider_name) LIKE $%d", len(args), len(args), len(args))
+	}
+
+	countSQL := "SELECT COUNT(*) FROM indexer_provider_group_inventory " + where
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&out.Count); err != nil {
+		return out, fmt.Errorf("count provider group inventory page: %w", err)
+	}
+
+	args = append(args, limit, offset)
+	limitParam := len(args) - 1
+	offsetParam := len(args)
+	sqlText := fmt.Sprintf(`
+		SELECT provider_id, provider_name, group_name, high, low, status, scanned_at
+		FROM indexer_provider_group_inventory
+		%s
+		ORDER BY lower(group_name), provider_id
+		LIMIT $%d OFFSET $%d`, where, limitParam, offsetParam)
+	rows, err := s.db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return out, fmt.Errorf("list provider group inventory page: %w", err)
+	}
+	defer rows.Close()
+
+	out.Items = make([]IndexerProviderGroupInventoryItem, 0, limit)
+	for rows.Next() {
+		var item IndexerProviderGroupInventoryItem
+		var scannedAt time.Time
+		if err := rows.Scan(&item.ProviderID, &item.ProviderName, &item.GroupName, &item.High, &item.Low, &item.Status, &scannedAt); err != nil {
+			return out, fmt.Errorf("scan provider group inventory page: %w", err)
+		}
+		item.ScannedAt = scannedAt.UTC().Format(time.RFC3339)
+		out.Items = append(out.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("iterate provider group inventory page: %w", err)
 	}
 	return out, nil
 }
