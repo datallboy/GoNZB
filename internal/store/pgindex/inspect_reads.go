@@ -1118,6 +1118,24 @@ func (s *Store) countGenerateNZBBacklog(ctx context.Context) (int64, error) {
 		WHERE r.source_kind = 'usenet_index'
 		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+		  AND EXISTS (
+			SELECT 1
+			FROM release_files rf
+			JOIN binary_inspections bai
+			  ON bai.binary_id = rf.binary_id
+			 AND bai.stage_name = 'inspect_archive'
+			 AND bai.status = 'completed'
+			WHERE rf.release_id = r.release_id
+		  )
+		  AND EXISTS (
+			SELECT 1
+			FROM release_files rf
+			JOIN binary_inspections bmi
+			  ON bmi.binary_id = rf.binary_id
+			 AND bmi.stage_name = 'inspect_media'
+			 AND bmi.status = 'completed'
+			WHERE rf.release_id = r.release_id
+		  )
 		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')
 		  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count generate nzb backlog: %w", err)

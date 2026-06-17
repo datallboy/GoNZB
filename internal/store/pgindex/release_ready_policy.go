@@ -107,6 +107,7 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
 		)`, alias),
 		probableWeakTitleClause(alias),
+		opaqueTitleNeedsEvidenceClause(alias),
 		fmt.Sprintf("COALESCE(%s.password_state, 'unknown') <> 'passworded_unknown'", alias),
 		"COALESCE(ro.hidden, FALSE) = FALSE",
 	}
@@ -151,6 +152,24 @@ func probableWeakTitleClause(alias string) string {
 			%[2]s ~ '(^|\\s)(part|vol)\\d+([+._-]\\d+)?$'
 			OR %[2]s ~ '^[a-z0-9]{12,}(\\s+(part|vol)\\d+([+._-]\\d+)?)?$'
 		)
+	)`, alias, effectiveTitle)
+}
+
+func opaqueTitleNeedsEvidenceClause(alias string) string {
+	effectiveTitle := fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, '')))", alias)
+	return fmt.Sprintf(`NOT (
+		%[2]s ~ '^[a-z0-9]{16,}(\\s+(part|vol)\\d+([+._-]\\d+)?)?$'
+		AND COALESCE(%[1]s.deobfuscated_title, '') = ''
+		AND COALESCE(%[1]s.matched_media_title, '') = ''
+		AND COALESCE(%[1]s.original_media_title, '') = ''
+		AND COALESCE(%[1]s.tmdb_id, 0) <= 0
+		AND COALESCE(%[1]s.tvdb_id, 0) <= 0
+		AND COALESCE(%[1]s.external_media_type, '') = ''
+		AND COALESCE(%[1]s.runtime_seconds, 0) <= 0
+		AND COALESCE(%[1]s.primary_resolution, '') = ''
+		AND COALESCE(%[1]s.primary_video_codec, '') = ''
+		AND COALESCE(%[1]s.primary_audio_codec, '') = ''
+		AND COALESCE(%[1]s.has_nfo, FALSE) = FALSE
 	)`, alias, effectiveTitle)
 }
 
