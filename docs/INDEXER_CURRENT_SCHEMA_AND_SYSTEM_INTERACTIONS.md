@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-06-11
+Snapshot date: 2026-06-16
 
 This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
@@ -21,6 +21,7 @@ Related reference docs:
 - `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
 - `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
 - `docs/active/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
+- `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
 
 ## How To Use This Doc
 
@@ -128,6 +129,22 @@ The long-term model is:
 - `binary_projection_events`: append-only future bridge for cross-stage state changes
 
 Do not add new behavior columns or new hot indexes to `binaries`. Add the field to the owning v2 table and keep active reads/writes on the v2 projection tables.
+
+### Rule 8: release formation identity is a documented data contract
+
+Release grouping changes must preserve the data contract in `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`.
+
+The short form:
+
+- scrape stores immutable article locators in `article_headers`
+- scrape stores grouping-support text and parsed subject/yEnc hints in `article_header_ingest_payloads`
+- assemble converts those facts into file-level binaries and release-family keys in v2 binary projection tables
+- yEnc recovery may promote stronger recovered filenames and merge file-level binaries when header subjects were obfuscated
+- PAR2 inspection may add target-file/count/title evidence, but it does not replace recovered yEnc identity
+- release-summary-refresh turns dirty binary family keys into readiness summaries and ready candidates
+- release formation consumes ready candidates and writes durable catalog rows
+
+If a code path changes how `release_family_key`, `file_set_key`, `binary_key`, expected file counts, or recovered filenames are derived, update the playbook in the same change.
 
 ## Locking And Contention Guidance
 
@@ -459,7 +476,7 @@ Audit focus:
 - queue-first versus seed/backfill selection
 - stale/noop/backoff behavior
 - joins against transient support tables
-- refinement writes into `binaries` / `binary_parts`
+- refinement writes into v2 binary projections / `binary_parts`
 - downstream dirty-key enqueue behavior
 
 ### Release summary refresh audit map
@@ -580,7 +597,7 @@ Allowed writes:
 
 Not allowed:
 
-- writing `binaries`
+- writing legacy `binaries` or v2 binary projection tables
 - writing release-side catalog tables
 - writing readiness summaries
 
@@ -648,6 +665,91 @@ Downloader-safety invariant:
 - NZB generation must emit the newsgroup that belongs to that file payload’s binary provenance
 - article sets for a single file must not mix articles from different newsgroups even when the surrounding release is multi-group
 
+## Release Formation Data Sources
+
+The detailed release-formation playbook is the canonical behavior reference. This section maps that behavior back to schema ownership.
+
+### NNTP ingest facts used for grouping
+
+`article_headers` is the immutable locator/counter table:
+
+- provider and newsgroup ids
+- article number
+- message id
+- posted date
+- overview byte and line counts
+
+`article_header_ingest_payloads` is the bounded support table that keeps grouping text and parsed subject hints:
+
+- raw subject
+- raw poster text
+- raw Xref text
+- subject-derived filename
+- subject-derived file index and file total
+- subject/yEnc-derived part number, total parts, and file size
+
+These fields are read by assemble and yEnc queue hydration. They are not durable release catalog fields.
+
+### Binary projection fields used for grouping
+
+`binary_core` anchors the file-level binary with provider, newsgroup, and canonical `binary_key`.
+
+`binary_identity_current` stores the current grouping identity:
+
+- `source_release_key`
+- `release_family_key`
+- `file_set_key`
+- `file_family_key`
+- `family_kind`
+- `base_stem`
+- `is_auxiliary`
+- `is_main_payload`
+- `release_key`
+- `release_name`
+- `binary_name`
+- `file_name`
+- `file_index`
+- `expected_file_count`
+- `expected_archive_file_count`
+- matcher confidence/status and compact grouping-summary scalars
+
+`binary_observation_stats` stores file completeness and article bounds:
+
+- `total_parts`
+- `observed_parts`
+- `total_bytes`
+- first/last article numbers
+- posted timestamp
+
+`binary_recovery_current` stores recovered identity evidence:
+
+- recovered source, currently including `yenc_header`
+- recovered filename
+- recovered extension/kind/confidence
+- recovery update timestamp
+
+### Release-summary fields used for candidate formation
+
+`release_family_readiness_summaries` materializes one summary per dirty family key:
+
+- key kind and family key
+- binary counts
+- complete binary counts
+- complete main-payload binary counts
+- expected file counts
+- expected archive file counts
+- coverage percentages
+- dominant file/family evidence
+- readiness bucket and recover-pending state
+
+`release_ready_candidates` is the release stage input queue. Its `key_kind` determines the candidate fan-out:
+
+- `release_family`: select binaries by `binary_identity_current.release_family_key`
+- `base_stem`: select binaries by normalized `binary_identity_current.base_stem`
+- `recovered_file_set`: select binaries by `binary_identity_current.file_set_key` and allow cross-newsgroup recovered file-set releases
+
+Release formation writes durable catalog rows only after consuming these ready candidates.
+
 ### `assemble_lane_a` and `assemble_lane_b`
 
 Allowed reads:
@@ -703,7 +805,7 @@ Current audit note:
 - lane B is the recent general backlog selector and can exclude structured-progress matches
 - current service usage defers release-summary recomputation and only enqueues dirty family keys
 - the store still supports inline release-summary recomputation when callers do not set the defer flag
-- `binaries` identity updates are guarded by match confidence:
+- v2 binary identity projection updates are guarded by match confidence:
   - equal-or-better confidence may replace family/name identity fields
   - lower-confidence rediscovery may still advance monotonic counters such as expected file count and total parts
   - lower-confidence rediscovery must not rewrite `release_family_key` or other indexed identity fields
@@ -731,15 +833,22 @@ Allowed reads:
 
 - `article_headers` only during bounded queue seeding/refresh
 - `article_header_ingest_payloads` only during bounded queue seeding/refresh and legacy retry compatibility writes
+- `binary_core`
+- `binary_identity_current`
+- `binary_observation_stats`
+- `binary_recovery_current`
 - `binary_parts`
-- `binaries`
 - `yenc_recovery_work_items`
 
 Allowed writes:
 
 - `yenc_recovery_work_items`
-- bounded refinement fields on `binaries`
-- merge/refinement updates on `binary_parts` where identity changes require it
+- stronger recovered identity fields in `binary_core`
+- stronger recovered identity fields in `binary_identity_current`
+- stat refreshes in `binary_observation_stats` after recovered merge/refinement
+- recovered source/name state in `binary_recovery_current`
+- completion-key refreshes in `binary_completion_keys` after recovered identity/stat changes
+- merge/refinement updates on `binary_parts` where recovered identity changes require it
 - release-family refresh queue enqueue only
 
 Not allowed:
@@ -752,6 +861,7 @@ Rationale:
 
 - recovery may improve canonical binary identity, but it does not own ingest facts or release materialization
 - recovery work selection should stay bounded and group-fair; queue seeding and candidate claims should not let one large newsgroup backlog starve all other eligible groups indefinitely
+- recovered yEnc filename promotion is the canonical path for turning obfuscated one-part-looking fragments into complete file-level binaries
 
 Primary DBO entry points:
 
@@ -762,6 +872,8 @@ Primary DBO entry points:
 Current audit note:
 
 - `recover_yenc` candidate selection reads materialized queue snapshots and does not join the hot source tables at selection time
+- `recover_yenc` re-runs the matcher with yEnc header `name`, `part`, `total`, and `size` overlaid into the raw overview facts
+- recovered rows must canonicalize `binary_key` as recovered family/file-set key plus recovered filename key, then merge duplicate file-level binaries for the same provider/newsgroup/family/file
 - ready candidates are claimed with `FOR UPDATE SKIP LOCKED` and `running` leases; abandoned claims become eligible again after lease expiry
 - transient fetch/apply failures release the queue claim with a short queue-local backoff
 - `recover_yenc` is queue-first and only seeds/backfills on hot-queue shortfall
@@ -1029,7 +1141,7 @@ These are explicit anti-patterns for future changes.
 
 ### Scrape stages may not
 
-- update `binaries`
+- update legacy `binaries` or v2 binary projection tables
 - update `releases`
 - mark readiness directly on `release_family_readiness_summaries`
 
@@ -1047,7 +1159,7 @@ These are explicit anti-patterns for future changes.
 
 ### Inspection stages may not
 
-- write progress markers into `binaries` or `releases` when a stage-runtime table should own the state
+- write progress markers into legacy `binaries`, v2 binary projection tables, or `releases` when a stage-runtime table should own the state
 - update ingest tables to record inspection outcomes
 - directly upsert heavy readiness summary rows
 

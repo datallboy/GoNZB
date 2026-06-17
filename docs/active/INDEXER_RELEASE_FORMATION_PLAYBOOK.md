@@ -22,6 +22,171 @@ Minimum functional path:
 8. `release_archive_nzb` archives the NZB and captures catalog/detail snapshots.
 9. `release_purge_archived_sources` deletes source lineage only after archival and required inspection gates are satisfied.
 
+## Literal Data Flow: From NNTP Facts To Release Keys
+
+Release formation starts with NNTP overview/header data, not with downloaded files.
+
+### Facts saved from NNTP during scrape
+
+`scrape_latest` and `scrape_backfill` save one canonical article row plus one ingest-payload support row.
+
+`article_headers` stores the immutable article locator and cheap counters:
+
+- `provider_id`
+- `newsgroup_id`
+- `article_number`
+- `message_id`
+- `date_utc`
+- `bytes`
+- `lines`
+- scrape timestamps
+
+`article_header_ingest_payloads` stores the text and parsed hints that are needed later for grouping:
+
+- raw article subject from overview
+- raw poster text
+- raw `Xref` header text when present
+- subject-derived quoted or yEnc-style filename when visible in overview
+- subject-derived file index and file total when visible in overview
+- subject-derived yEnc part number, yEnc total parts, and yEnc file size when visible in overview
+- bounded yEnc retry/backoff support state while that transitional boundary remains
+
+`article_header_crosspost_groups` stores observed groups from `Xref`. These rows are discovery/popularity telemetry and do not rewrite file provenance. A release may become cross-newsgroup, but each file payload remains bound to the newsgroup of the binary/articles that produced it.
+
+### Matcher inputs
+
+Assemble hydrates a `match.Candidate` from:
+
+- `article_headers.article_number`
+- `article_headers.message_id`
+- raw subject from `article_header_ingest_payloads`
+- poster from materialized poster refs or raw payload fallback
+- `article_headers.date_utc`
+- `article_headers.bytes`
+- `article_headers.lines`
+- raw `Xref` from `article_header_ingest_payloads`
+- parsed/raw overview map containing subject filename, file index/total, yEnc part/total/size, and later recovered yEnc header facts
+
+The matcher derives:
+
+- `cleanSubject`: HTML-unescaped subject
+- `subjectWithoutYEnc`: subject with yEnc tail removed
+- `normalizedSubject`: normalized subject key
+- `quotedFilename`: last quoted filename in the subject
+- `structured.Name`: yEnc `name=` from subject/raw overview when available
+- `structured.Part` and `structured.Total`: yEnc part/total from subject/raw overview
+- `structured.Size`: yEnc file size from subject/raw overview
+- `fileIndex` and `expectedFileCount`: subject file counter before yEnc markers, raw overview file counter, or archive-volume inference
+- `partNumber` and `totalParts`: yEnc/article part markers after yEnc markers, raw overview yEnc markers, or message-id `part N of M`
+
+### How `release_family_key` is created
+
+The matcher emits a file-level binary identity and a release-family identity. In priority order, `release_family_key` comes from:
+
+1. A readable `subject_set_token` when the subject prefix before counters/quoted filename is readable.
+2. A readable `releaseName` derived from the subject with yEnc tails, counters, and explicit filename removed.
+3. A small archive family stem from the explicit filename, quoted filename, structured yEnc name, or current file name when the file is `.partNN.rar`, `.rNN`, `.rar`, `.7z.NNN`, or `.par2`.
+4. An opaque or numeric subject-set token when the subject prefix is obfuscated but stable.
+5. A contextual obfuscated seed built from poster, message host, Xref groups, posting-window bucket, article-number bucket, release-family hint, and expected file count.
+6. A final context-seed fallback if no better key exists.
+
+The related keys have different purposes:
+
+- `source_release_key`: primary file/source key, normally canonicalized release name, contextual release seed, or small indexed archive stem.
+- `release_family_key`: grouping key used by normal release-summary and release formation.
+- `file_set_key`: recovered/file-set grouping key, normally `release_family_key files <expected_file_count>` or `subject_set_token files <expected_file_count>` when expected count is known.
+- `file_family_key`: normalized base stem or filename for file-level family affinity.
+- `binary_key`: file-level key under a source/family context, normally `source_release_key::file_key`.
+
+The matcher also records identity strength:
+
+- `strong`: archive stem or readable archive filename.
+- `probable`: readable title or high-confidence matcher evidence.
+- `provisional`: numeric/opaque subject-set grouping.
+- `weak`: contextual fallback.
+
+Weak/provisional contextual or opaque identities without promotable file evidence are intentionally deferred by clearing `release_family_key` and `file_set_key`. This prevents bad one-off obfuscated subjects from becoming public release families before yEnc/PAR2/inspection evidence can improve them.
+
+### File count, article count, and completeness semantics
+
+These counts are intentionally separate:
+
+- Article count is the number of article headers/segments assigned through `binary_parts`.
+- `partNumber` / `totalParts` describes multipart article completeness for one binary file.
+- `fileIndex` / `expectedFileCount` describes this file's position in the release file set when the subject or yEnc header exposes it.
+- `expected_archive_file_count` is derived later from PAR2 target coverage or archive evidence and is used as a stronger payload-file expectation when available.
+- `observed_parts` and `total_parts` in `binary_observation_stats` determine whether a binary file is complete.
+- `complete_main_payload_binary_count` in release summaries counts complete non-auxiliary payload files, not every `.par2`, `.nfo`, `.sfv`, sample, or sidecar.
+
+Release readiness compares complete main payload files against known expected file counts. If expected counts are absent, readiness depends more heavily on family strength, binary count, completeness, and downstream inspection gates.
+
+### Why recovered yEnc subject names matter
+
+The article header subject is often not the real file name. Modern Usenet posts may show an obfuscated subject while the yEnc payload header contains the true obfuscated archive/media filename:
+
+```text
+=ybegin part=1 total=200 size=... name=3FEPZidch6Yz6tVuHxvacG0Edwm.part001.rar
+```
+
+`recover_yenc` and assemble inline yEnc recovery fetch a small article prefix, parse the yEnc header, and re-run the same matcher with these facts overlaid into raw overview:
+
+- recovered yEnc `name`
+- recovered yEnc `part`
+- recovered yEnc `total`
+- recovered yEnc `size`
+- existing subject file index/total hints when present
+
+The recovered filename becomes the best explicit file identity. Recovery then writes stronger identity into:
+
+- `binary_core.binary_key`
+- `binary_identity_current.release_family_key`
+- `binary_identity_current.file_set_key`
+- `binary_identity_current.file_name`
+- `binary_identity_current.file_index`
+- `binary_identity_current.expected_file_count`
+- `binary_observation_stats.total_parts`
+- `binary_recovery_current.recovered_source = 'yenc_header'`
+- `binary_recovery_current.recovered_file_name`
+
+Recovered yEnc canonicalization is required:
+
+- recovered file key = normalized recovered filename
+- recovered family key = normalized file-set/release-family/source key
+- canonical recovered binary key = `familyKey::fileKey`
+
+Rows with the same provider, newsgroup, recovered family key, and recovered filename must merge into one binary. If they do not, release-summary-refresh sees many one-part fragments instead of one complete multipart file.
+
+### PAR2 evidence and title/file-set evidence
+
+`inspect_par2` can run on binary candidates before or after release formation. It fetches/materializes PAR2 data, parses PAR2 file-description packets, and writes:
+
+- `binary_par2_sets`
+- `binary_par2_targets`
+- PAR2 target coverage updates onto matching binary identity rows
+- release-facing `has_par2` when a release exists
+
+PAR2 target filenames are important because they often reveal the real archive payload file list even when subjects are obfuscated. PAR2 evidence can improve:
+
+- expected archive file count
+- target base stem
+- target filename coverage
+- source binary link for a covered target
+- admin/debug visibility into what title or payload family is implied by the PAR2 manifest
+
+PAR2 evidence does not replace yEnc recovery. yEnc recovery fixes file-level identity and article membership. PAR2 inspection strengthens expected payload counts and can help explain titles/file sets after enough binaries exist.
+
+### Release title source precedence
+
+The durable `releases` row stores several title fields because identity can improve after formation:
+
+- `source_title`: title from release-family/binary identity at formation time.
+- `deobfuscated_title`: better title recovered by inspection or enrichment.
+- `matched_media_title`: media/enrichment match title.
+- `title_source`: provenance of the title currently used.
+- `title_confidence`: confidence for the selected title.
+
+Release formation should not invent a public-looking title from a weak obfuscated key. If the best available title is still an opaque token, inspection/enrichment should be allowed to improve it before public-ready gates expose it.
+
 ## Source Tables And Ownership
 
 ### Scrape
