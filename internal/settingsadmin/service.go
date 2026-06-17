@@ -111,6 +111,8 @@ func preserveRuntimeSecrets(current, next *app.RuntimeSettings) {
 	}
 
 	preserveServerPasswords(current.Servers, next.Servers)
+	preserveServerPasswords(current.DownloaderServers, next.Servers)
+	preserveServerPasswords(current.IndexerServers, next.Servers)
 	preserveServerPasswords(current.DownloaderServers, next.DownloaderServers)
 	preserveServerPasswords(current.IndexerServers, next.IndexerServers)
 

@@ -298,7 +298,7 @@ func TestScopedDownloaderServersUsesSharedRuntimeServers(t *testing.T) {
 	}
 }
 
-func TestIndexerNNTPManagerDoesNotReuseSharedDownloaderManager(t *testing.T) {
+func TestIndexerNNTPManagerReusesSharedDownloaderManager(t *testing.T) {
 	indexerAddr := startTestNNTPServer(t)
 	downloaderAddr := startTestNNTPServer(t)
 
@@ -341,13 +341,12 @@ func TestIndexerNNTPManagerDoesNotReuseSharedDownloaderManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("indexerNNTPManager: %v", err)
 	}
-	defer manager.Close()
 
-	if !owned {
-		t.Fatalf("expected indexer manager to be owned, got owned=%v", owned)
+	if owned {
+		t.Fatalf("expected shared downloader manager reuse, got owned=%v", owned)
 	}
-	if manager == sharedManager {
-		t.Fatalf("expected dedicated indexer manager, but shared downloader manager was reused")
+	if manager != sharedManager {
+		t.Fatalf("expected shared downloader manager to be reused")
 	}
 }
 
