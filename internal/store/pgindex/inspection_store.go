@@ -1073,7 +1073,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				$1,
 				id,
 				'' AS release_id,
-				0 AS provider_id,
+				provider_id,
 				'' AS title,
 				'' AS source_title,
 				'' AS deobfuscated_title,
