@@ -1,6 +1,6 @@
 # Indexer Foundation Docs
 
-Snapshot date: 2026-06-04
+Snapshot date: 2026-06-17
 
 This is an internal execution and planning index for ongoing indexer work. It is not intended to be an end-user documentation entrypoint.
 
@@ -23,7 +23,9 @@ We currently have several planning and reference documents. This file defines wh
 - NNTP and inspection capacity planning is complete and archived
 - recovered-identity grouping follow-up is complete and archived
 - remaining database-growth follow-up is operational reclaim plus longer-run post-merge measurement on `dv`
-- the NZB archival and source-purge sprint is substantially complete and is now primarily closeout/reference work
+- the NZB archival and source-purge sprint is complete from the operational-stage standpoint; source purge now belongs to admin maintenance
+- the release-formation playbook has moved out of `docs/active/` and now lives as live reference documentation beside the current schema document
+- the v0.8.0 migration squash is implemented in-tree; remaining release gates are full test/build validation and a fresh serve/indexer soak
 
 ## Current Active Docs
 
@@ -47,7 +49,7 @@ Use for:
 
 Use for:
 
-- the active binary-storage redesign sprint after repeated `public.binaries` corruption
+- the active binary-storage redesign sprint after repeated binary hot-table incidents
 - the v2 table ownership model and phased migration away from the monolithic hot binary row
 - deciding whether a binary-state field belongs to assemble, recovery, inspection, release, archive, purge, or an append-only event/summary table
 
@@ -59,14 +61,6 @@ Use for:
 - `article_header_assembly_queue` ownership and claim semantics
 - replacing lane-specific runtime, CLI, API, and UI surfaces with `assemble`
 
-### `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
-
-Use for:
-
-- the active release-family and release-formation behavior contract
-- tracing how scrape, assemble, yEnc recovery, release-summary-refresh, release, inspect, archive, and purge interact
-- preventing regressions where recovered yEnc filenames fail to become complete file-level binaries and release candidates
-
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
@@ -74,6 +68,26 @@ Use for:
 - the living whole-system schema map for the current indexer
 - the enforceable ownership rules for stage reads and writes
 - the table ownership matrix, purge contract, and migration path for schema-boundary work
+
+## Current Reference Docs
+
+### `docs/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
+
+Use for:
+
+- the live release-family and release-formation behavior contract
+- tracing how scrape, assemble, yEnc recovery, release-summary-refresh, release, inspect, archive, and source-purge maintenance interact
+- preventing regressions where recovered yEnc filenames fail to become complete file-level binaries and release candidates
+
+This document is reference material, not an active sprint backlog.
+
+### `docs/V0_8_0_MIGRATION_SQUASH_PLAN.md`
+
+Use for:
+
+- the v0.8.0 schema-freeze and migration-squash release gate
+- documenting that the retired `binaries` compatibility table is removed from the clean PostgreSQL baseline
+- replacing the PostgreSQL and settings SQLite migration chains with v0.8.0 baselines
 
 ## Recently Completed Sprint Docs
 

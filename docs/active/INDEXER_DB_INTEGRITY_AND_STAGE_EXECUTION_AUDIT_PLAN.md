@@ -1,6 +1,6 @@
 # Indexer DB Integrity And Stage Execution Audit Plan
 
-Snapshot date: 2026-06-11
+Snapshot date: 2026-06-17
 
 This is the active execution guide for the database-integrity follow-up, full stage/DBO audit, and stage-execution hardening workstream.
 
@@ -8,6 +8,12 @@ Use this doc together with:
 
 - `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` for the living ownership matrix and stage/table interaction rules
 - `docs/active/INDEXER_FOUNDATION_DOCS.md` for current routing of active versus archived docs
+
+## v0.8.0 Closeout Status
+
+The core stage-execution corrective work is complete: split assemble lanes are collapsed into one scheduled `assemble` coordinator, source purge is represented as guarded maintenance, startup repairs stale stage leases, inspect claim paths retry PostgreSQL deadlocks, and dashboard backlog counts now use stage-specific exact work-unit queries where needed.
+
+The document is not a schema-freeze signoff by itself. The v0.8.0 migration squash and retired `binaries` decision are implemented in-tree; the remaining release gate is one clean fresh-database migration/serve soak using the final defaults.
 
 ## Summary
 
@@ -25,7 +31,7 @@ Working decisions already locked:
 - treat `scrape_*` as the highest-risk canonical writer and isolate it during bootstrap/recovery
 - prefer stage overlap gates and phased runtime profiles over introducing multi-process topology first
 - automatic maintenance must not purge ingest payloads during normal supervisor operation; destructive payload purge is manual-only
-- `binaries` identity fields are confidence-guarded; lower-confidence rediscovery must not rewrite indexed family identity after a stronger match exists
+- v2 binary identity fields are confidence-guarded; lower-confidence rediscovery must not rewrite indexed family identity after a stronger match exists
 - detailed matcher traces are no longer retained in PostgreSQL during normal assemble; compact inline summaries remain for release/admin behavior
 - behavior-bearing binary evidence should be columned, not kept in hot JSONB fields
 
@@ -103,10 +109,10 @@ Landed hardening direction:
 - stop persisting detailed matcher traces into `binary_grouping_evidence` by default
 - set fresh Docker Postgres clusters to initialize with data checksums
 - set hot binary evidence JSONB storage to avoid pglz compression where those fields remain
-- move remaining hot `binaries.grouping_evidence_json` behavior fields into scalar columns:
+- move former hot binary grouping-evidence behavior fields into scalar columns:
   - grouping summary kind/status/fallback
   - PAR2 target base/file/source markers
-- treat `binaries.grouping_evidence_json` as legacy read compatibility only; detail reads may synthesize JSON from scalar columns for the UI
+- keep detail reads on scalar v2 projection/evidence columns
 
 Remaining validation requirement:
 
@@ -531,7 +537,7 @@ Observed queue/query behavior:
 Schema / overlap findings:
 
 - `recover_yenc` candidate listing no longer depends on `article_header_ingest_payloads`; queue snapshots carry the subject, poster, xref, yEnc, and article metadata needed by the service
-- payload rows are still read during bounded queue refresh/seeding and updated for legacy retry/backoff compatibility
+- payload rows are still read during bounded queue refresh/seeding and updated for retired retry/backoff compatibility
 - overlap with assemble is acceptable only because:
   - assemble owns binary formation
   - recover owns recovery queue state
@@ -764,7 +770,7 @@ Audit:
 Required outputs:
 
 - exact difference in intent and query behavior between lane A and lane B
-- hottest indexes on `article_headers`, `binaries`, and `binary_parts`
+- hottest indexes on `article_headers`, legacy `binaries`, and `binary_parts`
 - remaining redundant lookups or write-backs
 - whether scrape/assemble overlap is structurally unsafe or just operationally discouraged
 
@@ -776,14 +782,14 @@ Audit:
 - `ListYEncRecoveryCandidates`
 - hot queue vs seed/backfill path
 - stale/backoff/noop handling
-- persistence of recovered identity into `binaries` / `binary_parts`
+- persistence of recovered identity into v2 binary projections and `binary_parts`
 
 Required outputs:
 
 - exact distinction between queue-first and seed/backfill query paths
 - overlap rules with assemble and release refresh
 - whether candidate selection is inferential or fully materialized
-- which joins are truly required and which are legacy/transitional
+- which joins are truly required and which are retired/transitional
 
 ### Pass 4: Release summary refresh
 
@@ -922,7 +928,7 @@ These are the baseline methods the audit should start from. The audit may expand
 2026-06-16 throughput audit:
 
 - `inspect_discovery` was the worst remaining selector after the binary v2 rewrite. `EXPLAIN ANALYZE` showed a broad binary projection scan and top-N sort over millions of joined rows, taking about 6.4s for a 100-row candidate batch.
-- The old legacy `binaries` discovery backlog index had not been recreated for the v2 projection. Migration 056 adds `idx_binary_identity_inspect_discovery_backlog`, and the selector now drives from `binary_identity_current` before joining core/stat/recovery rows. The same dataset planned as an index-driven nested-loop path and measured about 7.5ms.
+- The old `binaries` discovery backlog index had not been recreated for the v2 projection. Migration 056 adds `idx_binary_identity_inspect_discovery_backlog`, and the selector now drives from `binary_identity_current` before joining core/stat/recovery rows. The same dataset planned as an index-driven nested-loop path and measured about 7.5ms.
 - `inspect_par2` was also still using the broad binary projection CTE. Migration 057 adds v2 PAR2 identity/recovery backlog indexes, and the PAR2 selector now builds a small candidate source before applying existing set-state eligibility. The same dataset improved from about 2.5s to about 0.7s.
 - These changes do not alter inspection ownership. Inspection still writes `binary_inspections` and stage-owned evidence tables only; it does not mutate upstream binary identity/stat/recovery facts.
 
@@ -944,8 +950,8 @@ These are the baseline methods the audit should start from. The audit may expand
 - A deadlock was observed in `release_purge_archived_sources` while deleting terminal `binary_core` rows for an archived release.
 - The purge eligibility contract was intact: candidates still require `purge_pending`, durable object key, durable catalog files, and completed `inspect_media`.
 - The unsafe overlap was operational. Purge deletes the binary FK root and cascades through binary-owned tables, so it contends with assemble/yEnc binary writers even when the release is logically complete.
-- Supervisor now serializes `release_purge_archived_sources` with `assemble` under the `assemble/purge` exclusive group.
-- `PurgeArchivedReleaseSources` now runs inside the retryable PostgreSQL transaction wrapper so SQLSTATE `40P01`/`40001` retries are handled consistently with other hot write paths.
+- Source purge now runs as `maintenance.release_source_purge`; supervisor serializes it with `assemble` under the `assemble/purge` exclusive group.
+- `PurgeArchivedReleaseSources` and the maintenance wrapper run inside the retryable PostgreSQL transaction path so SQLSTATE `40P01`/`40001` retries are handled consistently with other hot write paths.
 
 ## Documentation Deliverables
 

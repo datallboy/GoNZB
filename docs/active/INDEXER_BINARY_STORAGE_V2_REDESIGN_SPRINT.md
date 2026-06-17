@@ -1,12 +1,16 @@
 # Indexer Binary Storage V2 Redesign Sprint
 
-Snapshot date: 2026-06-15
+Snapshot date: 2026-06-17
 
 This is the live sprint document for the binary-storage redesign. It replaces the assumption that the current `binaries` table is safe to keep extending.
 
+## v0.8.0 Release Readiness Note
+
+The production store path is on the v2 binary projection tables. The v0.8.0 migration squash omits the retired `public.binaries` compatibility table from the clean PostgreSQL baseline; `binary_core` is the canonical binary anchor.
+
 ## Summary
 
-The repeated corruption incidents should not be treated as maintenance-stage bugs. Maintenance and release reads exposed already-damaged `public.binaries` pages. The architectural problem is that `binaries` became a wide, heavily indexed, multi-owner, high-churn table touched by assemble, recovery, inspection, release refresh, maintenance, and purge.
+The repeated corruption incidents should not be treated as maintenance-stage bugs. Maintenance and release reads exposed already-damaged retired `binaries` pages. The architectural problem is that `binaries` became a wide, heavily indexed, multi-owner, high-churn table touched by assemble, recovery, inspection, release refresh, maintenance, and purge.
 
 PostgreSQL SQL should not physically corrupt heap or index pages by itself. The current shape still maximizes WAL pressure, bloat, autovacuum pressure, checkpoint pressure, and concurrent update exposure on the hottest relation. Because this is alpha software and the old database has been deleted, the correct direction is to redesign the binary storage path instead of preserving the old schema.
 
@@ -17,7 +21,7 @@ Resolved direct `binaries` write surfaces:
 - `assemble` now creates/updates `binary_core`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, and `binary_lifecycle` directly. Lane A and Lane B remain internal work classes inside this one writer.
 - `recover_yenc` now promotes recovered identity into `binary_core`, `binary_identity_current`, `binary_observation_stats`, and `binary_recovery_current`; merge cleanup deletes the source `binary_core` row.
 - `binary_recovery` now updates `binary_recovery_current` and canonicalized filenames in `binary_identity_current`, `release_files`, and `binary_parts`.
-- `release_purge_archived_sources` now deletes terminal binary lineage through `binary_core`, which is the canonical cascade anchor.
+- `maintenance.release_source_purge` now deletes terminal binary lineage through `binary_core`, which is the canonical cascade anchor.
 - production store ownership tests now reject direct SQL access to `binaries`; migration files and tests remain the only tolerated references.
 
 Current read-heavy surfaces:
@@ -25,8 +29,8 @@ Current read-heavy surfaces:
 - `release_summary_refresh` reads binary family, identity, expected counts, observed counts, payload/auxiliary flags, and recovered fields.
 - `release_formation` reads candidate binaries, release-family grouping, parts, and completeness.
 - `inspect_*` stages read binary identity and parts to decide whether work is actionable.
-- catalog/admin reads join `binaries` for release detail, file lists, and inspection artifacts.
-- yEnc work-item backfill and recovery reads `binaries` for candidate selection and merge decisions.
+- catalog/admin reads join v2 binary projections for release detail, file lists, and inspection artifacts.
+- yEnc work-item backfill and recovery read v2 binary projections for candidate selection and merge decisions.
 
 The old ownership exception policy is too broad. Stage write ownership must be enforced by schema and code, not just documentation.
 
@@ -76,7 +80,7 @@ Phase B:
 - `release_summary_refresh` scheduled summary aggregate/dominant reads now use `binary_identity_current`, `binary_observation_stats`, and `binary_core` instead of behavior-bearing fields on `binaries`.
 - release formation binary fan-out (`ListBinariesForReleaseCandidate`) now uses the same v2 projection tables instead of behavior-bearing fields on `binaries`.
 - release reform candidate discovery (`ListExistingReleaseCandidates`) now derives candidate binaries from the v2 projection tables.
-- Stop reading behavior-bearing fields from the legacy `binaries` row.
+- Stop reading behavior-bearing fields from the retired `binaries` compatibility row.
 - Add SQL ownership tests that fail on forbidden writes.
 
 Phase B remaining reader migration checklist:
@@ -89,24 +93,22 @@ Phase B remaining reader migration checklist:
 - [x] catalog/detail/admin/public release reads.
 - [x] NZB generation, archive, and purge reads.
 - [x] maintenance/helper reads and backlog counters.
-- [x] ownership tests expanded to reject new legacy behavior-field reads/writes once each path migrates.
+- [x] ownership tests expanded to reject new retired compatibility behavior-field reads/writes once each path migrates.
 
-Remaining intentional temporary `binaries` references:
+Remaining intentional `binaries` references:
 
-- migration files still create and carry the legacy table so older dev databases can migrate forward.
-- tests may still create or mutate legacy rows where they exercise migration/backward-compatibility setup.
+- archived pre-v0.8 migration files document the retired compatibility table history.
+- legacy integration tests may still mention retired compatibility rows where they exercise historical setup.
 - production store code must not read, write, lock, or delete `binaries`.
 
 Phase C:
 
-- Replace `binaries` with a narrow anchor or compatibility view.
-- Move foreign keys to the canonical anchor.
-- Drop legacy behavior columns and legacy hot indexes.
-- Add hash partitioning for high-volume tables.
+- Move any remaining historical test fixtures off retired compatibility setup.
+- Add hash partitioning for high-volume tables after the v0.8 baseline is stable.
 
 ## Partitioning Plan
 
-Use PostgreSQL declarative hash partitioning once read paths are off the legacy table:
+Use PostgreSQL declarative hash partitioning once read paths are off the retired compatibility table:
 
 - Partition `article_headers`, `article_header_ingest_payloads`, `assembly_work_items`, `binary_core`, `binary_parts`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, and high-cardinality dirty/event tables by `HASH(provider_id, newsgroup_id)`.
 - Start with 128 partitions.
@@ -154,7 +156,7 @@ Add enforcement in code and CI:
 - Split store access behind narrow interfaces: scrape, assemble, recovery, inspection, release, archive, purge, and maintenance.
 - Add a table ownership policy in migrations and mirror it in a Go test.
 - Add SQL scanner tests that reject `INSERT`, `UPDATE`, or `DELETE` against tables outside an allowed owner list.
-- Treat direct production reads or writes to legacy `binaries` as failures.
+- Treat direct production reads or writes to retired `binaries` compatibility rows as failures.
 - Remove test helpers that mutate `binaries` directly unless they are specifically testing the bridge.
 
 ## Validation Plan
@@ -202,15 +204,15 @@ This is intentionally not a retry-loop-only fix. Retries remain useful for trans
 
 Validation date: 2026-06-15
 
-Result: Phase A/B is complete. Phase C is partially complete: active production paths are off the legacy `binaries` hot table, but hash partitioning is not implemented and the compatibility table/view cleanup remains open.
+Result: Phase A/B is complete. Phase C is complete for the v0.8 baseline cleanup: active production paths are off the retired `binaries` hot table, the clean baseline omits `public.binaries`, and hash partitioning is deferred.
 
 Observed fresh-database serve soak:
 
-- all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
+- all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, and `indexer_maintenance`. Source purge is now represented by `maintenance.release_source_purge`.
 - scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for the serve soak.
 - materializer CLI validation passed after the serve soak: `materialize-posters --batch-size 10000` claimed 10,000 rows and upserted 10,000 refs; `refresh-crosspost-popularity --batch-size 1000` claimed 86 groups, refreshed 86 summaries, and upserted 634,073 message rows.
 - release outputs were produced and archived/purged: `nzb_cache` rows existed, release catalog rows existed, and `release_archive_state` reached `purged`.
-- v2 projection parity held after the soak: `binaries`, `binary_core`, `binary_identity_current`, `binary_observation_stats`, `binary_recovery_current`, and `binary_lifecycle` had matching row counts.
+- v2 projection parity held after the soak before the migration squash: `binaries`, `binary_core`, `binary_identity_current`, `binary_observation_stats`, `binary_recovery_current`, and `binary_lifecycle` had matching row counts.
 - PostgreSQL logs contained no application deadlock, corruption, recovery-mode, invalid-page, or unexpected-EOF errors during the serve window.
 - `pg_amcheck -U postgres -d gonzb --schema=public` completed with no corruption output after the soak.
 - `go test ./...` passed after the closeout guard changes.
@@ -219,7 +221,7 @@ Residual notes:
 
 - stage failures recorded during the final window were caused by the intentional Ctrl-C shutdown and had `context canceled` errors.
 - serve shutdown exceeded its graceful deadline after cancellation; this is cleanup polish, not a database-integrity blocker.
-- direct production `binaries` access has been removed; remaining references are migration/test compatibility only.
+- direct production `binaries` access has been removed; remaining references are archived migration history and legacy tests only.
 - inspection candidate selection was re-audited on 2026-06-16. `inspect_discovery` no longer performs a full v2 projection scan; the selector now starts from `idx_binary_identity_inspect_discovery_backlog`. The measured selector dropped from about 6.4s to about 7.5ms on the current dataset. `inspect_par2` now starts from v2 PAR2 identity/recovery indexes and dropped from about 2.5s to about 0.7s while preserving existing PAR2 set-state eligibility logic.
 - release-summary recovered-file-set sync remains the next throughput audit target. It stayed stable during the 2026-06-16 soak, but some small refresh batches still spent multiple seconds in recovered-file-set materialization.
 - crosspost popularity refresh currently performs full-group aggregation for queued groups. It completed successfully, but the observed batch was heavy enough that a delta or smaller-batch strategy should be considered before enabling it aggressively in supervisor defaults.
@@ -229,18 +231,18 @@ Residual notes:
 This branch cannot close until Phase C is complete.
 
 - [x] Replace `binaries` as the schema-level foreign-key root with `binary_core`.
-- [x] Move child-table foreign keys away from legacy `binaries`.
+- [x] Move child-table foreign keys away from retired `binaries`.
 - [x] Stop assemble from inserting/updating `binaries`; write canonical binary state directly to `binary_core`, `binary_observation_stats`, and `binary_identity_current`.
 - [x] Stop release-summary compatibility helpers from reading `binaries`.
 - [x] Stop inspection claim/start/finish and recovery helpers from checking/locking `binaries`.
 - [x] Stop recovery and purge from updating/deleting `binaries`.
-- [x] Remove behavior-bearing legacy binary columns from active read/write paths.
-- [x] Remove `binary_storage_v2.go` legacy projection backfill dependency after canonical writes land directly in v2 tables.
-- [x] Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete legacy `binaries`.
+- [x] Remove behavior-bearing retired binary columns from active read/write paths.
+- [x] Remove `binary_storage_v2.go` retired projection backfill dependency after canonical writes land directly in v2 tables.
+- [x] Decompose `recover_yenc` and `binary_recovery` so they mutate recovery-owned v2 tables and do not update/delete retired `binaries`.
 - [x] Move inspection claim/start/finish FK safety to the new canonical binary anchor.
 - [x] Update release purge so terminal cleanup deletes through the new anchor/source lineage contract instead of deleting `binaries` as the cascade root.
 - [x] Expand ownership scanner tests from allowlisted bridge access to rejecting all production `binaries` table access, except compatibility view definitions or migration-only cleanup.
-- [ ] Remove or freeze `binaries` as a compatibility view/table in a later schema-squash cleanup after test fixtures and old-database compatibility are retired.
+- [x] Remove `binaries` from the clean v0.8 PostgreSQL baseline after test fixtures and old-database compatibility are retired.
 - [x] Explicitly defer PostgreSQL declarative hash partitioning to a schema-squash release plan until the v2 schema and query shapes prove stable at larger scale.
 
 ## Crosspost Popularity Refresh Redesign

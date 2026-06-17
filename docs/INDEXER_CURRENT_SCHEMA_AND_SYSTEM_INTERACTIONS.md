@@ -1,6 +1,6 @@
 # Indexer Current Schema And System Interactions
 
-Snapshot date: 2026-06-16
+Snapshot date: 2026-06-17
 
 This document is the living reference for indexer schema ownership, stage boundaries, and allowed system interactions.
 
@@ -21,7 +21,7 @@ Related reference docs:
 - `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
 - `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
 - `docs/active/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
-- `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
+- `docs/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
 
 ## How To Use This Doc
 
@@ -101,11 +101,11 @@ Scrape/newsgroup control state follows the same rule.
 - materialized wildcard groups are runtime-derived control state owned by scrape configuration, not raw provider inventory
 - `indexing.newsgroups` and `indexing.backfill_until_date_by_group` are compatibility mirrors of effective scrape state during transition
 
-### Rule 5: purge is the only intentional downstream mutator of upstream source facts
+### Rule 5: source-purge maintenance is the only intentional downstream mutator of upstream source facts
 
-`release_purge_archived_sources` is allowed to delete upstream source rows, but only as terminal cleanup after archive eligibility is satisfied.
+`maintenance.release_source_purge` is allowed to delete upstream source rows, but only as terminal cleanup after archive eligibility is satisfied.
 
-Purge is not a general exception for write-back. It is the cleanup owner for rows that are no longer needed by the live pipeline.
+Source purge is not a general exception for write-back. It is the cleanup owner for rows that are no longer needed by the live pipeline.
 
 ### Rule 6: release catalog data is durable, source lineage is temporary
 
@@ -115,11 +115,11 @@ The long-term model is:
 - article/binary/grouping lineage exists to build and validate releases
 - once archive/NZB durability and required inspection are complete, temporary lineage can be purged
 
-### Rule 7: binary state is moving to v2 owned projections
+### Rule 7: binary state uses v2 owned projections
 
-`binaries` is no longer the target shape for behavior-bearing mutable state.
+The retired `public.binaries` compatibility table is not part of the clean v0.8 PostgreSQL baseline.
 
-`binary_core` is now the canonical foreign-key and cascade anchor for binary lineage. Production store code must not read, write, lock, or delete the legacy `binaries` table.
+`binary_core` is now the canonical foreign-key and cascade anchor for binary lineage. Production store code must not reintroduce, read, write, lock, or delete the retired `binaries` compatibility table.
 
 - `binary_core`: assemble-owned anchor projection
 - `binary_observation_stats`: assemble-owned part/count/byte/article bounds
@@ -128,11 +128,11 @@ The long-term model is:
 - `binary_lifecycle`: release/archive/purge-owned lifecycle state
 - `binary_projection_events`: append-only future bridge for cross-stage state changes
 
-Do not add new behavior columns or new hot indexes to `binaries`. Add the field to the owning v2 table and keep active reads/writes on the v2 projection tables.
+Do not add behavior columns, hot indexes, compatibility views, or new code paths for `binaries`. Add the field to the owning v2 table and keep active reads/writes on the v2 projection tables.
 
 ### Rule 8: release formation identity is a documented data contract
 
-Release grouping changes must preserve the data contract in `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`.
+Release grouping changes must preserve the data contract in `docs/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`.
 
 The short form:
 
@@ -320,13 +320,12 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | `poster_materialize` | none | Shared support dimension; scrape and assemble do not write it inline. |
-| `binaries` | legacy compatibility table | none | none | Retained for migration/backward-compatibility only. Production store code must not use it. |
 | `binary_core` | v2 canonical anchor | `assemble` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
 | `binary_observation_stats` | v2 canonical projection | `assemble` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
 | `binary_identity_current` | v2 canonical projection | `assemble` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
 | `binary_completion_keys` | derived selector projection | `assemble` | `recover_yenc` after recovered identity/stat changes only | Binary-derived incomplete normalized filename keys for internal Lane A. Keeps the hot selector off broad identity/stat joins. |
 | `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
-| `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `release_purge_archived_sources` | none | Archive/purge lifecycle state for binary lineage. |
+| `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `maintenance.release_source_purge` | none | Archive/purge lifecycle state for binary lineage. |
 | `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
 | `binary_parts` | canonical fact | `assemble` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep compact scalar summaries in `binary_identity_current`; full matcher traces are no longer persisted to PostgreSQL by default. |
@@ -596,7 +595,7 @@ Allowed writes:
 
 Not allowed:
 
-- writing legacy `binaries` or v2 binary projection tables
+- writing v2 binary projection tables
 - writing release-side catalog tables
 - writing readiness summaries
 
@@ -1008,7 +1007,7 @@ Current audit note:
 
 - `ListBinariesForReleaseCandidate` now reads binary fan-out data from the v2 projection tables.
 - `ListExistingReleaseCandidates` now derives reform candidates from the v2 projection tables.
-- release catalog compatibility reads and some detail helpers still have legacy `binaries` reads and remain later migration targets.
+- release catalog and detail helpers are on the v2 projection/catalog path; retired `binaries` compatibility reads remain forbidden.
 
 - release is ready-candidate-driven and no longer uses fragment-only families as a normal queue
 - cross-newsgroup release provenance is already supported through `release_newsgroups`, while per-file article lineage remains tied to file/binary provenance
@@ -1069,7 +1068,7 @@ Primary DBO entry points:
 - `MarkReleaseArchiveStored`
 - `MarkReleaseArchiveFailed`
 
-### `release_purge_archived_sources`
+### `maintenance.release_source_purge`
 
 Allowed reads:
 
@@ -1136,7 +1135,7 @@ These are explicit anti-patterns for future changes.
 
 ### Scrape stages may not
 
-- update legacy `binaries` or v2 binary projection tables
+- update v2 binary projection tables
 - update `releases`
 - mark readiness directly on `release_family_readiness_summaries`
 
@@ -1154,7 +1153,7 @@ These are explicit anti-patterns for future changes.
 
 ### Inspection stages may not
 
-- write progress markers into legacy `binaries`, v2 binary projection tables, or `releases` when a stage-runtime table should own the state
+- write progress markers into v2 binary projection tables or `releases` when a stage-runtime table should own the state
 - update ingest tables to record inspection outcomes
 - directly upsert heavy readiness summary rows
 

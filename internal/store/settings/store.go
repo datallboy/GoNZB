@@ -17,7 +17,7 @@ const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
 )
-const expectedSchemaVersion = 8
+const expectedSchemaVersion = 1
 
 type Store struct {
 	db *sql.DB

@@ -2,7 +2,11 @@
 
 Snapshot date: 2026-06-17
 
-This is the active execution note for replacing the split `assemble_lane_a` / `assemble_lane_b` runtime model with one canonical `assemble` stage.
+This is the closeout note for replacing the split `assemble_lane_a` / `assemble_lane_b` runtime model with one canonical `assemble` stage.
+
+## Closeout Status
+
+Complete as of 2026-06-17. `assemble` is the only scheduled binary assembly writer exposed by supervisor, CLI, runtime settings, API stage lists, and Admin UI. Lane A and Lane B remain internal work classes inside the coordinator.
 
 ## Target
 
@@ -42,7 +46,7 @@ Defaults:
 
 ## Validation
 
-Required checks for this sprint:
+Release checks for this area:
 
 - `go test ./...`
 - `npm run build` from `ui/`

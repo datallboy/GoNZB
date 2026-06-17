@@ -1,6 +1,6 @@
 # Indexer Release Formation Playbook
 
-Snapshot date: 2026-06-16
+Snapshot date: 2026-06-17
 
 This is the live reference for how the indexer should turn scraped article headers into release families, releases, hydrated public releases, archived NZBs, and safely purged source rows.
 
@@ -20,7 +20,7 @@ Minimum functional path:
 6. `inspect_*` hydrates metadata and readiness gates.
 7. `release_generate_nzb` writes the NZB.
 8. `release_archive_nzb` archives the NZB and captures catalog/detail snapshots.
-9. `release_purge_archived_sources` deletes source lineage only after archival and required inspection gates are satisfied.
+9. `maintenance.release_source_purge` deletes source lineage only after archival and required inspection gates are satisfied.
 
 ## Literal Data Flow: From NNTP Facts To Release Keys
 
