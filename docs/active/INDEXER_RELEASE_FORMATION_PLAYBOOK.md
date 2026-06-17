@@ -53,6 +53,84 @@ Release formation starts with NNTP overview/header data, not with downloaded fil
 
 `article_header_crosspost_groups` stores observed groups from `Xref`. These rows are discovery/popularity telemetry and do not rewrite file provenance. A release may become cross-newsgroup, but each file payload remains bound to the newsgroup of the binary/articles that produced it.
 
+### NNTP examples and column mapping
+
+Normal scrape ingest is overview-driven. It uses article numbers plus overview fields equivalent to `XOVER`/`OVER` data. `HEAD`, `ARTICLE`, and `BODY` examples are still useful for understanding the same source facts, but the current scrape path does not persist full headers or article bodies.
+
+Representative `XOVER` row:
+
+```text
+45360001  [03/60] "3FEPZidch6Yz6tVuHxvacG0Edwm.part003.rar" yEnc (12/200) 73400320
+          poster@example.invalid
+          Tue, 16 Jun 2026 20:41:12 +0000
+          <part12.3FEPZidch6Yz6tVuHxvacG0Edwm@example.invalid>
+          <refs omitted>
+          734532
+          9821
+          Xref: news.example alt.binaries.example:45360001 alt.binaries.misc:91820011
+```
+
+Same facts as `HEAD`:
+
+```text
+221 45360001 <part12.3FEPZidch6Yz6tVuHxvacG0Edwm@example.invalid> head follows
+Subject: [03/60] "3FEPZidch6Yz6tVuHxvacG0Edwm.part003.rar" yEnc (12/200) 73400320
+From: poster@example.invalid
+Date: Tue, 16 Jun 2026 20:41:12 +0000
+Message-ID: <part12.3FEPZidch6Yz6tVuHxvacG0Edwm@example.invalid>
+Bytes: 734532
+Lines: 9821
+Xref: news.example alt.binaries.example:45360001 alt.binaries.misc:91820011
+.
+```
+
+Same article prefix as `ARTICLE` or `BODY` during yEnc recovery:
+
+```text
+222 45360001 <part12.3FEPZidch6Yz6tVuHxvacG0Edwm@example.invalid> body follows
+=ybegin part=12 total=200 line=128 size=14680064000 name=3FEPZidch6Yz6tVuHxvacG0Edwm.part003.rar
+=ypart begin=807403521 end=880803840
+<encoded bytes omitted>
+```
+
+Column mapping from the overview/header facts:
+
+| NNTP fact | Example value | Stored column / use |
+| --- | --- | --- |
+| Selected provider | configured provider id | `article_headers.provider_id` |
+| Selected group | `alt.binaries.example` id | `article_headers.newsgroup_id` |
+| Article number | `45360001` | `article_headers.article_number` |
+| Message-ID | `<part12...@example.invalid>` | `article_headers.message_id`; later `binary_parts.message_id` through article membership |
+| Subject | `[03/60] "3FEP...part003.rar" yEnc (12/200) 73400320` | `article_header_ingest_payloads.subject` |
+| Poster/From | `poster@example.invalid` | `article_header_ingest_payloads.poster`; queued into `poster_materialization_queue`, then `article_header_poster_refs` / `posters` |
+| Date | `2026-06-16T20:41:12Z` | `article_headers.date_utc`; later binary/release posted windows |
+| Bytes | `734532` | `article_headers.bytes`; later `binary_parts.segment_bytes` and `binary_observation_stats.total_bytes` |
+| Lines | `9821` | `article_headers.lines`; matcher/recovery context only |
+| Xref raw text | `Xref: ... alt.binaries.misc:91820011` | `article_header_ingest_payloads.xref`; parsed into `article_header_crosspost_groups` for popularity/crosspost telemetry |
+| Quoted filename in subject | `3FEPZid...part003.rar` | `article_header_ingest_payloads.subject_file_name`; seeds `article_header_assembly_keys.normalized_file_name` |
+| File counter before yEnc | `[03/60]` | `article_header_ingest_payloads.subject_file_index = 3`, `subject_file_total = 60` |
+| yEnc article counter in subject | `(12/200)` | `article_header_ingest_payloads.yenc_part_number = 12`, `yenc_total_parts = 200` |
+| yEnc size in subject | `73400320` | `article_header_ingest_payloads.yenc_file_size` when parseable from subject tail |
+
+Column mapping from the yEnc body prefix:
+
+| yEnc fact | Example value | Stored column / use |
+| --- | --- | --- |
+| `name=` | `3FEPZid...part003.rar` | re-run matcher `structured.Name`; persisted as `binary_identity_current.file_name` / `binary_name` and `binary_recovery_current.recovered_file_name` |
+| `part=` | `12` | re-run matcher part number; persisted through `binary_parts.part_number` and refreshed stats |
+| `total=` | `200` | re-run matcher total parts; persisted in `binary_observation_stats.total_parts` |
+| `size=` | `14680064000` | matcher structured size evidence; may inform binary/release byte expectations when propagated by the stage |
+| `=ypart begin/end` | `807403521` / `880803840` | parsed by yEnc reader for prefix/full materialization context; not a primary grouping column today |
+
+Obfuscated example where yEnc recovery changes grouping:
+
+```text
+XOVER subject: [03/60] abcdefghijklmnopqrstuvwxyz yEnc (12/200)
+BODY prefix:   =ybegin part=12 total=200 size=14680064000 name=3FEPZidch6Yz6tVuHxvacG0Edwm.part003.rar
+```
+
+Before yEnc recovery, assemble may only have a weak/contextual family from the subject, poster, Xref groups, message host, posting window, and article bucket. After yEnc recovery, the matcher sees the recovered filename and can promote the file into a stable archive stem/file-set family. That is the difference between many weak one-part-looking fragments and one complete file-level binary with `observed_parts` approaching `total_parts`.
+
 ### Matcher inputs
 
 Assemble hydrates a `match.Candidate` from:
