@@ -10400,6 +10400,60 @@ func TestPublicIndexerReleaseVisibilitySuppressesProbableOpaquePartRows(t *testi
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesOpaqueTitleWithoutEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	opaqueTitle := "3FH1KXkb5pFCQcpBSJpyiJg7Nom"
+	releaseID, _ := seedVisibilityTestRelease(t, store, opaqueTitle, func(in *ReleaseRecord) {
+		in.Title = opaqueTitle
+		in.SourceTitle = opaqueTitle
+		in.SearchTitle = strings.ToLower(opaqueTitle)
+		in.DeobfuscatedTitle = ""
+		in.MatchedMediaTitle = ""
+		in.RuntimeSeconds = 0
+		in.PrimaryResolution = ""
+		in.PrimaryVideoCodec = ""
+		in.PrimaryAudioCodec = ""
+		in.HasNFO = false
+		in.HasPAR2 = true
+		in.IdentityStatus = "probable"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: opaqueTitle, Limit: 50})
+	if err != nil {
+		t.Fatalf("list public opaque releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected opaque no-evidence release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public opaque detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected opaque no-evidence detail to be hidden, got %+v", detail)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET deobfuscated_title = 'Clear.Title.2026.1080p.WEB-DL-GRP',
+		    title = 'Clear.Title.2026.1080p.WEB-DL-GRP',
+		    search_title = 'clear title 2026 1080p web dl grp'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("add deobfuscated title evidence: %v", err)
+	}
+
+	detail, err = store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public clear detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected clear deobfuscated release detail to be visible")
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
