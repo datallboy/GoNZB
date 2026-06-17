@@ -27,7 +27,7 @@ func DefaultReleaseReadyPolicy() ReleaseReadyPolicy {
 		MinMatchConfidence:                   0.55,
 		MinCompletionPct:                     100,
 		MinIdentityStatus:                    "probable",
-		RequireInspection:                    false,
+		RequireInspection:                    true,
 		RequireEnrichment:                    false,
 		RequirePayloadComplete:               true,
 		RequireExpectedFileCountComplete:     false,

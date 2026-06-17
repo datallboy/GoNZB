@@ -44,7 +44,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
 			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
-			InspectDiscovery:            defaultStage(false, 10, 100, 0),
+			InspectDiscovery:            defaultStage(false, 10, 100, 1),
 			InspectPAR2:                 defaultStage(false, 10, 100, 4),
 			InspectNFO:                  defaultStage(false, 10, 100, 0),
 			InspectArchive:              defaultStage(false, 10, 100, 1),
@@ -122,7 +122,7 @@ func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, AutoReformBatchSize: 25, MinConfidence: 0.55,
 		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
 		PublicMinMatchConfidence: 0.55, PublicMinCompletionPct: 100, PublicMinIdentityStatus: "probable",
-		PublicRequireInspection: false, PublicRequireEnrichment: false,
+		PublicRequireInspection: true, PublicRequireEnrichment: false,
 		PublicRequirePayloadComplete: true, PublicRequireExpectedFileCountComplete: false,
 		PublicRequirePAR2: false, PublicRequireNFO: false, PublicRequireSFV: false,
 		RetainUntilExpectedFileCountComplete: false, RetainRequirePAR2: false, RetainRequireNFO: false, RetainRequireSFV: false,
@@ -240,7 +240,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		PublicMinMatchConfidence:                        float64Value(cfg.Release.PublicMinMatchConfidence, 0.55),
 		PublicMinCompletionPct:                          float64Value(cfg.Release.PublicMinCompletionPct, 100),
 		PublicMinIdentityStatus:                         firstNonEmpty(cfg.Release.PublicMinIdentityStatus, "probable"),
-		PublicRequireInspection:                         boolValue(cfg.Release.PublicRequireInspection, false),
+		PublicRequireInspection:                         boolValue(cfg.Release.PublicRequireInspection, true),
 		PublicRequireEnrichment:                         boolValue(cfg.Release.PublicRequireEnrichment, false),
 		PublicRequirePayloadComplete:                    boolValue(cfg.Release.PublicRequirePayloadComplete, true),
 		PublicRequireExpectedFileCountComplete:          boolValue(cfg.Release.PublicRequireExpectedFileCountComplete, false),
@@ -458,7 +458,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			MinAvailablePercent: float64Ptr(indexing.MemoryGuard.MinAvailablePercent),
 			MinSwapFreeBytes:    int64Ptr(indexing.MemoryGuard.MinSwapFreeBytes),
 		}
-		effective.Indexing.InspectDiscovery = toStageConfigNoConcurrency(indexing.InspectDiscovery)
+		effective.Indexing.InspectDiscovery = toStageConfig(indexing.InspectDiscovery)
 		effective.Indexing.InspectPAR2 = toStageConfig(indexing.InspectPAR2)
 		effective.Indexing.InspectNFO = toStageConfigNoConcurrency(indexing.InspectNFO)
 		effective.Indexing.InspectArchive = toStageConfig(indexing.InspectArchive)
@@ -708,7 +708,6 @@ func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
 	if in == nil || in.Indexing == nil {
 		return
 	}
-	in.Indexing.InspectDiscovery.Concurrency = 0
 	in.Indexing.InspectNFO.Concurrency = 0
 	in.Indexing.InspectPassword.Concurrency = 0
 }

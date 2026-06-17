@@ -496,7 +496,7 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "archived_waiting_for_purge_releases",
 		Label:       "Purge Backlog",
-		Description: "Exact count of archived releases still waiting for release_purge_archived_sources processing.",
+		Description: "Exact count of archived releases still waiting for maintenance.release_source_purge processing.",
 		Exact:       true,
 	},
 	{
@@ -541,9 +541,8 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_inspect_archive_binaries",
 		Label:       "Archive Inspection Backlog",
-		Description: "Bounded count of archive families inspect_archive can claim now. Values at the cap mean there may be more work behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of archive-family work units inspect_archive can claim now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_password_binaries",
@@ -555,9 +554,8 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_inspect_media_binaries",
 		Label:       "Media Inspection Backlog",
-		Description: "Bounded count of media binaries inspect_media can claim now. Values at the cap mean there may be more work behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of media binaries inspect_media can claim now.",
+		Exact:       true,
 	},
 }
 
@@ -764,7 +762,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
 	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
-	{StageName: "release_purge_archived_sources", Label: "Purge Archived Sources", ItemLabel: "releases"},
+	{StageName: "maintenance.release_source_purge", Label: "Source Purge", ItemLabel: "releases"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
 	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
@@ -981,7 +979,7 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"generated_ready_count", "generate_attempted", "generate_candidates"}
 	case "release_archive_nzb":
 		return []string{"archived_count", "archive_claimed", "archive_candidates"}
-	case "release_purge_archived_sources":
+	case "release_purge_archived_sources", "maintenance.release_source_purge":
 		return []string{"purged_count", "purge_candidates"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
 		return []string{"processed_count", "candidate_count"}
@@ -1081,11 +1079,11 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 	case "pending_inspect_nfo_binaries":
 		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_nfo")
 	case "pending_inspect_archive_binaries":
-		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_archive")
+		return s.CountPendingInspectArchiveBinaries(ctx)
 	case "pending_inspect_password_binaries":
 		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_password")
 	case "pending_inspect_media_binaries":
-		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_media")
+		return s.CountPendingInspectMediaBinaries(ctx)
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
 	}
@@ -1408,6 +1406,111 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 	return count, nil
 }
 
+func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, error) {
+	filter, err := inspectCandidateFilter("inspect_archive", false)
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''
+			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
+			OR (
+				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END = 0 AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+					)
+				)
+			)`
+	representativePredicate := `
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$'
+					) OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip'`
+
+	var count int64
+	err = s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`,
+		candidate_keys AS (
+			SELECT
+				r.release_id,
+				CASE
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+					ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+				END AS archive_key
+			FROM binary_state b
+			JOIN release_files rf ON rf.binary_id = b.id
+			JOIN releases r ON r.release_id = rf.release_id
+			LEFT JOIN binary_inspections bi
+				ON bi.stage_name = 'inspect_archive'
+				AND bi.binary_id = b.id
+			WHERE `+filter+`
+			  AND (`+representativePredicate+`)
+			  AND (
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					bi.inspection_claimed_until IS NOT NULL AND
+					bi.inspection_claimed_until < NOW()
+				) OR
+				b.updated_at > bi.updated_at OR
+				`+errorRerunPredicate+`
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
+				bi.inspection_claimed_until < NOW()
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_inspections cfi
+				WHERE cfi.stage_name = 'inspect_discovery'
+				  AND cfi.binary_id = b.id
+				  AND cfi.status = 'completed'
+				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
+			  )
+		)
+		SELECT COUNT(*)
+		FROM (
+			SELECT release_id, archive_key
+			FROM candidate_keys
+			GROUP BY release_id, archive_key
+		) candidates`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending inspect_archive binaries: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
 	filter, err := inspectCandidateFilter("inspect_media", false)
 	if err != nil {
@@ -1456,6 +1559,14 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 		  AND (
 			bi.inspection_claimed_until IS NULL OR
 			bi.inspection_claimed_until < NOW()
+		  )
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_inspections cfi
+			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.binary_id = b.id
+			  AND cfi.status = 'completed'
+			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
 		  )`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count pending inspect_media binaries: %w", err)
