@@ -410,7 +410,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 
 	// If all providers are confirmed missing
 	if len(seg.MissingFrom) == len(m.providers) {
-		return nil, ErrArticleNotFound
+		return nil, m.articleNotFoundError(seg)
 	}
 
 	// If we have a real error (not 430), return it to trigger a retry with backoff
@@ -422,7 +422,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 	if policy == CapacityWaitQueue {
 		mp := m.firstFetchProvider(seg)
 		if mp == nil {
-			return nil, ErrArticleNotFound
+			return nil, m.articleNotFoundError(seg)
 		}
 		if err := m.waitAcquire(ctx, scope, mp); err != nil {
 			return nil, err
@@ -441,6 +441,22 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 	// Some providers were busy, so we tell the worker to wait and try again
 	m.stats.busyReturns.Add(1)
 	return nil, ErrProviderBusy
+}
+
+func (m *Manager) articleNotFoundError(seg *domain.Segment) error {
+	if seg == nil {
+		return ErrArticleNotFound
+	}
+	attempts := make([]string, 0, len(m.providers))
+	for _, mp := range m.providers {
+		if mp == nil {
+			continue
+		}
+		if seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
+			attempts = append(attempts, mp.ID())
+		}
+	}
+	return &ArticleNotFoundError{MessageID: seg.MessageID, Attempts: attempts}
 }
 
 func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, mp *managedProvider, seg *domain.Segment, groups []string) (io.Reader, error) {

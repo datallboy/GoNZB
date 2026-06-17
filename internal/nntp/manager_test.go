@@ -2,6 +2,7 @@ package nntp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -190,6 +191,23 @@ func TestManagerWaitQueuePolicyTriesOtherProviderBeforeWaiting(t *testing.T) {
 	}
 }
 
+func TestManagerArticleNotFoundIncludesProviderAttempts(t *testing.T) {
+	first := &missingProvider{id: "easynews"}
+	second := &missingProvider{id: "newshosting"}
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		newManagedProvider(first),
+		newManagedProvider(second),
+	}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+
+	_, err := manager.FetchMessage(context.Background(), "missing@example", []string{"alt.binaries.test"})
+	if !errors.Is(err, ErrArticleNotFound) {
+		t.Fatalf("expected article not found, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "providers=easynews,newshosting") {
+		t.Fatalf("expected provider attempts in error, got %q", err.Error())
+	}
+}
+
 func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	provider := newBlockingProvider(1)
 	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
@@ -280,6 +298,41 @@ type blockingProvider struct {
 	mu       sync.Mutex
 	active   int
 	max      int
+}
+
+type missingProvider struct {
+	id string
+}
+
+func (p *missingProvider) ID() string               { return p.id }
+func (p *missingProvider) Label() string            { return p.id }
+func (p *missingProvider) Priority() int            { return 0 }
+func (p *missingProvider) MaxConnection() int       { return 1 }
+func (p *missingProvider) IdleConnectionCount() int { return 0 }
+func (p *missingProvider) TestConnection() error    { return nil }
+func (p *missingProvider) Close() error             { return nil }
+func (p *missingProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return ProviderStatsSnapshot{}
+}
+
+func (p *missingProvider) Fetch(context.Context, string, []string) (io.Reader, error) {
+	return nil, ErrArticleNotFound
+}
+
+func (p *missingProvider) FetchBodyPrefix(context.Context, string, []string, int64) ([]byte, error) {
+	return nil, ErrArticleNotFound
+}
+
+func (p *missingProvider) GroupStats(context.Context, string) (GroupStats, error) {
+	return GroupStats{Low: 1, High: 1}, nil
+}
+
+func (p *missingProvider) ListGroups(context.Context, string) ([]GroupListing, error) {
+	return nil, nil
+}
+
+func (p *missingProvider) XOver(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+	return nil, nil
 }
 
 func newBlockingProvider(capacity int) *blockingProvider {
