@@ -218,6 +218,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
+	assembleMode := effectiveSupervisorAssembleMode(runtimeCfg)
 	assembleLaneASvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
@@ -229,7 +230,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			ClaimLease:              5 * time.Minute,
 			Concurrency:             runtimeCfg.AssembleLaneA.Concurrency,
 			BinaryUpsertDBChunkSize: runtimeCfg.AssembleLaneA.BinaryUpsertDBChunkSize,
-			Lane:                    pgindex.AssemblyClaimLaneA,
+			Lane:                    assembleMode.LaneAClaimMode,
 		},
 	)
 	assembleLaneBSvc := assemble.NewService(
@@ -378,7 +379,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		{
 			Name:        supervisor.StageAssembleLaneB,
 			Interval:    runtimeCfg.AssembleLaneB.Interval,
-			Enabled:     assembleLaneBSvc != nil && runtimeCfg.AssembleLaneB.Enabled,
+			Enabled:     assembleLaneBSvc != nil && assembleMode.LaneBStageEnabled,
 			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
 			Concurrency: runtimeCfg.AssembleLaneB.Concurrency,
 			Backoff:     runtimeCfg.AssembleLaneB.Backoff,
@@ -582,6 +583,23 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeProvider: scrapeProvider,
 		nntpStats:      nntpStats,
 	}, nil
+}
+
+type supervisorAssembleMode struct {
+	LaneAClaimMode    string
+	LaneBStageEnabled bool
+}
+
+func effectiveSupervisorAssembleMode(runtimeCfg usenetIndexerConfig) supervisorAssembleMode {
+	mode := supervisorAssembleMode{
+		LaneAClaimMode:    pgindex.AssemblyClaimLaneA,
+		LaneBStageEnabled: runtimeCfg.AssembleLaneB.Enabled,
+	}
+	if runtimeCfg.AssembleLaneA.Enabled && runtimeCfg.AssembleLaneB.Enabled {
+		mode.LaneAClaimMode = pgindex.AssemblyClaimLaneCombined
+		mode.LaneBStageEnabled = false
+	}
+	return mode
 }
 
 func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {

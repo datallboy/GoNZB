@@ -799,6 +799,8 @@ Primary DBO entry points:
 Current audit note:
 
 - lane A is a structured-completion selector that tries to feed incomplete binaries with matching normalized file identity
+- when both assemble lanes are enabled under `serve`, the runtime schedules lane A with the combined selector and suppresses the separate lane B scheduled stage
+- the combined selector reserves most of each batch for lane A structured completions and fills the remaining batch from lane B recent backlog, preserving a single binary-source writer while still creating fresh binaries
 - lane A candidate selection now reads `binary_completion_keys` and `article_header_assembly_keys`; it no longer scans `binary_identity_current`, `binary_observation_stats`, or `article_header_ingest_payloads` in the claim selector
 - `article_header_assembly_keys` is an assemble-owned work surface seeded by scrape; assemble deletes keys when the corresponding headers are claimed into binary parts
 - assemble/recover own `binary_completion_keys` and refresh it only when binary identity/stats change
