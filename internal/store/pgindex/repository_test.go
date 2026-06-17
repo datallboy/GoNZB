@@ -8078,7 +8078,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedMissingArticlePr
 		StageName:       "inspect_par2",
 		BinaryID:        binaryID,
 		Status:          "completed",
-		Summary:         map[string]any{"has_par2": true, "probe_skip_reason": "prefix_sample_failed", "probe_error_detail": "fetch article <abc@example>: article not found (430)"},
+		Summary:         map[string]any{"has_par2": true, "probe_skip_reason": "article_not_found", "probe_error_detail": "fetch article <abc@example>: article not found (430)"},
 		SourceUpdatedAt: &now,
 	}); err != nil {
 		t.Fatalf("complete par2 inspection: %v", err)

@@ -1034,8 +1034,13 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun,
 					BOOL_OR(
 						current_status = 'completed' AND
-						COALESCE(current_summary_json->>'probe_skip_reason', '') = 'prefix_sample_failed' AND
-						COALESCE(current_summary_json->>'probe_error_detail', '') ILIKE '%article not found (430)%'
+						(
+							COALESCE(current_summary_json->>'probe_skip_reason', '') = 'article_not_found' OR
+							(
+								COALESCE(current_summary_json->>'probe_skip_reason', '') = 'prefix_sample_failed' AND
+								COALESCE(current_summary_json->>'probe_error_detail', '') ILIKE '%article not found (430)%'
+							)
+						)
 					) AS has_completed_missing_article_probe,
 					BOOL_OR(
 						current_status = 'completed' AND
