@@ -32,8 +32,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
 			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
-			AssembleLaneA:               defaultAssembleStage(false, 2, 5000, 1),
-			AssembleLaneB:               defaultAssembleStage(false, 10, 2500, 1),
+			Assemble:                    defaultAssembleStage(false, 2, 5000, 1),
 			RecoverYEnc:                 defaultRecoverYEncStage(false),
 			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
 			Release:                     defaultReleaseStage(false),
@@ -106,6 +105,8 @@ func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSetting
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, interval, batch, concurrency)
 	stage.BinaryUpsertDBChunkSize = 250
+	stage.LaneATargetPct = 70
+	stage.LaneBMinPct = 30
 	return stage
 }
 
@@ -216,8 +217,10 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
-	out.AssembleLaneA = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneA, false, 2, 5000)
-	out.AssembleLaneB = indexStageRuntimeFromConfigWithConcurrency(cfg.AssembleLaneB, false, 10, 2500)
+	out.Assemble = mergeStageRuntimeSettings(
+		defaultAssembleStage(false, 2, 5000, 1),
+		indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, false, 2, 5000),
+	)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.ReleaseSummaryRefresh = mergeStageRuntimeSettings(
 		defaultReleaseSummaryRefreshStage(boolValue(cfg.Release.Enabled, true)),
@@ -388,8 +391,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
 		effective.Indexing.PosterMaterialize = toStageConfigNoConcurrency(indexing.PosterMaterialize)
 		effective.Indexing.CrosspostPopularityRefresh = toStageConfigNoConcurrency(indexing.CrosspostPopularityRefresh)
-		effective.Indexing.AssembleLaneA = toStageConfig(indexing.AssembleLaneA)
-		effective.Indexing.AssembleLaneB = toStageConfig(indexing.AssembleLaneB)
+		effective.Indexing.Assemble = toStageConfig(indexing.Assemble)
 		effective.Indexing.RecoverYEnc = toStageConfig(indexing.RecoverYEnc)
 		effective.Indexing.ReleaseSummaryRefresh = toStageConfigNoConcurrency(indexing.ReleaseSummaryRefresh)
 		effective.Indexing.Release = config.IndexingReleaseConfig{
@@ -683,8 +685,7 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ScrapeBackfill.Enabled ||
 		in.PosterMaterialize.Enabled ||
 		in.CrosspostPopularityRefresh.Enabled ||
-		in.AssembleLaneA.Enabled ||
-		in.AssembleLaneB.Enabled ||
+		in.Assemble.Enabled ||
 		in.RecoverYEnc.Enabled ||
 		in.ReleaseSummaryRefresh.Enabled ||
 		in.Release.Enabled ||
@@ -818,8 +819,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBackfill:              in.ScrapeBackfill,
 		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
-		AssembleLaneA:               mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.AssembleLaneA),
-		AssembleLaneB:               mergeStageRuntimeSettings(defaultAssembleStage(false, 10, 2500, 1), in.AssembleLaneB),
+		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                     in.Release,
@@ -1093,6 +1093,12 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.BinaryUpsertDBChunkSize > 0 {
 		base.BinaryUpsertDBChunkSize = override.BinaryUpsertDBChunkSize
 	}
+	if override.LaneATargetPct > 0 {
+		base.LaneATargetPct = override.LaneATargetPct
+	}
+	if override.LaneBMinPct > 0 {
+		base.LaneBMinPct = override.LaneBMinPct
+	}
 	return base
 }
 
@@ -1116,6 +1122,8 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		MaxEffectiveConcurrency: intValue(cfg.MaxEffectiveConcurrency, 0),
 		BackoffSeconds:          intValue(cfg.BackoffSeconds, 0),
 		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
+		LaneATargetPct:          intValue(cfg.LaneATargetPct, 0),
+		LaneBMinPct:             intValue(cfg.LaneBMinPct, 0),
 	}
 }
 
@@ -1143,6 +1151,12 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	}
 	if in.BinaryUpsertDBChunkSize > 0 {
 		out.BinaryUpsertDBChunkSize = intPtr(in.BinaryUpsertDBChunkSize)
+	}
+	if in.LaneATargetPct > 0 {
+		out.LaneATargetPct = intPtr(in.LaneATargetPct)
+	}
+	if in.LaneBMinPct > 0 {
+		out.LaneBMinPct = intPtr(in.LaneBMinPct)
 	}
 	return out
 }

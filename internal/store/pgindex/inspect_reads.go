@@ -758,8 +758,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
 	{StageName: "poster_materialize", Label: "Poster Materialize", ItemLabel: "headers"},
 	{StageName: "crosspost_popularity_refresh", Label: "Crosspost Popularity", ItemLabel: "groups"},
-	{StageName: "assemble_lane_a", Label: "Assemble Lane A", ItemLabel: "headers"},
-	{StageName: "assemble_lane_b", Label: "Assemble Lane B", ItemLabel: "headers"},
+	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
@@ -972,7 +971,7 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"claimed", "refs_upserted", "posters"}
 	case "crosspost_popularity_refresh":
 		return []string{"groups_refreshed", "claimed"}
-	case "assemble_lane_a", "assemble_lane_b":
+	case "assemble":
 		return []string{"processed_headers"}
 	case "recover_yenc":
 		return []string{"recovered", "attempted", "candidates"}

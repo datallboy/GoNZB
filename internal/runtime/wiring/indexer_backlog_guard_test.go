@@ -54,7 +54,7 @@ func TestScrapeBacklogGuardBlocksScheduledScrapeWhenAssembleEnabled(t *testing.T
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				AssembleLaneA: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
 		repo: fakeUnassembledBacklogReader{estimate: 200000},
@@ -73,7 +73,7 @@ func TestScrapeBacklogGuardAllowsManualScrapeOverride(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				AssembleLaneA: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
 		repo: fakeUnassembledBacklogReader{estimate: 200000},
@@ -92,7 +92,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				AssembleLaneA: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
 		repo: fakeUnassembledBacklogReader{estimate: 200000},

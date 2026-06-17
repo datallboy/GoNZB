@@ -25,8 +25,7 @@ func newIndexerPrerequisiteGate(appCtx *app.Context) supervisor.StageGateFunc {
 			if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
 				return supervisor.StageGateDecision{Allowed: false, Reason: "configure at least one scrape group"}, nil
 			}
-		case supervisor.StageAssembleLaneA,
-			supervisor.StageAssembleLaneB,
+		case supervisor.StageAssemble,
 			supervisor.StageRecoverYEnc,
 			supervisor.StageInspectDiscovery,
 			supervisor.StageInspectPAR2,

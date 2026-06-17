@@ -12,7 +12,6 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nntp"
-	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 type fakeSettingsStore struct {
@@ -91,7 +90,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Concurrency:     &concurrency,
 		BackoffSeconds:  &backoff,
 	}
-	cfg.Indexing.AssembleLaneA = config.IndexingStageConfig{
+	cfg.Indexing.Assemble = config.IndexingStageConfig{
 		Concurrency: &concurrency,
 	}
 	cfg.Indexing.Match = config.IndexingMatchConfig{
@@ -164,8 +163,8 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ScrapeLatest.Interval != 90*time.Second || got.ScrapeLatest.BatchSize != batch {
 		t.Fatalf("unexpected scrape_latest stage config: %+v", got.ScrapeLatest)
 	}
-	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.AssembleLaneA.Concurrency != concurrency {
-		t.Fatalf("unexpected scrape/latest or assemble lane-a concurrency: scrape=%+v laneA=%+v", got.ScrapeLatest, got.AssembleLaneA)
+	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.Assemble.Concurrency != concurrency {
+		t.Fatalf("unexpected scrape/latest or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
 	}
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
@@ -202,36 +201,6 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.EnrichPreDBStage.Interval != 90*time.Second || !got.EnrichTMDBStage.Enabled {
 		t.Fatalf("unexpected enrich stage config: predb=%+v tmdb=%+v", got.EnrichPreDBStage, got.EnrichTMDBStage)
-	}
-}
-
-func TestEffectiveSupervisorAssembleModeMergesEnabledLanes(t *testing.T) {
-	cfg := usenetIndexerConfig{
-		AssembleLaneA: indexerStageConfig{Enabled: true},
-		AssembleLaneB: indexerStageConfig{Enabled: true},
-	}
-
-	got := effectiveSupervisorAssembleMode(cfg)
-	if got.LaneAClaimMode != pgindex.AssemblyClaimLaneCombined {
-		t.Fatalf("expected lane A to use combined selector when both lanes are enabled, got %+v", got)
-	}
-	if got.LaneBStageEnabled {
-		t.Fatalf("expected lane B stage to be suppressed when lane A runs combined selector, got %+v", got)
-	}
-}
-
-func TestEffectiveSupervisorAssembleModePreservesStandaloneLaneB(t *testing.T) {
-	cfg := usenetIndexerConfig{
-		AssembleLaneA: indexerStageConfig{Enabled: false},
-		AssembleLaneB: indexerStageConfig{Enabled: true},
-	}
-
-	got := effectiveSupervisorAssembleMode(cfg)
-	if got.LaneAClaimMode != pgindex.AssemblyClaimLaneA {
-		t.Fatalf("expected lane A selector to remain lane_a, got %+v", got)
-	}
-	if !got.LaneBStageEnabled {
-		t.Fatalf("expected standalone lane B stage to remain enabled, got %+v", got)
 	}
 }
 

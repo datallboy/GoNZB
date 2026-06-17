@@ -55,6 +55,8 @@ type preparedArticleHeaderInsert struct {
 
 type payloadUpsertRow struct {
 	ArticleHeaderID int64
+	ArticleNumber   int64
+	MessageID       string
 	Subject         string
 	PosterID        any
 	Poster          string
@@ -958,6 +960,8 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 
 				payloadRows = append(payloadRows, payloadUpsertRow{
 					ArticleHeaderID: articleHeaderID,
+					ArticleNumber:   item.ArticleNumber,
+					MessageID:       item.MessageID,
 					Subject:         item.Subject,
 					PosterID:        nil,
 					Poster:          item.Poster,
@@ -1381,34 +1385,35 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 		lastByArticleHeaderID[row.ArticleHeaderID] = row
 	}
 
-	blankIDs := make([]int64, 0)
 	upsertRows := make([]payloadUpsertRow, 0, len(order))
 	for _, articleHeaderID := range order {
-		row := lastByArticleHeaderID[articleHeaderID]
-		if strings.TrimSpace(row.FileName) == "" {
-			blankIDs = append(blankIDs, articleHeaderID)
-			continue
-		}
-		upsertRows = append(upsertRows, row)
+		upsertRows = append(upsertRows, lastByArticleHeaderID[articleHeaderID])
 	}
 
 	if len(upsertRows) > 0 {
 		query := strings.Builder{}
 		query.WriteString(`
-			INSERT INTO article_header_assembly_keys (
+			INSERT INTO article_header_assembly_queue (
 				article_header_id,
 				provider_id,
 				newsgroup_id,
+				article_number,
+				message_id,
 				normalized_file_name,
-				created_at,
+				queue_kind,
+				queued_at,
 				updated_at
 			)
 			VALUES `)
 
-		args := make([]any, 0, len(upsertRows)*4)
+		args := make([]any, 0, len(upsertRows)*6)
 		for idx, row := range upsertRows {
 			if idx > 0 {
 				query.WriteString(",")
+			}
+			queueKind := "general"
+			if strings.TrimSpace(row.FileName) != "" {
+				queueKind = "structured"
 			}
 			query.WriteString("(")
 			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
@@ -1417,36 +1422,28 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 			args = append(args, providerID)
 			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 			args = append(args, newsgroupID)
+			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+			args = append(args, row.ArticleNumber)
+			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
+			args = append(args, strings.TrimSpace(row.MessageID))
 			fmt.Fprintf(&query, "lower(btrim($%d::text)),", len(args)+1)
 			args = append(args, row.FileName)
+			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
+			args = append(args, queueKind)
 			query.WriteString("NOW(),NOW())")
 		}
 		query.WriteString(`
 			ON CONFLICT (article_header_id) DO UPDATE
 			SET provider_id = EXCLUDED.provider_id,
 			    newsgroup_id = EXCLUDED.newsgroup_id,
+			    article_number = EXCLUDED.article_number,
+			    message_id = EXCLUDED.message_id,
 			    normalized_file_name = EXCLUDED.normalized_file_name,
+			    queue_kind = EXCLUDED.queue_kind,
 			    updated_at = NOW()`)
 
 		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
-			return fmt.Errorf("upsert article header assembly keys batch: %w", err)
-		}
-	}
-
-	if len(blankIDs) > 0 {
-		query := strings.Builder{}
-		query.WriteString(`DELETE FROM article_header_assembly_keys WHERE article_header_id IN (`)
-		args := make([]any, 0, len(blankIDs))
-		for idx, id := range blankIDs {
-			if idx > 0 {
-				query.WriteString(",")
-			}
-			fmt.Fprintf(&query, "$%d::bigint", len(args)+1)
-			args = append(args, id)
-		}
-		query.WriteString(")")
-		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
-			return fmt.Errorf("delete blank article header assembly keys batch: %w", err)
+			return fmt.Errorf("upsert article header assembly queue batch: %w", err)
 		}
 	}
 

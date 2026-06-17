@@ -85,9 +85,9 @@ func TestPipelineBacklogGuardLeavesInspectStagesAllowed(t *testing.T) {
 	guard := &cachedPipelineBacklogGuard{
 		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				AssembleLaneA: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				RecoverYEnc:   app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 1000},
-				Release:       app.IndexingReleaseRuntimeSettings{Enabled: true, BatchSize: 200},
+				Assemble:    app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				RecoverYEnc: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 1000},
+				Release:     app.IndexingReleaseRuntimeSettings{Enabled: true, BatchSize: 200},
 			},
 		}},
 		repo:        fakePipelineBacklogReader{assembleEstimate: 200000},

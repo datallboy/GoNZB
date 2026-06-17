@@ -70,6 +70,9 @@ type indexerStageConfigPatch struct {
 	Concurrency             *int     `json:"concurrency,omitempty"`
 	MaxEffectiveConcurrency *int     `json:"max_effective_concurrency,omitempty"`
 	BackoffSeconds          *int     `json:"backoff_seconds,omitempty"`
+	BinaryUpsertDBChunkSize *int     `json:"binary_upsert_db_chunk_size,omitempty"`
+	LaneATargetPct          *int     `json:"lane_a_target_pct,omitempty"`
+	LaneBMinPct             *int     `json:"lane_b_min_pct,omitempty"`
 }
 
 type indexerReleaseOverridePatch struct {
@@ -871,10 +874,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.PosterMaterialize, true
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		return runtime.Indexing.CrosspostPopularityRefresh, true
-	case string(supervisor.StageAssembleLaneA):
-		return runtime.Indexing.AssembleLaneA, true
-	case string(supervisor.StageAssembleLaneB):
-		return runtime.Indexing.AssembleLaneB, true
+	case string(supervisor.StageAssemble):
+		return runtime.Indexing.Assemble, true
 	case string(supervisor.StageRecoverYEnc):
 		return runtime.Indexing.RecoverYEnc, true
 	case string(supervisor.StageReleaseSummaryRefresh):
@@ -935,8 +936,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageScrapeBackfill),
 	string(supervisor.StagePosterMaterialize),
 	string(supervisor.StageCrosspostPopularityRefresh),
-	string(supervisor.StageAssembleLaneA),
-	string(supervisor.StageAssembleLaneB),
+	string(supervisor.StageAssemble),
 	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageReleaseSummaryRefresh),
 	string(supervisor.StageRelease),
@@ -984,10 +984,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.PosterMaterialize, patch)
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		applyStagePatch(&indexing.CrosspostPopularityRefresh, patch)
-	case string(supervisor.StageAssembleLaneA):
-		applyStagePatch(&indexing.AssembleLaneA, patch)
-	case string(supervisor.StageAssembleLaneB):
-		applyStagePatch(&indexing.AssembleLaneB, patch)
+	case string(supervisor.StageAssemble):
+		applyStagePatch(&indexing.Assemble, patch)
 	case string(supervisor.StageRecoverYEnc):
 		applyStagePatch(&indexing.RecoverYEnc, patch)
 	case string(supervisor.StageReleaseSummaryRefresh):
@@ -1026,7 +1024,7 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 
 func stageSupportsConcurrency(stageName string) bool {
 	switch stageName {
-	case string(supervisor.StageAssembleLaneA), string(supervisor.StageAssembleLaneB), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectPAR2), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
+	case string(supervisor.StageAssemble), string(supervisor.StageRecoverYEnc), string(supervisor.StageInspectPAR2), string(supervisor.StageInspectArchive), string(supervisor.StageInspectMedia):
 		return true
 	default:
 		return false
@@ -1051,6 +1049,15 @@ func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageCo
 	}
 	if patch.BackoffSeconds != nil {
 		dst.BackoffSeconds = *patch.BackoffSeconds
+	}
+	if patch.BinaryUpsertDBChunkSize != nil {
+		dst.BinaryUpsertDBChunkSize = *patch.BinaryUpsertDBChunkSize
+	}
+	if patch.LaneATargetPct != nil {
+		dst.LaneATargetPct = *patch.LaneATargetPct
+	}
+	if patch.LaneBMinPct != nil {
+		dst.LaneBMinPct = *patch.LaneBMinPct
 	}
 }
 

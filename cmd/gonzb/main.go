@@ -104,22 +104,9 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 
 var indexerAssembleCmd = &cobra.Command{
 	Use:   "assemble",
-	Short: "Assemble binaries using the split lane executors",
-}
-
-var indexerAssembleLaneACmd = &cobra.Command{
-	Use:   "lane-a",
-	Short: "Run the priority assemble lane that feeds existing incomplete binaries first",
+	Short: "Assemble binaries from queued article headers",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerAssembleLaneA(assembleOnce)
-	},
-}
-
-var indexerAssembleLaneBCmd = &cobra.Command{
-	Use:   "lane-b",
-	Short: "Run the backlog-drain assemble lane for recent unmatched headers",
-	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerAssembleLaneB(assembleOnce)
+		commands.New(cfgFile).ExecuteIndexerAssemble(assembleOnce)
 	},
 }
 
@@ -379,8 +366,7 @@ func init() {
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
 
-	indexerAssembleLaneACmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane A assemble pass and exit instead of continuous mode")
-	indexerAssembleLaneBCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane B assemble pass and exit instead of continuous mode")
+	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
@@ -415,8 +401,6 @@ func init() {
 	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
 
 	indexerCmd.AddCommand(indexerAssembleCmd)
-	indexerAssembleCmd.AddCommand(indexerAssembleLaneACmd)
-	indexerAssembleCmd.AddCommand(indexerAssembleLaneBCmd)
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerReleaseCmd.AddCommand(indexerReleaseRefreshSummariesCmd)

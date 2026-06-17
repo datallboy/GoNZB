@@ -11,8 +11,7 @@ import (
 
 type Service struct {
 	supervisor              *supervisor.Supervisor
-	assembleLaneA           func(ctx context.Context) error
-	assembleLaneB           func(ctx context.Context) error
+	assemble                func(ctx context.Context) error
 	recoverYEnc             func(ctx context.Context) error
 	releaseReform           func(ctx context.Context) error
 	enrichPredbSceneName    func(ctx context.Context) error
@@ -24,8 +23,7 @@ type Service struct {
 
 type Options struct {
 	ReleaseReform           func(ctx context.Context) error
-	AssembleLaneA           func(ctx context.Context) error
-	AssembleLaneB           func(ctx context.Context) error
+	Assemble                func(ctx context.Context) error
 	RecoverYEnc             func(ctx context.Context) error
 	EnrichPredbSceneName    func(ctx context.Context) error
 	EnrichPredbMetadataOnly func(ctx context.Context) error
@@ -41,8 +39,7 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 	}
 	return &Service{
 		supervisor:              supervisorSvc,
-		assembleLaneA:           cfg.AssembleLaneA,
-		assembleLaneB:           cfg.AssembleLaneB,
+		assemble:                cfg.Assemble,
 		recoverYEnc:             cfg.RecoverYEnc,
 		releaseReform:           cfg.ReleaseReform,
 		enrichPredbSceneName:    cfg.EnrichPredbSceneName,
@@ -91,8 +88,7 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
 		supervisor.StageScrapeLatest,
-		supervisor.StageAssembleLaneA,
-		supervisor.StageAssembleLaneB,
+		supervisor.StageAssemble,
 		supervisor.StageReleaseSummaryRefresh,
 		supervisor.StageRelease,
 		supervisor.StageReleaseGenerateNZB,
@@ -128,18 +124,11 @@ func (s *Service) ReformReleasesOnce(ctx context.Context) error {
 	return s.releaseReform(ctx)
 }
 
-func (s *Service) AssembleLaneAOnce(ctx context.Context) error {
-	if s.assembleLaneA == nil {
-		return fmt.Errorf("assemble lane A service is not configured")
+func (s *Service) AssembleOnce(ctx context.Context) error {
+	if s.assemble == nil {
+		return fmt.Errorf("assemble service is not configured")
 	}
-	return s.assembleLaneA(ctx)
-}
-
-func (s *Service) AssembleLaneBOnce(ctx context.Context) error {
-	if s.assembleLaneB == nil {
-		return fmt.Errorf("assemble lane B service is not configured")
-	}
-	return s.assembleLaneB(ctx)
+	return s.assemble(ctx)
 }
 
 func (s *Service) RecoverYEncOnce(ctx context.Context) error {
