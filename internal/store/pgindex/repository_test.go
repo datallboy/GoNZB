@@ -8007,6 +8007,9 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	found := false
 	for _, candidate := range candidates {
 		if candidate.BinaryID == binaryID {
+			if candidate.ProviderID != 1 {
+				t.Fatalf("expected inspect_par2 provider_id=1, got %+v", candidate)
+			}
 			found = true
 			break
 		}
