@@ -257,6 +257,25 @@ func TestRunOnceSkipsYEncRecoveryWhenStructuredIdentityAlreadyMatchesExistingBin
 	}
 }
 
+func TestCanonicalizeRecoveredYEncMatchUsesRecoveredFileKey(t *testing.T) {
+	got := canonicalizeRecoveredYEncMatch(match.Result{
+		SourceReleaseKey: "random subject context release 3372000000",
+		ReleaseFamilyKey: "BFVOHwfmP29vSW4Zi",
+		FileSetKey:       "BFVOHwfmP29vSW4Zi",
+		ReleaseKey:       "random subject context release 3372000000",
+		BinaryKey:        "random subject context release 3372000000::BFVOHwfmP29vSW4Zi part080 rar",
+		BinaryName:       "BFVOHwfmP29vSW4Zi.part080.rar",
+		FileName:         "BFVOHwfmP29vSW4Zi.part080.rar",
+	})
+
+	if got.BinaryKey != "bfvohwfmp29vsw4zi::bfvohwfmp29vsw4zi part080 rar" {
+		t.Fatalf("expected recovered file binary key, got %q", got.BinaryKey)
+	}
+	if got.SourceReleaseKey != "BFVOHwfmP29vSW4Zi" {
+		t.Fatalf("expected recovered file-set source key, got %q", got.SourceReleaseKey)
+	}
+}
+
 func TestRunOnceSkipsYEncRecoveryWhenSubjectAlreadyExposesFileName(t *testing.T) {
 	postedAt := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	repo := &fakeRepository{

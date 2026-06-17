@@ -801,20 +801,50 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	if in == nil {
 		return
 	}
-	in.SourceReleaseKey = strings.TrimSpace(in.SourceReleaseKey)
-	in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
-	in.FileFamilyKey = strings.TrimSpace(in.FileFamilyKey)
+	in.SourceReleaseKey = normalizeBinaryIdentityKey(in.SourceReleaseKey)
+	in.ReleaseFamilyKey = normalizeBinaryIdentityKey(firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey))
+	in.FileSetKey = normalizeBinaryIdentityKey(in.FileSetKey)
+	in.FileFamilyKey = normalizeBinaryIdentityKey(in.FileFamilyKey)
+	in.SubjectSetToken = normalizeBinaryIdentityKey(in.SubjectSetToken)
 	in.FamilyKind = strings.TrimSpace(in.FamilyKind)
-	in.BaseStem = strings.TrimSpace(in.BaseStem)
-	in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)
+	in.BaseStem = normalizeBinaryIdentityKey(in.BaseStem)
+	in.ReleaseKey = normalizeBinaryIdentityKey(firstNonBlank(in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey))
 	in.ReleaseName = strings.TrimSpace(in.ReleaseName)
 	in.BinaryKey = strings.TrimSpace(in.BinaryKey)
 	in.BinaryName = strings.TrimSpace(in.BinaryName)
 	in.FileName = strings.TrimSpace(in.FileName)
+	if recoveredKey := recoveredYEncBinaryKey(in); recoveredKey != "" {
+		in.BinaryKey = recoveredKey
+		if in.FileSetKey != "" {
+			in.SourceReleaseKey = in.FileSetKey
+			in.ReleaseFamilyKey = firstNonBlank(in.ReleaseFamilyKey, in.FileSetKey)
+			in.ReleaseKey = firstNonBlank(in.ReleaseFamilyKey, in.FileSetKey)
+		}
+	} else {
+		in.BinaryKey = normalizeBinaryIdentityKey(in.BinaryKey)
+	}
+	if in.FileFamilyKey == "" {
+		in.FileFamilyKey = normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey) + "::" + in.FileName)
+	}
 	in.MatchStatus = firstNonBlank(in.MatchStatus, "probable")
 	if in.GroupingEvidence == nil {
 		in.GroupingEvidence = map[string]any{}
 	}
+}
+
+func recoveredYEncBinaryKey(in *YEncHeaderRecoveryRecord) string {
+	if in == nil {
+		return ""
+	}
+	fileKey := normalizeBinaryIdentityKey(firstNonBlank(in.FileName, in.BinaryName))
+	if fileKey == "" {
+		return ""
+	}
+	familyKey := normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey))
+	if familyKey == "" {
+		return ""
+	}
+	return familyKey + "::" + fileKey
 }
 
 func dedupeYEncRecoverySummaryKeys(in []releaseFamilySummaryKey) []releaseFamilySummaryKey {
