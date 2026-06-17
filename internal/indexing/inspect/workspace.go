@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -14,9 +15,12 @@ import (
 )
 
 const WorkspaceStaleTTL = 6 * time.Hour
+const workspaceFullSweepInterval = 10 * time.Minute
 
 type WorkspaceManager struct {
-	opts Options
+	opts            Options
+	mu              sync.Mutex
+	lastFullCleanup time.Time
 }
 
 type Workspace struct {
@@ -43,6 +47,7 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 		return nil, fmt.Errorf("create inspect workspace root %s: %w", stageDir, err)
 	}
 	_, _ = cleanupStaleWorkspaces(stageDir, WorkspaceStaleTTL)
+	m.cleanupWorkspaceRootIfDue()
 
 	dir := filepath.Join(stageDir, ksuid.New().String())
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -77,6 +82,21 @@ func (m *WorkspaceManager) PrepareBinaryWorkspace(ctx context.Context, stageName
 		ManifestPath:      manifestPath,
 		MaterializedBytes: int64(len(b)),
 	}, nil
+}
+
+func (m *WorkspaceManager) cleanupWorkspaceRootIfDue() {
+	if m == nil {
+		return
+	}
+	now := time.Now()
+	m.mu.Lock()
+	if !m.lastFullCleanup.IsZero() && now.Sub(m.lastFullCleanup) < workspaceFullSweepInterval {
+		m.mu.Unlock()
+		return
+	}
+	m.lastFullCleanup = now
+	m.mu.Unlock()
+	_, _ = cleanupWorkspaceRoot(m.workspaceRoot(), WorkspaceStaleTTL)
 }
 
 func (m *WorkspaceManager) workspaceRoot() string {

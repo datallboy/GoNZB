@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -61,6 +62,13 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		}
 		return metrics, nil
 	}
+	metrics["worker_count"] = s.opts.Concurrency
+
+	if s.opts.Concurrency > 1 && len(candidates) > 1 {
+		processed, err := s.inspectCandidatesConcurrently(ctx, candidates)
+		metrics["processed_count"] = processed
+		return metrics, err
+	}
 
 	processed := 0
 	for _, candidate := range candidates {
@@ -76,6 +84,72 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	metrics["processed_count"] = processed
 	return metrics, nil
+}
+
+func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	workerCount := s.opts.Concurrency
+	if workerCount > len(candidates) {
+		workerCount = len(candidates)
+	}
+	jobs := make(chan pgindex.BinaryInspectionCandidate)
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	processed := 0
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if err := ctx.Err(); err != nil {
+					return
+				}
+				if err := s.inspectCandidate(ctx, candidate); err != nil {
+					select {
+					case errs <- err:
+						cancel()
+					default:
+					}
+					return
+				}
+				mu.Lock()
+				processed++
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, candidate := range candidates {
+		select {
+		case <-ctx.Done():
+			break
+		case jobs <- candidate:
+			continue
+		}
+		break
+	}
+	close(jobs)
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		mu.Lock()
+		defer mu.Unlock()
+		return processed, err
+	default:
+	}
+	if err := ctx.Err(); err != nil && err != context.Canceled {
+		mu.Lock()
+		defer mu.Unlock()
+		return processed, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return processed, nil
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {

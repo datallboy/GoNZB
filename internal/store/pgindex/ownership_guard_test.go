@@ -71,7 +71,7 @@ func TestLegacyBinaryAnchorIsNotUsedByProductionStoreCode(t *testing.T) {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		if pattern.Match(content) {
-			t.Fatalf("%s accesses legacy binaries; use binary_core and stage-owned v2 projections instead", name)
+			t.Fatalf("%s accesses retired binaries compatibility rows; use binary_core and stage-owned v2 projections instead", name)
 		}
 	}
 }
@@ -93,7 +93,7 @@ func TestLegacyBinaryWritesAreRemovedFromProductionStoreCode(t *testing.T) {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		if pattern.Match(content) {
-			t.Fatalf("%s writes legacy binaries; split the write into stage-owned v2 tables first", name)
+			t.Fatalf("%s writes retired binaries compatibility rows; split the write into stage-owned v2 tables first", name)
 		}
 	}
 }
