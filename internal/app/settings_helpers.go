@@ -601,8 +601,6 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 		return false
 	}
 	return len(in.Servers) > 0 ||
-		len(in.DownloaderServers) > 0 ||
-		len(in.IndexerServers) > 0 ||
 		len(in.Indexers) > 0 ||
 		len(in.ArrIntegrations) > 0 ||
 		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled) ||
@@ -624,18 +622,12 @@ func DownloaderNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
 	if in == nil {
 		return nil
 	}
-	if len(in.DownloaderServers) > 0 {
-		return in.DownloaderServers
-	}
 	return in.Servers
 }
 
 func IndexerNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
 	if in == nil {
 		return nil
-	}
-	if len(in.IndexerServers) > 0 {
-		return in.IndexerServers
 	}
 	return in.Servers
 }
@@ -644,13 +636,7 @@ func RuntimeServersForCompatibility(in *RuntimeSettings) []ServerRuntimeSettings
 	if in == nil {
 		return nil
 	}
-	if len(in.Servers) > 0 {
-		return in.Servers
-	}
-	if len(in.DownloaderServers) > 0 {
-		return in.DownloaderServers
-	}
-	return in.IndexerServers
+	return in.Servers
 }
 
 func ToConfigServers(servers []ServerRuntimeSettings) []config.ServerConfig {

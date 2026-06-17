@@ -21,7 +21,7 @@ func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutServer(t *testi
 
 func TestValidateRuntimeSettingsAllowsEnabledIndexerStageWithoutNewsgroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
-	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
 	runtime.Indexing.ScrapeLatest.Enabled = true
 
 	err := ValidateRuntimeSettings(&config.Config{}, runtime)

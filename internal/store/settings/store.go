@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -18,7 +17,7 @@ const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
 )
-const expectedSchemaVersion = 7
+const expectedSchemaVersion = 8
 
 type Store struct {
 	db *sql.DB
@@ -341,13 +340,7 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 			return nil, false, err
 		}
 		switch scope {
-		case "downloader":
-			item.ID = strings.TrimPrefix(item.ID, "downloader:")
-			out.DownloaderServers = append(out.DownloaderServers, item)
-		case "indexer":
-			item.ID = strings.TrimPrefix(item.ID, "indexer:")
-			out.IndexerServers = append(out.IndexerServers, item)
-		default:
+		case "", "shared":
 			out.Servers = append(out.Servers, item)
 		}
 	}
@@ -484,12 +477,9 @@ func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, runtime *RuntimeSe
 		return err
 	}
 
-	writeScoped := func(scope string, servers []ServerRuntimeSettings) error {
+	writeServers := func(servers []ServerRuntimeSettings) error {
 		for _, item := range servers {
 			id := item.ID
-			if scope != "shared" && id != "" {
-				id = scope + ":" + id
-			}
 			// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO settings_nntp_servers (
@@ -510,7 +500,7 @@ func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, runtime *RuntimeSe
 				item.PoolIdleTimeoutSeconds,
 				item.PoolMaxAgeSeconds,
 				item.EnablePoolLogging,
-				scope,
+				"shared",
 			); err != nil {
 				return err
 			}
@@ -521,13 +511,7 @@ func (s *Store) writeServers(ctx context.Context, tx *sql.Tx, runtime *RuntimeSe
 	if runtime == nil {
 		return nil
 	}
-	if err := writeScoped("shared", runtime.Servers); err != nil {
-		return err
-	}
-	if err := writeScoped("downloader", runtime.DownloaderServers); err != nil {
-		return err
-	}
-	if err := writeScoped("indexer", runtime.IndexerServers); err != nil {
+	if err := writeServers(runtime.Servers); err != nil {
 		return err
 	}
 
