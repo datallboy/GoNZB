@@ -45,9 +45,14 @@ type provider interface {
 	XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error)
 }
 
+type providerAwareXOver interface {
+	XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error)
+}
+
 type GroupStats struct {
-	Low  int64
-	High int64
+	Low        int64
+	High       int64
+	ProviderID string
 }
 
 type OverviewHeader struct {
@@ -348,6 +353,10 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	if err != nil {
 		return groupRunResult{}, fmt.Errorf("group stats %s: %w", group, err)
 	}
+	providerID, err = s.effectiveProviderID(ctx, providerID, stats.ProviderID)
+	if err != nil {
+		return groupRunResult{}, err
+	}
 	if stats.High <= 0 {
 		s.log.Warn("scrape latest: group %s has no articles yet", group)
 		return groupRunResult{}, nil
@@ -378,10 +387,11 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 		to = stats.High
 	}
 
-	headers, inserted, _, _, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil)
+	headers, inserted, _, _, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
 	if err != nil {
 		return groupRunResult{}, err
 	}
+	providerID = actualProviderID
 
 	if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
 		return groupRunResult{}, fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
@@ -407,6 +417,10 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	stats, err := s.provider.GroupStats(ctx, group)
 	if err != nil {
 		return groupRunResult{}, fmt.Errorf("group stats %s: %w", group, err)
+	}
+	providerID, err = s.effectiveProviderID(ctx, providerID, stats.ProviderID)
+	if err != nil {
+		return groupRunResult{}, err
 	}
 	if stats.High <= 0 {
 		s.log.Warn("scrape backfill: group %s has no articles yet", group)
@@ -487,10 +501,11 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		c := cutoffDate.UTC()
 		cutoff = &c
 	}
-	headers, inserted, oldestSeen, cutoffFiltered, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff)
+	headers, inserted, oldestSeen, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff, stats.ProviderID)
 	if err != nil {
 		return groupRunResult{}, err
 	}
+	providerID = actualProviderID
 
 	if hasCutoff {
 		if oldestSeen != nil && !oldestSeen.After(cutoffDate.UTC()) {
@@ -528,10 +543,26 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}, nil
 }
 
-func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time) ([]pgindex.ArticleHeader, int64, *time.Time, int, error) {
-	rows, err := s.provider.XOver(ctx, group, from, to)
+func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int64, error) {
+	var (
+		rows      []OverviewHeader
+		actualKey string
+		err       error
+	)
+	if aware, ok := s.provider.(providerAwareXOver); ok {
+		rows, actualKey, err = aware.XOverWithProvider(ctx, group, from, to)
+	} else {
+		rows, err = s.provider.XOver(ctx, group, from, to)
+		actualKey = s.provider.ID()
+	}
 	if err != nil {
-		return nil, 0, nil, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
+		return nil, 0, nil, 0, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
+	}
+	if strings.TrimSpace(actualKey) != "" && strings.TrimSpace(expectedProviderKey) != "" && !strings.EqualFold(actualKey, expectedProviderKey) {
+		providerID, err = s.effectiveProviderID(ctx, providerID, actualKey)
+		if err != nil {
+			return nil, 0, nil, 0, 0, err
+		}
 	}
 
 	headers := make([]pgindex.ArticleHeader, 0, len(rows))
@@ -581,10 +612,22 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 
 	inserted, err := s.repo.InsertArticleHeaders(ctx, providerID, newsgroupID, headers)
 	if err != nil {
-		return nil, 0, oldestSeen, cutoffFiltered, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
+		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
 	}
 
-	return headers, inserted, oldestSeen, cutoffFiltered, nil
+	return headers, inserted, oldestSeen, cutoffFiltered, providerID, nil
+}
+
+func (s *Service) effectiveProviderID(ctx context.Context, fallbackID int64, providerKey string) (int64, error) {
+	providerKey = strings.TrimSpace(providerKey)
+	if providerKey == "" || strings.EqualFold(providerKey, strings.TrimSpace(s.provider.ID())) {
+		return fallbackID, nil
+	}
+	providerID, err := s.repo.EnsureProvider(ctx, providerKey, providerKey)
+	if err != nil {
+		return 0, fmt.Errorf("ensure provider %s: %w", providerKey, err)
+	}
+	return providerID, nil
 }
 
 func (s *Service) effectiveGroups() []string {
