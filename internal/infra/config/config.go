@@ -75,7 +75,6 @@ type StoreConfig struct {
 	PGMaintenanceDSN string `mapstructure:"pg_maintenance_dsn" yaml:"pg_maintenance_dsn"`
 }
 type APIConfig struct {
-	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
 }
 
@@ -310,7 +309,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.public_min_match_confidence", 0.55)
 	v.SetDefault("indexing.release.public_min_completion_pct", 100.0)
 	v.SetDefault("indexing.release.public_min_identity_status", "probable")
-	v.SetDefault("indexing.release.public_require_inspection", false)
+	v.SetDefault("indexing.release.public_require_inspection", true)
 	v.SetDefault("indexing.release.public_require_enrichment", false)
 	v.SetDefault("indexing.release.public_require_payload_complete", true)
 	v.SetDefault("indexing.release.public_require_expected_file_count_complete", false)

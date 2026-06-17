@@ -37,9 +37,10 @@ export const runTriggerOptions = [
 
 export const permissionGroups = [
   {
-    label: 'Indexer catalog',
+    label: 'Catalog access',
     permissions: [
       'indexer.releases.read',
+      'aggregator.releases.read',
       'indexer.releases.override',
       'indexer.releases.hide',
       'indexer.releases.purge',

@@ -13,6 +13,7 @@ const (
 	PermissionIndexerRuntimeConfigure    = "indexer.runtime.configure"
 	PermissionAdminSettingsRead          = "admin.settings.read"
 	PermissionAdminSettingsWrite         = "admin.settings.write"
+	PermissionAggregatorReleasesRead     = "aggregator.releases.read"
 	PermissionAggregatorRuntimeRead      = "aggregator.runtime.read"
 	PermissionAggregatorRuntimeConfigure = "aggregator.runtime.configure"
 	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
@@ -58,15 +59,11 @@ type Principal struct {
 	UserID      string
 	Username    string
 	Permissions map[string]struct{}
-	ByAPIKey    bool
 }
 
 func (p *Principal) Has(permission string) bool {
 	if p == nil {
 		return false
-	}
-	if p.ByAPIKey {
-		return true
 	}
 	_, ok := p.Permissions[permission]
 	return ok
@@ -80,6 +77,7 @@ func DefaultRoles() []Role {
 			Builtin: true,
 			Permissions: []string{
 				PermissionIndexerReleasesRead,
+				PermissionAggregatorReleasesRead,
 			},
 		},
 		{
@@ -92,6 +90,7 @@ func DefaultRoles() []Role {
 				PermissionIndexerRuntimeRun,
 				PermissionIndexerRuntimePause,
 				PermissionAdminSettingsRead,
+				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
 				PermissionDownloaderRuntimeRead,
 			},
@@ -111,6 +110,7 @@ func DefaultRoles() []Role {
 				PermissionIndexerRuntimeConfigure,
 				PermissionAdminSettingsRead,
 				PermissionAdminSettingsWrite,
+				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
 				PermissionAggregatorRuntimeConfigure,
 				PermissionDownloaderRuntimeRead,
