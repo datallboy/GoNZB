@@ -47,6 +47,7 @@ type usenetIndexerConfig struct {
 	Newsgroups                                      []string
 	BackfillUntilDateByGroup                        map[string]time.Time
 	ScrapeServer                                    *config.ServerConfig
+	ScrapeServers                                   []config.ServerConfig
 	ReleaseMinConfidence                            float64
 	ReleaseMinCompletion                            float64
 	ReleaseMinExpectedFileCoveragePct               float64
@@ -596,11 +597,14 @@ func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
 }
 
 func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*nntp.Manager, bool, error) {
-	if runtimeCfg.ScrapeServer == nil {
+	if len(runtimeCfg.ScrapeServers) == 0 && runtimeCfg.ScrapeServer == nil {
 		return nil, false, fmt.Errorf("usenet indexer scrape runtime requires at least one NNTP server")
 	}
 	managerConfig := *appCtx.Config
-	managerConfig.Servers = []config.ServerConfig{*runtimeCfg.ScrapeServer}
+	managerConfig.Servers = append([]config.ServerConfig(nil), runtimeCfg.ScrapeServers...)
+	if len(managerConfig.Servers) == 0 {
+		managerConfig.Servers = []config.ServerConfig{*runtimeCfg.ScrapeServer}
+	}
 	managerCtx := *appCtx
 	managerCtx.Config = &managerConfig
 	manager, err := nntp.NewManagerWithOptions(&managerCtx, managerOptionsFromRuntime(indexerRuntimeSettings(appCtx), nntp.CapacityWaitQueue))
@@ -775,6 +779,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 	if len(cfg.Servers) > 0 {
 		server := cfg.Servers[0]
 		out.ScrapeServer = &server
+		out.ScrapeServers = append([]config.ServerConfig(nil), cfg.Servers...)
 	}
 
 	return out, nil

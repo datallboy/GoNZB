@@ -238,6 +238,32 @@ func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
 	}
 }
 
+func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{ID: "easynews", Host: "easy.example.com", Port: 563, MaxConnection: 20},
+			{ID: "newshosting", Host: "newshosting.example.com", Port: 563, MaxConnection: 30, Priority: 1},
+		},
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+	}
+
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("deriveUsenetIndexerConfig: %v", err)
+	}
+	if got.ScrapeServer == nil || got.ScrapeServer.ID != "easynews" {
+		t.Fatalf("expected first server retained as compatibility scrape server, got %+v", got.ScrapeServer)
+	}
+	if len(got.ScrapeServers) != 2 {
+		t.Fatalf("expected all indexer servers to be preserved, got %+v", got.ScrapeServers)
+	}
+	if got.ScrapeServers[1].ID != "newshosting" {
+		t.Fatalf("expected newshosting as second scrape server, got %+v", got.ScrapeServers)
+	}
+}
+
 func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},

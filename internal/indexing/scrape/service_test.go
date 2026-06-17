@@ -91,6 +91,56 @@ func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) 
 	}
 }
 
+func TestRunLatestUsesProviderThatServedGroupStatsForCheckpointsAndInsert(t *testing.T) {
+	repo := &fakeScrapeRepo{providerIDsByKey: map[string]int64{"fake": 1, "newshosting": 2}}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 10, ProviderID: "newshosting"},
+		headers: []OverviewHeader{
+			{ArticleNumber: 10, MessageID: "<ten>"},
+		},
+		xoverProviderID: "newshosting",
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  1,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertProviderIDs) != 1 || repo.insertProviderIDs[0] != 2 {
+		t.Fatalf("expected insert under provider 2, got %#v", repo.insertProviderIDs)
+	}
+	if len(repo.latestProviderIDs) != 1 || repo.latestProviderIDs[0] != 2 {
+		t.Fatalf("expected checkpoint under provider 2, got %#v", repo.latestProviderIDs)
+	}
+}
+
+func TestRunLatestUsesProviderThatServedXOverWhenItDiffersFromStats(t *testing.T) {
+	repo := &fakeScrapeRepo{providerIDsByKey: map[string]int64{"fake": 1, "easynews": 2, "newshosting": 3}}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 10, ProviderID: "easynews"},
+		headers: []OverviewHeader{
+			{ArticleNumber: 10, MessageID: "<ten>"},
+		},
+		xoverProviderID: "newshosting",
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  1,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertProviderIDs) != 1 || repo.insertProviderIDs[0] != 3 {
+		t.Fatalf("expected insert under xover provider 3, got %#v", repo.insertProviderIDs)
+	}
+	if len(repo.latestProviderIDs) != 1 || repo.latestProviderIDs[0] != 3 {
+		t.Fatalf("expected checkpoint under xover provider 3, got %#v", repo.latestProviderIDs)
+	}
+}
+
 func TestRunLatestOnceFailsWhenCriticalIndexIntegrityFails(t *testing.T) {
 	svc := NewService(&fakeScrapeRepo{
 		integrityReport: &pgindex.IndexerIntegrityReport{
@@ -370,13 +420,24 @@ type fakeScrapeRepo struct {
 	latestCheckpointValue     int64
 	groupCutoffReached        bool
 	nextNewsgroupID           int64
+	providerIDsByKey          map[string]int64
+	insertProviderIDs         []int64
+	latestProviderIDs         []int64
 	groupNamesByID            map[int64]string
 	latestCheckpointByGroup   map[string]int64
 	backfillCheckpointByGroup map[string]int64
 }
 
-func (f *fakeScrapeRepo) EnsureProvider(context.Context, string, string) (int64, error) {
-	return 1, nil
+func (f *fakeScrapeRepo) EnsureProvider(_ context.Context, providerKey, _ string) (int64, error) {
+	if f.providerIDsByKey == nil {
+		f.providerIDsByKey = map[string]int64{"fake": 1}
+	}
+	if id := f.providerIDsByKey[providerKey]; id > 0 {
+		return id, nil
+	}
+	id := int64(len(f.providerIDsByKey) + 1)
+	f.providerIDsByKey[providerKey] = id
+	return id, nil
 }
 
 func (f *fakeScrapeRepo) CheckCriticalIndexerIntegrity(context.Context, bool) (*pgindex.IndexerIntegrityReport, error) {
@@ -416,9 +477,10 @@ func (f *fakeScrapeRepo) GetLatestCheckpoint(_ context.Context, _ int64, newsgro
 	return f.latestCheckpointByGroup[f.groupName(newsgroupID)], nil
 }
 
-func (f *fakeScrapeRepo) UpsertLatestCheckpoint(_ context.Context, _ int64, newsgroupID int64, lastArticleNumber int64) error {
+func (f *fakeScrapeRepo) UpsertLatestCheckpoint(_ context.Context, providerID int64, newsgroupID int64, lastArticleNumber int64) error {
 	f.latestCheckpointUpdated = true
 	f.latestCheckpointValue = lastArticleNumber
+	f.latestProviderIDs = append(f.latestProviderIDs, providerID)
 	if f.latestCheckpointByGroup == nil {
 		f.latestCheckpointByGroup = map[string]int64{}
 	}
@@ -455,7 +517,8 @@ func (f *fakeScrapeRepo) SetBackfillCheckpointState(_ context.Context, _ int64, 
 	return nil
 }
 
-func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, _ int64, _ int64, headers []pgindex.ArticleHeader) (int64, error) {
+func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, providerID int64, _ int64, headers []pgindex.ArticleHeader) (int64, error) {
+	f.insertProviderIDs = append(f.insertProviderIDs, providerID)
 	f.insertedHeaders = append(f.insertedHeaders, headers...)
 	return int64(len(headers)), nil
 }
@@ -468,10 +531,11 @@ func (f *fakeScrapeRepo) groupName(newsgroupID int64) string {
 }
 
 type fakeScrapeProvider struct {
-	stats        GroupStats
-	statsByGroup map[string]GroupStats
-	headers      []OverviewHeader
-	xoverFn      func(context.Context, string, int64, int64) ([]OverviewHeader, error)
+	stats           GroupStats
+	statsByGroup    map[string]GroupStats
+	headers         []OverviewHeader
+	xoverFn         func(context.Context, string, int64, int64) ([]OverviewHeader, error)
+	xoverProviderID string
 }
 
 func (f fakeScrapeProvider) ID() string {
@@ -492,6 +556,15 @@ func (f fakeScrapeProvider) XOver(ctx context.Context, group string, from, to in
 		return f.xoverFn(ctx, group, from, to)
 	}
 	return append([]OverviewHeader(nil), f.headers...), nil
+}
+
+func (f fakeScrapeProvider) XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error) {
+	rows, err := f.XOver(ctx, group, from, to)
+	providerID := f.xoverProviderID
+	if providerID == "" {
+		providerID = f.ID()
+	}
+	return rows, providerID, err
 }
 
 type testScrapeLogger struct{}

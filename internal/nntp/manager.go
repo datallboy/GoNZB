@@ -260,6 +260,13 @@ func (c *ManagerClient) GroupStats(ctx context.Context, group string) (GroupStat
 	return c.manager.groupStatsForScope(ctx, c.scope, c.policy, group)
 }
 
+func (c *ManagerClient) GroupStatsWithProvider(ctx context.Context, group string) (GroupStats, string, error) {
+	if c == nil || c.manager == nil {
+		return GroupStats{}, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.groupStatsForScopeWithProvider(ctx, c.scope, c.policy, group)
+}
+
 func (c *ManagerClient) ListGroups(ctx context.Context, pattern string) ([]GroupListing, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
@@ -272,6 +279,13 @@ func (c *ManagerClient) XOver(ctx context.Context, group string, from, to int64)
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
 	return c.manager.xoverForScope(ctx, c.scope, c.policy, group, from, to)
+}
+
+func (c *ManagerClient) XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error) {
+	if c == nil || c.manager == nil {
+		return nil, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.xoverForScopeWithProvider(ctx, c.scope, c.policy, group, from, to)
 }
 
 func (m *Manager) ID() string {
@@ -524,18 +538,23 @@ func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (
 }
 
 func (m *Manager) groupStatsForScope(ctx context.Context, scope string, policy CapacityPolicy, group string) (GroupStats, error) {
+	result, _, err := m.groupStatsForScopeWithProvider(ctx, scope, policy, group)
+	return result, err
+}
+
+func (m *Manager) groupStatsForScopeWithProvider(ctx context.Context, scope string, policy CapacityPolicy, group string) (GroupStats, string, error) {
 	m.stats.groupStats.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.groupStats.Add(1)
 	if err := ctx.Err(); err != nil {
-		return GroupStats{}, err
+		return GroupStats{}, "", err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
-			return GroupStats{}, err
+			return GroupStats{}, "", err
 		}
 		if !acquired {
 			continue
@@ -544,29 +563,29 @@ func (m *Manager) groupStatsForScope(ctx context.Context, scope string, policy C
 		result, err := mp.Provider.GroupStats(ctx, group)
 		m.releaseForScope(scope, mp)
 		if err == nil {
-			return result, nil
+			return result, mp.ID(), nil
 		}
 		lastErr = err
 	}
 
 	if lastErr != nil {
 		m.recordOperationError(scope, lastErr)
-		return GroupStats{}, lastErr
+		return GroupStats{}, "", lastErr
 	}
 	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
-			return GroupStats{}, err
+			return GroupStats{}, "", err
 		}
 		result, err := mp.Provider.GroupStats(ctx, group)
 		m.releaseForScope(scope, mp)
 		if err != nil {
 			m.recordOperationError(scope, err)
 		}
-		return result, err
+		return result, mp.ID(), err
 	}
 	m.stats.busyReturns.Add(1)
-	return GroupStats{}, ErrProviderBusy
+	return GroupStats{}, "", ErrProviderBusy
 }
 
 func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
@@ -578,18 +597,23 @@ func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, 
 }
 
 func (m *Manager) xoverForScope(ctx context.Context, scope string, policy CapacityPolicy, group string, from, to int64) ([]OverviewHeader, error) {
+	result, _, err := m.xoverForScopeWithProvider(ctx, scope, policy, group, from, to)
+	return result, err
+}
+
+func (m *Manager) xoverForScopeWithProvider(ctx context.Context, scope string, policy CapacityPolicy, group string, from, to int64) ([]OverviewHeader, string, error) {
 	m.stats.xover.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.xover.Add(1)
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !acquired {
 			continue
@@ -598,29 +622,29 @@ func (m *Manager) xoverForScope(ctx context.Context, scope string, policy Capaci
 		result, err := mp.Provider.XOver(ctx, group, from, to)
 		m.releaseForScope(scope, mp)
 		if err == nil {
-			return result, nil
+			return result, mp.ID(), nil
 		}
 		lastErr = err
 	}
 
 	if lastErr != nil {
 		m.recordOperationError(scope, lastErr)
-		return nil, lastErr
+		return nil, "", lastErr
 	}
 	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		result, err := mp.Provider.XOver(ctx, group, from, to)
 		m.releaseForScope(scope, mp)
 		if err != nil {
 			m.recordOperationError(scope, err)
 		}
-		return result, err
+		return result, mp.ID(), err
 	}
 	m.stats.busyReturns.Add(1)
-	return nil, ErrProviderBusy
+	return nil, "", ErrProviderBusy
 }
 
 func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider) (bool, error) {
