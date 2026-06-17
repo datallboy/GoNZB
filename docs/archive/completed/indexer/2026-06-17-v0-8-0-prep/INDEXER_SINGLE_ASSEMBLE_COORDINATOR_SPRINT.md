@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-06-17
 
-This is the closeout note for replacing the split `assemble_lane_a` / `assemble_lane_b` runtime model with one canonical `assemble` stage.
+Archived status: completed/historical as of 2026-06-17. This is the closeout note for replacing the split `assemble_lane_a` / `assemble_lane_b` runtime model with one canonical `assemble` stage.
 
 ## Closeout Status
 

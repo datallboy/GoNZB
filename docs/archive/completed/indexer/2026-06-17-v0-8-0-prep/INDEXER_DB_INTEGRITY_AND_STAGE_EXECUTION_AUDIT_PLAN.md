@@ -2,12 +2,12 @@
 
 Snapshot date: 2026-06-17
 
-This is the active execution guide for the database-integrity follow-up, full stage/DBO audit, and stage-execution hardening workstream.
+Archived status: completed/historical as of 2026-06-17. This document records the database-integrity follow-up, full stage/DBO audit, and stage-execution hardening workstream; it is no longer an active execution guide.
 
 Use this doc together with:
 
 - `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` for the living ownership matrix and stage/table interaction rules
-- `docs/active/INDEXER_FOUNDATION_DOCS.md` for current routing of active versus archived docs
+- `docs/README.md` for current documentation routing
 
 ## v0.8.0 Closeout Status
 

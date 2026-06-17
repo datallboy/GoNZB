@@ -21,8 +21,6 @@ If you are trying to understand or run GoNZB, start with:
 
 These are mainly planning, implementation-history, or agent/developer references rather than end-user documentation:
 
-- `docs/active/`
-  - current internal execution and planning docs
 - `docs/archive/completed/indexer/`
   - completed implementation plans and historical decision records
 - `docs/archive/development/indexer/`

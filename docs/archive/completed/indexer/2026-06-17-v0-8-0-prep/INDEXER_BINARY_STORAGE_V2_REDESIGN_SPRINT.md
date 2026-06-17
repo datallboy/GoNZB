@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-06-17
 
-This is the live sprint document for the binary-storage redesign. It replaces the assumption that the current `binaries` table is safe to keep extending.
+Archived status: completed/historical as of 2026-06-17. This was the live sprint document for the binary-storage redesign and now records the completed v0.8 baseline cleanup.
 
 ## v0.8.0 Release Readiness Note
 

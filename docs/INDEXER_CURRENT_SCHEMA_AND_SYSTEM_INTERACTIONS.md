@@ -18,9 +18,9 @@ Related reference docs:
 
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_SCHEMA_AUDIT.md`
 - `docs/archive/completed/indexer/2026-05-14-indexer-database-growth-trim/INDEXER_DATABASE_GROWTH_TRIM_PLAN.md`
-- `docs/active/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
-- `docs/active/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
-- `docs/active/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
+- `docs/archive/completed/indexer/INDEXER_NZB_ARCHIVAL_AND_SOURCE_PURGE_PLAN.md`
+- `docs/archive/completed/indexer/2026-06-17-v0-8-0-prep/INDEXER_DB_INTEGRITY_AND_STAGE_EXECUTION_AUDIT_PLAN.md`
+- `docs/archive/completed/indexer/2026-06-17-v0-8-0-prep/INDEXER_BINARY_STORAGE_V2_REDESIGN_SPRINT.md`
 - `docs/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
 
 ## How To Use This Doc
