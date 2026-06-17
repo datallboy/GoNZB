@@ -2069,28 +2069,26 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 		return nil
 	}
 
-	var values strings.Builder
-	args := make([]any, 0, len(binaryIDs))
+	requestedBinaryIDs := make([]int64, 0, len(binaryIDs))
 	for _, binaryID := range binaryIDs {
-		if values.Len() > 0 {
-			values.WriteByte(',')
+		if binaryID <= 0 {
+			return fmt.Errorf("binary id is required")
 		}
-		fmt.Fprintf(&values, "($%d::bigint)", len(args)+1)
-		args = append(args, binaryID)
+		requestedBinaryIDs = append(requestedBinaryIDs, binaryID)
 	}
 
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	if _, err := tx.ExecContext(ctx, `
 		WITH requested(binary_id) AS (
-			VALUES %s
+			SELECT DISTINCT unnest($1::bigint[])
 		)
 		DELETE FROM binary_completion_keys bck
 		USING requested r
-		WHERE bck.binary_id = r.binary_id`, values.String()), args...); err != nil {
+		WHERE bck.binary_id = r.binary_id`, requestedBinaryIDs); err != nil {
 		return fmt.Errorf("delete binary completion keys: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	if _, err := tx.ExecContext(ctx, `
 		WITH requested(binary_id) AS (
-			VALUES %s
+			SELECT DISTINCT unnest($1::bigint[])
 		)
 		INSERT INTO binary_completion_keys (
 			binary_id,
@@ -2130,7 +2128,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 		    observed_parts = EXCLUDED.observed_parts,
 		    total_parts = EXCLUDED.total_parts,
 		    completion_ratio = EXCLUDED.completion_ratio,
-		    updated_at = NOW()`, values.String()), args...); err != nil {
+		    updated_at = NOW()`, requestedBinaryIDs); err != nil {
 		return fmt.Errorf("upsert binary completion keys: %w", err)
 	}
 	return nil
@@ -2726,22 +2724,17 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		return nil, nil
 	}
 
-	var values strings.Builder
-	args := make([]any, 0, len(binaryIDs))
-	for i, binaryID := range binaryIDs {
+	requestedBinaryIDs := make([]int64, 0, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
 		if binaryID <= 0 {
 			return nil, fmt.Errorf("binary id is required")
 		}
-		if i > 0 {
-			values.WriteByte(',')
-		}
-		values.WriteString(fmt.Sprintf("($%d::bigint)", i+1))
-		args = append(args, binaryID)
+		requestedBinaryIDs = append(requestedBinaryIDs, binaryID)
 	}
 
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := tx.QueryContext(ctx, `
 		WITH requested(binary_id) AS (
-			VALUES %s
+			SELECT DISTINCT unnest($1::bigint[])
 		),
 		locked_binaries AS MATERIALIZED (
 			SELECT bos.binary_id
@@ -2802,7 +2795,7 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			COALESCE(bic.expected_file_count, 0),
 			COALESCE(bic.expected_archive_file_count, 0)
 		FROM updated u
-		JOIN binary_identity_current bic ON bic.binary_id = u.binary_id`, values.String()), args...)
+		JOIN binary_identity_current bic ON bic.binary_id = u.binary_id`, requestedBinaryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
 	}
