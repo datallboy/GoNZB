@@ -1469,41 +1469,47 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		return nil, err
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin binary inspection claim tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "gonzb-inspect-claim-"+req.StageName); err != nil {
-		return nil, fmt.Errorf("lock binary inspection claim %s: %w", req.StageName, err)
-	}
-
-	candidates, err := s.listBinaryInspectionCandidates(ctx, tx, req.StageName, req.Limit, req.Options)
-	if err != nil {
-		return nil, err
-	}
-	if len(candidates) == 0 {
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit empty binary inspection claim tx: %w", err)
+	var candidates []BinaryInspectionCandidate
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin binary inspection claim tx: %w", err)
 		}
-		return candidates, nil
-	}
+		defer tx.Rollback()
 
-	args := make([]any, 0, len(candidates)*4+3)
-	args = append(args, req.StageName, req.Owner, req.LeaseDuration.Seconds())
-	values := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		base := len(args)
-		var sourceUpdated any
-		if candidate.SourceUpdatedAt != nil {
-			sourceUpdated = candidate.SourceUpdatedAt.UTC()
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "gonzb-inspect-claim-"+req.StageName); err != nil {
+			return fmt.Errorf("lock binary inspection claim %s: %w", req.StageName, err)
 		}
-		args = append(args, candidate.BinaryID, strings.TrimSpace(candidate.ReleaseID), sourceUpdated, candidate.BinaryID)
-		values = append(values, fmt.Sprintf("($%d::bigint,$%d::text,$%d::timestamptz,$%d::bigint)", base+1, base+2, base+3, base+4))
-	}
 
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		attemptCandidates, err := s.listBinaryInspectionCandidates(ctx, tx, req.StageName, req.Limit, req.Options)
+		if err != nil {
+			return err
+		}
+		if len(attemptCandidates) == 0 {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit empty binary inspection claim tx: %w", err)
+			}
+			candidates = attemptCandidates
+			return nil
+		}
+		sort.SliceStable(attemptCandidates, func(i, j int) bool {
+			return attemptCandidates[i].BinaryID < attemptCandidates[j].BinaryID
+		})
+
+		args := make([]any, 0, len(attemptCandidates)*4+3)
+		args = append(args, req.StageName, req.Owner, req.LeaseDuration.Seconds())
+		values := make([]string, 0, len(attemptCandidates))
+		for _, candidate := range attemptCandidates {
+			base := len(args)
+			var sourceUpdated any
+			if candidate.SourceUpdatedAt != nil {
+				sourceUpdated = candidate.SourceUpdatedAt.UTC()
+			}
+			args = append(args, candidate.BinaryID, strings.TrimSpace(candidate.ReleaseID), sourceUpdated, candidate.BinaryID)
+			values = append(values, fmt.Sprintf("($%d::bigint,$%d::text,$%d::timestamptz,$%d::bigint)", base+1, base+2, base+3, base+4))
+		}
+
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		WITH requested(binary_id, requested_release_id, source_updated_at, lookup_binary_id) AS (
 			VALUES %s
 		),
@@ -1580,11 +1586,16 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		    inspection_claimed_by = EXCLUDED.inspection_claimed_by,
 		    inspection_claimed_until = EXCLUDED.inspection_claimed_until,
 		    updated_at = NOW()`, strings.Join(values, ",")), args...); err != nil {
-		return nil, fmt.Errorf("claim %d binary inspections for %s: %w", len(candidates), req.StageName, err)
-	}
+			return fmt.Errorf("claim %d binary inspections for %s: %w", len(attemptCandidates), req.StageName, err)
+		}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit binary inspection claim tx: %w", err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit binary inspection claim tx: %w", err)
+		}
+		candidates = attemptCandidates
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return candidates, nil
 }
