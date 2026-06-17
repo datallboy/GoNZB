@@ -30,6 +30,14 @@ Current read-heavy surfaces:
 
 The old ownership exception policy is too broad. Stage write ownership must be enforced by schema and code, not just documentation.
 
+2026-06-16 yEnc recovery grouping regression:
+
+- Live data showed tens of thousands of `binary_recovery_current.recovered_source = 'yenc_header'` rows with recovered filenames, but `release_recovered_file_set_candidates` remained empty.
+- The cause was not release formation itself. Recovered rows were being left as one-part fragment binaries because recovered yEnc identity stored the recovered filename while preserving a per-subject contextual `binary_key`.
+- Since `binary_core` uniqueness and merge lookup are keyed by `(provider_id, newsgroup_id, binary_key)`, repeated recovered filenames could not collapse into one binary per recovered file.
+- `recover_yenc` and assemble inline yEnc recovery now canonicalize recovered binary keys as `file_set_key::recovered_file_name` before writing. This lets duplicate fragment rows merge into the same file-level binary and gives release summary refresh usable completeness signals.
+- Existing databases processed before this fix may contain polluted recovered fragments. A fresh scrape/recovery run is the clean validation path unless a targeted repair pass is added.
+
 ## Target Architecture
 
 The final target is to remove the monolithic hot `binaries` table as the canonical state store. The transition starts with v2 side tables because many current reads and foreign keys still require the existing anchor while the stores are rewritten.

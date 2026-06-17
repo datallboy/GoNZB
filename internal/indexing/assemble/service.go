@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/nntp"
@@ -791,7 +792,57 @@ func (s *Service) rematchFromYEncHeader(ctx context.Context, header pgindex.Asse
 	if rematched.FileName == "" || strings.HasSuffix(strings.ToLower(rematched.FileName), ".bin") {
 		return match.Result{}, recoveryAttemptResult{}, nil
 	}
+	rematched = canonicalizeRecoveredYEncMatch(rematched)
 	return rematched, recoveryAttemptResult{recovered: true}, nil
+}
+
+func canonicalizeRecoveredYEncMatch(in match.Result) match.Result {
+	fileKey := normalizeRecoveredYEncKey(firstNonEmptyString(in.FileName, in.BinaryName))
+	familyKey := normalizeRecoveredYEncKey(firstNonEmptyString(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey))
+	if fileKey == "" || familyKey == "" {
+		return in
+	}
+	in.BinaryKey = familyKey + "::" + fileKey
+	if in.FileSetKey != "" {
+		in.SourceReleaseKey = in.FileSetKey
+		in.ReleaseFamilyKey = firstNonEmptyString(in.ReleaseFamilyKey, in.FileSetKey)
+		in.ReleaseKey = firstNonEmptyString(in.ReleaseFamilyKey, in.FileSetKey)
+	}
+	if strings.TrimSpace(in.FileFamilyKey) == "" {
+		in.FileFamilyKey = normalizeRecoveredYEncKey(familyKey + " " + fileKey)
+	}
+	return in
+}
+
+func normalizeRecoveredYEncKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	lastSpace := true
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func hasSufficientStructuredIdentity(header pgindex.AssemblyCandidate) bool {

@@ -417,8 +417,8 @@ func (s *Supervisor) tryClaimStageGroup(group string, stageName StageName) (func
 
 func exclusiveStageGroup(name StageName) (string, bool) {
 	switch name {
-	case StageAssembleLaneA, StageAssembleLaneB:
-		return "assemble", true
+	case StageAssembleLaneA, StageAssembleLaneB, StageReleasePurgeArchivedSources:
+		return "binary-source-write", true
 	default:
 		return "", false
 	}

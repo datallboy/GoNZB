@@ -939,6 +939,14 @@ These are the baseline methods the audit should start from. The audit may expand
 - `MarkReleaseArchiveFailed`
 - `PurgeArchivedReleaseSources`
 
+2026-06-16 purge/assemble deadlock follow-up:
+
+- A deadlock was observed in `release_purge_archived_sources` while deleting terminal `binary_core` rows for an archived release.
+- The purge eligibility contract was intact: candidates still require `purge_pending`, durable object key, durable catalog files, and completed `inspect_media`.
+- The unsafe overlap was operational. Purge deletes the binary FK root and cascades through binary-owned tables, so it contends with assemble/yEnc binary writers even when the release is logically complete.
+- Supervisor now serializes `release_purge_archived_sources` with assemble lane A/lane B under the `binary-source-write` exclusive group.
+- `PurgeArchivedReleaseSources` now runs inside the retryable PostgreSQL transaction wrapper so SQLSTATE `40P01`/`40001` retries are handled consistently with other hot write paths.
+
 ## Documentation Deliverables
 
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`

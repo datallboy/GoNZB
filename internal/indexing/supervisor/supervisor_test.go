@@ -238,11 +238,12 @@ func TestRunStageOnceSkipsWhenStageGateBlocks(t *testing.T) {
 	}
 }
 
-func TestRunStageOnceSerializesAssembleLanes(t *testing.T) {
+func TestRunStageOnceSerializesBinarySourceWriters(t *testing.T) {
 	startedA := make(chan struct{})
 	releaseA := make(chan struct{})
 	doneA := make(chan error, 1)
 	var ranB bool
+	var ranPurge bool
 
 	svc := New(nil, []Stage{
 		{
@@ -264,6 +265,15 @@ func TestRunStageOnceSerializesAssembleLanes(t *testing.T) {
 				return nil
 			}),
 		},
+		{
+			Name:     StageReleasePurgeArchivedSources,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				ranPurge = true
+				return nil
+			}),
+		},
 	})
 
 	go func() {
@@ -280,7 +290,14 @@ func TestRunStageOnceSerializesAssembleLanes(t *testing.T) {
 		t.Fatalf("run lane B while lane A active: %v", err)
 	}
 	if ranB {
-		t.Fatal("lane B runner should not execute while lane A holds the assemble write lane")
+		t.Fatal("lane B runner should not execute while lane A holds the binary source write lane")
+	}
+
+	if err := svc.RunStageOnce(context.Background(), StageReleasePurgeArchivedSources); err != nil {
+		t.Fatalf("run purge while lane A active: %v", err)
+	}
+	if ranPurge {
+		t.Fatal("purge runner should not execute while lane A holds the binary source write lane")
 	}
 
 	close(releaseA)
