@@ -465,70 +465,73 @@ export function AdminReleaseDetailPage() {
             <p className="muted-copy">Catalog view of the release payload. Expand a file to review its article segments.</p>
           </div>
         </div>
-        {releaseFileRows.map(({ summary, detail }) => (
-          <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`}>
-            <summary>
-              {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
-            </summary>
-            <div className="stack">
-              <div className="muted-row">
-                <span>Index {summary.file_index}</span>
-                <span>
-                  Parts {summary.observed_parts} / {summary.total_parts}
-                </span>
-                <span>Articles {summary.article_count}</span>
-                <span>Posted {formatDateTime(summary.posted_at)}</span>
+        {releaseFileRows.map(({ summary, detail }) => {
+          const groups = detail?.newsgroups?.length ? detail.newsgroups : data.release.newsgroups
+          return (
+            <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`}>
+              <summary>
+                {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
+              </summary>
+              <div className="stack">
+                <div className="muted-row">
+                  <span>Index {summary.file_index}</span>
+                  <span>
+                    Parts {summary.observed_parts} / {summary.total_parts}
+                  </span>
+                  <span>Articles {summary.article_count}</span>
+                  <span>Posted {formatDateTime(summary.posted_at)}</span>
+                </div>
+                <div className="muted-row">
+                  <span>Binary {summary.binary_id || detail?.binary_id || 'not linked'}</span>
+                  <span>{summary.match_status || 'unmatched'}</span>
+                  <span>{summary.poster || detail?.poster || 'Unknown poster'}</span>
+                  <span>{groups.join(', ') || 'No groups recorded'}</span>
+                </div>
+                {summary.binary_id <= 0 ? (
+                  <div className="banner">
+                    Catalog-only file. The source binary link is not currently available, so article segments and binary inspection details may be unavailable.
+                  </div>
+                ) : null}
+                {summary.file_name.toLowerCase().endsWith('.nzb') ? (
+                  <div className="banner">
+                    Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
+                  </div>
+                ) : null}
+                {detail ? (
+                  <details className="detail-block detail-block--nested">
+                    <summary>Article Segments ({detail.articles.length})</summary>
+                    <div className="table-shell">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Part</th>
+                            <th>Message ID</th>
+                            <th>Bytes</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.articles.map((article) => (
+                            <tr key={`${detail.file_id}-${article.message_id}-${article.part_number}`}>
+                              <td>{article.part_number}</td>
+                              <td className="mono-cell">{article.message_id}</td>
+                              <td>{formatBytes(article.bytes)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                ) : null}
+                {detail ? (
+                  <details className="detail-block detail-block--nested">
+                    <summary>Grouping Evidence</summary>
+                    <pre className="json-block">{stringifyJSON(detail.grouping_evidence_json)}</pre>
+                  </details>
+                ) : null}
               </div>
-              <div className="muted-row">
-                <span>Binary {summary.binary_id || detail?.binary_id || 'not linked'}</span>
-                <span>{summary.match_status || 'unmatched'}</span>
-                <span>{summary.poster || detail?.poster || 'Unknown poster'}</span>
-                <span>{detail?.newsgroups.join(', ') || 'No groups recorded'}</span>
-              </div>
-              {summary.binary_id <= 0 ? (
-                <div className="banner">
-                  Catalog-only file. The source binary link is not currently available, so article segments and binary inspection details may be unavailable.
-                </div>
-              ) : null}
-              {summary.file_name.toLowerCase().endsWith('.nzb') ? (
-                <div className="banner">
-                  Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
-                </div>
-              ) : null}
-              {detail ? (
-                <details className="detail-block detail-block--nested">
-                  <summary>Article Segments ({detail.articles.length})</summary>
-                <div className="table-shell">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Part</th>
-                        <th>Message ID</th>
-                        <th>Bytes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                        {detail.articles.map((article) => (
-                          <tr key={`${detail.file_id}-${article.message_id}-${article.part_number}`}>
-                          <td>{article.part_number}</td>
-                          <td className="mono-cell">{article.message_id}</td>
-                          <td>{formatBytes(article.bytes)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                </details>
-              ) : null}
-              {detail ? (
-                <details className="detail-block detail-block--nested">
-                  <summary>Grouping Evidence</summary>
-                  <pre className="json-block">{stringifyJSON(detail.grouping_evidence_json)}</pre>
-                </details>
-              ) : null}
-            </div>
-          </details>
-        ))}
+            </details>
+          )
+        })}
       </div>
 
       {hasBinaryDetail ? (

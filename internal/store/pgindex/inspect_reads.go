@@ -1818,8 +1818,8 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			cf.file_index,
 			cf.is_pars,
 			cf.subject,
-			cf.poster,
-			cf.posted_at,
+			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
+			COALESCE(cf.posted_at, raw_meta.posted_at),
 			cf.article_count,
 			cf.total_parts,
 			cf.observed_parts,
@@ -1829,6 +1829,20 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		LEFT JOIN release_files rf
 		  ON rf.release_id = cf.release_id
 		 AND rf.file_name = cf.file_name
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah ON ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters p ON p.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE bp.binary_id = rf.binary_id
+			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
@@ -1949,8 +1963,8 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.file_name,
 			b.provider_id,
 			b.newsgroup_id,
-			COALESCE(p.poster_name, ''),
-			b.posted_at,
+			COALESCE(NULLIF(p.poster_name, ''), raw_meta.poster, ''),
+			COALESCE(b.posted_at, raw_meta.posted_at),
 			b.file_index,
 			b.expected_file_count,
 			b.total_parts,
@@ -1983,6 +1997,20 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah ON ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters pp ON pp.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE bp.binary_id = b.id
+			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE b.id = $1`, binaryID)
 
 	var item IndexerBinaryDetail
@@ -2098,8 +2126,8 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			cf.file_index,
 			cf.is_pars,
 			cf.subject,
-			cf.poster,
-			cf.posted_at,
+			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
+			COALESCE(cf.posted_at, raw_meta.posted_at),
 			COALESCE(b.total_parts, cf.total_parts, 0),
 			COALESCE(b.observed_parts, cf.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
@@ -2129,6 +2157,20 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 		 AND rf.file_name = cf.file_name
 		LEFT JOIN binary_detail_state b ON b.id = rf.binary_id
 		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah ON ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters p ON p.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE bp.binary_id = rf.binary_id
+			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE cf.id = $1`, fileID)
 
 	var item IndexerFileDetail
@@ -2168,6 +2210,12 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 	newsgroups, err := s.ListCatalogReleaseNewsgroups(ctx, item.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if len(newsgroups) == 0 && item.BinaryID > 0 {
+		newsgroups, err = s.ListCatalogBinaryNewsgroups(ctx, item.BinaryID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	item.Newsgroups = newsgroups
 
