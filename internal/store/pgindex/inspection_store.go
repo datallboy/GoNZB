@@ -3006,6 +3006,9 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 	if requireExpectedFileCount {
 		expectedFileCountGate = "(r.expected_file_count <= 0 OR r.file_count >= r.expected_file_count)"
 	}
+	payloadCompleteGate := `b.total_parts > 0 AND
+		b.observed_parts >= b.total_parts AND
+		(b.is_main_payload = TRUE OR b.is_auxiliary = FALSE)`
 	switch stageName {
 	case "inspect_discovery":
 		return `r.completion_pct >= 100 AND
@@ -3024,8 +3027,7 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 	case "inspect_nfo":
 		return "LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.nfo'", nil
 	case "inspect_archive":
-		return `r.completion_pct >= 100 AND
-		` + expectedFileCountGate + ` AND
+		return payloadCompleteGate + ` AND
 		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
@@ -3054,8 +3056,7 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
 		)`, nil
 	case "inspect_media":
-		return `r.completion_pct >= 100 AND
-		` + expectedFileCountGate + ` AND
+		return payloadCompleteGate + ` AND
 		(
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mkv' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.mp4' OR
