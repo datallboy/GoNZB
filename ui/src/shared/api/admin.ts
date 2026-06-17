@@ -8,6 +8,9 @@ import type {
   AdminReleaseDetailResponse,
   AdminReleaseListResponse,
   AdminReleaseListParams,
+  AdminMaintenanceTaskPatch,
+  AdminMaintenanceTaskRun,
+  AdminMaintenanceTasksResponse,
   AdminRunDetailResponse,
   AdminRunListParams,
   AdminRunsResponse,
@@ -123,6 +126,23 @@ export function patchAdminStage(stageName: string, patch: AdminStageConfigPatch)
 
 export function runStageAction(stageName: string, action: 'run' | 'pause' | 'resume') {
   return apiRequest(`/api/v1/admin/indexer/stages/${stageName}/actions/${action}`, { method: 'POST' })
+}
+
+export async function getAdminMaintenanceTasks() {
+  const response = await apiRequest<AdminMaintenanceTasksResponse>('/api/v1/admin/indexer/maintenance/tasks')
+  return response.items
+}
+
+export function dryRunAdminMaintenanceTask(taskKey: string) {
+  return apiRequest<AdminMaintenanceTaskRun>(`/api/v1/admin/indexer/maintenance/tasks/${taskKey}/dry-run`, { method: 'POST' })
+}
+
+export function runAdminMaintenanceTask(taskKey: string) {
+  return apiRequest<AdminMaintenanceTaskRun>(`/api/v1/admin/indexer/maintenance/tasks/${taskKey}/run`, { method: 'POST' })
+}
+
+export function patchAdminMaintenanceTask(taskKey: string, patch: AdminMaintenanceTaskPatch) {
+  return apiRequest(`/api/v1/admin/indexer/maintenance/tasks/${taskKey}`, { method: 'PATCH', body: patch })
 }
 
 export function getAdminRuns(params: AdminRunListParams) {

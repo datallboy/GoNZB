@@ -450,6 +450,24 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		downloaderConfigured(current) {
 		return fmt.Errorf("removing ARR integrations while downloader runtime is configured requires a restart")
 	}
+	if err := validateIndexerMaintenanceTasks(next); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateIndexerMaintenanceTasks(next *app.RuntimeSettings) error {
+	if next == nil || next.Indexing == nil {
+		return nil
+	}
+	for key, cfg := range next.Indexing.MaintenanceTasks {
+		if cfg.ScheduleEnabled && cfg.IntervalHours < 6 {
+			return fmt.Errorf("maintenance task %q scheduled interval must be at least 6 hours", key)
+		}
+		if cfg.BatchSize < 0 {
+			return fmt.Errorf("maintenance task %q batch size cannot be negative", key)
+		}
+	}
 	return nil
 }
 

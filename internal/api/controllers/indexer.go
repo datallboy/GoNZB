@@ -97,6 +97,58 @@ func (ctrl *IndexerController) ResumeStage(c *echo.Context) error {
 	return ctrl.runStageAction(c, "resume")
 }
 
+func (ctrl *IndexerController) ListMaintenanceTasks(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	items, err := ctrl.Service.ListMaintenanceTasks(c.Request().Context())
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *IndexerController) DryRunMaintenanceTask(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	result, err := ctrl.Service.DryRunMaintenanceTask(c.Request().Context(), pathParamTrimmed(c, "task"))
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *IndexerController) RunMaintenanceTask(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	result, err := ctrl.Service.RunMaintenanceTask(c.Request().Context(), pathParamTrimmed(c, "task"))
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *IndexerController) PatchMaintenanceTask(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	var patch indexerMaintenanceTaskPatch
+	if err := c.Bind(&patch); err != nil {
+		return jsonError(c, http.StatusBadRequest, "invalid maintenance task patch")
+	}
+	task, err := ctrl.Service.UpdateMaintenanceTask(c.Request().Context(), pathParamTrimmed(c, "task"), patch)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, task)
+}
+
 func (ctrl *IndexerController) ListReleases(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

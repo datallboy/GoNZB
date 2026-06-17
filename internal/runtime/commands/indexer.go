@@ -179,7 +179,27 @@ func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
 	defer cleanup()
 
 	if once {
-		if err := appCtx.UsenetIndexer.ReleasePurgeArchivedSourcesOnce(ctx); err != nil {
+		indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
+		batchSize := indexing.ReleasePurgeArchivedSources.BatchSize
+		if batchSize <= 0 {
+			batchSize = 50
+		}
+		if _, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, batchSize, pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+			MinMatchConfidence:                   indexing.Release.PublicMinMatchConfidence,
+			MinCompletionPct:                     indexing.Release.PublicMinCompletionPct,
+			MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
+			RequireInspection:                    indexing.Release.PublicRequireInspection,
+			RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
+			RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
+			RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
+			RequirePAR2:                          indexing.Release.PublicRequirePAR2,
+			RequireNFO:                           indexing.Release.PublicRequireNFO,
+			RequireSFV:                           indexing.Release.PublicRequireSFV,
+			RetainUntilExpectedFileCountComplete: indexing.Release.RetainUntilExpectedFileCountComplete,
+			RetainRequirePAR2:                    indexing.Release.RetainRequirePAR2,
+			RetainRequireNFO:                     indexing.Release.RetainRequireNFO,
+			RetainRequireSFV:                     indexing.Release.RetainRequireSFV,
+		})); err != nil {
 			appCtx.Logger.Fatal("indexer release purge-archived-sources --once failed: %v", err)
 		}
 		appCtx.Logger.Info("indexer release purge-archived-sources --once completed")

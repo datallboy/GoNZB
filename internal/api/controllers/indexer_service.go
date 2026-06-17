@@ -33,6 +33,10 @@ type indexerService interface {
 	PauseStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	ResumeStage(ctx context.Context, stageName string) (*indexerStageView, error)
 	UpdateStageConfig(ctx context.Context, stageName string, patch indexerStageConfigPatch) (*indexerStageView, error)
+	ListMaintenanceTasks(ctx context.Context) ([]indexerMaintenanceTaskView, error)
+	DryRunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
+	RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
+	UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
@@ -84,6 +88,39 @@ type indexerReleaseOverridePatch struct {
 	Hidden                 *bool     `json:"hidden,omitempty"`
 	Notes                  *string   `json:"notes,omitempty"`
 	Tags                   *[]string `json:"tags,omitempty"`
+}
+
+type indexerMaintenanceTaskView struct {
+	TaskKey         string                         `json:"task_key"`
+	Label           string                         `json:"label"`
+	Purpose         string                         `json:"purpose"`
+	Destructive     bool                           `json:"destructive"`
+	Enabled         bool                           `json:"enabled"`
+	ScheduleEnabled bool                           `json:"schedule_enabled"`
+	IntervalHours   int                            `json:"interval_hours"`
+	BatchSize       int                            `json:"batch_size"`
+	LastDryRunAt    string                         `json:"last_dry_run_at,omitempty"`
+	LastRun         *pgindex.IndexerStageRun       `json:"last_run,omitempty"`
+	LastDryRun      *indexerMaintenanceTaskRunView `json:"last_dry_run,omitempty"`
+	Warnings        []string                       `json:"warnings,omitempty"`
+	Blockers        []string                       `json:"blockers,omitempty"`
+}
+
+type indexerMaintenanceTaskRunView struct {
+	TaskKey              string           `json:"task_key"`
+	DryRun               bool             `json:"dry_run"`
+	EstimatedRowsByTable map[string]int64 `json:"estimated_rows_by_table,omitempty"`
+	DeletedRowsByTable   map[string]int64 `json:"deleted_rows_by_table,omitempty"`
+	EstimatedBytes       int64            `json:"estimated_bytes,omitempty"`
+	Blockers             []string         `json:"blockers,omitempty"`
+	Warnings             []string         `json:"warnings,omitempty"`
+}
+
+type indexerMaintenanceTaskPatch struct {
+	Enabled         *bool `json:"enabled,omitempty"`
+	ScheduleEnabled *bool `json:"schedule_enabled,omitempty"`
+	IntervalHours   *int  `json:"interval_hours,omitempty"`
+	BatchSize       *int  `json:"batch_size,omitempty"`
 }
 
 type indexerAdminReleaseView struct {
@@ -588,6 +625,239 @@ func (s *runtimeIndexerService) UpdateStageConfig(ctx context.Context, stageName
 	return s.getStage(ctx, string(stage))
 }
 
+func (s *runtimeIndexerService) ListMaintenanceTasks(ctx context.Context) ([]indexerMaintenanceTaskView, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runs, _ := s.store.ListIndexerStageRuns(ctx, "", 100)
+	lastRunByStage := map[string]pgindex.IndexerStageRun{}
+	for _, run := range runs {
+		if _, ok := lastRunByStage[run.StageName]; ok {
+			continue
+		}
+		lastRunByStage[run.StageName] = run
+	}
+	items := make([]indexerMaintenanceTaskView, 0, len(indexerMaintenanceTaskDefinitions))
+	for _, def := range indexerMaintenanceTaskDefinitions {
+		view := maintenanceTaskViewFromSettings(def, runtime)
+		if run, ok := lastRunByStage[maintenanceTaskStageName(def.TaskKey)]; ok {
+			runCopy := run
+			view.LastRun = &runCopy
+		}
+		items = append(items, view)
+	}
+	return items, nil
+}
+
+func (s *runtimeIndexerService) DryRunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error) {
+	def, err := parseMaintenanceTask(taskKey)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.executeMaintenanceTask(ctx, def.TaskKey, true)
+	if err != nil {
+		return nil, err
+	}
+	if s.settingsAdmin != nil {
+		current, err := s.settingsAdmin.Get(ctx)
+		if err == nil {
+			next := app.CloneRuntimeSettings(current)
+			if next.Indexing == nil {
+				next.Indexing = &app.IndexingRuntimeSettings{}
+			}
+			next.Indexing.MaintenanceTasks = app.WithRuntimeDefaults(next).Indexing.MaintenanceTasks
+			cfg := next.Indexing.MaintenanceTasks[def.TaskKey]
+			cfg.LastDryRunAt = time.Now().UTC().Format(time.RFC3339)
+			next.Indexing.MaintenanceTasks[def.TaskKey] = cfg
+			_, _ = s.settingsAdmin.Update(ctx, &app.RuntimeSettingsPatch{Indexing: next.Indexing})
+		}
+	}
+	return maintenanceTaskRunView(result), nil
+}
+
+func (s *runtimeIndexerService) RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error) {
+	def, err := parseMaintenanceTask(taskKey)
+	if err != nil {
+		return nil, err
+	}
+	if def.Destructive {
+		runtime, err := s.loadRuntimeSettings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg := maintenanceTaskConfig(runtime, def.TaskKey)
+		lastDryRun, err := time.Parse(time.RFC3339, strings.TrimSpace(cfg.LastDryRunAt))
+		if err != nil || time.Since(lastDryRun) > 30*time.Minute {
+			return nil, fmt.Errorf("destructive task %q requires a fresh dry-run within 30 minutes", def.TaskKey)
+		}
+	}
+	result, err := s.runMaintenanceTaskWithStageRecord(ctx, def.TaskKey)
+	if err != nil {
+		return nil, err
+	}
+	return maintenanceTaskRunView(result), nil
+}
+
+func (s *runtimeIndexerService) UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error) {
+	def, err := parseMaintenanceTask(taskKey)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.settingsAdmin == nil {
+		return nil, settingsadmin.ErrUnavailable
+	}
+	current, err := s.settingsAdmin.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	next := app.CloneRuntimeSettings(current)
+	if next.Indexing == nil {
+		next.Indexing = &app.IndexingRuntimeSettings{}
+	}
+	next.Indexing.MaintenanceTasks = app.WithRuntimeDefaults(next).Indexing.MaintenanceTasks
+	cfg := next.Indexing.MaintenanceTasks[def.TaskKey]
+	if patch.Enabled != nil {
+		cfg.Enabled = *patch.Enabled
+	}
+	if patch.ScheduleEnabled != nil {
+		cfg.ScheduleEnabled = *patch.ScheduleEnabled
+	}
+	if patch.IntervalHours != nil {
+		cfg.IntervalHours = *patch.IntervalHours
+	}
+	if patch.BatchSize != nil {
+		cfg.BatchSize = *patch.BatchSize
+	}
+	if cfg.ScheduleEnabled && cfg.IntervalHours < 6 {
+		return nil, fmt.Errorf("maintenance task %q scheduled interval must be at least 6 hours", def.TaskKey)
+	}
+	next.Indexing.MaintenanceTasks[def.TaskKey] = cfg
+	if _, err := s.settingsAdmin.Update(ctx, &app.RuntimeSettingsPatch{Indexing: next.Indexing}); err != nil {
+		return nil, err
+	}
+	updated, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view := maintenanceTaskViewFromSettings(def, updated)
+	return &view, nil
+}
+
+type maintenanceTaskStore interface {
+	DryRunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
+	RunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
+	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
+	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+	FailIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
+}
+
+func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, taskKey string, dryRun bool) (*pgindex.MaintenanceTaskResult, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	store, ok := s.store.(maintenanceTaskStore)
+	if !ok {
+		return nil, errIndexerUnavailable
+	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg := maintenanceTaskConfig(runtime, taskKey)
+	if !cfg.Enabled {
+		return nil, fmt.Errorf("maintenance task %q is disabled", taskKey)
+	}
+	switch taskKey {
+	case "release_source_purge":
+		if dryRun {
+			return store.DryRunReleaseSourcePurge(ctx, cfg.BatchSize, s.releaseReadyPolicy(ctx))
+		}
+		return store.RunReleaseSourcePurge(ctx, cfg.BatchSize, s.releaseReadyPolicy(ctx))
+	case "readiness_cleanup":
+		if dryRun {
+			return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{}, Warnings: []string{"dry-run is not exact for the existing combined readiness cleanup path"}}, nil
+		}
+		out, err := store.RunIndexerMaintenance(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey: taskKey,
+			DryRun:  false,
+			DeletedRowsByTable: map[string]int64{
+				"release_family_readiness_summaries": out.PurgedReadinessSummaries,
+				"releases":                           out.PurgedOrphanReleases,
+			},
+			Warnings: []string{"v1 delegates to the existing combined indexer maintenance cleanup path"},
+		}, nil
+	case "inspect_workspace_cleanup":
+		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: dryRun, EstimatedRowsByTable: map[string]int64{}, Warnings: []string{"inspect workspace cleanup is currently executed by the scheduled indexer_maintenance service"}}, nil
+	default:
+		if dryRun {
+			return store.DryRunSimpleMaintenanceTask(ctx, taskKey)
+		}
+		return store.RunSimpleMaintenanceTask(ctx, taskKey)
+	}
+}
+
+func (s *runtimeIndexerService) runMaintenanceTaskWithStageRecord(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error) {
+	store, ok := s.store.(maintenanceTaskStore)
+	if !ok {
+		return nil, errIndexerUnavailable
+	}
+	owner := "maintenance-api"
+	stageName := maintenanceTaskStageName(taskKey)
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg := maintenanceTaskConfig(runtime, taskKey)
+	claim, err := store.ClaimIndexerStage(ctx, pgindex.IndexerStageClaimRequest{
+		StageName:     stageName,
+		TriggerKind:   "manual",
+		Owner:         owner,
+		Enabled:       true,
+		Interval:      time.Duration(cfg.IntervalHours) * time.Hour,
+		BatchSize:     cfg.BatchSize,
+		Concurrency:   1,
+		LeaseDuration: 30 * time.Minute,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claim == nil || !claim.Claimed || claim.Run == nil {
+		reason := "not claimed"
+		if claim != nil && claim.Reason != "" {
+			reason = claim.Reason
+		}
+		return nil, fmt.Errorf("maintenance task %q skipped: %s", taskKey, reason)
+	}
+	result, runErr := s.executeMaintenanceTask(ctx, taskKey, false)
+	metrics, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		metrics = json.RawMessage(`{"metrics_error":"marshal_failed"}`)
+	}
+	finish := pgindex.IndexerStageFinishRequest{RunID: claim.Run.ID, Owner: owner, MetricsJSON: metrics}
+	if runErr != nil {
+		finish.ErrorText = runErr.Error()
+		if err := store.FailIndexerStageRun(context.Background(), finish); err != nil {
+			return nil, fmt.Errorf("%v (also failed to mark maintenance task failed: %w)", runErr, err)
+		}
+		return nil, runErr
+	}
+	if err := store.CompleteIndexerStageRun(context.Background(), finish); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *runtimeIndexerService) ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	if s == nil || s.store == nil {
 		return nil, 0, errIndexerUnavailable
@@ -942,7 +1212,6 @@ var allIndexerStages = []string{
 	string(supervisor.StageRelease),
 	string(supervisor.StageReleaseGenerateNZB),
 	string(supervisor.StageReleaseArchiveNZB),
-	string(supervisor.StageReleasePurgeArchivedSources),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
 	string(supervisor.StageInspectNFO),
@@ -952,6 +1221,83 @@ var allIndexerStages = []string{
 	string(supervisor.StageEnrichPreDB),
 	string(supervisor.StageEnrichTMDB),
 	string(supervisor.StageMaintenance),
+}
+
+type maintenanceTaskDefinition struct {
+	TaskKey     string
+	Label       string
+	Purpose     string
+	Destructive bool
+	Warnings    []string
+}
+
+var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
+	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true},
+	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Destructive: true},
+	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Destructive: true, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
+	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Destructive: true},
+	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Destructive: true},
+	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Destructive: true, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
+	{TaskKey: "header_payload_purge", Label: "Header Payload Purge", Purpose: "Runs the existing aged article-header payload purge.", Destructive: true, Warnings: []string{"disabled by default"}},
+}
+
+func parseMaintenanceTask(taskKey string) (maintenanceTaskDefinition, error) {
+	taskKey = strings.ToLower(strings.TrimSpace(taskKey))
+	for _, def := range indexerMaintenanceTaskDefinitions {
+		if def.TaskKey == taskKey {
+			return def, nil
+		}
+	}
+	return maintenanceTaskDefinition{}, fmt.Errorf("unknown maintenance task %q", taskKey)
+}
+
+func maintenanceTaskStageName(taskKey string) string {
+	return "maintenance." + taskKey
+}
+
+func maintenanceTaskConfig(runtime *app.RuntimeSettings, taskKey string) app.IndexingMaintenanceTaskRuntimeSettings {
+	defaults := app.DefaultRuntimeSettings()
+	cfg := defaults.Indexing.MaintenanceTasks[taskKey]
+	if runtime != nil && runtime.Indexing != nil {
+		withDefaults := app.WithRuntimeDefaults(runtime)
+		if withDefaults != nil && withDefaults.Indexing != nil {
+			if override, ok := withDefaults.Indexing.MaintenanceTasks[taskKey]; ok {
+				cfg = override
+			}
+		}
+	}
+	return cfg
+}
+
+func maintenanceTaskViewFromSettings(def maintenanceTaskDefinition, runtime *app.RuntimeSettings) indexerMaintenanceTaskView {
+	cfg := maintenanceTaskConfig(runtime, def.TaskKey)
+	return indexerMaintenanceTaskView{
+		TaskKey:         def.TaskKey,
+		Label:           def.Label,
+		Purpose:         def.Purpose,
+		Destructive:     def.Destructive,
+		Enabled:         cfg.Enabled,
+		ScheduleEnabled: cfg.ScheduleEnabled,
+		IntervalHours:   cfg.IntervalHours,
+		BatchSize:       cfg.BatchSize,
+		LastDryRunAt:    cfg.LastDryRunAt,
+		Warnings:        append([]string(nil), def.Warnings...),
+	}
+}
+
+func maintenanceTaskRunView(result *pgindex.MaintenanceTaskResult) *indexerMaintenanceTaskRunView {
+	if result == nil {
+		return nil
+	}
+	return &indexerMaintenanceTaskRunView{
+		TaskKey:              result.TaskKey,
+		DryRun:               result.DryRun,
+		EstimatedRowsByTable: result.EstimatedRowsByTable,
+		DeletedRowsByTable:   result.DeletedRowsByTable,
+		EstimatedBytes:       result.EstimatedBytes,
+		Blockers:             result.Blockers,
+		Warnings:             result.Warnings,
+	}
 }
 
 func parseIndexerStage(stageName string) (supervisor.StageName, error) {
