@@ -6,7 +6,8 @@ func TestDynamicBatchSizesStayBelowPostgresBindParameterSoftLimit(t *testing.T) 
 	cases := map[string]int{
 		"archive purge binary id staging":          archivePurgeBinaryIDStageChunk,
 		"binary identity lock":                     binaryIdentityLockBatchSize * 3,
-		"binary completion key sync":               binaryCompletionKeySyncChunkSize,
+		"binary completion key sync":               1,
+		"binary stats refresh":                     1,
 		"binary part article lookup":               binaryPartArticleLookupChunk,
 		"binary part upsert":                       binaryPartUpsertBatchRecords * 7,
 		"predb entry id lookup":                    predbEntryIDLookupChunk,
