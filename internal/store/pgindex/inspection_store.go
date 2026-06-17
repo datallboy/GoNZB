@@ -959,6 +959,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			candidate_rows AS (
 				SELECT
 					b.id,
+					b.provider_id,
 					b.release_family_key,
 					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS display_file_name,
 					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '') AS raw_file_name,
