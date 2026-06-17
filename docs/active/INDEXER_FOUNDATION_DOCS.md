@@ -51,6 +51,14 @@ Use for:
 - the v2 table ownership model and phased migration away from the monolithic hot binary row
 - deciding whether a binary-state field belongs to assemble, recovery, inspection, release, archive, purge, or an append-only event/summary table
 
+### `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
+
+Use for:
+
+- the active release-family and release-formation behavior contract
+- tracing how scrape, assemble, yEnc recovery, release-summary-refresh, release, inspect, archive, and purge interact
+- preventing regressions where recovered yEnc filenames fail to become complete file-level binaries and release candidates
+
 ### `docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md`
 
 Use for:
