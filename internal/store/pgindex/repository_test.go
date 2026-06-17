@@ -7084,6 +7084,108 @@ func TestListBinaryInspectionCandidatesInspectPAR2PrefersManifestOverVolumes(t *
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectPAR2PrioritizesReleaseLinkedCompleteSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-priority-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	now := time.Now().UTC()
+	newPartialID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "new-partial-par2",
+		ReleaseFamilyKey: "new-partial-par2",
+		FileFamilyKey:    "new-partial-par2::par2",
+		FamilyKind:       "par2",
+		BaseStem:         "newer",
+		IsAuxiliary:      true,
+		ReleaseKey:       "new-partial-par2",
+		ReleaseName:      "Newer Partial PAR2",
+		BinaryKey:        "new-partial-par2::manifest",
+		BinaryName:       "newer.par2",
+		FileName:         "newer.par2",
+		TotalParts:       200,
+		PostedAt:         &now,
+		MatchConfidence:  0.95,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert newer partial par2: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, newPartialID); err != nil {
+		t.Fatalf("seed newer observed_parts: %v", err)
+	}
+
+	olderCompleteAt := now.Add(-time.Hour)
+	completeID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "linked-complete-par2",
+		ReleaseFamilyKey: "linked-complete-par2",
+		FileFamilyKey:    "linked-complete-par2::par2",
+		FamilyKind:       "par2",
+		BaseStem:         "older",
+		IsAuxiliary:      true,
+		ReleaseKey:       "linked-complete-par2",
+		ReleaseName:      "Linked Complete PAR2",
+		BinaryKey:        "linked-complete-par2::volume",
+		BinaryName:       "older.vol00+01.par2",
+		FileName:         "older.vol00+01.par2",
+		TotalParts:       1,
+		PostedAt:         &olderCompleteAt,
+		MatchConfidence:  0.95,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert older complete par2: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, completeID); err != nil {
+		t.Fatalf("seed complete observed_parts: %v", err)
+	}
+	releaseID := fmt.Sprintf("par2-priority-release-%d", time.Now().UnixNano())
+	if _, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:        releaseID,
+		ProviderID:       1,
+		Title:            "Linked Complete PAR2",
+		SourceTitle:      "Linked Complete PAR2",
+		ReleaseFamilyKey: "linked-complete-par2",
+		FileCount:        1,
+		CompletionPct:    100,
+	}); err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  completeID,
+		FileName:  "older.vol00+01.par2",
+		SizeBytes: 1024,
+		IsPars:    true,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 2)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatalf("expected inspect_par2 candidates")
+	}
+	if candidates[0].FileName != "older.vol00+01.par2" {
+		t.Fatalf("expected release-linked complete par2 first, got %+v", candidates[0])
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDetailsUntilSourceChanges(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

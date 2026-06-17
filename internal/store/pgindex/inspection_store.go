@@ -968,11 +968,17 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					b.posted_at,
 					b.total_bytes,
 					b.total_parts,
+					b.observed_parts,
 					b.match_confidence,
 					b.updated_at AS source_updated_at,
 					COALESCE(bi.status, '') AS current_status,
 					bi.updated_at AS current_updated_at,
 					COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+					EXISTS (
+						SELECT 1
+						FROM release_files rf
+						WHERE rf.binary_id = b.id
+					) AS release_linked,
 					CASE
 						WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
 						THEN regexp_replace(
@@ -1091,7 +1097,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				FROM eligible_rows
 				ORDER BY par2_set_name, volume_rank, volume_number, source_updated_at DESC, id DESC
 			) chosen
-			ORDER BY source_updated_at DESC, id DESC
+			ORDER BY release_linked DESC, (observed_parts >= total_parts) DESC, source_updated_at DESC, id DESC
 			LIMIT $2`
 		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
 	}

@@ -253,6 +253,21 @@ PAR2 target filenames are important because they often reveal the real archive p
 
 PAR2 evidence does not replace yEnc recovery. yEnc recovery fixes file-level identity and article membership. PAR2 inspection strengthens expected payload counts and can help explain titles/file sets after enough binaries exist.
 
+Base `.par2` files are preferred because they usually contain the cleanest file-description packet set, but they are not mandatory. When a base manifest is absent, `inspect_par2` may inspect a `.volNN+MM.par2` volume for the same normalized PAR2 set. Candidate ordering should keep release-linked and complete PAR2 binaries ahead of newer incomplete standalone PAR2 rows so actionable releases are not starved by partial repair-file backlog.
+
+### Password Evidence Sources
+
+Password state is resolved by evidence-backed candidates, not brute force. Candidate sources include NZB metadata, NZB filename tokens, NFO/text sidecars, visible archive/PAR2 target names, release/source/deobfuscated titles, poster/uploader names, and user-supplied admin hints.
+
+Provider groups with password-themed names, such as `alt.binaries.rar-passwords`, `alt.binaries.password.protected`, or similar, should not be treated as normal payload scrape groups by default. A sampled `alt.binaries.rar-passwords` window showed ordinary yEnc PAR2 payload articles cross-posted from encrypted binary groups, not visible password hints in XOVER/HEAD/BODY prefixes. These groups are still useful as optional password-intelligence sources:
+
+- Xref membership can identify encrypted ecosystems related to a release.
+- XOVER/HEAD sampling can find rare explicit password sidecar subjects.
+- BODY prefix sampling should be restricted to small text-like sidecars or subjects containing password terms.
+- Matching should be bounded by release tokens, poster, date window, source groups, and nearby article ranges.
+
+Do not feed password-themed groups directly into main assembly unless the operator explicitly adds them as scraped payload groups. Doing so can duplicate encrypted payload workload without improving password recovery.
+
 ### Release title source precedence
 
 The durable `releases` row stores several title fields because identity can improve after formation:
