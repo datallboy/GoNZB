@@ -56,10 +56,16 @@ func TestInspectCandidateFilterPasswordRequiresEncryptedRelease(t *testing.T) {
 	}
 }
 
-func TestInspectCandidateFilterArchiveExpectedFileCountGateIsConfigurable(t *testing.T) {
+func TestInspectCandidateFilterArchiveUsesPayloadCompletionNotReleaseCompletion(t *testing.T) {
 	filter, err := inspectCandidateFilter("inspect_archive", false)
 	if err != nil {
 		t.Fatalf("inspectCandidateFilter(false) error = %v", err)
+	}
+	if !strings.Contains(filter, "b.observed_parts >= b.total_parts") {
+		t.Fatalf("expected inspect_archive filter to require candidate payload completion, got %q", filter)
+	}
+	if strings.Contains(filter, "r.completion_pct >= 100") {
+		t.Fatalf("expected inspect_archive filter to omit release completion gate, got %q", filter)
 	}
 	if strings.Contains(filter, "r.file_count >= r.expected_file_count") {
 		t.Fatalf("expected inspect_archive filter without expected-file gate to omit file-count match, got %q", filter)
@@ -69,8 +75,8 @@ func TestInspectCandidateFilterArchiveExpectedFileCountGateIsConfigurable(t *tes
 	if err != nil {
 		t.Fatalf("inspectCandidateFilter(true) error = %v", err)
 	}
-	if !strings.Contains(filter, "r.file_count >= r.expected_file_count") {
-		t.Fatalf("expected inspect_archive filter with expected-file gate to require file-count match, got %q", filter)
+	if strings.Contains(filter, "r.file_count >= r.expected_file_count") {
+		t.Fatalf("expected inspect_archive filter to ignore release-level expected-file gate, got %q", filter)
 	}
 }
 
@@ -6793,6 +6799,103 @@ func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *t
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectArchiveAllowsPayloadCompleteWithMissingSidecars(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.payloadcomplete.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-archive-payloadcomplete-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-payloadcomplete-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Payload Complete Missing Sidecars",
+		SourceTitle:             "Payload.Complete.Missing.Sidecars",
+		SearchTitle:             "payload complete missing sidecars",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               5,
+		ExpectedFileCount:       6,
+		CompletionPct:           83.33,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       83.33,
+		AvailabilityTier:        "partial",
+		MediaQualityScore:       0,
+		MediaQualityTier:        "",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "payload.complete",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Payload Complete Missing Sidecars",
+		BinaryKey:         baseKey + "::part01",
+		BinaryName:        "payload.complete.part01.rar",
+		FileName:          "payload.complete.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 5,
+		TotalParts:        3,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = total_parts, total_bytes = 716800, updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark binary payload complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "payload.complete.part01.rar",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return
+		}
+	}
+	t.Fatalf("expected inspect_archive candidate for payload-complete release below 100%% overall completion")
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRARVolumes(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -7632,6 +7735,103 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	if !found {
 		t.Fatalf("expected inspect_media candidate to rerun after fresher archive inspection")
 	}
+}
+
+func TestListBinaryInspectionCandidatesInspectMediaAllowsPayloadCompleteWithMissingSidecars(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.media.payloadcomplete.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-media-payloadcomplete-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("media-payloadcomplete-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Media Payload Complete Missing Sidecars",
+		SourceTitle:             "Media.Payload.Complete.Missing.Sidecars",
+		SearchTitle:             "media payload complete missing sidecars",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  posterName,
+		FileCount:               5,
+		ExpectedFileCount:       6,
+		CompletionPct:           83.33,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		VideoCount:              1,
+		AvailabilityScore:       83.33,
+		AvailabilityTier:        "partial",
+		MediaQualityScore:       0,
+		MediaQualityTier:        "",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::media",
+		FamilyKind:        "readable_title",
+		BaseStem:          "media payload complete missing sidecars",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Media Payload Complete Missing Sidecars",
+		BinaryKey:         baseKey + "::mkv",
+		BinaryName:        "media.payload.complete.missing.sidecars.mkv",
+		FileName:          "media.payload.complete.missing.sidecars.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 5,
+		TotalParts:        4,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = total_parts, total_bytes = 1048576, updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark media binary payload complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "media.payload.complete.missing.sidecars.mkv",
+		SizeBytes: 1048576,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return
+		}
+	}
+	t.Fatalf("expected inspect_media candidate for payload-complete release below 100%% overall completion")
 }
 
 func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *testing.T) {
