@@ -96,6 +96,12 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		{Name: StageInspectMedia},
 		{Name: StageEnrichPreDB},
 		{Name: StageEnrichTMDB},
+		{Name: StageMaintenanceReleaseSourcePurge},
+		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
+		{Name: StageName("maintenance.readiness_cleanup")},
+		{Name: StageName("maintenance.runtime_history_cleanup")},
+		{Name: StageName("maintenance.grouping_evidence_cleanup")},
+		{Name: StageName("maintenance.header_payload_purge")},
 		{Name: StageMaintenance},
 	}
 	svc := New(nil, stages)

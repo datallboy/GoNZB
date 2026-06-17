@@ -10,7 +10,6 @@ export const stageOptions = [
   { value: 'release', label: 'Release' },
   { value: 'release_generate_nzb', label: 'Generate NZB' },
   { value: 'release_archive_nzb', label: 'Archive NZB' },
-  { value: 'release_purge_archived_sources', label: 'Purge Archived Sources' },
   { value: 'inspect_discovery', label: 'Inspect Discovery' },
   { value: 'inspect_par2', label: 'Inspect PAR2' },
   { value: 'inspect_nfo', label: 'Inspect NFO' },

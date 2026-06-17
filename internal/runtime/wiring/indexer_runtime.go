@@ -25,7 +25,6 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/release"
 	"github.com/datallboy/gonzb/internal/indexing/releasearchive"
 	"github.com/datallboy/gonzb/internal/indexing/releasegenerate"
-	"github.com/datallboy/gonzb/internal/indexing/releasepurge"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/indexing/yencrecover"
@@ -81,6 +80,7 @@ type usenetIndexerConfig struct {
 	EnrichPreDBStage                                indexerStageConfig
 	EnrichTMDBStage                                 indexerStageConfig
 	MaintenanceStage                                indexerStageConfig
+	MaintenanceTasks                                map[string]app.IndexingMaintenanceTaskRuntimeSettings
 }
 
 type indexerStageConfig struct {
@@ -278,10 +278,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Policy:    runtimeCfg.ReleaseReadyPolicy,
 		},
 	)
-	releasePurgeSvc := releasepurge.NewService(
-		appCtx.PGIndexStore,
-		releasepurge.Options{BatchSize: runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize, Policy: runtimeCfg.ReleaseReadyPolicy},
-	)
 	workspaceManager := inspectpkg.NewWorkspaceManager(runtimeCfg.Inspect)
 	commandRunner := inspectpkg.ExecCommandRunner{}
 	inspectDiscoverySvc := discovery.NewService(appCtx.PGIndexStore, inspectDiscoveryFetcher, appCtx.Logger, withInspectBatch(runtimeCfg.Inspect, runtimeCfg.InspectDiscovery.BatchSize))
@@ -416,17 +412,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}),
 		},
 		{
-			Name:        supervisor.StageReleasePurgeArchivedSources,
-			Interval:    runtimeCfg.ReleasePurgeArchivedSourcesStage.Interval,
-			Enabled:     releasePurgeSvc != nil && runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled,
-			BatchSize:   runtimeCfg.ReleasePurgeArchivedSourcesStage.BatchSize,
-			Concurrency: 1,
-			Backoff:     runtimeCfg.ReleasePurgeArchivedSourcesStage.Backoff,
-			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-				return marshalStageMetrics(releasePurgeSvc.RunOnceWithMetrics(ctx))
-			}),
-		},
-		{
 			Name:        supervisor.StageInspectDiscovery,
 			Interval:    runtimeCfg.InspectDiscovery.Interval,
 			Enabled:     runtimeCfg.InspectDiscovery.Enabled,
@@ -514,6 +499,36 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return marshalStageMetrics(enrichTMDBSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
+		maintenanceTaskStage(runtimeCfg, "release_source_purge", supervisor.StageMaintenanceReleaseSourcePurge, func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, cfg.BatchSize, runtimeCfg.ReleaseReadyPolicy)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "assembly_queue_stale_cleanup", supervisor.StageName("maintenance.assembly_queue_stale_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "assembly_queue_stale_cleanup")
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "readiness_cleanup", supervisor.StageName("maintenance.readiness_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			out, err := appCtx.PGIndexStore.RunIndexerMaintenance(ctx)
+			if out == nil {
+				return map[string]any{}, err
+			}
+			return map[string]any{
+				"purged_readiness_summaries": out.PurgedReadinessSummaries,
+				"purged_orphan_releases":     out.PurgedOrphanReleases,
+			}, err
+		}),
+		maintenanceTaskStage(runtimeCfg, "runtime_history_cleanup", supervisor.StageName("maintenance.runtime_history_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "runtime_history_cleanup")
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "grouping_evidence_cleanup", supervisor.StageName("maintenance.grouping_evidence_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "grouping_evidence_cleanup")
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "header_payload_purge", supervisor.StageName("maintenance.header_payload_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "header_payload_purge")
+			return maintenanceTaskMetrics(result), err
+		}),
 		{
 			Name:        supervisor.StageMaintenance,
 			Interval:    runtimeCfg.MaintenanceStage.Interval,
@@ -620,6 +635,38 @@ func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, er
 		return nil, marshalErr
 	}
 	return payload, err
+}
+
+func maintenanceTaskStage(runtimeCfg usenetIndexerConfig, taskKey string, name supervisor.StageName, run func(context.Context, app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error)) supervisor.Stage {
+	cfg := runtimeCfg.MaintenanceTasks[taskKey]
+	if cfg.IntervalHours <= 0 {
+		cfg.IntervalHours = 24
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 100
+	}
+	return supervisor.Stage{
+		Name:        name,
+		Interval:    time.Duration(cfg.IntervalHours) * time.Hour,
+		Enabled:     cfg.Enabled && cfg.ScheduleEnabled,
+		BatchSize:   cfg.BatchSize,
+		Concurrency: 1,
+		Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+			return marshalStageMetrics(run(ctx, cfg))
+		}),
+	}
+}
+
+func maintenanceTaskMetrics(result *pgindex.MaintenanceTaskResult) map[string]any {
+	if result == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"task_key":              result.TaskKey,
+		"deleted_rows_by_table": result.DeletedRowsByTable,
+		"blockers":              result.Blockers,
+		"warnings":              result.Warnings,
+	}
 }
 
 func newIndexerStageOwner() string {
@@ -744,6 +791,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		InspectMedia:     newIndexerStageConfig(indexingCfg.InspectMedia),
 		EnrichPreDBStage: newIndexerStageConfig(IndexingStageRuntimeSettingsFromPredb(indexingCfg.EnrichPreDB)),
 		EnrichTMDBStage:  newIndexerStageConfig(IndexingStageRuntimeSettingsFromTMDB(indexingCfg.EnrichTMDB)),
+		MaintenanceTasks: indexingCfg.MaintenanceTasks,
 		MaintenanceStage: indexerStageConfig{
 			Enabled:     true,
 			Interval:    6 * time.Hour,

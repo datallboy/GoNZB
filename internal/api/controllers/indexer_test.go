@@ -132,6 +132,22 @@ func (s *stubIndexerService) UpdateStageConfig(ctx context.Context, stageName st
 	return &stage, nil
 }
 
+func (s *stubIndexerService) ListMaintenanceTasks(ctx context.Context) ([]indexerMaintenanceTaskView, error) {
+	return []indexerMaintenanceTaskView{{TaskKey: "release_source_purge", Label: "Release Source Purge"}}, nil
+}
+
+func (s *stubIndexerService) DryRunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error) {
+	return &indexerMaintenanceTaskRunView{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{}}, nil
+}
+
+func (s *stubIndexerService) RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error) {
+	return &indexerMaintenanceTaskRunView{TaskKey: taskKey, DryRun: false, DeletedRowsByTable: map[string]int64{}}, nil
+}
+
+func (s *stubIndexerService) UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error) {
+	return &indexerMaintenanceTaskView{TaskKey: taskKey}, nil
+}
+
 func (s *stubIndexerService) ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
 	return s.releases, s.releaseTotal, nil
 }

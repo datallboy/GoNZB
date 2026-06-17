@@ -260,6 +260,10 @@ type UsenetIndexStore interface {
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 	ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	DryRunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
+	RunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
 	BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*pgindex.IndexerCrosspostBackfillResult, error)
 	MaterializeArticleHeaderPosters(ctx context.Context, limit int) (*pgindex.IndexerPosterMaterializationResult, error)

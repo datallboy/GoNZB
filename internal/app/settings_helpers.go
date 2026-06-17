@@ -39,6 +39,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ReleaseGenerateNZB:          defaultStage(false, 10, 100, 0),
 			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
 			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
+			MaintenanceTasks:            defaultMaintenanceTasks(),
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
 			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
@@ -255,6 +256,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
 	out.ReleasePurgeArchivedSources = indexStageRuntimeFromConfig(cfg.ReleasePurgeArchivedSources, false, 10, 50)
+	out.MaintenanceTasks = defaultMaintenanceTasks()
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
 		ProbableConfidenceThreshold: float64Value(cfg.Match.ProbableConfidenceThreshold, 0.55),
@@ -826,6 +828,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ReleaseGenerateNZB:          mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
 		ReleaseArchiveNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
+		MaintenanceTasks:            mergeMaintenanceTaskRuntimeSettings(defaultMaintenanceTasks(), in.MaintenanceTasks),
 		Match:                       in.Match,
 		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
 		StorageGuard:                normalizeStorageGuardRuntimeSettings(in.StorageGuard),
@@ -1100,6 +1103,41 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 		base.LaneBMinPct = override.LaneBMinPct
 	}
 	return base
+}
+
+func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings {
+	return map[string]IndexingMaintenanceTaskRuntimeSettings{
+		"release_source_purge":         {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 50},
+		"assembly_queue_stale_cleanup": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
+		"readiness_cleanup":            {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
+		"runtime_history_cleanup":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
+		"grouping_evidence_cleanup":    {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
+		"inspect_workspace_cleanup":    {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
+		"header_payload_purge":         {Enabled: false, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 250000},
+	}
+}
+
+func mergeMaintenanceTaskRuntimeSettings(base, override map[string]IndexingMaintenanceTaskRuntimeSettings) map[string]IndexingMaintenanceTaskRuntimeSettings {
+	out := make(map[string]IndexingMaintenanceTaskRuntimeSettings, len(base)+len(override))
+	for key, cfg := range base {
+		out[key] = cfg
+	}
+	for key, cfg := range override {
+		merged := out[key]
+		merged.Enabled = cfg.Enabled
+		merged.ScheduleEnabled = cfg.ScheduleEnabled
+		if cfg.IntervalHours > 0 {
+			merged.IntervalHours = cfg.IntervalHours
+		}
+		if cfg.BatchSize > 0 {
+			merged.BatchSize = cfg.BatchSize
+		}
+		if cfg.LastDryRunAt != "" {
+			merged.LastDryRunAt = cfg.LastDryRunAt
+		}
+		out[key] = merged
+	}
+	return out
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

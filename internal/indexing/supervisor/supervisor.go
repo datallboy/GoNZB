@@ -21,26 +21,27 @@ type logger interface {
 type StageName string
 
 const (
-	StageScrapeLatest                StageName = "scrape_latest"
-	StageScrapeBackfill              StageName = "scrape_backfill"
-	StagePosterMaterialize           StageName = "poster_materialize"
-	StageCrosspostPopularityRefresh  StageName = "crosspost_popularity_refresh"
-	StageAssemble                    StageName = "assemble"
-	StageRecoverYEnc                 StageName = "recover_yenc"
-	StageReleaseSummaryRefresh       StageName = "release_summary_refresh"
-	StageRelease                     StageName = "release"
-	StageReleaseGenerateNZB          StageName = "release_generate_nzb"
-	StageReleaseArchiveNZB           StageName = "release_archive_nzb"
-	StageReleasePurgeArchivedSources StageName = "release_purge_archived_sources"
-	StageInspectDiscovery            StageName = "inspect_discovery"
-	StageInspectPAR2                 StageName = "inspect_par2"
-	StageInspectNFO                  StageName = "inspect_nfo"
-	StageInspectArchive              StageName = "inspect_archive"
-	StageInspectPassword             StageName = "inspect_password"
-	StageInspectMedia                StageName = "inspect_media"
-	StageEnrichPreDB                 StageName = "enrich_predb"
-	StageEnrichTMDB                  StageName = "enrich_tmdb"
-	StageMaintenance                 StageName = "indexer_maintenance"
+	StageScrapeLatest                  StageName = "scrape_latest"
+	StageScrapeBackfill                StageName = "scrape_backfill"
+	StagePosterMaterialize             StageName = "poster_materialize"
+	StageCrosspostPopularityRefresh    StageName = "crosspost_popularity_refresh"
+	StageAssemble                      StageName = "assemble"
+	StageRecoverYEnc                   StageName = "recover_yenc"
+	StageReleaseSummaryRefresh         StageName = "release_summary_refresh"
+	StageRelease                       StageName = "release"
+	StageReleaseGenerateNZB            StageName = "release_generate_nzb"
+	StageReleaseArchiveNZB             StageName = "release_archive_nzb"
+	StageReleasePurgeArchivedSources   StageName = "release_purge_archived_sources"
+	StageInspectDiscovery              StageName = "inspect_discovery"
+	StageInspectPAR2                   StageName = "inspect_par2"
+	StageInspectNFO                    StageName = "inspect_nfo"
+	StageInspectArchive                StageName = "inspect_archive"
+	StageInspectPassword               StageName = "inspect_password"
+	StageInspectMedia                  StageName = "inspect_media"
+	StageEnrichPreDB                   StageName = "enrich_predb"
+	StageEnrichTMDB                    StageName = "enrich_tmdb"
+	StageMaintenance                   StageName = "indexer_maintenance"
+	StageMaintenanceReleaseSourcePurge StageName = "maintenance.release_source_purge"
 )
 
 type Runner interface {
@@ -177,7 +178,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageRelease,
 		StageReleaseGenerateNZB,
 		StageReleaseArchiveNZB,
-		StageReleasePurgeArchivedSources,
 		StageInspectDiscovery,
 		StageInspectPAR2,
 		StageInspectNFO,
@@ -186,6 +186,12 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageInspectMedia,
 		StageEnrichPreDB,
 		StageEnrichTMDB,
+		StageMaintenanceReleaseSourcePurge,
+		StageName("maintenance.assembly_queue_stale_cleanup"),
+		StageName("maintenance.readiness_cleanup"),
+		StageName("maintenance.runtime_history_cleanup"),
+		StageName("maintenance.grouping_evidence_cleanup"),
+		StageName("maintenance.header_payload_purge"),
 		StageMaintenance,
 	)
 }
@@ -415,8 +421,8 @@ func (s *Supervisor) tryClaimStageGroup(group string, stageName StageName) (func
 
 func exclusiveStageGroup(name StageName) (string, bool) {
 	switch name {
-	case StageAssemble, StageReleasePurgeArchivedSources:
-		return "binary-source-write", true
+	case StageAssemble, StageReleasePurgeArchivedSources, StageMaintenanceReleaseSourcePurge:
+		return "assemble/purge", true
 	default:
 		return "", false
 	}

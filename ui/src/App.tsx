@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
+import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
 import { AdminRolesPage } from './modules/admin/AdminRolesPage'
@@ -91,6 +92,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminStagesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/maintenance"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminMaintenancePage />
               </RequireAuth>
             }
           />

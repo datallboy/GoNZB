@@ -275,6 +275,43 @@ export type AdminStagesResponse = {
   count: number
 }
 
+export type AdminMaintenanceTask = {
+  task_key: string
+  label: string
+  purpose: string
+  destructive: boolean
+  enabled: boolean
+  schedule_enabled: boolean
+  interval_hours: number
+  batch_size: number
+  last_dry_run_at?: string
+  last_run?: AdminRun
+  warnings?: string[]
+  blockers?: string[]
+}
+
+export type AdminMaintenanceTaskRun = {
+  task_key: string
+  dry_run: boolean
+  estimated_rows_by_table?: Record<string, number>
+  deleted_rows_by_table?: Record<string, number>
+  estimated_bytes?: number
+  warnings?: string[]
+  blockers?: string[]
+}
+
+export type AdminMaintenanceTasksResponse = {
+  items: AdminMaintenanceTask[]
+  count: number
+}
+
+export type AdminMaintenanceTaskPatch = {
+  enabled?: boolean
+  schedule_enabled?: boolean
+  interval_hours?: number
+  batch_size?: number
+}
+
 export type AdminStageConfigPatch = {
   enabled?: boolean
   interval_minutes?: number
@@ -813,7 +850,8 @@ export type IndexingRuntimeSettings = {
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
-  release_purge_archived_sources: AdminStageConfigPatch
+  release_purge_archived_sources?: AdminStageConfigPatch
+  maintenance_tasks?: Record<string, AdminMaintenanceTaskPatch & { last_dry_run_at?: string }>
   release: AdminStageConfigPatch & {
     auto_reform_batch_size: number
     min_confidence: number
