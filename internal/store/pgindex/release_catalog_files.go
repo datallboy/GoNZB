@@ -41,8 +41,8 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 			rf.file_index,
 			rf.is_pars,
 			COALESCE(rf.subject, ''),
-			COALESCE(rf.poster, ''),
-			rf.posted_at,
+			COALESCE(NULLIF(rf.poster, ''), raw_meta.poster, ''),
+			COALESCE(rf.posted_at, raw_meta.posted_at),
 			COUNT(bp.id)::integer AS article_count,
 			COALESCE(MAX(bos.total_parts), 0)::integer,
 			COALESCE(MAX(bos.observed_parts), 0)::integer,
@@ -53,8 +53,22 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 		LEFT JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
 		LEFT JOIN binary_observation_stats bos ON bos.binary_id = rf.binary_id
 		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts rbp
+			JOIN article_headers ah ON ah.id = rbp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters p ON p.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE rbp.binary_id = rf.binary_id
+			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE rf.release_id = $1
-		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at`,
+		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, raw_meta.poster, raw_meta.posted_at`,
 		releaseID,
 	)
 	if err != nil {

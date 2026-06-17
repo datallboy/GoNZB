@@ -138,8 +138,8 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 			COALESCE(ng.group_name, ''),
 			cf.file_name,
 			cf.subject,
-			cf.poster,
-			cf.posted_at,
+			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
+			COALESCE(cf.posted_at, raw_meta.posted_at),
 			cf.size_bytes,
 			cf.is_pars,
 			cf.file_index
@@ -155,6 +155,20 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 		) rf ON TRUE
 		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah ON ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters p ON p.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE bp.binary_id = rf.binary_id
+			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
@@ -213,8 +227,8 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 			COALESCE(ng.group_name, '') AS group_name,
 			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), bic.release_name) AS file_name,
 			COALESCE(NULLIF(bic.binary_name, ''), NULLIF(bic.file_name, ''), bic.release_name) AS subject,
-			COALESCE(p.poster_name, '') AS poster,
-			bos.posted_at,
+			COALESCE(NULLIF(p.poster_name, ''), raw_meta.poster, '') AS poster,
+			COALESCE(bos.posted_at, raw_meta.posted_at),
 			bos.total_bytes AS size_bytes,
 			LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
 			bic.file_index
@@ -223,6 +237,20 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN posters p ON p.id = bc.poster_id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah ON ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			LEFT JOIN posters pp ON pp.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
+			WHERE bp.binary_id = bc.binary_id
+			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE bc.binary_id = $1`, binaryID)
 
 	var item CatalogReleaseFile
