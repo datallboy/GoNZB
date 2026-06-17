@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/nntp"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 type fakeSettingsStore struct {
@@ -201,6 +202,36 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 	if got.EnrichPreDBStage.Interval != 90*time.Second || !got.EnrichTMDBStage.Enabled {
 		t.Fatalf("unexpected enrich stage config: predb=%+v tmdb=%+v", got.EnrichPreDBStage, got.EnrichTMDBStage)
+	}
+}
+
+func TestEffectiveSupervisorAssembleModeMergesEnabledLanes(t *testing.T) {
+	cfg := usenetIndexerConfig{
+		AssembleLaneA: indexerStageConfig{Enabled: true},
+		AssembleLaneB: indexerStageConfig{Enabled: true},
+	}
+
+	got := effectiveSupervisorAssembleMode(cfg)
+	if got.LaneAClaimMode != pgindex.AssemblyClaimLaneCombined {
+		t.Fatalf("expected lane A to use combined selector when both lanes are enabled, got %+v", got)
+	}
+	if got.LaneBStageEnabled {
+		t.Fatalf("expected lane B stage to be suppressed when lane A runs combined selector, got %+v", got)
+	}
+}
+
+func TestEffectiveSupervisorAssembleModePreservesStandaloneLaneB(t *testing.T) {
+	cfg := usenetIndexerConfig{
+		AssembleLaneA: indexerStageConfig{Enabled: false},
+		AssembleLaneB: indexerStageConfig{Enabled: true},
+	}
+
+	got := effectiveSupervisorAssembleMode(cfg)
+	if got.LaneAClaimMode != pgindex.AssemblyClaimLaneA {
+		t.Fatalf("expected lane A selector to remain lane_a, got %+v", got)
+	}
+	if !got.LaneBStageEnabled {
+		t.Fatalf("expected standalone lane B stage to remain enabled, got %+v", got)
 	}
 }
 
