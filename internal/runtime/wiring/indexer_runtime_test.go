@@ -204,7 +204,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 }
 
-func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
+func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
 		SettingsStore: fakeSettingsStore{
@@ -231,10 +231,10 @@ func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
 
 	servers := scopedIndexerServers(appCtx)
 	if len(servers) != 1 {
-		t.Fatalf("expected one indexer-scoped server, got %+v", servers)
+		t.Fatalf("expected one shared indexer server, got %+v", servers)
 	}
-	if servers[0].ID != "indexer" || servers[0].Host != "indexer.example.com" || servers[0].Username != "indexer-user" {
-		t.Fatalf("expected indexer-scoped server selection, got %+v", servers[0])
+	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
+		t.Fatalf("expected shared server selection, got %+v", servers[0])
 	}
 }
 
@@ -264,7 +264,7 @@ func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
 	}
 }
 
-func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing.T) {
+func TestScopedDownloaderServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
 		SettingsStore: fakeSettingsStore{
@@ -291,10 +291,10 @@ func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing
 
 	servers := scopedDownloaderServers(appCtx)
 	if len(servers) != 1 {
-		t.Fatalf("expected one downloader-scoped server, got %+v", servers)
+		t.Fatalf("expected one shared downloader server, got %+v", servers)
 	}
-	if servers[0].ID != "downloader" || servers[0].Host != "downloader.example.com" || servers[0].Username != "downloader-user" {
-		t.Fatalf("expected downloader-scoped server selection, got %+v", servers[0])
+	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
+		t.Fatalf("expected shared server selection, got %+v", servers[0])
 	}
 }
 

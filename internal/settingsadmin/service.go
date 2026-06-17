@@ -162,8 +162,6 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 	}
 
 	issues = append(issues, validateServers("servers", runtime.Servers)...)
-	issues = append(issues, validateServers("downloader_servers", runtime.DownloaderServers)...)
-	issues = append(issues, validateServers("indexer_servers", runtime.IndexerServers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
 	issues = append(issues, validateDownload(runtime.Download)...)
 	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
@@ -437,7 +435,7 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		return nil
 	}
 	if base != nil && base.Modules.Downloader.Enabled &&
-		len(app.DownloaderNNTPServers(next)) < len(app.DownloaderNNTPServers(current)) &&
+		len(next.Servers) < len(current.Servers) &&
 		downloaderConfigured(current) {
 		return fmt.Errorf("removing NNTP servers while downloader runtime is configured requires a restart")
 	}

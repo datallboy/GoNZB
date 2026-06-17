@@ -426,6 +426,8 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
     case 'nntp':
       return {
         servers: serversForSave(settings.servers ?? [], 'nntp'),
+        downloader_servers: [],
+        indexer_servers: [],
         nntp_pool: settings.nntp_pool,
       }
     case 'downloader':
