@@ -13,7 +13,7 @@ A public release should be formed from a coherent family of binaries that repres
 Minimum functional path:
 
 1. `scrape_latest` / `scrape_backfill` ingest article headers and immutable ingest payloads.
-2. `assemble_lane_a` and `assemble_lane_b` claim headers and write canonical binary projections.
+2. `assemble` claims queued article headers and writes canonical binary projections, internally balancing partial-binary completion and fresh binary creation.
 3. `recover_yenc` or assemble inline yEnc recovery promotes true recovered filenames when subject/XOVER data is obfuscated.
 4. `release_summary_refresh` summarizes binary families into readiness rows and release-ready candidates.
 5. `release` forms durable release rows and release-file mappings from ready candidates.
@@ -107,7 +107,7 @@ Column mapping from the overview/header facts:
 | Bytes | `734532` | `article_headers.bytes`; later `binary_parts.segment_bytes` and `binary_observation_stats.total_bytes` |
 | Lines | `9821` | `article_headers.lines`; matcher/recovery context only |
 | Xref raw text | `Xref: ... alt.binaries.misc:91820011` | `article_header_ingest_payloads.xref`; parsed into `article_header_crosspost_groups` for popularity/crosspost telemetry |
-| Quoted filename in subject | `3FEPZid...part003.rar` | `article_header_ingest_payloads.subject_file_name`; seeds `article_header_assembly_keys.normalized_file_name` |
+| Quoted filename in subject | `3FEPZid...part003.rar` | `article_header_ingest_payloads.subject_file_name`; seeds `article_header_assembly_queue.normalized_file_name` with `queue_kind = 'structured'` |
 | File counter before yEnc | `[03/60]` | `article_header_ingest_payloads.subject_file_index = 3`, `subject_file_total = 60` |
 | yEnc article counter in subject | `(12/200)` | `article_header_ingest_payloads.yenc_part_number = 12`, `yenc_total_parts = 200` |
 | yEnc size in subject | `73400320` | `article_header_ingest_payloads.yenc_file_size` when parseable from subject tail |
@@ -437,7 +437,7 @@ Purge prerequisites:
 - required inspection gate is complete.
 - source lineage rows were captured before archive/purge.
 
-Purge may delete binary source rows through `binary_core`, but it must not overlap active binary writers. It is serialized with assemble lanes under the supervisor `binary-source-write` group.
+Purge may delete binary source rows through `binary_core`, but it must not overlap active binary writers. It is serialized with `assemble` under the supervisor `assemble/purge` group.
 
 ## Regression Checks
 

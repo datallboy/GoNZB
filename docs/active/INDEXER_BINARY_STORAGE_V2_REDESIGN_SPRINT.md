@@ -14,7 +14,7 @@ PostgreSQL SQL should not physically corrupt heap or index pages by itself. The 
 
 Resolved direct `binaries` write surfaces:
 
-- `assemble_lane_a` and `assemble_lane_b` now create/update `binary_core`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, and `binary_lifecycle` directly.
+- `assemble` now creates/updates `binary_core`, `binary_observation_stats`, `binary_identity_current`, `binary_recovery_current`, and `binary_lifecycle` directly. Lane A and Lane B remain internal work classes inside this one writer.
 - `recover_yenc` now promotes recovered identity into `binary_core`, `binary_identity_current`, `binary_observation_stats`, and `binary_recovery_current`; merge cleanup deletes the source `binary_core` row.
 - `binary_recovery` now updates `binary_recovery_current` and canonicalized filenames in `binary_identity_current`, `release_files`, and `binary_parts`.
 - `release_purge_archived_sources` now deletes terminal binary lineage through `binary_core`, which is the canonical cascade anchor.
@@ -69,8 +69,8 @@ Phase A, implemented first:
 Phase B:
 
 - Move release-summary-refresh, release formation, inspect selection, yEnc selection, and catalog reads to the v2 side tables.
-- Move assemble lane-A claim-time completion matching to compact selector projections:
-  - `article_header_assembly_keys` is assemble-owned, seeded from already parsed subject filenames during scrape ingest, and completed/deleted by assemble.
+- Move assemble claim-time completion matching to compact selector projections:
+  - `article_header_assembly_queue` is assemble-owned, seeded by scrape for every ingested header, claimed by assemble, and deleted after successful binary part assignment.
   - `binary_completion_keys` is assemble-owned and refreshed when binary identity/stats change.
   - this avoids stale header-key scans while keeping scrape as a seed writer rather than owner of assemble progress.
 - `release_summary_refresh` scheduled summary aggregate/dominant reads now use `binary_identity_current`, `binary_observation_stats`, and `binary_core` instead of behavior-bearing fields on `binaries`.
@@ -182,7 +182,7 @@ The scrape deadlock on poster upsert showed the same ownership problem as `binar
 Implemented target shape:
 
 - `scrape_latest` and `scrape_backfill` insert canonical/raw ingest rows only: `article_headers`, `article_header_ingest_payloads`, `article_header_crosspost_groups`, checkpoints, and queue seeds.
-- scrape also seeds downstream-owned selector/support work surfaces derived from the same header row when they are required to avoid downstream hot joins, such as `article_header_assembly_keys`.
+- scrape also seeds downstream-owned selector/support work surfaces derived from the same header row when they are required to avoid downstream hot joins, such as `article_header_assembly_queue`.
 - `poster_materialize` owns `posters` and `article_header_poster_refs`.
 - `crosspost_popularity_refresh` owns `article_header_crosspost_group_summary`.
 - `article_header_crosspost_group_messages` and `article_header_crosspost_group_sources` were removed by migration 055. Exact per-message materialization created a large write-amplified reporting table and is no longer part of the target schema.
@@ -206,7 +206,7 @@ Result: Phase A/B is complete. Phase C is partially complete: active production 
 
 Observed fresh-database serve soak:
 
-- all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble_lane_a`, `assemble_lane_b`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
+- all enabled stages executed: `scrape_latest`, `scrape_backfill`, `assemble`, `recover_yenc`, `release_summary_refresh`, `release`, `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`, `release_generate_nzb`, `release_archive_nzb`, `release_purge_archived_sources`, and `indexer_maintenance`.
 - scrape materializer queues were seeded during the run. `poster_materialize` and `crosspost_popularity_refresh` are wired as supervisor stages, but were disabled in the runtime settings used for the serve soak.
 - materializer CLI validation passed after the serve soak: `materialize-posters --batch-size 10000` claimed 10,000 rows and upserted 10,000 refs; `refresh-crosspost-popularity --batch-size 1000` claimed 86 groups, refreshed 86 summaries, and upserted 634,073 message rows.
 - release outputs were produced and archived/purged: `nzb_cache` rows existed, release catalog rows existed, and `release_archive_state` reached `purged`.

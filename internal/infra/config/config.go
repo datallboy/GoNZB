@@ -95,8 +95,7 @@ type IndexingConfig struct {
 	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
 	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
 	CrosspostPopularityRefresh  IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
-	AssembleLaneA               IndexingStageConfig        `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
-	AssembleLaneB               IndexingStageConfig        `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
+	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
 	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
 	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
 	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
@@ -126,6 +125,8 @@ type IndexingStageConfig struct {
 	MaxEffectiveConcurrency *int     `mapstructure:"max_effective_concurrency" yaml:"max_effective_concurrency"`
 	BackoffSeconds          *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
+	LaneATargetPct          *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
+	LaneBMinPct             *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
 }
 
 type IndexingMatchConfig struct {
@@ -294,8 +295,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble_lane_a.binary_upsert_db_chunk_size", 250)
-	v.SetDefault("indexing.assemble_lane_b.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
+	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
 	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
@@ -479,10 +481,7 @@ func (c *Config) validate() error {
 	if err := validateIndexingStageConfig("indexing.crosspost_popularity_refresh", c.Indexing.CrosspostPopularityRefresh); err != nil {
 		return err
 	}
-	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.assemble_lane_b", c.Indexing.AssembleLaneB); err != nil {
+	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {

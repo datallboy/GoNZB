@@ -62,8 +62,7 @@ type usenetIndexerConfig struct {
 	ScrapeBackfill                                  indexerStageConfig
 	PosterMaterialize                               indexerStageConfig
 	CrosspostPopularityRefresh                      indexerStageConfig
-	AssembleLaneA                                   indexerStageConfig
-	AssembleLaneB                                   indexerStageConfig
+	Assemble                                        indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
 	ReleaseSummaryRefreshStage                      indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
@@ -93,6 +92,8 @@ type indexerStageConfig struct {
 	MaxEffectiveConcurrency int
 	Backoff                 time.Duration
 	BinaryUpsertDBChunkSize int
+	LaneATargetPct          int
+	LaneBMinPct             int
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -125,8 +126,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeBackfillSvc       *scrape.Service
 		scrapeProvider          io.Closer
 		nntpStats               func() app.NNTPRuntimeStats
-		assembleAFetcher        inspectpkg.ArticleFetcher
-		assembleBFetcher        inspectpkg.ArticleFetcher
+		assembleFetcher         inspectpkg.ArticleFetcher
 		inspectDiscoveryFetcher inspectpkg.ArticleFetcher
 		inspectPAR2Fetcher      inspectpkg.ArticleFetcher
 		inspectNFOFetcher       inspectpkg.ArticleFetcher
@@ -169,8 +169,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			return nil, err
 		}
 		scrapeClient := indexerNNTPClient(manager, "scrape")
-		assembleLaneAClient := indexerNNTPClient(manager, "assemble_lane_a")
-		assembleLaneBClient := indexerNNTPClient(manager, "assemble_lane_b")
+		assembleClient := indexerNNTPClient(manager, "assemble")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
 		if len(runtimeCfg.Newsgroups) > 0 {
@@ -206,8 +205,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		nntpStats = func() app.NNTPRuntimeStats {
 			return manager.RuntimeStats("indexer")
 		}
-		assembleAFetcher = assembleLaneAClient
-		assembleBFetcher = assembleLaneBClient
+		assembleFetcher = assembleClient
 		inspectDiscoveryFetcher = indexerNNTPClient(manager, "inspect_discovery")
 		inspectPAR2Fetcher = indexerNNTPClient(manager, "inspect_par2")
 		inspectNFOFetcher = indexerNNTPClient(manager, "inspect_nfo")
@@ -218,33 +216,19 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	}
 
 	matcherSvc := match.NewService(runtimeCfg.Match)
-	assembleMode := effectiveSupervisorAssembleMode(runtimeCfg)
-	assembleLaneASvc := assemble.NewService(
+	assembleSvc := assemble.NewService(
 		appCtx.PGIndexStore,
 		matcherSvc,
-		assembleAFetcher,
+		assembleFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize:               runtimeCfg.AssembleLaneA.BatchSize,
-			ClaimOwner:              "assemble-lane-a",
+			BatchSize:               runtimeCfg.Assemble.BatchSize,
+			ClaimOwner:              "assemble",
 			ClaimLease:              5 * time.Minute,
-			Concurrency:             runtimeCfg.AssembleLaneA.Concurrency,
-			BinaryUpsertDBChunkSize: runtimeCfg.AssembleLaneA.BinaryUpsertDBChunkSize,
-			Lane:                    assembleMode.LaneAClaimMode,
-		},
-	)
-	assembleLaneBSvc := assemble.NewService(
-		appCtx.PGIndexStore,
-		matcherSvc,
-		assembleBFetcher,
-		appCtx.Logger,
-		assemble.Options{
-			BatchSize:               runtimeCfg.AssembleLaneB.BatchSize,
-			ClaimOwner:              "assemble-lane-b",
-			ClaimLease:              5 * time.Minute,
-			Concurrency:             runtimeCfg.AssembleLaneB.Concurrency,
-			BinaryUpsertDBChunkSize: runtimeCfg.AssembleLaneB.BinaryUpsertDBChunkSize,
-			Lane:                    pgindex.AssemblyClaimLaneB,
+			Concurrency:             runtimeCfg.Assemble.Concurrency,
+			BinaryUpsertDBChunkSize: runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
+			LaneATargetPct:          runtimeCfg.Assemble.LaneATargetPct,
+			LaneBMinPct:             runtimeCfg.Assemble.LaneBMinPct,
 		},
 	)
 	recoverYEncSvc := yencrecover.NewService(
@@ -366,25 +350,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}),
 		},
 		{
-			Name:        supervisor.StageAssembleLaneA,
-			Interval:    runtimeCfg.AssembleLaneA.Interval,
-			Enabled:     assembleLaneASvc != nil && runtimeCfg.AssembleLaneA.Enabled,
-			BatchSize:   runtimeCfg.AssembleLaneA.BatchSize,
-			Concurrency: runtimeCfg.AssembleLaneA.Concurrency,
-			Backoff:     runtimeCfg.AssembleLaneA.Backoff,
+			Name:        supervisor.StageAssemble,
+			Interval:    runtimeCfg.Assemble.Interval,
+			Enabled:     assembleSvc != nil && runtimeCfg.Assemble.Enabled,
+			BatchSize:   runtimeCfg.Assemble.BatchSize,
+			Concurrency: runtimeCfg.Assemble.Concurrency,
+			Backoff:     runtimeCfg.Assemble.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-				return marshalStageMetrics(assembleLaneASvc.RunOnceWithMetrics(ctx))
-			}),
-		},
-		{
-			Name:        supervisor.StageAssembleLaneB,
-			Interval:    runtimeCfg.AssembleLaneB.Interval,
-			Enabled:     assembleLaneBSvc != nil && assembleMode.LaneBStageEnabled,
-			BatchSize:   runtimeCfg.AssembleLaneB.BatchSize,
-			Concurrency: runtimeCfg.AssembleLaneB.Concurrency,
-			Backoff:     runtimeCfg.AssembleLaneB.Backoff,
-			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-				return marshalStageMetrics(assembleLaneBSvc.RunOnceWithMetrics(ctx))
+				return marshalStageMetrics(assembleSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -566,8 +539,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	service := indexing.NewService(supervisorSvc, indexing.Options{
-		AssembleLaneA:           assembleLaneASvc.RunOnce,
-		AssembleLaneB:           assembleLaneBSvc.RunOnce,
+		Assemble:                assembleSvc.RunOnce,
 		RecoverYEnc:             recoverYEncSvc.RunOnce,
 		ReleaseReform:           releaseSvc.RunReformOnce,
 		EnrichPredbSceneName:    enrichPreDBSvc.RunSceneNameRecoveryOnce,
@@ -583,23 +555,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeProvider: scrapeProvider,
 		nntpStats:      nntpStats,
 	}, nil
-}
-
-type supervisorAssembleMode struct {
-	LaneAClaimMode    string
-	LaneBStageEnabled bool
-}
-
-func effectiveSupervisorAssembleMode(runtimeCfg usenetIndexerConfig) supervisorAssembleMode {
-	mode := supervisorAssembleMode{
-		LaneAClaimMode:    pgindex.AssemblyClaimLaneA,
-		LaneBStageEnabled: runtimeCfg.AssembleLaneB.Enabled,
-	}
-	if runtimeCfg.AssembleLaneA.Enabled && runtimeCfg.AssembleLaneB.Enabled {
-		mode.LaneAClaimMode = pgindex.AssemblyClaimLaneCombined
-		mode.LaneBStageEnabled = false
-	}
-	return mode
 }
 
 func scopedIndexerServers(appCtx *app.Context) []config.ServerConfig {
@@ -742,8 +697,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
 		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
 		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),
-		AssembleLaneA:              newIndexerStageConfig(indexingCfg.AssembleLaneA),
-		AssembleLaneB:              newIndexerStageConfig(indexingCfg.AssembleLaneB),
+		Assemble:                   newIndexerStageConfig(indexingCfg.Assemble),
 		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),
 		ReleaseSummaryRefreshStage: newIndexerStageConfig(indexingCfg.ReleaseSummaryRefresh),
 		ReleaseStage: newIndexerStageConfig(app.IndexingStageRuntimeSettings{
@@ -818,6 +772,8 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		MaxEffectiveConcurrency: in.MaxEffectiveConcurrency,
 		Backoff:                 time.Duration(in.BackoffSeconds) * time.Second,
 		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
+		LaneATargetPct:          in.LaneATargetPct,
+		LaneBMinPct:             in.LaneBMinPct,
 	}
 }
 

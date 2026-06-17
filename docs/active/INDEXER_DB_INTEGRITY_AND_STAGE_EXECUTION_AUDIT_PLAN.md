@@ -58,9 +58,9 @@ Interpretation:
 
 Immediate landed application mitigation:
 
-- `assemble_lane_a` and `assemble_lane_b` are now mutually exclusive within one supervisor process.
-- Both lanes may remain enabled, but only one assemble write lane can execute at a time.
-- This preserves the lane split while preventing overlapping writes into the v2 binary assembly tables from one `serve` process.
+- `assemble` is now the only scheduled assemble writer within one supervisor process.
+- Lane A and Lane B remain internal work classes selected inside the assemble coordinator.
+- This prevents overlapping lane writers into the v2 binary assembly tables from one `serve` process.
 
 Release-summary-refresh follow-up on `2026-06-16`:
 
@@ -294,7 +294,7 @@ Effective now:
 Rationale:
 
 - `article_header_ingest_payloads` still feeds yEnc recovery and raw fallback evidence
-- assemble lane A now uses `article_header_assembly_keys` for claim-time normalized filename matching instead of scanning payload rows
+- assemble now uses `article_header_assembly_queue` plus `binary_completion_keys` for claim-time normalized filename matching instead of scanning payload rows
 - auto-purging payloads before downstream backlog drains can reduce release formation quality and regroup potential
 - intentional source purge remains the only automated destructive lineage cleanup path after NZB generation/archive/purge eligibility
 
@@ -453,12 +453,12 @@ Hot-path inefficiencies found:
 
 ### Schema / overlap findings
 
-- assemble still has the most important current ownership exception in the system:
-  - it updates `article_headers.assembly_claimed_by`
-  - it updates `article_headers.assembly_claimed_until`
-  - it sets `article_headers.assembled_at`
-- this means scrape/assemble overlap is not just “operationally discouraged”; it is structurally high-risk:
-  - both stages write `article_headers`
+- assemble claim/progress state has moved out of `article_headers`:
+  - it claims `article_header_assembly_queue`
+  - it deletes queue rows after successful `binary_parts` writes
+- this removes the previous scrape/assemble article-row write overlap:
+  - scrape writes immutable article facts and seeds queue rows
+  - assemble writes/deletes queue rows and binary projections
   - poster writes are now isolated to `poster_materialize`, so poster no longer adds scrape/assemble write overlap
   - scrape should stay isolated from assemble during bootstrap and heavy regroup work
 - claim selection is serialized globally with:
@@ -472,10 +472,10 @@ Hot-path inefficiencies found:
 
 - assemble no longer writes `posters`; `poster_materialize` owns poster dimension writes
 - `RefreshBinaryStatsBatch` no longer rereads `article_headers` twice per part row when computing aggregate binary stats
-- lane A claim selection no longer derives incomplete binary/header filename matches from broad joins over `binary_identity_current`, `binary_observation_stats`, and `article_header_ingest_payloads`
-- scrape now seeds `article_header_assembly_keys` inline from already parsed subject filenames; this is an assemble-owned work surface completed/deleted by assemble after binary part assignment
+- assemble claim selection no longer derives incomplete binary/header filename matches from broad joins over `binary_identity_current`, `binary_observation_stats`, and `article_header_ingest_payloads`
+- scrape now seeds `article_header_assembly_queue` inline from already parsed article/header facts; this is an assemble-owned work surface claimed and completed/deleted by assemble after binary part assignment
 - assemble/recover now materialize `binary_completion_keys` when binary identity/stats change; this is binary-owner state and avoids a separate stage that would only move the same heavy selector elsewhere
-- stale `article_header_assembly_keys` rows must not accumulate; migration `054` removes historical completed keys and assemble deletes newly completed keys inline
+- stale `article_header_assembly_queue` rows must not accumulate; assemble deletes newly completed queue rows inline and migration `061` removes rows already represented by `binary_parts`
 
 ### Remaining assemble-specific follow-up
 
@@ -669,7 +669,7 @@ Remaining maintenance-specific follow-up:
 Audit stages in this exact order:
 
 1. `scrape_latest` / `scrape_backfill`
-2. `assemble_lane_a` / `assemble_lane_b`
+2. `assemble`
 3. `recover_yenc`
 4. `release_summary_refresh`
 5. `release`
@@ -944,7 +944,7 @@ These are the baseline methods the audit should start from. The audit may expand
 - A deadlock was observed in `release_purge_archived_sources` while deleting terminal `binary_core` rows for an archived release.
 - The purge eligibility contract was intact: candidates still require `purge_pending`, durable object key, durable catalog files, and completed `inspect_media`.
 - The unsafe overlap was operational. Purge deletes the binary FK root and cascades through binary-owned tables, so it contends with assemble/yEnc binary writers even when the release is logically complete.
-- Supervisor now serializes `release_purge_archived_sources` with assemble lane A/lane B under the `binary-source-write` exclusive group.
+- Supervisor now serializes `release_purge_archived_sources` with `assemble` under the `assemble/purge` exclusive group.
 - `PurgeArchivedReleaseSources` now runs inside the retryable PostgreSQL transaction wrapper so SQLSTATE `40P01`/`40001` retries are handled consistently with other hot write paths.
 
 ## Documentation Deliverables

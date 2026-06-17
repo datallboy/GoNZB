@@ -85,6 +85,8 @@ type IndexingStageRuntimeSettings struct {
 	MaxEffectiveConcurrency int     `json:"max_effective_concurrency,omitempty"`
 	BackoffSeconds          int     `json:"backoff_seconds,omitempty"`
 	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
+	LaneATargetPct          int     `json:"lane_a_target_pct,omitempty"`
+	LaneBMinPct             int     `json:"lane_b_min_pct,omitempty"`
 }
 
 type IndexingReleaseRuntimeSettings struct {
@@ -221,8 +223,7 @@ type IndexingRuntimeSettings struct {
 	ScrapeBackfill              IndexingStageRuntimeSettings                    `json:"scrape_backfill,omitempty"`
 	PosterMaterialize           IndexingStageRuntimeSettings                    `json:"poster_materialize,omitempty"`
 	CrosspostPopularityRefresh  IndexingStageRuntimeSettings                    `json:"crosspost_popularity_refresh,omitempty"`
-	AssembleLaneA               IndexingStageRuntimeSettings                    `json:"assemble_lane_a,omitempty"`
-	AssembleLaneB               IndexingStageRuntimeSettings                    `json:"assemble_lane_b,omitempty"`
+	Assemble                    IndexingStageRuntimeSettings                    `json:"assemble,omitempty"`
 	RecoverYEnc                 IndexingStageRuntimeSettings                    `json:"recover_yenc,omitempty"`
 	ReleaseSummaryRefresh       IndexingStageRuntimeSettings                    `json:"release_summary_refresh,omitempty"`
 	Release                     IndexingReleaseRuntimeSettings                  `json:"release,omitempty"`

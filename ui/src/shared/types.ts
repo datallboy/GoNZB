@@ -284,6 +284,8 @@ export type AdminStageConfigPatch = {
   max_effective_concurrency?: number
   backoff_seconds?: number
   binary_upsert_db_chunk_size?: number
+  lane_a_target_pct?: number
+  lane_b_min_pct?: number
 }
 
 export type AdminRun = {
@@ -806,8 +808,7 @@ export type IndexingRuntimeSettings = {
   scrape_backfill: AdminStageConfigPatch
   poster_materialize: AdminStageConfigPatch
   crosspost_popularity_refresh: AdminStageConfigPatch
-  assemble_lane_a: AdminStageConfigPatch
-  assemble_lane_b: AdminStageConfigPatch
+  assemble: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch

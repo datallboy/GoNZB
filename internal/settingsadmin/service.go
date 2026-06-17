@@ -398,8 +398,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
-		{name: "assemble_lane_a", config: indexing.AssembleLaneA},
-		{name: "assemble_lane_b", config: indexing.AssembleLaneB},
+		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
 		{name: "release_summary_refresh", config: indexing.ReleaseSummaryRefresh},
 		{name: "release", config: app.IndexingStageRuntimeSettings{
@@ -550,8 +549,7 @@ func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	}
 	return indexing.ScrapeLatest.Enabled ||
 		indexing.ScrapeBackfill.Enabled ||
-		indexing.AssembleLaneA.Enabled ||
-		indexing.AssembleLaneB.Enabled ||
+		indexing.Assemble.Enabled ||
 		indexing.RecoverYEnc.Enabled ||
 		indexing.ReleaseSummaryRefresh.Enabled ||
 		indexing.Release.Enabled ||

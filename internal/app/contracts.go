@@ -228,6 +228,8 @@ type UsenetIndexStore interface {
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	ClaimAssemblyQueueBatch(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (int, error)
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
 	RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error
@@ -312,8 +314,7 @@ type UsenetIndexerService interface {
 	ScrapeOnce(ctx context.Context) error
 	ScrapeLatestOnce(ctx context.Context) error
 	ScrapeBackfillOnce(ctx context.Context) error
-	AssembleLaneAOnce(ctx context.Context) error
-	AssembleLaneBOnce(ctx context.Context) error
+	AssembleOnce(ctx context.Context) error
 	RecoverYEncOnce(ctx context.Context) error
 	ReleaseSummaryRefreshOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error

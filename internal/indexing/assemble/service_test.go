@@ -497,8 +497,16 @@ func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]
 }
 
 func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+	return f.ClaimAssemblyQueueBatch(context.Background(), req)
+}
+
+func (f *fakeRepository) ClaimAssemblyQueueBatch(_ context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
 	f.lastClaimRequest = req
 	return f.headers, nil
+}
+
+func (f *fakeRepository) CleanupStaleAssemblyQueueRows(context.Context, int) (int, error) {
+	return 0, nil
 }
 
 func (f *fakeRepository) UpsertBinary(_ context.Context, in pgindex.BinaryRecord) (int64, error) {

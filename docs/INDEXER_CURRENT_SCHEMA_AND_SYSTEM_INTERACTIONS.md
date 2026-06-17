@@ -191,7 +191,7 @@ Allowed:
 
 Held back:
 
-- `assemble_*`
+- `assemble`
 - `recover_yenc`
 - `release_summary_refresh`
 - `release`
@@ -208,8 +208,7 @@ Validated current bootstrap posture:
 
 Allowed:
 
-- `assemble_lane_a`
-- `assemble_lane_b`
+- `assemble`
 - `recover_yenc`
 - `release_summary_refresh`
 - `release`
@@ -309,9 +308,9 @@ This matrix is the schema contract for current and near-term code changes.
 
 | Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
 | --- | --- | --- | --- | --- |
-| `article_headers` | canonical fact | `scrape_*` | `assemble_*` claim/progress markers only (transitional) | Durable ingest fact row per article. |
+| `article_headers` | canonical fact | `scrape_*` | none | Durable ingest fact row per article. Assemble does not write claim/progress state here. |
 | `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional raw ingest metadata; keeps raw poster/xref text. Poster materialization must not write back to this table. |
-| `article_header_assembly_keys` | queue/work selector projection | `assemble_*` | `scrape_*` seed only | Header-derived normalized filename keys for assemble lane A. Scrape seeds from parsed subjects; assemble completes/deletes keys after binary part assignment. |
+| `article_header_assembly_queue` | queue/work selector projection | `assemble` | `scrape_*` seed only | Canonical assemble header queue. Scrape seeds structured/general work rows; assemble claims, releases, records errors, and deletes rows after binary part assignment. |
 | `article_header_poster_refs` | derived/support projection | `poster_materialize` | none | Per-header poster dimension projection derived from raw payload poster text. |
 | `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
 | `article_header_crosspost_groups` | discovery/support telemetry | `scrape_*` | none | Raw observed `Xref` group memberships for popularity/review only; not canonical file lineage. |
@@ -322,16 +321,16 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | `poster_materialize` | none | Shared support dimension; scrape and assemble do not write it inline. |
 | `binaries` | legacy compatibility table | none | none | Retained for migration/backward-compatibility only. Production store code must not use it. |
-| `binary_core` | v2 canonical anchor | `assemble_*` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
-| `binary_observation_stats` | v2 canonical projection | `assemble_*` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
-| `binary_identity_current` | v2 canonical projection | `assemble_*` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
-| `binary_completion_keys` | derived selector projection | `assemble_*` | `recover_yenc` after recovered identity/stat changes only | Binary-derived incomplete normalized filename keys for assemble lane A. Keeps the hot selector off broad identity/stat joins. |
+| `binary_core` | v2 canonical anchor | `assemble` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
+| `binary_observation_stats` | v2 canonical projection | `assemble` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
+| `binary_identity_current` | v2 canonical projection | `assemble` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
+| `binary_completion_keys` | derived selector projection | `assemble` | `recover_yenc` after recovered identity/stat changes only | Binary-derived incomplete normalized filename keys for internal Lane A. Keeps the hot selector off broad identity/stat joins. |
 | `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
 | `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `release_purge_archived_sources` | none | Archive/purge lifecycle state for binary lineage. |
 | `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
-| `binary_parts` | canonical fact | `assemble_*` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
+| `binary_parts` | canonical fact | `assemble` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep compact scalar summaries in `binary_identity_current`; full matcher traces are no longer persisted to PostgreSQL by default. |
-| `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble_*` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
+| `yenc_recovery_work_items` | queue/work | `recover_yenc` | `assemble` seed only | Recovery-owned materialized candidate queue with fetch metadata snapshots and leases. |
 | `binary_inspections` | queue/work | `inspect_*` | none | Inspection stage tracking only. |
 | `binary_archive_entries` | derived/evidence | `inspect_archive` | none | Archive evidence owned by archive inspection. |
 | `binary_media_streams` | derived/evidence | `inspect_media` | none | Media evidence owned by media inspection. |
@@ -750,12 +749,12 @@ These fields are read by assemble and yEnc queue hydration. They are not durable
 
 Release formation writes durable catalog rows only after consuming these ready candidates.
 
-### `assemble_lane_a` and `assemble_lane_b`
+### `assemble`
 
 Allowed reads:
 
 - `article_headers`
-- `article_header_assembly_keys`
+- `article_header_assembly_queue`
 - `binary_completion_keys`
 - `article_header_ingest_payloads` as raw fallback evidence during candidate hydration/recovery support
 - runtime/stage config
@@ -771,10 +770,7 @@ Allowed writes:
 - `binary_parts`
 - `yenc_recovery_work_items` seeding
 - release-family refresh queue enqueue only
-- transitional bounded write-back to `article_headers` for:
-  - `assembly_claimed_by`
-  - `assembly_claimed_until`
-  - `assembled_at`
+- `article_header_assembly_queue` claim/release/error/delete fields
 
 Not allowed:
 
@@ -787,7 +783,7 @@ Rationale:
 
 Primary DBO entry points:
 
-- `ClaimUnassembledArticleHeaders`
+- `ClaimAssemblyQueueBatch`
 - `listPriorityAssemblyHeaderIDs`
 - `listRecentUnassembledHeaderIDs`
 - `hydrateAssemblyCandidates`
@@ -796,15 +792,12 @@ Primary DBO entry points:
 - `UpsertBinaryParts`
 - binary refresh/update helpers in `assembly_store.go`
 
-Current audit note:
-
-- lane A is a structured-completion selector that tries to feed incomplete binaries with matching normalized file identity
-- when both assemble lanes are enabled under `serve`, the runtime schedules lane A with the combined selector and suppresses the separate lane B scheduled stage
-- the combined selector reserves most of each batch for lane A structured completions and fills the remaining batch from lane B recent backlog, preserving a single binary-source writer while still creating fresh binaries
-- lane A candidate selection now reads `binary_completion_keys` and `article_header_assembly_keys`; it no longer scans `binary_identity_current`, `binary_observation_stats`, or `article_header_ingest_payloads` in the claim selector
-- `article_header_assembly_keys` is an assemble-owned work surface seeded by scrape; assemble deletes keys when the corresponding headers are claimed into binary parts
+- Internal Lane A is a structured-completion selector that tries to feed incomplete binaries with matching normalized file identity.
+- Internal Lane B is the recent general backlog selector for fresh binary creation.
+- The single `assemble` stage reserves most of each batch for Lane A structured completions and fills remaining capacity from Lane B recent backlog, preserving a single binary-source writer while still creating fresh binaries.
+- Lane A candidate selection reads `binary_completion_keys` and `article_header_assembly_queue`; it no longer scans `binary_identity_current`, `binary_observation_stats`, or `article_header_ingest_payloads` in the claim selector.
+- `article_header_assembly_queue` is an assemble-owned work surface seeded by scrape; assemble deletes rows when the corresponding headers are written into binary parts.
 - assemble/recover own `binary_completion_keys` and refresh it only when binary identity/stats change
-- lane B is the recent general backlog selector and can exclude structured-progress matches
 - current service usage defers release-summary recomputation and only enqueues dirty family keys
 - the store still supports inline release-summary recomputation when callers do not set the defer flag
 - v2 binary identity projection updates are guarded by match confidence:
@@ -1149,7 +1142,7 @@ These are explicit anti-patterns for future changes.
 
 ### Assemble stages may not
 
-- expand `article_headers` writeback beyond the bounded transitional claim/progress fields (`assembly_claimed_by`, `assembly_claimed_until`, `assembled_at`)
+- add assemble claim/progress writeback to `article_headers`; `article_header_assembly_queue` is the canonical claim surface
 - update `releases` to record assembly progress
 - bulk recompute `release_family_readiness_summaries`
 

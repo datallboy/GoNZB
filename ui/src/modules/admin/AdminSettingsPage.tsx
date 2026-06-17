@@ -17,13 +17,11 @@ type StageKey =
   | 'scrape_backfill'
   | 'poster_materialize'
   | 'crosspost_popularity_refresh'
-  | 'assemble_lane_a'
-  | 'assemble_lane_b'
+  | 'assemble'
   | 'recover_yenc'
   | 'release_summary_refresh'
   | 'release_generate_nzb'
   | 'release_archive_nzb'
-  | 'release_purge_archived_sources'
   | 'release'
   | 'inspect_discovery'
   | 'inspect_par2'
@@ -42,6 +40,7 @@ type StageDefinition = {
   description: string
   supportsConcurrency: boolean
   showBinaryUpsertChunk?: boolean
+  showLaneBalance?: boolean
   showMaxEffectiveConcurrency?: boolean
   showMaxBatches?: boolean
   defaultMaxBatches?: number
@@ -56,14 +55,12 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run.', concurrencyHelpText: 'NNTP-backed workers. Higher values consume more indexer NNTP slots.' },
   { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
   { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
-  { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
-  { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
+  { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showMaxEffectiveConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Effective concurrency may be capped below this value to avoid connection churn.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
   { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
-  { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.', batchHelpText: 'Archived releases purged per run.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
@@ -76,8 +73,8 @@ const stageDefinitions: StageDefinition[] = [
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
-  { title: 'Assemble and recovery commands', keys: ['assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
-  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb', 'release_purge_archived_sources'] },
+  { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
+  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -118,8 +115,7 @@ function defaultSettings(): RuntimeSettings {
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
       poster_materialize: stageDefaults(10000),
       crosspost_popularity_refresh: stageDefaults(1000),
-      assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
-      assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
+      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
       recover_yenc: stageDefaults(25, 1, { max_effective_concurrency: 4 }),
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
@@ -147,7 +143,6 @@ function defaultSettings(): RuntimeSettings {
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
-      release_purge_archived_sources: stageDefaults(50),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -259,14 +254,12 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
       poster_materialize: { ...defaults.indexing!.poster_materialize, ...indexing.poster_materialize },
       crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
-      assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
-      assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
+      assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
       release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
-      release_purge_archived_sources: { ...defaults.indexing!.release_purge_archived_sources, ...indexing.release_purge_archived_sources },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
@@ -776,7 +769,7 @@ export function AdminSettingsPage() {
                             />
                           ) : null}
                         </div>
-                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency) ? (
+                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency || definition.showLaneBalance) ? (
                           <div className="toolbar-grid toolbar-grid--compact">
                             {definition.showBinaryUpsertChunk ? (
                               <NumberField
@@ -794,6 +787,26 @@ export function AdminSettingsPage() {
                                 value={value.max_effective_concurrency ?? 4}
                                 helpText="Safety cap applied below requested concurrency. For recover yEnc this limits BODY prefix fetches, which discard NNTP connections after partial reads."
                                 onChange={(next) => updateStage(key, { max_effective_concurrency: next })}
+                              />
+                            ) : null}
+                            {definition.showLaneBalance ? (
+                              <NumberField
+                                label="Lane A target %"
+                                min={0}
+                                max={100}
+                                value={value.lane_a_target_pct ?? 70}
+                                helpText="Target share for completing existing partial binaries."
+                                onChange={(next) => updateStage(key, { lane_a_target_pct: next })}
+                              />
+                            ) : null}
+                            {definition.showLaneBalance ? (
+                              <NumberField
+                                label="Lane B minimum %"
+                                min={0}
+                                max={100}
+                                value={value.lane_b_min_pct ?? 30}
+                                helpText="Minimum share reserved for fresh queued headers when available."
+                                onChange={(next) => updateStage(key, { lane_b_min_pct: next })}
                               />
                             ) : null}
                           </div>

@@ -25,8 +25,7 @@ const (
 	StageScrapeBackfill              StageName = "scrape_backfill"
 	StagePosterMaterialize           StageName = "poster_materialize"
 	StageCrosspostPopularityRefresh  StageName = "crosspost_popularity_refresh"
-	StageAssembleLaneA               StageName = "assemble_lane_a"
-	StageAssembleLaneB               StageName = "assemble_lane_b"
+	StageAssemble                    StageName = "assemble"
 	StageRecoverYEnc                 StageName = "recover_yenc"
 	StageReleaseSummaryRefresh       StageName = "release_summary_refresh"
 	StageRelease                     StageName = "release"
@@ -172,8 +171,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageScrapeBackfill,
 		StagePosterMaterialize,
 		StageCrosspostPopularityRefresh,
-		StageAssembleLaneA,
-		StageAssembleLaneB,
+		StageAssemble,
 		StageRecoverYEnc,
 		StageReleaseSummaryRefresh,
 		StageRelease,
@@ -417,7 +415,7 @@ func (s *Supervisor) tryClaimStageGroup(group string, stageName StageName) (func
 
 func exclusiveStageGroup(name StageName) (string, bool) {
 	switch name {
-	case StageAssembleLaneA, StageAssembleLaneB, StageReleasePurgeArchivedSources:
+	case StageAssemble, StageReleasePurgeArchivedSources:
 		return "binary-source-write", true
 	default:
 		return "", false

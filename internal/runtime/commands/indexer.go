@@ -55,37 +55,20 @@ func (r *Runner) ExecuteIndexerScrapeBackfill(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerAssembleLaneA(once bool) {
+func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
 	if once {
-		if err := appCtx.UsenetIndexer.AssembleLaneAOnce(ctx); err != nil {
-			appCtx.Logger.Fatal("indexer assemble lane-a --once failed: %v", err)
+		if err := appCtx.UsenetIndexer.AssembleOnce(ctx); err != nil {
+			appCtx.Logger.Fatal("indexer assemble --once failed: %v", err)
 		}
-		appCtx.Logger.Info("indexer assemble lane-a --once completed")
+		appCtx.Logger.Info("indexer assemble --once completed")
 		return
 	}
 
-	if err := wiring.RunIndexerAssembleLaneAScheduler(ctx, appCtx); err != nil {
-		appCtx.Logger.Fatal("indexer assemble lane-a scheduler failed: %v", err)
-	}
-}
-
-func (r *Runner) ExecuteIndexerAssembleLaneB(once bool) {
-	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
-	defer cleanup()
-
-	if once {
-		if err := appCtx.UsenetIndexer.AssembleLaneBOnce(ctx); err != nil {
-			appCtx.Logger.Fatal("indexer assemble lane-b --once failed: %v", err)
-		}
-		appCtx.Logger.Info("indexer assemble lane-b --once completed")
-		return
-	}
-
-	if err := wiring.RunIndexerAssembleLaneBScheduler(ctx, appCtx); err != nil {
-		appCtx.Logger.Fatal("indexer assemble lane-b scheduler failed: %v", err)
+	if err := wiring.RunIndexerAssembleScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer assemble scheduler failed: %v", err)
 	}
 }
 

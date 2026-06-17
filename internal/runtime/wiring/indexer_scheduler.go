@@ -25,12 +25,8 @@ func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context)
 	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
 }
 
-func RunIndexerAssembleLaneAScheduler(ctx context.Context, appCtx *app.Context) error {
-	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneA)
-}
-
-func RunIndexerAssembleLaneBScheduler(ctx context.Context, appCtx *app.Context) error {
-	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneB)
+func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
 }
 
 func RunIndexerRecoverYEncScheduler(ctx context.Context, appCtx *app.Context) error {

@@ -155,7 +155,7 @@ func assembleEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	if indexing == nil {
 		return false
 	}
-	return indexing.AssembleLaneA.Enabled || indexing.AssembleLaneB.Enabled
+	return indexing.Assemble.Enabled
 }
 
 func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
@@ -163,10 +163,7 @@ func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater i
 		return scrapeBacklogGuardMinHighWater, scrapeBacklogGuardMinLowWater
 	}
 	capacity := 0
-	for _, stage := range []app.IndexingStageRuntimeSettings{
-		indexing.AssembleLaneA,
-		indexing.AssembleLaneB,
-	} {
+	for _, stage := range []app.IndexingStageRuntimeSettings{indexing.Assemble} {
 		if !stage.Enabled {
 			continue
 		}

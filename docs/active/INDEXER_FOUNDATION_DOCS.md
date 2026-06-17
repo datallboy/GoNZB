@@ -51,6 +51,14 @@ Use for:
 - the v2 table ownership model and phased migration away from the monolithic hot binary row
 - deciding whether a binary-state field belongs to assemble, recovery, inspection, release, archive, purge, or an append-only event/summary table
 
+### `docs/active/INDEXER_SINGLE_ASSEMBLE_COORDINATOR_SPRINT.md`
+
+Use for:
+
+- the active one-stage assemble coordinator redesign
+- `article_header_assembly_queue` ownership and claim semantics
+- replacing lane-specific runtime, CLI, API, and UI surfaces with `assemble`
+
 ### `docs/active/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`
 
 Use for:

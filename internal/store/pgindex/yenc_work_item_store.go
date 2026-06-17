@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 const (
@@ -268,20 +267,10 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 }
 
 func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64) (int64, int64, error) {
-	values := make([]string, 0, len(unique))
-	args := make([]any, 0, len(unique))
-	for i, binaryID := range unique {
-		values = append(values, fmt.Sprintf("($%d::bigint)", i+1))
-		args = append(args, binaryID)
-	}
-	if len(args) > postgresBindParameterSoftLimit {
-		return 0, 0, fmt.Errorf("yenc recovery work item sync chunk has %d bind parameters", len(args))
-	}
-
 	var upserted int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
-			VALUES `+strings.Join(values, ",")+`
+			SELECT DISTINCT unnest($1::bigint[])
 		),
 		eligible AS (
 			SELECT
@@ -443,7 +432,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM upserted`,
-		args...,
+		unique,
 	).Scan(&upserted); err != nil {
 		return 0, 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
 	}
@@ -451,7 +440,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 	var retired int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
-			VALUES `+strings.Join(values, ",")+`
+			SELECT DISTINCT unnest($1::bigint[])
 		),
 		eligible AS (
 			SELECT DISTINCT bc.binary_id
@@ -502,7 +491,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM retired`,
-		args...,
+		unique,
 	).Scan(&retired); err != nil {
 		return 0, 0, fmt.Errorf("retire yenc recovery work items: %w", err)
 	}
