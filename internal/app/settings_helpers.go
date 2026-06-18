@@ -28,8 +28,8 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
 			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
 			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
-			ScrapeLatest:                defaultStage(false, 10, 5000, 0),
-			ScrapeBackfill:              defaultStage(false, 10, 5000, 0),
+			ScrapeLatest:                defaultScrapeStage(false),
+			ScrapeBackfill:              defaultScrapeStage(false),
 			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
 			Assemble:                    defaultAssembleStage(false, 2, 5000, 1),
@@ -95,6 +95,12 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 
 func defaultStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	return IndexingStageRuntimeSettings{Enabled: enabled, IntervalMinutes: interval, BatchSize: batch, Concurrency: concurrency}
+}
+
+func defaultScrapeStage(enabled bool) IndexingStageRuntimeSettings {
+	stage := defaultStage(enabled, 10, 5000, 1)
+	stage.MaxBatches = 1
+	return stage
 }
 
 func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSettings {

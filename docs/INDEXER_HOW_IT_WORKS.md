@@ -282,6 +282,15 @@ Important note:
 - scrape does not create binaries or releases directly
 - it only creates raw article inventory for later stages
 
+Scrape tuning:
+
+- `batch_size` is the article-number window requested for one group claim. With the default `5000`, one claim fetches up to 5,000 XOVER rows for one group.
+- `max_batches` is the maximum number of group claims in one scheduled run. It is not a per-group loop count. Default: `1`.
+- `concurrency` is the maximum number of group claims processed in parallel with NNTP XOVER workers. Default: `1`.
+- Effective work per scheduled run is roughly `batch_size * max_batches`, bounded by available groups and provider article ranges. `concurrency` changes how many of those group claims run at the same time, not how many total claims are selected.
+- Conservative default for both `scrape_latest` and `scrape_backfill`: `batch_size=5000`, `max_batches=1`, `concurrency=1`.
+- Raise `max_batches` first when you want a run to touch more groups without adding parallel pressure. Raise `concurrency` only when NNTP and PostgreSQL ingest have clear headroom.
+
 ### `indexer scrape backfill`
 
 Purpose:
