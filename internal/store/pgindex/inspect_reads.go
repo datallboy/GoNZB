@@ -1627,19 +1627,23 @@ func adminReleasePayloadCompletionStateSQL(alias string) string {
 	END`, alias)
 }
 
-func parseAdminPayloadCompletionStates(raw string) []string {
-	seen := make(map[string]struct{}, 3)
-	out := make([]string, 0, 3)
+func parseAdminFilterValues(raw string, allowed ...string) []string {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, value := range allowed {
+		allowedSet[value] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(allowed))
+	out := make([]string, 0, len(allowed))
 	for _, part := range strings.Split(raw, ",") {
-		state := strings.ToLower(strings.TrimSpace(part))
-		switch state {
-		case "complete", "incomplete", "unknown":
-			if _, ok := seen[state]; ok {
-				continue
-			}
-			seen[state] = struct{}{}
-			out = append(out, state)
+		value := strings.ToLower(strings.TrimSpace(part))
+		if _, ok := allowedSet[value]; !ok {
+			continue
 		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
@@ -1658,6 +1662,23 @@ func anyStrings(values []string) []any {
 		out = append(out, value)
 	}
 	return out
+}
+
+func adminReleaseInClause(column string, start int, values []string) (string, []any) {
+	return fmt.Sprintf("%s IN (%s)", column, adminReleaseStatePlaceholders(start, len(values))), anyStrings(values)
+}
+
+func adminReleaseAnyPredicateClause(values []string, predicates map[string]string) string {
+	clauses := make([]string, 0, len(values))
+	for _, value := range values {
+		if predicate := predicates[value]; predicate != "" {
+			clauses = append(clauses, "("+predicate+")")
+		}
+	}
+	if len(clauses) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")"
 }
 
 func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (string, []any) {
@@ -1685,88 +1706,91 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	if params.CategoryID > 0 {
 		add(fmt.Sprintf("r.category_id = $%d", arg), params.CategoryID)
 	}
-	if v := strings.TrimSpace(params.Classification); v != "" {
-		add(fmt.Sprintf("r.classification = $%d", arg), v)
+	if values := parseAdminFilterValues(params.Classification, "video", "video_archive", "tv", "movie", "audio", "ebook", "archive", "misc"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.classification", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.ExternalMediaType); v != "" {
-		add(fmt.Sprintf("r.external_media_type = $%d", arg), v)
+	if values := parseAdminFilterValues(params.ExternalMediaType, "movie", "tv", "audio"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.external_media_type", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.IdentityStatus); v != "" {
-		add(fmt.Sprintf("r.identity_status = $%d", arg), v)
+	if values := parseAdminFilterValues(params.IdentityStatus, "identified", "probable", "unknown"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.identity_status", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.PasswordState); v != "" {
-		add(fmt.Sprintf("r.password_state = $%d", arg), v)
+	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "passworded_known", "passworded_unknown"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.password_state", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.MediaQualityTier); v != "" {
-		add(fmt.Sprintf("r.media_quality_tier = $%d", arg), v)
+	if values := parseAdminFilterValues(params.MediaQualityTier, "premium", "good", "fair", "unknown"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.media_quality_tier", arg, values)
+		add(clause, values...)
 	}
-	switch strings.TrimSpace(params.Hidden) {
-	case "hidden":
-		add("COALESCE(ro.hidden, FALSE) = TRUE")
-	case "visible":
-		add("COALESCE(ro.hidden, FALSE) = FALSE")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Hidden, "hidden", "visible"), map[string]string{
+		"hidden":  "COALESCE(ro.hidden, FALSE) = TRUE",
+		"visible": "COALESCE(ro.hidden, FALSE) = FALSE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.PublicState) {
-	case "public":
-		add("(" + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ")")
-	case "internal_only":
-		add("NOT (" + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ") AND COALESCE(ro.hidden, FALSE) = FALSE")
-	case "hidden":
-		add("COALESCE(ro.hidden, FALSE) = TRUE")
+	publicClause := publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.PublicState, "public", "internal_only", "hidden"), map[string]string{
+		"public":        publicClause,
+		"internal_only": "NOT (" + publicClause + ") AND COALESCE(ro.hidden, FALSE) = FALSE",
+		"hidden":        "COALESCE(ro.hidden, FALSE) = TRUE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Inspected) {
-	case "yes":
-		add("(r.runtime_seconds > 0 OR r.primary_resolution <> '' OR r.primary_video_codec <> '' OR r.primary_audio_codec <> '' OR r.has_nfo = TRUE OR r.has_par2 = TRUE)")
-	case "no":
-		add("(r.runtime_seconds = 0 AND r.primary_resolution = '' AND r.primary_video_codec = '' AND r.primary_audio_codec = '' AND r.has_nfo = FALSE AND r.has_par2 = FALSE)")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Inspected, "yes", "no"), map[string]string{
+		"yes": "r.runtime_seconds > 0 OR r.primary_resolution <> '' OR r.primary_video_codec <> '' OR r.primary_audio_codec <> '' OR r.has_nfo = TRUE OR r.has_par2 = TRUE",
+		"no":  "r.runtime_seconds = 0 AND r.primary_resolution = '' AND r.primary_video_codec = '' AND r.primary_audio_codec = '' AND r.has_nfo = FALSE AND r.has_par2 = FALSE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Enriched) {
-	case "yes":
-		add("(r.tmdb_id > 0 OR r.tvdb_id > 0 OR r.external_media_type <> '' OR r.matched_media_title <> '')")
-	case "no":
-		add("(r.tmdb_id = 0 AND r.tvdb_id = 0 AND r.external_media_type = '' AND r.matched_media_title = '')")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Enriched, "yes", "no"), map[string]string{
+		"yes": "r.tmdb_id > 0 OR r.tvdb_id > 0 OR r.external_media_type <> '' OR r.matched_media_title <> ''",
+		"no":  "r.tmdb_id = 0 AND r.tvdb_id = 0 AND r.external_media_type = '' AND r.matched_media_title = ''",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Uncategorized) {
-	case "yes":
-		add(fmt.Sprintf("r.category_id = %d", newsnab.OtherMisc))
-	case "no":
-		add(fmt.Sprintf("r.category_id <> %d", newsnab.OtherMisc))
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Uncategorized, "yes", "no"), map[string]string{
+		"yes": fmt.Sprintf("r.category_id = %d", newsnab.OtherMisc),
+		"no":  fmt.Sprintf("r.category_id <> %d", newsnab.OtherMisc),
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.PasswordCandidates) {
-	case "yes":
-		add("EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
-	case "no":
-		add("NOT EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.PasswordCandidates, "yes", "no"), map[string]string{
+		"yes": "EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)",
+		"no":  "NOT EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.MetadataMismatch) {
-	case "yes":
-		add(`(
+	metadataMismatchClause := `(
 			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
 			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
-		)`)
-	case "no":
-		add(`NOT (
-			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
-			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
-		)`)
+		)`
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.MetadataMismatch, "yes", "no"), map[string]string{
+		"yes": metadataMismatchClause,
+		"no":  "NOT " + metadataMismatchClause,
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.LowConfidence) {
-	case "yes":
-		add("COALESCE(r.identity_confidence_score, 0) < 0.80")
-	case "no":
-		add("COALESCE(r.identity_confidence_score, 0) >= 0.80")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.LowConfidence, "yes", "no"), map[string]string{
+		"yes": "COALESCE(r.identity_confidence_score, 0) < 0.80",
+		"no":  "COALESCE(r.identity_confidence_score, 0) >= 0.80",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.CompletionState) {
-	case "exact_100":
-		add("r.completion_pct = 100")
-	case "below_100":
-		add("r.completion_pct < 100")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.CompletionState, "exact_100", "below_100"), map[string]string{
+		"exact_100": "r.completion_pct = 100",
+		"below_100": "r.completion_pct < 100",
+	}); clause != "" {
+		add(clause)
 	}
 	payloadStateSQL := adminReleasePayloadCompletionStateSQL("r")
-	if states := parseAdminPayloadCompletionStates(params.PayloadCompletionInclude); len(states) > 0 {
+	if states := parseAdminFilterValues(params.PayloadCompletionInclude, "complete", "incomplete", "unknown"); len(states) > 0 {
 		add(fmt.Sprintf("(%s) IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
 	}
-	if states := parseAdminPayloadCompletionStates(params.PayloadCompletionExclude); len(states) > 0 {
+	if states := parseAdminFilterValues(params.PayloadCompletionExclude, "complete", "incomplete", "unknown"); len(states) > 0 {
 		add(fmt.Sprintf("(%s) NOT IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
 	}
 	if params.HasNFO != nil {
