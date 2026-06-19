@@ -289,8 +289,9 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	passwordedKnown := false
 	passwordedUnknown := false
 	passwordState := derivePasswordState(passworded, passwordedKnown, passwordedUnknown)
-	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(cluster.Binaries)
-	classification := classifyCluster(cluster.Binaries, archiveCount, videoCount, audioCount)
+	releaseFileBinaries := selectReleaseFileBinaries(cluster.Binaries)
+	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(releaseFileBinaries)
+	classification := classifyCluster(releaseFileBinaries, archiveCount, videoCount, audioCount)
 	subtitles := detectSubtitleLanguages(cluster.Binaries)
 	postedAt := earliestPostedAt(candidate.PostedAt, cluster.Binaries)
 	now := time.Now().UTC()
@@ -323,13 +324,13 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		Category:                 category.Name,
 		Classification:           classification,
 		Poster:                   dominantPoster(cluster.Binaries),
-		SizeBytes:                totalBytes(cluster.Binaries),
+		SizeBytes:                totalBytes(releaseFileBinaries),
 		PostedAt:                 postedAt,
-		FileCount:                clusterObservedFileCount(cluster.Binaries),
-		ExpectedFileCount:        clusterExpectedFileCount(cluster.Binaries),
-		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(cluster.Binaries),
-		ParFileCount:             countPARFiles(cluster.Binaries),
-		CompletionPct:            clusterCompletionPct(cluster.Binaries),
+		FileCount:                clusterObservedFileCount(releaseFileBinaries),
+		ExpectedFileCount:        clusterExpectedFileCount(releaseFileBinaries),
+		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(releaseFileBinaries),
+		ParFileCount:             countPARFiles(releaseFileBinaries),
+		CompletionPct:            clusterCompletionPct(releaseFileBinaries),
 		MatchConfidence:          clamp01(cluster.MatchConfidence),
 		IdentityStatus:           identityStatus,
 		Passworded:               passworded,
@@ -443,6 +444,27 @@ func newsgroupIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 		return out[i] < out[j]
 	})
 	return out
+}
+
+func selectReleaseFileBinaries(binaries []pgindex.BinarySummary) []pgindex.BinarySummary {
+	selected := make([]pgindex.BinarySummary, 0, len(binaries))
+	byName := make(map[string]int, len(binaries))
+	for _, binary := range binaries {
+		fileName := pickFileName(binary)
+		key := strings.ToLower(strings.TrimSpace(fileName))
+		if key == "" {
+			key = fmt.Sprintf("binary-%d", binary.BinaryID)
+		}
+		if existingIdx, ok := byName[key]; ok {
+			if prefersBinaryForReleaseFile(binary, selected[existingIdx]) {
+				selected[existingIdx] = binary
+			}
+			continue
+		}
+		byName[key] = len(selected)
+		selected = append(selected, binary)
+	}
+	return selected
 }
 
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {

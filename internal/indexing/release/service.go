@@ -369,7 +369,7 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	}
 	if !reform {
 		autoReformCandidates := 0
-		if s.opts.AutoReformBatchSize > 0 && initialSummaryBacklog == 0 && len(candidates) < s.opts.BatchSize {
+		if s.opts.AutoReformBatchSize > 0 && len(candidates) < s.opts.BatchSize {
 			start := time.Now()
 			existing, existingErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.AutoReformBatchSize, 0)
 			timings.candidateList += time.Since(start)
@@ -1055,23 +1055,7 @@ func countCompleteBinaries(binaries []pgindex.BinarySummary) int {
 }
 
 func (s *Service) buildReleaseFiles(_ context.Context, cluster releaseCluster, timings *releaseTimings) ([]pgindex.ReleaseFileRecord, error) {
-	selected := make([]pgindex.BinarySummary, 0, len(cluster.Binaries))
-	byName := make(map[string]int, len(cluster.Binaries))
-	for _, binary := range cluster.Binaries {
-		fileName := pickFileName(binary)
-		key := strings.ToLower(strings.TrimSpace(fileName))
-		if key == "" {
-			key = fmt.Sprintf("binary-%d", binary.BinaryID)
-		}
-		if existingIdx, ok := byName[key]; ok {
-			if prefersBinaryForReleaseFile(binary, selected[existingIdx]) {
-				selected[existingIdx] = binary
-			}
-			continue
-		}
-		byName[key] = len(selected)
-		selected = append(selected, binary)
-	}
+	selected := selectReleaseFileBinaries(cluster.Binaries)
 
 	files := make([]pgindex.ReleaseFileRecord, 0, len(selected))
 	for idx, binary := range selected {

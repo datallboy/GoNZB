@@ -1654,7 +1654,7 @@ func TestRunOnceAutoReformsExistingCandidates(t *testing.T) {
 	}
 }
 
-func TestRunOnceSkipsAutoReformWhenSummaryBacklogExists(t *testing.T) {
+func TestRunOnceAutoReformsExistingCandidatesWhenSummaryBacklogExists(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		queuedSummaryCount: 10,
 		existingCandidates: []pgindex.ReleaseCandidate{{
@@ -1672,11 +1672,11 @@ func TestRunOnceSkipsAutoReformWhenSummaryBacklogExists(t *testing.T) {
 		t.Fatalf("run once with backlog: %v", err)
 	}
 
-	if repo.listExistingReleaseCandidatesCalls != 0 {
-		t.Fatalf("expected no existing-candidate auto reform query while summary backlog exists, got %d", repo.listExistingReleaseCandidatesCalls)
+	if repo.listExistingReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected existing-candidate auto reform query while summary backlog exists, got %d", repo.listExistingReleaseCandidatesCalls)
 	}
-	if got := metrics["auto_reform_candidates"]; got != 0 {
-		t.Fatalf("expected auto_reform_candidates=0, got %#v", got)
+	if got := metrics["auto_reform_candidates"]; got != 1 {
+		t.Fatalf("expected auto_reform_candidates=1, got %#v", got)
 	}
 }
 
@@ -2444,6 +2444,120 @@ func TestBuildReleaseRecordPopulatesDeobfuscatedTitleForReadableSource(t *testin
 	}
 	if record.CategoryID != 5040 {
 		t.Fatalf("expected TVHD category id, got %+v", record)
+	}
+}
+
+func TestBuildReleaseRecordDedupesCrossGroupFilesForCounters(t *testing.T) {
+	cluster := releaseCluster{
+		MatchConfidence: 0.92,
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:                 1,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part1.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 2,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part1.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 3,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part2.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 4,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part2.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 5,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.par2",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            1,
+				TotalParts:               1,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 6,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.par2",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            1,
+				TotalParts:               1,
+				MatchConfidence:          0.92,
+			},
+		},
+	}
+
+	record := buildReleaseRecord(pgindex.ReleaseCandidate{
+		ProviderID:        1,
+		NewsgroupID:       0,
+		KeyKind:           pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		ReleaseFamilyKey:  "show family",
+		SourceReleaseKey:  "show family",
+		ReleaseKey:        "show family",
+		ReleaseName:       "Show.S01E01",
+		ExpectedFileCount: 4,
+	}, cluster, nil)
+
+	if record.FileCount != 3 {
+		t.Fatalf("expected deduped file count 3, got %d", record.FileCount)
+	}
+	if record.ParFileCount != 1 {
+		t.Fatalf("expected deduped par file count 1, got %d", record.ParFileCount)
+	}
+	if record.CompletionPct != 100 {
+		t.Fatalf("expected completion capped at 100 from deduped payload files, got %.2f", record.CompletionPct)
+	}
+	if record.ArchiveCount != 1 {
+		t.Fatalf("expected one archive family, got %d", record.ArchiveCount)
 	}
 }
 
