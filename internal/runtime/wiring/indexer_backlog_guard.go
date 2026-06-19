@@ -12,6 +12,7 @@ import (
 
 const (
 	scrapeBacklogGuardRefreshInterval = 15 * time.Second
+	scrapeLatestTrickleInterval       = 5 * time.Minute
 	scrapeBacklogGuardMinHighWater    = int64(50000)
 	scrapeBacklogGuardMinLowWater     = int64(10000)
 )
@@ -25,12 +26,13 @@ type cachedScrapeBacklogGuard struct {
 	settingsStore app.SettingsStore
 	repo          unassembledBacklogReader
 
-	mu         sync.Mutex
-	cond       *sync.Cond
-	evaluating bool
-	lastCheck  time.Time
-	lastResult supervisor.StageGateDecision
-	blocked    bool
+	mu                sync.Mutex
+	cond              *sync.Cond
+	evaluating        bool
+	lastCheck         time.Time
+	lastResults       map[supervisor.StageName]supervisor.StageGateDecision
+	blocked           bool
+	lastLatestTrickle time.Time
 }
 
 func newIndexerScrapeBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc {
@@ -44,6 +46,7 @@ func newIndexerScrapeBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc 
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: appCtx.SettingsStore,
 		repo:          repo,
+		lastResults:   make(map[supervisor.StageName]supervisor.StageGateDecision),
 	}
 	guard.cond = sync.NewCond(&guard.mu)
 	return guard.allowStage
@@ -65,9 +68,12 @@ func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervi
 		g.cond.Wait()
 	}
 	if time.Since(g.lastCheck) < scrapeBacklogGuardRefreshInterval {
-		result := g.lastResult
+		result, ok := g.lastResults[stage.Name]
 		g.mu.Unlock()
-		return result, nil
+		if ok {
+			return result, nil
+		}
+		return supervisor.StageGateDecision{Allowed: true}, nil
 	}
 	g.evaluating = true
 	g.mu.Unlock()
@@ -80,7 +86,7 @@ func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervi
 		g.mu.Unlock()
 		return supervisor.StageGateDecision{}, fmt.Errorf("load runtime settings for scrape backlog guard: %w", err)
 	}
-	decision, err := g.evaluate(ctx, runtime)
+	decisions, err := g.evaluate(ctx, runtime)
 	if err != nil {
 		g.mu.Lock()
 		g.evaluating = false
@@ -91,32 +97,40 @@ func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervi
 
 	g.mu.Lock()
 	g.lastCheck = time.Now()
-	g.lastResult = decision
+	g.lastResults = decisions
+	decision, ok := decisions[stage.Name]
 	g.evaluating = false
 	g.cond.Broadcast()
 	g.mu.Unlock()
+	if !ok {
+		return supervisor.StageGateDecision{Allowed: true}, nil
+	}
 	return decision, nil
 }
 
-func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.RuntimeSettings) (supervisor.StageGateDecision, error) {
+func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.RuntimeSettings) (map[supervisor.StageName]supervisor.StageGateDecision, error) {
+	allowed := map[supervisor.StageName]supervisor.StageGateDecision{
+		supervisor.StageScrapeLatest:   {Allowed: true},
+		supervisor.StageScrapeBackfill: {Allowed: true},
+	}
 	if runtime == nil || runtime.Indexing == nil {
-		return supervisor.StageGateDecision{Allowed: true}, nil
+		return allowed, nil
 	}
 	if !assembleEnabled(runtime.Indexing) {
 		g.blocked = false
-		return supervisor.StageGateDecision{Allowed: true}, nil
+		return allowed, nil
 	}
 
 	highWater, lowWater := scrapeBacklogThresholds(runtime.Indexing)
 	estimated, err := g.repo.EstimateUnassembledArticleHeaders(ctx)
 	if err != nil {
-		return supervisor.StageGateDecision{}, fmt.Errorf("estimate unassembled article header backlog: %w", err)
+		return nil, fmt.Errorf("estimate unassembled article header backlog: %w", err)
 	}
 	backlog := estimated
 	if backlog == 0 {
 		exact, err := g.repo.CountUnassembledArticleHeaders(ctx)
 		if err != nil {
-			return supervisor.StageGateDecision{}, fmt.Errorf("count unassembled article header backlog: %w", err)
+			return nil, fmt.Errorf("count unassembled article header backlog: %w", err)
 		}
 		backlog = exact
 	}
@@ -125,30 +139,45 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	blocked := g.blocked
 	g.mu.Unlock()
 
-	if blocked {
+	if blocked || backlog > lowWater {
 		if backlog > lowWater {
-			return supervisor.StageGateDecision{
-				Allowed: false,
-				Reason:  fmt.Sprintf("scrape paused for assemble catch-up: unassembled_headers=%d resume_threshold=%d", backlog, lowWater),
-			}, nil
+			label := "resume_threshold"
+			threshold := lowWater
+			if !blocked && backlog >= highWater {
+				label = "high_water"
+				threshold = highWater
+			}
+			g.mu.Lock()
+			g.blocked = true
+			g.mu.Unlock()
+			return g.scrapeBlockedDecisions(backlog, threshold, label), nil
 		}
 		g.mu.Lock()
 		g.blocked = false
 		g.mu.Unlock()
-		return supervisor.StageGateDecision{Allowed: true}, nil
+		return allowed, nil
 	}
 
-	if backlog >= highWater {
-		g.mu.Lock()
-		g.blocked = true
-		g.mu.Unlock()
-		return supervisor.StageGateDecision{
-			Allowed: false,
-			Reason:  fmt.Sprintf("scrape paused for assemble catch-up: unassembled_headers=%d high_water=%d", backlog, highWater),
-		}, nil
-	}
+	return allowed, nil
+}
 
-	return supervisor.StageGateDecision{Allowed: true}, nil
+func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {
+	reason := fmt.Sprintf("scrape paused for assemble catch-up: unassembled_headers=%d %s=%d", backlog, thresholdLabel, threshold)
+	decisions := map[supervisor.StageName]supervisor.StageGateDecision{
+		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
+		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
+	}
+	now := time.Now()
+
+	g.mu.Lock()
+	lastTrickle := g.lastLatestTrickle
+	if lastTrickle.IsZero() || now.Sub(lastTrickle) >= scrapeLatestTrickleInterval {
+		g.lastLatestTrickle = now
+		decisions[supervisor.StageScrapeLatest] = supervisor.StageGateDecision{Allowed: true}
+	}
+	g.mu.Unlock()
+
+	return decisions
 }
 
 func assembleEnabled(indexing *app.IndexingRuntimeSettings) bool {
