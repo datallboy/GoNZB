@@ -176,8 +176,10 @@ func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([
 				r.title
 			FROM releases r
 			JOIN nzb_cache n ON n.release_id = r.release_id
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			WHERE r.source_kind = 'usenet_index'
 			  AND n.generation_status = 'ready'
+			  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)
 			  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 			  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
 			  AND EXISTS (
@@ -427,8 +429,10 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int, poli
 		  AND EXISTS (
 			SELECT 1
 			FROM releases r
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			WHERE r.release_id = release_archive_state.release_id
 			  AND `+retainPredicate+`
+			  AND (`+releaseReadyVisibilityClause("r", policy)+`)
 		  )
 		  AND EXISTS (
 			SELECT 1

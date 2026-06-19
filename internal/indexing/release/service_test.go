@@ -2712,6 +2712,10 @@ func (f *fakeReleaseRepository) ListExistingReleaseCandidates(_ context.Context,
 	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates[offset:end]...), nil
 }
 
+func (f *fakeReleaseRepository) ListExistingReleaseCandidatesForReleaseIDs(context.Context, []string) ([]pgindex.ReleaseCandidate, error) {
+	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates...), nil
+}
+
 func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, _ string, releaseKey string) ([]pgindex.BinarySummary, error) {
 	f.listBinariesCalls++
 	return f.binariesByKey[releaseKey], nil

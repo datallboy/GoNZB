@@ -23,6 +23,7 @@ var (
 	recoverYEncOnce bool
 	releaseOnce     bool
 	releaseReform   bool
+	releaseIDs      []string
 	pipelineOnce    bool
 	inspectOnce     bool
 	enrichOnce      bool
@@ -114,7 +115,7 @@ var indexerReleaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Form releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform)
+		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform, releaseIDs)
 	},
 }
 
@@ -370,6 +371,7 @@ func init() {
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
+	indexerReleaseCmd.Flags().StringArrayVar(&releaseIDs, "release-id", nil, "Limit --reform to a specific release id; repeatable")
 	indexerReleaseRefreshSummariesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release summary refresh pass and exit instead of continuous mode")
 	indexerReleaseGenerateNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one NZB pre-generation pass and exit instead of continuous mode")
 	indexerReleaseArchiveNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archive NZB pass and exit instead of continuous mode")

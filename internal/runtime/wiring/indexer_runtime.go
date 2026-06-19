@@ -566,6 +566,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		Assemble:                assembleSvc.RunOnce,
 		RecoverYEnc:             recoverYEncSvc.RunOnce,
 		ReleaseReform:           releaseSvc.RunReformOnce,
+		ReleaseReformReleases:   releaseSvc.RunReformReleasesOnce,
 		EnrichPredbSceneName:    enrichPreDBSvc.RunSceneNameRecoveryOnce,
 		EnrichPredbMetadataOnly: enrichPreDBSvc.RunMetadataFallbackOnce,
 		EnrichPredbSyncFeed:     enrichPreDBSvc.RunSyncFeedOnce,

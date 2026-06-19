@@ -343,7 +343,7 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		)
 		SELECT
 			b.provider_id,
-			MIN(b.newsgroup_id)::BIGINT AS newsgroup_id,
+			0::BIGINT AS newsgroup_id,
 			'release_family' AS key_kind,
 			MAX(b.source_release_key) AS source_release_key,
 			b.release_family_key,
@@ -404,6 +404,132 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate existing release candidates: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Store) ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, releaseIDs []string) ([]ReleaseCandidate, error) {
+	ids := make([]string, 0, len(releaseIDs))
+	seen := make(map[string]struct{}, len(releaseIDs))
+	for _, releaseID := range releaseIDs {
+		releaseID = strings.TrimSpace(releaseID)
+		if releaseID == "" {
+			continue
+		}
+		if _, ok := seen[releaseID]; ok {
+			continue
+		}
+		seen[releaseID] = struct{}{}
+		ids = append(ids, releaseID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH target_releases AS (
+			SELECT
+				release_id,
+				provider_id,
+				release_family_key,
+				release_key,
+				title,
+				posted_at,
+				updated_at
+			FROM releases
+			WHERE release_id = ANY($1::TEXT[])
+			  AND BTRIM(release_family_key) <> ''
+		),
+		candidate_binaries AS (
+			SELECT
+				r.release_id,
+				bc.binary_id AS id,
+				bc.provider_id,
+				bc.newsgroup_id,
+				bic.source_release_key,
+				bic.release_key,
+				bic.release_name,
+				bic.release_family_key,
+				bic.expected_file_count,
+				bic.expected_archive_file_count,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bos.posted_at,
+				bos.total_parts,
+				bos.observed_parts,
+				bos.total_bytes
+			FROM target_releases r
+			JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.release_family_key = r.release_family_key
+			 AND BTRIM(bic.release_family_key) <> ''
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		)
+		SELECT
+			b.provider_id,
+			0::BIGINT AS newsgroup_id,
+			'release_family' AS key_kind,
+			MAX(b.source_release_key) AS source_release_key,
+			b.release_family_key,
+			MAX(b.release_key) AS release_key,
+			MAX(b.release_name) AS release_name,
+			MIN(b.posted_at) AS posted_at,
+			COUNT(*)::INTEGER AS binary_count,
+			COUNT(*) FILTER (
+				WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+			)::INTEGER AS complete_binary_count,
+			CASE
+				WHEN COUNT(*) FILTER (
+					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
+				) > 0 THEN 'actionable'
+				WHEN COUNT(*) > 0 THEN 'fragment_only'
+				ELSE 'stale_cleanup_only'
+			END AS readiness_bucket,
+			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
+		FROM candidate_binaries b
+		GROUP BY b.provider_id, b.release_family_key
+		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("list existing release candidates for release ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ReleaseCandidate, 0, len(ids))
+	for rows.Next() {
+		var item ReleaseCandidate
+		var postedAt sql.NullTime
+
+		if err := rows.Scan(
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.KeyKind,
+			&item.SourceReleaseKey,
+			&item.ReleaseFamilyKey,
+			&item.ReleaseKey,
+			&item.ReleaseName,
+			&postedAt,
+			&item.BinaryCount,
+			&item.CompleteBinaryCount,
+			&item.ReadinessBucket,
+			&item.TotalBytes,
+		); err != nil {
+			return nil, fmt.Errorf("scan existing release candidate for release ids: %w", err)
+		}
+
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+
+		out = append(out, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing release candidates for release ids: %w", err)
 	}
 
 	return out, nil

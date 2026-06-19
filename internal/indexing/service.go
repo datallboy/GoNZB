@@ -14,6 +14,7 @@ type Service struct {
 	assemble                func(ctx context.Context) error
 	recoverYEnc             func(ctx context.Context) error
 	releaseReform           func(ctx context.Context) error
+	releaseReformReleases   func(ctx context.Context, releaseIDs []string) error
 	enrichPredbSceneName    func(ctx context.Context) error
 	enrichPredbMetadataOnly func(ctx context.Context) error
 	enrichPredbSyncFeed     func(ctx context.Context) error
@@ -23,6 +24,7 @@ type Service struct {
 
 type Options struct {
 	ReleaseReform           func(ctx context.Context) error
+	ReleaseReformReleases   func(ctx context.Context, releaseIDs []string) error
 	Assemble                func(ctx context.Context) error
 	RecoverYEnc             func(ctx context.Context) error
 	EnrichPredbSceneName    func(ctx context.Context) error
@@ -42,6 +44,7 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 		assemble:                cfg.Assemble,
 		recoverYEnc:             cfg.RecoverYEnc,
 		releaseReform:           cfg.ReleaseReform,
+		releaseReformReleases:   cfg.ReleaseReformReleases,
 		enrichPredbSceneName:    cfg.EnrichPredbSceneName,
 		enrichPredbMetadataOnly: cfg.EnrichPredbMetadataOnly,
 		enrichPredbSyncFeed:     cfg.EnrichPredbSyncFeed,
@@ -122,6 +125,13 @@ func (s *Service) ReformReleasesOnce(ctx context.Context) error {
 		return fmt.Errorf("release reform service is not configured")
 	}
 	return s.releaseReform(ctx)
+}
+
+func (s *Service) ReformSelectedReleasesOnce(ctx context.Context, releaseIDs []string) error {
+	if s.releaseReformReleases == nil {
+		return fmt.Errorf("targeted release reform service is not configured")
+	}
+	return s.releaseReformReleases(ctx, releaseIDs)
 }
 
 func (s *Service) AssembleOnce(ctx context.Context) error {

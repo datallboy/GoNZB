@@ -246,6 +246,7 @@ type UsenetIndexStore interface {
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListReleaseNZBGenerateCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseNZBGenerateCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, releaseIDs []string) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
@@ -327,6 +328,7 @@ type UsenetIndexerService interface {
 	ReleaseArchiveNZBOnce(ctx context.Context) error
 	ReleasePurgeArchivedSourcesOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
+	ReformSelectedReleasesOnce(ctx context.Context, releaseIDs []string) error
 	InspectOnce(ctx context.Context) error
 	InspectDiscoveryOnce(ctx context.Context) error
 	InspectPAR2Once(ctx context.Context) error

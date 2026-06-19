@@ -89,18 +89,25 @@ func (r *Runner) ExecuteIndexerRecoverYEnc(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerRelease(once bool, reform bool) {
+func (r *Runner) ExecuteIndexerRelease(once bool, reform bool, releaseIDs []string) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
 	if reform && !once {
 		appCtx.Logger.Fatal("indexer release --reform currently requires --once")
 	}
+	if len(releaseIDs) > 0 && !reform {
+		appCtx.Logger.Fatal("indexer release --release-id requires --reform")
+	}
 
 	if once {
 		var err error
 		if reform {
-			err = appCtx.UsenetIndexer.ReformReleasesOnce(ctx)
+			if len(releaseIDs) > 0 {
+				err = appCtx.UsenetIndexer.ReformSelectedReleasesOnce(ctx, releaseIDs)
+			} else {
+				err = appCtx.UsenetIndexer.ReformReleasesOnce(ctx)
+			}
 		} else {
 			err = appCtx.UsenetIndexer.ReleaseOnce(ctx)
 		}
