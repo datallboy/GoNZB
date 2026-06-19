@@ -402,10 +402,11 @@ textarea {
   position: relative;
 }
 
-.multi-select summary {
+.multi-select__button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
   min-height: 47px;
   padding: 0.8rem 0.95rem;
   border: 1px solid var(--border);
@@ -413,14 +414,10 @@ textarea {
   background: rgba(7, 18, 26, 0.85);
   color: var(--text);
   cursor: pointer;
-  list-style: none;
+  text-align: left;
 }
 
-.multi-select summary::-webkit-details-marker {
-  display: none;
-}
-
-.multi-select summary::after {
+.multi-select__button::after {
   content: "";
   width: 0.55rem;
   height: 0.55rem;
@@ -429,11 +426,11 @@ textarea {
   transform: rotate(45deg) translateY(-2px);
 }
 
-.multi-select[open] summary {
+.multi-select.open .multi-select__button {
   border-color: var(--border-strong);
 }
 
-.multi-select[open] summary::after {
+.multi-select.open .multi-select__button::after {
   transform: rotate(225deg) translateY(-2px);
 }
 
