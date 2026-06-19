@@ -46,6 +46,7 @@ type Options struct {
 	AutoReformBatchSize                                int
 	SummaryRefreshBatchSize                            int
 	SummaryRefreshMaxBatches                           int
+	SummaryRefreshMaxDuration                          time.Duration
 	SummaryRefreshCandidateBacklogLimit                int
 	ReleaseMinConfidence                               float64
 	ReleaseMinCompletion                               float64
@@ -70,6 +71,9 @@ func NewService(repo repository, log logger, opts Options) *Service {
 	}
 	if opts.SummaryRefreshMaxBatches <= 0 {
 		opts.SummaryRefreshMaxBatches = 10
+	}
+	if opts.SummaryRefreshMaxDuration <= 0 {
+		opts.SummaryRefreshMaxDuration = 3 * time.Second
 	}
 	if opts.SummaryRefreshCandidateBacklogLimit <= 0 {
 		opts.SummaryRefreshCandidateBacklogLimit = opts.SummaryRefreshBatchSize * 5
@@ -152,8 +156,14 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 	coldBatches := 0
 	hotDequeued := 0
 	coldDequeued := 0
+	timeLimited := false
+	runStarted := time.Now()
 
 	for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
+		if batch > 0 && s.opts.SummaryRefreshMaxDuration > 0 && time.Since(runStarted) >= s.opts.SummaryRefreshMaxDuration {
+			timeLimited = true
+			break
+		}
 		refreshStart := time.Now()
 		refreshedBatch := 0
 		if metricsRepo, ok := s.repo.(summaryRefreshMetricsProvider); ok {
@@ -194,11 +204,17 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 			break
 		}
 		remainingSummaryBacklog -= refreshedBatch
+		if s.opts.SummaryRefreshMaxDuration > 0 && time.Since(runStarted) >= s.opts.SummaryRefreshMaxDuration {
+			timeLimited = true
+			break
+		}
 	}
 
 	metrics := map[string]any{
 		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
 		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
+		"summary_refresh_max_duration_ms":         durationMillis(s.opts.SummaryRefreshMaxDuration),
+		"summary_refresh_time_limited":            timeLimited,
 		"summary_refresh_candidate_backlog_limit": s.opts.SummaryRefreshCandidateBacklogLimit,
 		"summary_refresh_initial_count":           initialSummaryBacklog,
 		"summary_refresh_remaining_count":         remainingSummaryBacklog,
