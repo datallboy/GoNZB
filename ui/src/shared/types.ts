@@ -323,6 +323,11 @@ export type AdminStageConfigPatch = {
   binary_upsert_db_chunk_size?: number
   lane_a_target_pct?: number
   lane_b_min_pct?: number
+  target_window_enabled?: boolean
+  target_window_start?: string
+  target_window_end?: string
+  target_window_pct?: number
+  newest_pct?: number
 }
 
 export type AdminRun = {
@@ -372,9 +377,13 @@ export type AdminReleaseSummary = {
   posted_at?: string
   size_bytes: number
   file_count: number
+  expected_file_count: number
+  expected_archive_file_count: number
+  par_file_count: number
   completion_pct: number
   has_nfo: boolean
   has_par2: boolean
+  archive_count: number
   password_state: string
   media_quality_tier: string
   nzb_generation_status: string
@@ -713,8 +722,14 @@ export type AdminReleaseDetailResponse = {
     files: AdminReleaseFileSummary[]
     diagnostics: {
       payload_complete: boolean
+      payload_completeness_known: boolean
+      payload_completion_pct: number
+      known_binary_completion_pct: number
       expected_file_count_complete: boolean
+      expected_file_count_known: boolean
+      expected_archive_file_count_known: boolean
       missing_expected_file_count: number
+      missing_expected_archive_file_count: number
       has_par2_manifest: boolean
       has_sfv: boolean
       readiness_note: string
@@ -958,6 +973,7 @@ export type ServerRuntimeSettings = {
   pool_idle_timeout_seconds: number
   pool_max_age_seconds: number
   enable_pool_logging: boolean
+  roles?: string[]
 }
 
 export type IndexerRuntimeSettings = {

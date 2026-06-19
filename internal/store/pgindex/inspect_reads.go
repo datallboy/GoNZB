@@ -1338,8 +1338,10 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 					bi.status = 'failed' OR
 					(
 						bi.status = 'running' AND
-						bi.inspection_claimed_until IS NOT NULL AND
-						bi.inspection_claimed_until < NOW()
+						(
+							bi.inspection_claimed_until IS NULL OR
+							bi.inspection_claimed_until < NOW()
+						)
 					) OR
 					b.updated_at > bi.updated_at
 				) AS needs_rerun
@@ -1480,8 +1482,10 @@ func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, 
 				bi.status = 'failed' OR
 				(
 					bi.status = 'running' AND
-					bi.inspection_claimed_until IS NOT NULL AND
-					bi.inspection_claimed_until < NOW()
+					(
+						bi.inspection_claimed_until IS NULL OR
+						bi.inspection_claimed_until < NOW()
+					)
 				) OR
 				b.updated_at > bi.updated_at OR
 				`+errorRerunPredicate+`
@@ -1527,8 +1531,10 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 			bi.status = 'failed' OR
 			(
 				bi.status = 'running' AND
-				bi.inspection_claimed_until IS NOT NULL AND
-				bi.inspection_claimed_until < NOW()
+				(
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				)
 			) OR
 			b.updated_at > bi.updated_at OR
 			` + errorRerunPredicate + `
@@ -1946,8 +1952,8 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			cf.file_index,
 			cf.is_pars,
 			cf.subject,
-			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
-			COALESCE(cf.posted_at, raw_meta.posted_at),
+			cf.poster,
+			cf.posted_at,
 			cf.article_count,
 			cf.total_parts,
 			cf.observed_parts,
@@ -1957,20 +1963,6 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		LEFT JOIN release_files rf
 		  ON rf.release_id = cf.release_id
 		 AND rf.file_name = cf.file_name
-		LEFT JOIN LATERAL (
-			SELECT
-				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
-				MIN(ah.date_utc) AS posted_at
-			FROM binary_parts bp
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
-			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE bp.binary_id = rf.binary_id
-			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
-			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
-			LIMIT 1
-		) raw_meta ON TRUE
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {

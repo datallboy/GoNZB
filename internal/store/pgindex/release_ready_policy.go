@@ -175,8 +175,18 @@ func opaqueTitleNeedsEvidenceClause(alias string) string {
 
 func payloadCompleteClause(alias string) string {
 	return fmt.Sprintf(`(
-		COALESCE(%[1]s.expected_archive_file_count, 0) <= 0
-		OR GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= COALESCE(%[1]s.expected_archive_file_count, 0)
+		(
+			COALESCE(%[1]s.archive_count, 0) > 0
+			AND COALESCE(%[1]s.expected_archive_file_count, 0) > 0
+			AND GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= COALESCE(%[1]s.expected_archive_file_count, 0)
+		)
+		OR (
+			COALESCE(%[1]s.archive_count, 0) <= 0
+			AND (
+				COALESCE(%[1]s.expected_archive_file_count, 0) <= 0
+				OR GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= COALESCE(%[1]s.expected_archive_file_count, 0)
+			)
+		)
 	)`, alias)
 }
 

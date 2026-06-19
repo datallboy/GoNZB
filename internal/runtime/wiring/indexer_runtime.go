@@ -94,6 +94,11 @@ type indexerStageConfig struct {
 	BinaryUpsertDBChunkSize int
 	LaneATargetPct          int
 	LaneBMinPct             int
+	TargetWindowEnabled     bool
+	TargetWindowStart       string
+	TargetWindowEnd         string
+	TargetWindowPct         int
+	NewestPct               int
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -237,11 +242,15 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		recoverFetcher,
 		appCtx.Logger,
 		yencrecover.Options{
-			BatchSize:               runtimeCfg.RecoverYEnc.BatchSize,
-			MaxHeaderBytes:          8192,
-			FetchTimeout:            10 * time.Second,
-			Concurrency:             runtimeCfg.RecoverYEnc.Concurrency,
-			MaxEffectiveConcurrency: runtimeCfg.RecoverYEnc.MaxEffectiveConcurrency,
+			BatchSize:           runtimeCfg.RecoverYEnc.BatchSize,
+			MaxHeaderBytes:      8192,
+			FetchTimeout:        10 * time.Second,
+			Concurrency:         runtimeCfg.RecoverYEnc.Concurrency,
+			TargetWindowEnabled: runtimeCfg.RecoverYEnc.TargetWindowEnabled,
+			TargetWindowStart:   runtimeCfg.RecoverYEnc.TargetWindowStart,
+			TargetWindowEnd:     runtimeCfg.RecoverYEnc.TargetWindowEnd,
+			TargetWindowPercent: runtimeCfg.RecoverYEnc.TargetWindowPct,
+			NewestPercent:       runtimeCfg.RecoverYEnc.NewestPct,
 		},
 	)
 
@@ -822,6 +831,11 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
 		LaneATargetPct:          in.LaneATargetPct,
 		LaneBMinPct:             in.LaneBMinPct,
+		TargetWindowEnabled:     in.TargetWindowEnabled,
+		TargetWindowStart:       in.TargetWindowStart,
+		TargetWindowEnd:         in.TargetWindowEnd,
+		TargetWindowPct:         in.TargetWindowPct,
+		NewestPct:               in.NewestPct,
 	}
 }
 

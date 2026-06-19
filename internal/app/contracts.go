@@ -129,23 +129,24 @@ type NNTPScopeRuntimeStats struct {
 }
 
 type NNTPProviderRuntimeStats struct {
-	ID                string `json:"id"`
-	Label             string `json:"label"`
-	Priority          int    `json:"priority"`
-	Capacity          int    `json:"capacity"`
-	Active            int    `json:"active"`
-	Idle              int    `json:"idle"`
-	Dials             int64  `json:"dials"`
-	DialFailures      int64  `json:"dial_failures"`
-	PoolReuses        int64  `json:"pool_reuses"`
-	PoolReturns       int64  `json:"pool_returns"`
-	PoolDiscardIdle   int64  `json:"pool_discard_idle"`
-	PoolDiscardAge    int64  `json:"pool_discard_age"`
-	PoolDiscardError  int64  `json:"pool_discard_error"`
-	FetchRetries      int64  `json:"fetch_retries"`
-	GroupStatsRetries int64  `json:"group_stats_retries"`
-	XOverRetries      int64  `json:"xover_retries"`
-	RecoverableErrors int64  `json:"recoverable_errors"`
+	ID                string   `json:"id"`
+	Label             string   `json:"label"`
+	Roles             []string `json:"roles,omitempty"`
+	Priority          int      `json:"priority"`
+	Capacity          int      `json:"capacity"`
+	Active            int      `json:"active"`
+	Idle              int      `json:"idle"`
+	Dials             int64    `json:"dials"`
+	DialFailures      int64    `json:"dial_failures"`
+	PoolReuses        int64    `json:"pool_reuses"`
+	PoolReturns       int64    `json:"pool_returns"`
+	PoolDiscardIdle   int64    `json:"pool_discard_idle"`
+	PoolDiscardAge    int64    `json:"pool_discard_age"`
+	PoolDiscardError  int64    `json:"pool_discard_error"`
+	FetchRetries      int64    `json:"fetch_retries"`
+	GroupStatsRetries int64    `json:"group_stats_retries"`
+	XOverRetries      int64    `json:"xover_retries"`
+	RecoverableErrors int64    `json:"recoverable_errors"`
 }
 
 // Manager defines the contract for our NZB search and download engine.

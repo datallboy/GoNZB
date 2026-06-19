@@ -714,8 +714,7 @@ func (p *nntpProvider) fetchBodyPrefixWithConn(ctx context.Context, conn *nntpCo
 		return nil, retry, err
 	}
 
-	limited := io.LimitReader(reader, maxBytes)
-	data, readErr := io.ReadAll(limited)
+	data, readErr := readBodyPrefixUntilYBegin(reader, maxBytes)
 	if closer, ok := reader.(*pooledReader); ok {
 		// Prefix callers intentionally do not drain the dot body. Returning this
 		// connection to the pool would corrupt the next command, so discard it.
@@ -727,6 +726,42 @@ func (p *nntpProvider) fetchBodyPrefixWithConn(ctx context.Context, conn *nntpCo
 		return nil, isRecoverableConnError(readErr), readErr
 	}
 	return data, false, nil
+}
+
+func readBodyPrefixUntilYBegin(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 8192
+	}
+	maxCap := int64(1024)
+	if maxBytes < maxCap {
+		maxCap = maxBytes
+	}
+
+	buffered := bufio.NewReader(reader)
+	data := make([]byte, 0, int(maxCap))
+	for int64(len(data)) < maxBytes {
+		line, err := buffered.ReadString('\n')
+		if len(line) > 0 {
+			remaining := int(maxBytes) - len(data)
+			if remaining > 0 {
+				if len(line) > remaining {
+					data = append(data, line[:remaining]...)
+				} else {
+					data = append(data, line...)
+				}
+			}
+			if strings.HasPrefix(line, "=ybegin") || int64(len(data)) >= maxBytes {
+				return data, nil
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return data, nil
+			}
+			return data, err
+		}
+	}
+	return data, nil
 }
 
 func isRecoverableConnError(err error) bool {

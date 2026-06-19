@@ -342,7 +342,7 @@ This matrix is the schema contract for current and near-term code changes.
 | `release_family_readiness_summaries` | derived/materialized read-model | `release_summary_refresh` | none | Shared hot table; one heavy writer only. |
 | `releases` | durable catalog fact | `release` | `inspect_*`, enrichment, overrides, archive tail for explicit catalog/archive fields only | Permanent release catalog header. |
 | `release_catalog_files` | durable catalog fact | `release` | archive-maintenance/backfill only | Durable UI/detail file metadata. |
-| `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. |
+| `release_files` | transitional source/detail bridge | `release` | purge deletes only | Transitional and should shrink over time. `binary_id` is a soft lineage pointer, not an enforced FK to `binary_core`; release must not acquire binary-row locks while writing this table. |
 | `release_newsgroups` | durable catalog support | `release` | purge deletes only if replaced by another durable source | Current release provenance/catalog support. |
 | `release_archive_state` | durable archive state | archive tail | none | Blob/archive lifecycle state. |
 | `release_archive_detail_*` tables | frozen transitional archive detail | none for active runtime flows | none | Legacy compatibility surface; no longer part of the active detail or maintenance path. |
@@ -994,6 +994,7 @@ Current boundary note:
 
 - user-facing and admin file/detail reads should anchor on `release_catalog_files`
 - `release_files` remains a transitional live-lineage bridge for binary/article drilldown and purge-time source cleanup only
+- `release_files.binary_id` is intentionally not FK-enforced against `binary_core`; enforcing that relationship makes release inserts take locks on assemble-owned binary rows and violates the downstream-read/upstream-no-locking boundary
 
 Primary DBO entry points:
 

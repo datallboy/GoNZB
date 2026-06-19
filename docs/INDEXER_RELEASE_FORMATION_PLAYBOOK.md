@@ -397,6 +397,8 @@ Primary writes:
 - `release_newsgroups`
 - release candidate acknowledgements
 
+`release_files.binary_id` is a soft source-lineage pointer. It must not be FK-enforced against `binary_core`, because release formation is downstream of assemble and should not take row locks on assemble-owned binary projections while writing release-owned catalog state.
+
 Candidate kinds:
 
 - `release_family`: normal family-key grouping from assemble.

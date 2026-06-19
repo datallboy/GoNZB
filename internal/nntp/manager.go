@@ -21,6 +21,7 @@ type managedProvider struct {
 	Provider
 	semaphore    chan struct{}
 	debugLogging bool
+	roles        map[string]bool
 }
 
 type CapacityPolicy string
@@ -28,6 +29,8 @@ type CapacityPolicy string
 const (
 	CapacityReturnBusy CapacityPolicy = "return_busy"
 	CapacityWaitQueue  CapacityPolicy = "wait_queue"
+
+	providerHeadroomPercent = 5
 )
 
 type ManagerOptions struct {
@@ -90,6 +93,7 @@ type ManagerScopeStats struct {
 type ManagerProviderStats struct {
 	ID                string
 	Label             string
+	Roles             []string
 	Priority          int
 	Capacity          int
 	Active            int
@@ -168,6 +172,7 @@ func NewManagerWithOptions(ctx *app.Context, opts ManagerOptions) (*Manager, err
 			Provider:     p,
 			semaphore:    make(chan struct{}, p.MaxConnection()),
 			debugLogging: cfg.EnablePoolLogging,
+			roles:        normalizeProviderRoles(cfg.Roles),
 		})
 	}
 
@@ -208,7 +213,45 @@ func newManagedProvider(p Provider) *managedProvider {
 	return &managedProvider{
 		Provider:  p,
 		semaphore: make(chan struct{}, capacity),
+		roles:     normalizeProviderRoles(nil),
 	}
+}
+
+func normalizeProviderRoles(roles []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, role := range roles {
+		switch strings.TrimSpace(strings.ToLower(role)) {
+		case "scrape":
+			out["scrape"] = true
+		case "yenc_recovery", "recover_yenc":
+			out["yenc_recovery"] = true
+		case "inspection", "inspect":
+			out["inspection"] = true
+		case "download", "downloader":
+			out["download"] = true
+		}
+	}
+	if len(out) == 0 {
+		out["scrape"] = true
+		out["yenc_recovery"] = true
+		out["inspection"] = true
+		out["download"] = true
+	}
+	return out
+}
+
+func providerRoleList(roles map[string]bool) []string {
+	if len(roles) == 0 {
+		return []string{"download", "inspection", "scrape", "yenc_recovery"}
+	}
+	out := make([]string, 0, len(roles))
+	for role, enabled := range roles {
+		if enabled {
+			out = append(out, role)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Manager) Client() *ManagerClient {
@@ -314,7 +357,7 @@ func (m *Manager) listGroupsForScope(ctx context.Context, scope string, policy C
 	}
 
 	var lastErr error
-	for _, mp := range m.providers {
+	for _, mp := range m.providerAcquireOrder(scope, m.providers) {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
@@ -408,8 +451,9 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 		}
 	}
 
-	// If all providers are confirmed missing
-	if len(seg.MissingFrom) == len(m.providers) {
+	eligible := m.eligibleProviders(scope)
+	// If all eligible providers are confirmed missing
+	if len(eligible) > 0 && m.missingEligibleProviderCount(scope, seg) >= len(eligible) {
 		return nil, m.articleNotFoundError(seg)
 	}
 
@@ -420,11 +464,8 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 	}
 
 	if policy == CapacityWaitQueue {
-		mp := m.firstFetchProvider(seg)
-		if mp == nil {
-			return nil, m.articleNotFoundError(seg)
-		}
-		if err := m.waitAcquire(ctx, scope, mp); err != nil {
+		mp, err := m.waitForFetchProvider(ctx, scope, seg)
+		if err != nil {
 			return nil, err
 		}
 		reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
@@ -508,7 +549,7 @@ func (m *Manager) fetchBodyPrefixForScope(ctx context.Context, scope string, pol
 	}
 
 	var lastErr error
-	for _, mp := range m.providers {
+	for _, mp := range m.providerAcquireOrder(scope, m.providers) {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
@@ -667,6 +708,9 @@ func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider
 	if mp == nil {
 		return false, nil
 	}
+	if !mp.allowsScope(scope) {
+		return false, nil
+	}
 	module := moduleForScope(scope)
 	if module == "downloader" {
 		m.recordDownloaderDemand()
@@ -723,24 +767,178 @@ func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProv
 }
 
 func (m *Manager) waitForProvider(ctx context.Context, scope string) (*managedProvider, error) {
-	if len(m.providers) == 0 {
-		return nil, ErrProviderBusy
-	}
-	mp := m.providers[0]
-	if err := m.waitAcquire(ctx, scope, mp); err != nil {
-		return nil, err
-	}
-	return mp, nil
+	return m.waitForProviderFromList(ctx, scope, m.eligibleProviders(scope))
 }
 
-func (m *Manager) firstFetchProvider(seg *domain.Segment) *managedProvider {
+func (m *Manager) waitForFetchProvider(ctx context.Context, scope string, seg *domain.Segment) (*managedProvider, error) {
+	eligible := 0
+	providers := make([]*managedProvider, 0, len(m.providers))
 	for _, mp := range m.providers {
+		if !mp.allowsScope(scope) {
+			continue
+		}
+		eligible++
+		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
+			continue
+		}
+		providers = append(providers, mp)
+	}
+	if eligible == 0 {
+		return nil, ErrProviderBusy
+	}
+	if len(providers) == 0 {
+		return nil, m.articleNotFoundError(seg)
+	}
+	return m.waitForProviderFromList(ctx, scope, providers)
+}
+
+func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, providers []*managedProvider) (*managedProvider, error) {
+	if len(providers) == 0 {
+		return nil, ErrProviderBusy
+	}
+	start := time.Now()
+	scopeStats := m.scopeStats(scope)
+	module := moduleForScope(scope)
+	m.stats.waiting.Add(1)
+	scopeStats.waiting.Add(1)
+	defer m.stats.waiting.Add(-1)
+	defer scopeStats.waiting.Add(-1)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if module == "downloader" {
+			m.recordDownloaderDemand()
+		}
+		if m.moduleCanAcquire(module) {
+			for _, mp := range m.providerAcquireOrder(scope, providers) {
+				select {
+				case mp.semaphore <- struct{}{}:
+					m.recordActive(scope, module, 1)
+					m.recordWait(scopeStats, time.Since(start))
+					return mp, nil
+				default:
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			m.recordWait(scopeStats, time.Since(start))
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) firstFetchProvider(scope string, seg *domain.Segment) *managedProvider {
+	for _, mp := range m.providers {
+		if !mp.allowsScope(scope) {
+			continue
+		}
 		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
 			continue
 		}
 		return mp
 	}
 	return nil
+}
+
+func (m *Manager) eligibleProviders(scope string) []*managedProvider {
+	out := make([]*managedProvider, 0, len(m.providers))
+	for _, mp := range m.providers {
+		if mp.allowsScope(scope) {
+			out = append(out, mp)
+		}
+	}
+	return out
+}
+
+func (m *Manager) providerAcquireOrder(scope string, providers []*managedProvider) []*managedProvider {
+	if len(providers) < 2 {
+		return providers
+	}
+	eligible := make([]*managedProvider, 0, len(providers))
+	for _, mp := range providers {
+		if mp == nil || !mp.allowsScope(scope) {
+			continue
+		}
+		eligible = append(eligible, mp)
+	}
+	if len(eligible) < 2 {
+		return providers
+	}
+	if normalizeScope(scope) == "recover_yenc" {
+		out := append([]*managedProvider(nil), providers...)
+		sort.SliceStable(out, func(i, j int) bool {
+			left := providerUtilizationBasisPoints(out[i])
+			right := providerUtilizationBasisPoints(out[j])
+			if left != right {
+				return left < right
+			}
+			return out[i].Priority() < out[j].Priority()
+		})
+		return out
+	}
+	head := make([]*managedProvider, 0, len(providers))
+	tail := make([]*managedProvider, 0)
+	for _, mp := range providers {
+		if mp == nil || !mp.allowsScope(scope) || !providerAtHeadroom(mp) || !providerHasIdlePeer(mp, eligible) {
+			head = append(head, mp)
+			continue
+		}
+		tail = append(tail, mp)
+	}
+	if len(tail) == 0 {
+		return providers
+	}
+	return append(head, tail...)
+}
+
+func providerUtilizationBasisPoints(mp *managedProvider) int {
+	if mp == nil {
+		return 10000
+	}
+	capacity := cap(mp.semaphore)
+	if capacity <= 0 {
+		return 10000
+	}
+	return len(mp.semaphore) * 10000 / capacity
+}
+
+func providerAtHeadroom(mp *managedProvider) bool {
+	if mp == nil {
+		return false
+	}
+	capacity := cap(mp.semaphore)
+	if capacity <= 0 {
+		return false
+	}
+	active := len(mp.semaphore)
+	return active*100 >= capacity*(100-providerHeadroomPercent)
+}
+
+func providerHasIdlePeer(current *managedProvider, providers []*managedProvider) bool {
+	for _, candidate := range providers {
+		if candidate == nil || candidate == current {
+			continue
+		}
+		if len(candidate.semaphore) < cap(candidate.semaphore) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) missingEligibleProviderCount(scope string, seg *domain.Segment) int {
+	if seg == nil || len(seg.MissingFrom) == 0 {
+		return 0
+	}
+	count := 0
+	for _, mp := range m.providers {
+		if mp.allowsScope(scope) && seg.MissingFrom[mp.ID()] {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) release(mp *managedProvider) {
@@ -818,6 +1016,35 @@ func normalizeScope(scope string) string {
 		return "unscoped"
 	}
 	return scope
+}
+
+func roleForScope(scope string) string {
+	switch normalizeScope(scope) {
+	case "downloader":
+		return "download"
+	case "recover_yenc":
+		return "yenc_recovery"
+	case "scrape":
+		return "scrape"
+	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
+		return "inspection"
+	default:
+		return ""
+	}
+}
+
+func (mp *managedProvider) allowsScope(scope string) bool {
+	if mp == nil {
+		return false
+	}
+	role := roleForScope(scope)
+	if role == "" {
+		return true
+	}
+	if len(mp.roles) == 0 {
+		return true
+	}
+	return mp.roles[role]
 }
 
 func moduleForScope(scope string) string {
@@ -984,6 +1211,7 @@ func (m *Manager) Stats() ManagerStats {
 		providers = append(providers, ManagerProviderStats{
 			ID:                mp.ID(),
 			Label:             mp.Label(),
+			Roles:             providerRoleList(mp.roles),
 			Priority:          mp.Priority(),
 			Capacity:          cap(mp.semaphore),
 			Active:            providerActive,
@@ -1105,6 +1333,7 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		out.Providers = append(out.Providers, app.NNTPProviderRuntimeStats{
 			ID:                provider.ID,
 			Label:             provider.Label,
+			Roles:             append([]string(nil), provider.Roles...),
 			Priority:          provider.Priority,
 			Capacity:          provider.Capacity,
 			Active:            provider.Active,

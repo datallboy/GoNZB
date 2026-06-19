@@ -241,8 +241,22 @@ func validateServers(field string, servers []app.ServerRuntimeSettings) []string
 		if server.MaxConnection < 0 {
 			issues = append(issues, prefix+".max_connections must be 0 or greater")
 		}
+		for j, role := range server.Roles {
+			if !validNNTPProviderRole(role) {
+				issues = append(issues, fmt.Sprintf("%s.roles[%d] must be one of scrape, yenc_recovery, inspection, download", prefix, j))
+			}
+		}
 	}
 	return issues
+}
+
+func validNNTPProviderRole(role string) bool {
+	switch strings.TrimSpace(strings.ToLower(role)) {
+	case "scrape", "yenc_recovery", "inspection", "download":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateIndexers(indexers []app.IndexerRuntimeSettings) []string {
@@ -344,6 +358,9 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if strings.HasPrefix(stage.name, "assemble") && stage.config.BinaryUpsertDBChunkSize == 0 {
 			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
 		}
+		if stage.name == "recover_yenc" {
+			issues = append(issues, validateYEncRecoveryTargetWindow(stage.config)...)
+		}
 	}
 	if indexing.Inspect.MinBinaryBytes < 0 {
 		issues = append(issues, "indexing.inspect.min_binary_bytes must be greater than or equal to 0")
@@ -385,6 +402,34 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if _, err := hex.DecodeString(clean); err != nil {
 			issues = append(issues, fmt.Sprintf("indexing.inspect.blocked_magic_hex[%d] must be hex encoded", i))
 		}
+	}
+	return issues
+}
+
+func validateYEncRecoveryTargetWindow(stage app.IndexingStageRuntimeSettings) []string {
+	if !stage.TargetWindowEnabled {
+		return nil
+	}
+	issues := make([]string, 0)
+	start, startErr := time.Parse(time.RFC3339, strings.TrimSpace(stage.TargetWindowStart))
+	end, endErr := time.Parse(time.RFC3339, strings.TrimSpace(stage.TargetWindowEnd))
+	if startErr != nil {
+		issues = append(issues, "indexing.recover_yenc.target_window_start must be RFC3339 when target window is enabled")
+	}
+	if endErr != nil {
+		issues = append(issues, "indexing.recover_yenc.target_window_end must be RFC3339 when target window is enabled")
+	}
+	if startErr == nil && endErr == nil && !start.Before(end) {
+		issues = append(issues, "indexing.recover_yenc.target_window_start must be before target_window_end")
+	}
+	if stage.TargetWindowPct < 0 || stage.TargetWindowPct > 100 {
+		issues = append(issues, "indexing.recover_yenc.target_window_pct must be between 0 and 100 when target window is enabled")
+	}
+	if stage.NewestPct < 0 || stage.NewestPct > 100 {
+		issues = append(issues, "indexing.recover_yenc.newest_pct must be between 0 and 100 when target window is enabled")
+	}
+	if stage.TargetWindowPct+stage.NewestPct != 100 {
+		issues = append(issues, "indexing.recover_yenc.target_window_pct and newest_pct must total 100 when target window is enabled")
 	}
 	return issues
 }

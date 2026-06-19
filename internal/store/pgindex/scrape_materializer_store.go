@@ -289,6 +289,23 @@ func upsertPosterDimensionRows(ctx context.Context, tx *sql.Tx, rows []claimedPo
 }
 
 func upsertArticleHeaderPosterRefs(ctx context.Context, tx *sql.Tx, rows []claimedPosterMaterializationRow, posterIDs map[string]int64) (int64, error) {
+	const posterRefUpsertChunkSize = 2500
+	var total int64
+	for start := 0; start < len(rows); start += posterRefUpsertChunkSize {
+		end := start + posterRefUpsertChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		affected, err := upsertArticleHeaderPosterRefsChunk(ctx, tx, rows[start:end], posterIDs)
+		if err != nil {
+			return total, err
+		}
+		total += affected
+	}
+	return total, nil
+}
+
+func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []claimedPosterMaterializationRow, posterIDs map[string]int64) (int64, error) {
 	var query strings.Builder
 	args := make([]any, 0, len(rows)*4)
 	query.WriteString(`

@@ -58,8 +58,81 @@ func TestRunOnceRecoversCandidateFromYEncHeaderPrefix(t *testing.T) {
 	if repo.applied.BinaryID != 10 || repo.applied.ArticleHeaderID != 20 {
 		t.Fatalf("expected binary/article ids to be preserved, got %+v", repo.applied)
 	}
+	if repo.applied.PartNumber != 1 || repo.applied.TotalParts != 1 || repo.applied.FileSize != 1024 {
+		t.Fatalf("expected yEnc part metadata to be preserved, got part=%d total=%d size=%d", repo.applied.PartNumber, repo.applied.TotalParts, repo.applied.FileSize)
+	}
 	if fetcher.maxBytes != 256 {
 		t.Fatalf("expected prefix limit to be passed to fetcher, got %d", fetcher.maxBytes)
+	}
+}
+
+func TestRunOncePersistsRecoveredYEncMultipartHeaderMetadata(t *testing.T) {
+	repo := &fakeRepo{
+		candidates: []pgindex.YEncRecoveryCandidate{{
+			BinaryID:        12,
+			ArticleHeaderID: 22,
+			NewsgroupName:   "alt.binaries.test",
+			ArticleNumber:   5678,
+			MessageID:       "multipart@test",
+			Subject:         `2cf281e3e9fa4a1f82d5c320fa444010`,
+			Poster:          "poster",
+			DateUTC:         ptrTime(time.Date(2026, 6, 18, 14, 24, 11, 0, time.UTC)),
+			Bytes:           716800,
+			Lines:           5693,
+		}},
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=12 total=732 line=128 size=524288000 name=5AzyRS4rfbOyP5fZH.part2.rar\r\n=ypart begin=7884801 end=8601600\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 10, MaxHeaderBytes: 256})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["recovered"] != 1 {
+		t.Fatalf("expected one recovered candidate, got metrics=%v", metrics)
+	}
+	if repo.applied.FileName != "5AzyRS4rfbOyP5fZH.part2.rar" {
+		t.Fatalf("expected recovered yEnc filename, got %q", repo.applied.FileName)
+	}
+	if repo.applied.PartNumber != 12 || repo.applied.TotalParts != 732 || repo.applied.FileSize != 524288000 {
+		t.Fatalf("expected yEnc part metadata 12/732 size=524288000, got part=%d total=%d size=%d", repo.applied.PartNumber, repo.applied.TotalParts, repo.applied.FileSize)
+	}
+}
+
+func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
+	bucketStart := time.Date(2026, 6, 18, 14, 20, 0, 0, time.UTC)
+	bucketEnd := bucketStart.Add(5 * time.Minute)
+	repo := &fakeRepo{
+		candidates: []pgindex.YEncRecoveryCandidate{{
+			BinaryID:            12,
+			ArticleHeaderID:     22,
+			NewsgroupName:       "alt.binaries.test",
+			MessageID:           "fairness@test",
+			Subject:             `2cf281e3e9fa4a1f82d5c320fa444010`,
+			RecoveryLane:        "time_cohort_fairness",
+			FairnessBucketStart: &bucketStart,
+			FairnessBucketEnd:   &bucketEnd,
+		}, {
+			BinaryID:        13,
+			ArticleHeaderID: 23,
+			NewsgroupName:   "alt.binaries.test",
+			MessageID:       "newest@test",
+			Subject:         `3cf281e3e9fa4a1f82d5c320fa444011`,
+			RecoveryLane:    "newest",
+		}},
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.rar\r\n=ypart begin=1 end=1024\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 10, MaxHeaderBytes: 256})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["selected_fairness"] != 1 || metrics["selected_newest"] != 1 {
+		t.Fatalf("expected one candidate from each recovery lane, got metrics=%v", metrics)
+	}
+	if metrics["fairness_bucket_start"] != bucketStart.Format(time.RFC3339) || metrics["fairness_bucket_end"] != bucketEnd.Format(time.RFC3339) {
+		t.Fatalf("expected fairness bucket metrics, got metrics=%v", metrics)
 	}
 }
 
@@ -169,7 +242,7 @@ func TestRunOnceSkipsStaleBinaryRecoveryCandidate(t *testing.T) {
 	}
 }
 
-func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
+func TestRunOnceUsesConfiguredPrefixFetchConcurrency(t *testing.T) {
 	candidates := make([]pgindex.YEncRecoveryCandidate, 12)
 	for i := range candidates {
 		candidates[i] = pgindex.YEncRecoveryCandidate{
@@ -185,8 +258,8 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 		body:  []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.mkv\r\n=ypart begin=1 end=1024\r\n"),
 		block: make(chan struct{}),
 	}
-	const maxEffectiveConcurrency = 4
-	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 12, MaxHeaderBytes: 256, Concurrency: 32, MaxEffectiveConcurrency: maxEffectiveConcurrency})
+	const configuredConcurrency = 12
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 12, MaxHeaderBytes: 256, Concurrency: configuredConcurrency})
 
 	done := make(chan struct{})
 	var (
@@ -200,7 +273,7 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if fetcher.maxActiveCount() == maxEffectiveConcurrency {
+		if fetcher.maxActiveCount() == configuredConcurrency {
 			break
 		}
 		select {
@@ -215,16 +288,117 @@ func TestRunOnceCapsPrefixFetchConcurrency(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("RunOnceWithMetrics failed: %v", runErr)
 	}
-	if metrics["effective_concurrency"] != maxEffectiveConcurrency {
-		t.Fatalf("expected effective concurrency cap %d, got metrics=%v", maxEffectiveConcurrency, metrics)
+	if metrics["effective_concurrency"] != configuredConcurrency {
+		t.Fatalf("expected configured concurrency %d, got metrics=%v", configuredConcurrency, metrics)
 	}
-	if fetcher.maxActiveCount() > maxEffectiveConcurrency {
-		t.Fatalf("prefix fetch concurrency exceeded cap: %d", fetcher.maxActiveCount())
+	if fetcher.maxActiveCount() != configuredConcurrency {
+		t.Fatalf("prefix fetch concurrency did not use configured concurrency: %d", fetcher.maxActiveCount())
+	}
+}
+
+func TestRunOncePassesTargetWindowSelectionOptions(t *testing.T) {
+	repo := &fakeRepo{}
+	fetcher := &fakePrefixFetcher{}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{
+		BatchSize:           2000,
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "2026-06-18T18:20:00Z",
+		TargetWindowEnd:     "2026-06-18T18:40:00Z",
+		TargetWindowPercent: 70,
+		NewestPercent:       30,
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if repo.selectionLimit != 2000 {
+		t.Fatalf("expected selection limit 2000, got %d", repo.selectionLimit)
+	}
+	if repo.selectionOpts.TargetWindowStart == nil || repo.selectionOpts.TargetWindowEnd == nil {
+		t.Fatalf("expected target window options, got %+v", repo.selectionOpts)
+	}
+	if repo.selectionOpts.TargetWindowPercent != 70 || repo.selectionOpts.NewestPercent != 30 {
+		t.Fatalf("expected 70/30 target split, got %+v", repo.selectionOpts)
+	}
+	if metrics["target_window_enabled"] != true || metrics["target_window_pct"] != 70 || metrics["newest_pct"] != 30 {
+		t.Fatalf("expected target window metrics, got %v", metrics)
+	}
+}
+
+func TestRunOnceAllowsTargetWindowOnlySelection(t *testing.T) {
+	repo := &fakeRepo{}
+	fetcher := &fakePrefixFetcher{}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{
+		BatchSize:           2000,
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "2026-06-18T18:20:00Z",
+		TargetWindowEnd:     "2026-06-18T18:40:00Z",
+		TargetWindowPercent: 100,
+		NewestPercent:       0,
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if repo.selectionOpts.TargetWindowPercent != 100 || repo.selectionOpts.NewestPercent != 0 {
+		t.Fatalf("expected target-only split, got %+v", repo.selectionOpts)
+	}
+	if metrics["target_window_pct"] != 100 || metrics["newest_pct"] != 0 {
+		t.Fatalf("expected target-only metrics, got %v", metrics)
+	}
+}
+
+func TestRunOncePassesFairnessNewestSplitWithoutExplicitTargetWindow(t *testing.T) {
+	repo := &fakeRepo{}
+	fetcher := &fakePrefixFetcher{}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{
+		BatchSize:           5000,
+		TargetWindowEnabled: false,
+		TargetWindowPercent: 100,
+		NewestPercent:       0,
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if repo.selectionLimit != 5000 {
+		t.Fatalf("expected selection limit 5000, got %d", repo.selectionLimit)
+	}
+	if repo.selectionOpts.TargetWindowStart != nil || repo.selectionOpts.TargetWindowEnd != nil {
+		t.Fatalf("did not expect literal target window bounds, got %+v", repo.selectionOpts)
+	}
+	if repo.selectionOpts.TargetWindowPercent != 100 || repo.selectionOpts.NewestPercent != 0 {
+		t.Fatalf("expected 100/0 fairness split, got %+v", repo.selectionOpts)
+	}
+	if metrics["target_window_enabled"] != false || metrics["target_window_pct"] != 100 || metrics["newest_pct"] != 0 {
+		t.Fatalf("expected fairness-only split metrics, got %v", metrics)
+	}
+}
+
+func TestRunOnceRejectsInvalidTargetWindowSplit(t *testing.T) {
+	repo := &fakeRepo{}
+	fetcher := &fakePrefixFetcher{}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{
+		BatchSize:           100,
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "2026-06-18T18:20:00Z",
+		TargetWindowEnd:     "2026-06-18T18:40:00Z",
+		TargetWindowPercent: 60,
+		NewestPercent:       60,
+	})
+
+	if _, err := svc.RunOnceWithMetrics(context.Background()); err == nil {
+		t.Fatal("expected invalid target split to fail")
 	}
 }
 
 type fakeRepo struct {
 	candidates         []pgindex.YEncRecoveryCandidate
+	selectionOpts      pgindex.YEncRecoverySelectionOptions
+	selectionLimit     int
 	applied            pgindex.YEncHeaderRecoveryRecord
 	notFoundArticleID  int64
 	noopArticleID      int64
@@ -233,6 +407,12 @@ type fakeRepo struct {
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
+	return append([]pgindex.YEncRecoveryCandidate(nil), f.candidates...), nil
+}
+
+func (f *fakeRepo) ListYEncRecoveryCandidatesWithOptions(_ context.Context, limit int, opts pgindex.YEncRecoverySelectionOptions) ([]pgindex.YEncRecoveryCandidate, error) {
+	f.selectionLimit = limit
+	f.selectionOpts = opts
 	return append([]pgindex.YEncRecoveryCandidate(nil), f.candidates...), nil
 }
 

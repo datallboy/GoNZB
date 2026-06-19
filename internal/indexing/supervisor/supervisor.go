@@ -452,7 +452,7 @@ func (s *Supervisor) heartbeatStageRun(ctx context.Context, runID int64, errCh c
 }
 
 func (s *Supervisor) controlContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 5*time.Second)
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 func (s *Supervisor) selectStages(names ...StageName) ([]Stage, error) {

@@ -186,6 +186,9 @@ type YEncRecoveryCandidate struct {
 	CurrentBaseStem                 string
 	CurrentReadinessBucket          string
 	StructuredIdentityBinaryMatched bool
+	RecoveryLane                    string
+	FairnessBucketStart             *time.Time
+	FairnessBucketEnd               *time.Time
 }
 
 func (c YEncRecoveryCandidate) FetchGroups() []string {
@@ -246,7 +249,9 @@ type YEncHeaderRecoveryRecord struct {
 	FileName          string
 	FileIndex         int
 	ExpectedFileCount int
+	PartNumber        int
 	TotalParts        int
+	FileSize          int64
 	MatchConfidence   float64
 	MatchStatus       string
 	GroupingEvidence  map[string]any
@@ -399,28 +404,30 @@ type ReleasePasswordCandidateRecord struct {
 }
 
 type ReleaseInspectionUpdate struct {
-	ReleaseID           string
-	Encrypted           *bool
-	HasPAR2             *bool
-	HasNFO              *bool
-	Passworded          *bool
-	PasswordedKnown     *bool
-	PasswordedUnknown   *bool
-	PasswordState       string
-	PreferredPasswordID *int64
-	ArchiveCount        *int
-	VideoCount          *int
-	AudioCount          *int
-	RuntimeSeconds      *int
-	SamplePresent       *bool
-	PrimaryResolution   string
-	PrimaryVideoCodec   string
-	PrimaryAudioCodec   string
-	SubtitleLanguages   []string
-	MediaTags           []string
-	MediaQualityScore   *float64
-	MediaQualityTier    string
-	MetadataUpdatedAt   *time.Time
+	ReleaseID                string
+	Encrypted                *bool
+	HasPAR2                  *bool
+	HasNFO                   *bool
+	Passworded               *bool
+	PasswordedKnown          *bool
+	PasswordedUnknown        *bool
+	PasswordState            string
+	PreferredPasswordID      *int64
+	ArchiveCount             *int
+	VideoCount               *int
+	AudioCount               *int
+	ExpectedFileCount        *int
+	ExpectedArchiveFileCount *int
+	RuntimeSeconds           *int
+	SamplePresent            *bool
+	PrimaryResolution        string
+	PrimaryVideoCodec        string
+	PrimaryAudioCodec        string
+	SubtitleLanguages        []string
+	MediaTags                []string
+	MediaQualityScore        *float64
+	MediaQualityTier         string
+	MetadataUpdatedAt        *time.Time
 }
 
 type ReleaseTMDBMatchRecord struct {

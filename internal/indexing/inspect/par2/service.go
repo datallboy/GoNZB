@@ -44,6 +44,7 @@ type Service struct {
 }
 
 var parVolumePartsRE = regexp.MustCompile(`(?i)\.vol(\d+)\+(\d+)\.par2$`)
+var par2ArchiveTargetRE = regexp.MustCompile(`(?i)(\.part0*\d+\.rar|\.r\d{2,3}|\.rar|\.zip|\.zip\.0*\d+|\.7z|\.7z\.0*\d+)$`)
 
 func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, log logger, opts inspectpkg.Options) *Service {
 	return &Service{
@@ -519,11 +520,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	targetMetadata := make([]map[string]any, 0, len(targets))
 	targetRows := make([]pgindex.BinaryPAR2TargetRecord, 0, len(targets))
+	archiveTargetCount := 0
 	for _, target := range targets {
 		targetMetadata = append(targetMetadata, map[string]any{
 			"name": target.Name,
 			"size": target.Size,
 		})
+		if isPAR2ArchiveTarget(target.Name) {
+			archiveTargetCount++
+		}
 		targetRows = append(targetRows, pgindex.BinaryPAR2TargetRecord{
 			BinaryID:  candidate.BinaryID,
 			ReleaseID: candidate.ReleaseID,
@@ -592,15 +597,24 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if strings.TrimSpace(candidate.ReleaseID) == "" {
 		return result, nil
 	}
+	expectedFileCount := len(targetRows)
 	result.releaseUpdate = &pgindex.ReleaseInspectionUpdate{
-		ReleaseID:         candidate.ReleaseID,
-		HasPAR2:           &hasPAR2,
-		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
+		ReleaseID:                candidate.ReleaseID,
+		HasPAR2:                  &hasPAR2,
+		ExpectedFileCount:        &expectedFileCount,
+		ExpectedArchiveFileCount: ptrIntPAR2(archiveTargetCount),
+		MetadataUpdatedAt:        ptrTime(time.Now().UTC()),
 	}
 	return result, nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func ptrIntPAR2(v int) *int { return &v }
+
+func isPAR2ArchiveTarget(fileName string) bool {
+	return par2ArchiveTargetRE.MatchString(strings.ToLower(strings.TrimSpace(fileName)))
+}
 
 func durationMillis(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000.0

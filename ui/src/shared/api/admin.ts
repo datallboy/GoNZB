@@ -6,6 +6,8 @@ import type {
   IndexerOverviewStreamSnapshot,
   IndexerStageThroughput,
   AdminReleaseDetailResponse,
+  AdminBinaryDetail,
+  AdminFileDetail,
   AdminReleaseListResponse,
   AdminReleaseListParams,
   AdminMaintenanceTaskPatch,
@@ -173,6 +175,14 @@ export function getAdminReleases(params: AdminReleaseListParams) {
 
 export function getAdminRelease(id: string) {
   return apiRequest<AdminReleaseDetailResponse>(`/api/v1/admin/indexer/releases/${id}`)
+}
+
+export function getIndexerFile(id: number) {
+  return apiRequest<AdminFileDetail>(`/api/v1/indexer/files/${id}`)
+}
+
+export function getIndexerBinary(id: number) {
+  return apiRequest<AdminBinaryDetail>(`/api/v1/indexer/binaries/${id}`)
 }
 
 export function patchAdminRelease(id: string, body: ReleaseOverridePatch) {

@@ -150,6 +150,8 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 	phaseBDuration := time.Duration(0)
 	hotBatches := 0
 	coldBatches := 0
+	hotDequeued := 0
+	coldDequeued := 0
 
 	for batch := 0; batch < s.opts.SummaryRefreshMaxBatches && remainingSummaryBacklog > 0; batch++ {
 		refreshStart := time.Now()
@@ -169,12 +171,10 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 			recoveredFileSetDuration += refreshMetrics.RecoveredFileSetSyncDuration
 			phaseADuration += refreshMetrics.PhaseADuration
 			phaseBDuration += refreshMetrics.PhaseBDuration
-			switch refreshMetrics.Mode {
-			case "hot":
-				hotBatches++
-			case "cold":
-				coldBatches++
-			}
+			hotBatches += refreshMetrics.HotAttempts
+			coldBatches += refreshMetrics.ColdAttempts
+			hotDequeued += refreshMetrics.HotDequeued
+			coldDequeued += refreshMetrics.ColdDequeued
 		} else {
 			batchCount, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
 			if batchErr != nil {
@@ -216,9 +216,13 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		"summary_refresh_phase_b_duration_ms":     durationMillis(phaseBDuration),
 		"summary_refresh_hot_batches":             hotBatches,
 		"summary_refresh_cold_batches":            coldBatches,
+		"summary_refresh_hot_attempts":            hotBatches,
+		"summary_refresh_cold_attempts":           coldBatches,
+		"summary_refresh_hot_dequeued_count":      hotDequeued,
+		"summary_refresh_cold_dequeued_count":     coldDequeued,
 	}
 	s.log.Info(
-		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d dequeued=%d batches=%d refresh_duration_ms=%.2f dequeue_duration_ms=%.2f summary_duration_ms=%.2f aggregate_duration_ms=%.2f dominant_duration_ms=%.2f ready_sync_duration_ms=%.2f recovered_file_set_duration_ms=%.2f hot_batches=%d cold_batches=%d",
+		"release summary refresh: initial_summary_backlog=%d remaining_summary_backlog=%d refreshed=%d dequeued=%d batches=%d refresh_duration_ms=%.2f dequeue_duration_ms=%.2f summary_duration_ms=%.2f aggregate_duration_ms=%.2f dominant_duration_ms=%.2f ready_sync_duration_ms=%.2f recovered_file_set_duration_ms=%.2f hot_attempts=%d cold_attempts=%d hot_dequeued=%d cold_dequeued=%d",
 		initialSummaryBacklog,
 		remainingSummaryBacklog,
 		refreshedSummaries,
@@ -233,6 +237,8 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 		durationMillis(recoveredFileSetDuration),
 		hotBatches,
 		coldBatches,
+		hotDequeued,
+		coldDequeued,
 	)
 	return metrics, nil
 }
@@ -707,7 +713,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		}
 
 		record := buildReleaseRecord(candidate, cluster, clusterTitleCandidates[idx])
-		if ok, reason := shouldPersistCluster(cluster, record, s.opts); !ok {
+		if ok, reason := shouldPersistCluster(candidate, cluster, record, s.opts); !ok {
 			outcome.skippedFragments++
 			switch reason {
 			case fragmentReasonNoMainPayload:
@@ -723,7 +729,8 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		}
 		if candidate.ExpectedFileCount > 1 &&
 			record.ExpectedFileCount > 1 &&
-			record.CompletionPct < s.opts.ReleaseMinExpectedFileCoveragePct {
+			record.CompletionPct < s.opts.ReleaseMinExpectedFileCoveragePct &&
+			!allowsIncompleteReleaseFormation(candidate, cluster, record) {
 			outcome.skippedCompletion++
 			preserveExistingOnSkippedLowCoverage = true
 			continue
@@ -903,17 +910,19 @@ func (s *Service) flushDeferredAcks(ctx context.Context, candidates []pgindex.Re
 	return nil
 }
 
-func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) (bool, string) {
+func shouldPersistCluster(candidate pgindex.ReleaseCandidate, cluster releaseCluster, record pgindex.ReleaseRecord, opts Options) (bool, string) {
 	mainPayloadCount := countMainPayloadBinaries(cluster.Binaries)
 	if mainPayloadCount == 0 {
 		return false, fragmentReasonNoMainPayload
 	}
 	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
 	expectedArchiveFiles := clusterExpectedArchiveFileCount(cluster.Binaries)
+	recoveredFileSet := candidate.KeyKind == pgindex.ReleaseCandidateKeyKindRecoveredFileSet
 	if (expectedFiles > 1 || expectedArchiveFiles > 1) && mainPayloadCount < 2 {
 		return false, fragmentReasonMultiFileSingleMainPayload
 	}
-	if expectedFiles <= 0 &&
+	if !recoveredFileSet &&
+		expectedFiles <= 0 &&
 		expectedArchiveFiles <= 0 &&
 		mainPayloadCount > 1 &&
 		clusterHasSplitArchiveParts(cluster.Binaries) &&
@@ -922,13 +931,15 @@ func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, 
 		return false, fragmentReasonContextualWeak
 	}
 	if opts.RequireExpectedFileCountForContextualObfuscated &&
+		!recoveredFileSet &&
 		expectedFiles <= 0 &&
 		expectedArchiveFiles <= 0 &&
 		clusterIsContextualObfuscated(cluster.Binaries) &&
 		!allowsStandaloneBinaryRelease(cluster.Binaries, record) {
 		return false, fragmentReasonContextualWeak
 	}
-	if !clusterHasUsableFileIdentity(cluster.Binaries, record) &&
+	if !recoveredFileSet &&
+		!clusterHasUsableFileIdentity(cluster.Binaries, record) &&
 		(looksWeakGeneratedReleaseTitle(record.Title) || looksWeakGeneratedReleaseTitle(record.SourceTitle)) {
 		return false, fragmentReasonContextualWeak
 	}
@@ -936,6 +947,12 @@ func shouldPersistCluster(cluster releaseCluster, record pgindex.ReleaseRecord, 
 		return false, fragmentReasonSingleMainPayload
 	}
 	return true, ""
+}
+
+func allowsIncompleteReleaseFormation(candidate pgindex.ReleaseCandidate, cluster releaseCluster, record pgindex.ReleaseRecord) bool {
+	return candidate.KeyKind == pgindex.ReleaseCandidateKeyKindRecoveredFileSet ||
+		recordHasStrongTitleEvidence(record) ||
+		clusterHasUsableFileIdentity(cluster.Binaries, record)
 }
 
 func clusterHasSplitArchiveParts(binaries []pgindex.BinarySummary) bool {

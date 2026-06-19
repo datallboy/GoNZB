@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/textproto"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,35 @@ func TestIsRecoverableConnError(t *testing.T) {
 		if got := isRecoverableConnError(tc.err); got != tc.want {
 			t.Fatalf("%s: expected %v, got %v", tc.name, tc.want, got)
 		}
+	}
+}
+
+func TestReadBodyPrefixUntilYBeginStopsBeforePayload(t *testing.T) {
+	body := strings.NewReader("preamble\r\n=ybegin part=12 total=732 line=128 size=524288000 name=example.part2.rar\r\n=ypart begin=1 end=2\r\nencoded payload\r\n")
+
+	got, err := readBodyPrefixUntilYBegin(body, 8192)
+	if err != nil {
+		t.Fatalf("read prefix: %v", err)
+	}
+
+	text := string(got)
+	if !strings.Contains(text, "=ybegin part=12 total=732") {
+		t.Fatalf("expected ybegin in prefix, got %q", text)
+	}
+	if strings.Contains(text, "=ypart") || strings.Contains(text, "encoded payload") {
+		t.Fatalf("expected prefix to stop after ybegin line, got %q", text)
+	}
+}
+
+func TestReadBodyPrefixUntilYBeginHonorsByteLimit(t *testing.T) {
+	body := strings.NewReader("abcdef\r\n=ybegin part=1 total=1 line=128 size=1 name=x\r\n")
+
+	got, err := readBodyPrefixUntilYBegin(body, 4)
+	if err != nil {
+		t.Fatalf("read prefix: %v", err)
+	}
+	if string(got) != "abcd" {
+		t.Fatalf("expected byte-limited prefix, got %q", string(got))
 	}
 }
 
