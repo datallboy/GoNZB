@@ -21,6 +21,7 @@ type repository interface {
 	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, releaseIDs []string) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
@@ -109,6 +110,37 @@ func (s *Service) RunOnce(ctx context.Context) error {
 func (s *Service) RunReformOnce(ctx context.Context) error {
 	_, err := s.runOnceWithMetrics(ctx, true)
 	return err
+}
+
+func (s *Service) RunReformReleasesOnce(ctx context.Context, releaseIDs []string) error {
+	if s.repo == nil {
+		return fmt.Errorf("release repo is required")
+	}
+	candidates, err := s.repo.ListExistingReleaseCandidatesForReleaseIDs(ctx, releaseIDs)
+	if err != nil {
+		return fmt.Errorf("list existing release candidates for release ids: %w", err)
+	}
+	var timings releaseTimings
+	deferredAcks := make([]pgindex.ReleaseCandidateAck, 0, len(candidates))
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			if flushErr := s.flushDeferredAcks(ctx, deferredAcks, &timings); flushErr != nil {
+				return flushErr
+			}
+			return err
+		}
+		outcome, err := s.formCandidate(ctx, candidate, &timings)
+		if err != nil {
+			if flushErr := s.flushDeferredAcks(ctx, deferredAcks, &timings); flushErr != nil {
+				return fmt.Errorf("%v (also failed to flush deferred release acks: %w)", err, flushErr)
+			}
+			return fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
+		}
+		if outcome.deferredAck != nil {
+			deferredAcks = append(deferredAcks, *outcome.deferredAck)
+		}
+	}
+	return s.flushDeferredAcks(ctx, deferredAcks, &timings)
 }
 
 func (s *Service) runOnce(ctx context.Context, reform bool) error {
@@ -672,7 +704,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		if timings != nil {
 			timings.deleteStale += time.Since(start)
 		}
-		if candidate.KeyKind != "" {
+		if canAckReleaseCandidate(candidate) {
 			start = time.Now()
 			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 				return candidateOutcome{}, fmt.Errorf("ack empty release candidate: %w", err)
@@ -692,7 +724,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		if timings != nil {
 			timings.deleteStale += time.Since(start)
 		}
-		if candidate.KeyKind != "" {
+		if canAckReleaseCandidate(candidate) {
 			start = time.Now()
 			if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 				return candidateOutcome{}, fmt.Errorf("ack cooled-down fragment-only candidate: %w", err)
@@ -805,7 +837,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 	if timings != nil {
 		timings.deleteStale += time.Since(start)
 	}
-	if candidate.KeyKind != "" {
+	if canAckReleaseCandidate(candidate) {
 		start = time.Now()
 		if err := s.repo.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey); err != nil {
 			return outcome, fmt.Errorf("ack release candidate %s: %w", familyKey, err)
@@ -850,7 +882,7 @@ func staleReleaseCleanupKeys(candidate pgindex.ReleaseCandidate, familyKey strin
 }
 
 func buildDeferredReleaseAck(candidate pgindex.ReleaseCandidate, familyKey string) *pgindex.ReleaseCandidateAck {
-	if candidate.KeyKind == "" || familyKey == "" {
+	if !canAckReleaseCandidate(candidate) || familyKey == "" {
 		return nil
 	}
 	return &pgindex.ReleaseCandidateAck{
@@ -859,6 +891,10 @@ func buildDeferredReleaseAck(candidate pgindex.ReleaseCandidate, familyKey strin
 		KeyKind:     candidate.KeyKind,
 		FamilyKey:   familyKey,
 	}
+}
+
+func canAckReleaseCandidate(candidate pgindex.ReleaseCandidate) bool {
+	return strings.TrimSpace(candidate.KeyKind) != "" && candidate.ProviderID > 0 && candidate.NewsgroupID > 0
 }
 
 func mergeAutoReformCandidates(current, existing []pgindex.ReleaseCandidate) ([]pgindex.ReleaseCandidate, int) {
