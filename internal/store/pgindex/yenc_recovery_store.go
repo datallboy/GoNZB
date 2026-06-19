@@ -13,6 +13,7 @@ const (
 	yencRecoverySeedScanLowYieldThreshold = 25
 	yencRecoveryReadyWindowMultiplier     = 8
 	yencRecoveryReadyWindowMax            = 8000
+	yencHeaderRecoveryApplyBatchSize      = 500
 	yencRecoveryFairnessStageName         = "recover_yenc"
 	yencRecoveryFairnessBucketSeconds     = 5 * 60
 	yencRecoveryFairnessHorizon           = 24 * time.Hour
@@ -878,85 +879,17 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		}
 		defer rollbackTx(tx)
 
-		seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
+		var targetID int64
+		var keys []releaseFamilySummaryKey
+		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true)
 		if err != nil {
 			return err
 		}
-		if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
-			return err
-		}
-
-		targetID, err := findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+		statKeys, err := refreshBinaryStatsInTx(ctx, tx, targetID)
 		if err != nil {
 			return err
 		}
-		if targetID == 0 || targetID == in.BinaryID {
-			if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
-				return err
-			}
-			targetID = in.BinaryID
-		} else {
-			if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
-				return err
-			}
-			if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
-				return err
-			}
-			if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_core WHERE binary_id = $1`, in.BinaryID); err != nil {
-				return fmt.Errorf("delete merged yenc source binary core %d: %w", in.BinaryID, err)
-			}
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE article_header_ingest_payloads
-			SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
-			    yenc_total_parts = GREATEST(yenc_total_parts, $3),
-			    yenc_file_size = GREATEST(yenc_file_size, $4),
-			    yenc_recovery_missing_count = 0,
-			    yenc_recovery_last_missing_at = NULL,
-			    yenc_recovery_retry_after = NULL
-			WHERE article_header_id = $1`,
-			in.ArticleHeaderID,
-			in.PartNumber,
-			in.TotalParts,
-			in.FileSize,
-		); err != nil {
-			return fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE yenc_recovery_work_items
-			SET status = 'done',
-			    ready_at = NOW(),
-			    lease_owner = '',
-			    lease_expires_at = NULL,
-			    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
-			    yenc_total_parts = GREATEST(yenc_total_parts, $5),
-			    yenc_file_size = GREATEST(yenc_file_size, $6),
-			    updated_at = NOW()
-			WHERE binary_id IN ($1, $2)`,
-			in.BinaryID,
-			targetID,
-			in.ArticleHeaderID,
-			in.PartNumber,
-			in.TotalParts,
-			in.FileSize,
-		); err != nil {
-			return fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
-		}
-
-		keys, err := refreshBinaryStatsInTx(ctx, tx, targetID)
-		if err != nil {
-			return err
-		}
-		keys = append(keys,
-			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: seed.ReleaseFamilyKey},
-			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: seed.BaseStem},
-			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: in.ReleaseFamilyKey},
-			releaseFamilySummaryKey{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: in.BaseStem},
-		)
+		keys = append(keys, statKeys...)
 		if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(keys)); err != nil {
 			return err
 		}
@@ -964,12 +897,327 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit yenc recovery tx: %w", err)
 		}
-		result = &YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: targetID, Merged: targetID != in.BinaryID}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *Store) ApplyYEncHeaderRecoveries(ctx context.Context, records []YEncHeaderRecoveryRecord) ([]YEncHeaderRecoveryResult, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]YEncHeaderRecoveryRecord, 0, len(records))
+	for _, record := range records {
+		if record.BinaryID <= 0 {
+			return nil, fmt.Errorf("binary id is required")
+		}
+		if strings.TrimSpace(record.BinaryKey) == "" || strings.TrimSpace(record.FileName) == "" {
+			return nil, fmt.Errorf("recovered binary key and file name are required")
+		}
+		normalizeYEncHeaderRecoveryRecord(&record)
+		normalized = append(normalized, record)
+	}
+
+	out := make([]YEncHeaderRecoveryResult, 0, len(normalized))
+	for start := 0; start < len(normalized); start += yencHeaderRecoveryApplyBatchSize {
+		end := start + yencHeaderRecoveryApplyBatchSize
+		if end > len(normalized) {
+			end = len(normalized)
+		}
+		results, err := s.applyYEncHeaderRecoveryBatch(ctx, normalized[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, results...)
+	}
+	return out, nil
+}
+
+func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEncHeaderRecoveryRecord) ([]YEncHeaderRecoveryResult, error) {
+	results := make([]YEncHeaderRecoveryResult, 0, len(records))
+	if len(records) == 0 {
+		return results, nil
+	}
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin yenc recovery batch tx: %w", err)
+		}
+		defer rollbackTx(tx)
+
+		if err := stageYEncHeaderRecoveryBatch(ctx, tx, records); err != nil {
+			return err
+		}
+		orderedRowIDs, locks, err := loadYEncHeaderRecoveryBatchOrder(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := lockBinaryIdentityKeys(ctx, tx, locks); err != nil {
+			return err
+		}
+
+		targetIDs := make([]int64, 0, len(orderedRowIDs))
+		summaryKeys := make([]releaseFamilySummaryKey, 0, len(orderedRowIDs)*4)
+		chunkResults := make([]YEncHeaderRecoveryResult, 0, len(orderedRowIDs))
+		for _, rowID := range orderedRowIDs {
+			if rowID < 0 || rowID >= len(records) {
+				continue
+			}
+			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false)
+			if err != nil {
+				if IsBinaryNotFound(err) {
+					continue
+				}
+				return err
+			}
+			chunkResults = append(chunkResults, *result)
+			targetIDs = append(targetIDs, targetID)
+			summaryKeys = append(summaryKeys, keys...)
+		}
+		statKeys, err := refreshBinaryStatsIDsInTx(ctx, tx, dedupeYEncRecoveryInt64s(targetIDs))
+		if err != nil {
+			return err
+		}
+		summaryKeys = append(summaryKeys, statKeys...)
+		if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(summaryKeys)); err != nil {
+			return err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit yenc recovery batch tx: %w", err)
+		}
+		results = chunkResults
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
+	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if lockIdentity {
+		if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
+			return nil, 0, nil, err
+		}
+	}
+
+	targetID, err := findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	if targetID > 0 && targetID != in.BinaryID {
+		if err := lockYEncRecoveryBinaryPair(ctx, tx, in.BinaryID, targetID); err != nil {
+			return nil, 0, nil, err
+		}
+	}
+
+	targetID, err = findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if targetID == 0 || targetID == in.BinaryID {
+		if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
+			return nil, 0, nil, err
+		}
+		targetID = in.BinaryID
+	} else {
+		if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
+			return nil, 0, nil, err
+		}
+		if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
+			return nil, 0, nil, err
+		}
+		if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
+			return nil, 0, nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM binary_core WHERE binary_id = $1`, in.BinaryID); err != nil {
+			return nil, 0, nil, fmt.Errorf("delete merged yenc source binary core %d: %w", in.BinaryID, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE article_header_ingest_payloads
+		SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
+		    yenc_total_parts = GREATEST(yenc_total_parts, $3),
+		    yenc_file_size = GREATEST(yenc_file_size, $4),
+		    yenc_recovery_missing_count = 0,
+		    yenc_recovery_last_missing_at = NULL,
+		    yenc_recovery_retry_after = NULL
+		WHERE article_header_id = $1`,
+		in.ArticleHeaderID,
+		in.PartNumber,
+		in.TotalParts,
+		in.FileSize,
+	); err != nil {
+		return nil, 0, nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items
+		SET status = 'done',
+		    ready_at = NOW(),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
+		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
+		    yenc_file_size = GREATEST(yenc_file_size, $6),
+		    updated_at = NOW()
+		WHERE binary_id IN ($1, $2)`,
+		in.BinaryID,
+		targetID,
+		in.ArticleHeaderID,
+		in.PartNumber,
+		in.TotalParts,
+		in.FileSize,
+	); err != nil {
+		return nil, 0, nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
+	}
+
+	keys := []releaseFamilySummaryKey{
+		{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: seed.ReleaseFamilyKey},
+		{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: seed.BaseStem},
+		{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "release_family", FamilyKey: in.ReleaseFamilyKey},
+		{ProviderID: seed.ProviderID, NewsgroupID: seed.NewsgroupID, KeyKind: "base_stem", FamilyKey: in.BaseStem},
+	}
+	result := &YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: targetID, Merged: targetID != in.BinaryID}
+	return result, targetID, keys, nil
+}
+
+func stageYEncHeaderRecoveryBatch(ctx context.Context, tx *sql.Tx, records []YEncHeaderRecoveryRecord) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS yenc_header_recovery_batch (
+			row_id integer PRIMARY KEY,
+			binary_id bigint NOT NULL,
+			article_header_id bigint NOT NULL,
+			binary_key text NOT NULL,
+			file_name text NOT NULL
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create yenc recovery batch temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `TRUNCATE yenc_header_recovery_batch`); err != nil {
+		return fmt.Errorf("truncate yenc recovery batch temp table: %w", err)
+	}
+	const chunkSize = 500
+	for start := 0; start < len(records); start += chunkSize {
+		end := start + chunkSize
+		if end > len(records) {
+			end = len(records)
+		}
+		values := make([]string, 0, end-start)
+		args := make([]any, 0, (end-start)*5)
+		for i := start; i < end; i++ {
+			base := len(args) + 1
+			values = append(values, fmt.Sprintf("($%d::integer,$%d::bigint,$%d::bigint,$%d::text,$%d::text)", base, base+1, base+2, base+3, base+4))
+			args = append(args, i, records[i].BinaryID, records[i].ArticleHeaderID, records[i].BinaryKey, records[i].FileName)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO yenc_header_recovery_batch (
+				row_id,
+				binary_id,
+				article_header_id,
+				binary_key,
+				file_name
+			)
+			VALUES %s`, strings.Join(values, ",")), args...); err != nil {
+			return fmt.Errorf("stage yenc recovery batch rows %d-%d: %w", start, end, err)
+		}
+	}
+	return nil
+}
+
+func loadYEncHeaderRecoveryBatchOrder(ctx context.Context, tx *sql.Tx) ([]int, []binaryIdentityLock, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			b.row_id,
+			bc.provider_id,
+			bc.newsgroup_id,
+			b.binary_key
+		FROM yenc_header_recovery_batch b
+		JOIN binary_core bc ON bc.binary_id = b.binary_id
+		ORDER BY bc.provider_id, bc.newsgroup_id, b.binary_key, b.binary_id, b.row_id`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load yenc recovery batch order: %w", err)
+	}
+	defer rows.Close()
+
+	rowIDs := []int{}
+	locks := []binaryIdentityLock{}
+	for rows.Next() {
+		var (
+			rowID       int
+			providerID  int64
+			newsgroupID int64
+			binaryKey   string
+		)
+		if err := rows.Scan(&rowID, &providerID, &newsgroupID, &binaryKey); err != nil {
+			return nil, nil, fmt.Errorf("scan yenc recovery batch order: %w", err)
+		}
+		rowIDs = append(rowIDs, rowID)
+		locks = append(locks, binaryIdentityLock{ProviderID: providerID, NewsgroupID: newsgroupID, BinaryKey: binaryKey})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate yenc recovery batch order: %w", err)
+	}
+	return rowIDs, locks, nil
+}
+
+func lockYEncRecoveryBinaryPair(ctx context.Context, tx *sql.Tx, sourceID, targetID int64) error {
+	if sourceID <= 0 || targetID <= 0 || sourceID == targetID {
+		return nil
+	}
+	first, second := sourceID, targetID
+	if second < first {
+		first, second = second, first
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT binary_id
+		FROM binary_core
+		WHERE binary_id = ANY($1::bigint[])
+		ORDER BY binary_id
+		FOR UPDATE`,
+		[]int64{first, second},
+	)
+	if err != nil {
+		return fmt.Errorf("lock yenc recovery binary pair source=%d target=%d: %w", sourceID, targetID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan yenc recovery binary pair lock: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate yenc recovery binary pair lock: %w", err)
+	}
+	return nil
+}
+
+func dedupeYEncRecoveryInt64s(in []int64) []int64 {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(in))
+	out := make([]int64, 0, len(in))
+	for _, value := range in {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 type yencRecoveryBinarySeed struct {

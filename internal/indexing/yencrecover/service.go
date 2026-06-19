@@ -34,6 +34,10 @@ type repositoryWithSelectionOptions interface {
 	ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit int, opts pgindex.YEncRecoverySelectionOptions) ([]pgindex.YEncRecoveryCandidate, error)
 }
 
+type repositoryWithBatchHeaderRecovery interface {
+	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
+}
+
 type bodyPrefixFetcher interface {
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 }
@@ -172,13 +176,16 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics["max_effective_concurrency"] = 0
 	metrics["effective_concurrency"] = workerCount
 	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
+	batchRepo, batchWrites := s.repo.(repositoryWithBatchHeaderRecovery)
+	metrics["batch_writes"] = batchWrites
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
 	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		firstErr error
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+		firstErr        error
+		recoveryRecords []pgindex.YEncHeaderRecoveryRecord
 	)
-	recordResult := func(result *pgindex.YEncHeaderRecoveryResult, kind string, timings yencCandidateTimings, err error) {
+	recordResult := func(outcome *yencCandidateOutcome, kind string, timings yencCandidateTimings, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		addYEncDurationMetric(metrics, "fetch_ms", timings.Fetch)
@@ -187,6 +194,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		addYEncDurationMetric(metrics, "write_ms", timings.Write)
 		addYEncDurationMetric(metrics, "not_found_write_ms", timings.NotFoundWrite)
 		metrics["attempted"] = metrics["attempted"].(int) + 1
+		if outcome != nil && outcome.Record != nil {
+			recoveryRecords = append(recoveryRecords, *outcome.Record)
+		}
 		switch kind {
 		case "not_found":
 			metrics["not_found"] = metrics["not_found"].(int) + 1
@@ -200,7 +210,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["noops"] = metrics["noops"].(int) + 1
 		case "recovered":
 			metrics["recovered"] = metrics["recovered"].(int) + 1
-			if result != nil && result.Merged {
+			if outcome != nil && outcome.Result != nil && outcome.Result.Merged {
 				metrics["merged"] = metrics["merged"].(int) + 1
 			}
 		}
@@ -235,8 +245,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 					recordResult(nil, "noop", yencCandidateTimings{}, ctx.Err())
 					continue
 				}
-				result, kind, timings, err := s.recoverCandidate(ctx, candidate)
-				recordResult(result, kind, timings, err)
+				outcome, kind, timings, err := s.recoverCandidate(ctx, candidate, batchWrites)
+				recordResult(outcome, kind, timings, err)
 			}
 		}()
 	}
@@ -250,6 +260,21 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	close(jobs)
 	wg.Wait()
+	if firstErr == nil && batchWrites && len(recoveryRecords) > 0 {
+		started := time.Now()
+		results, err := batchRepo.ApplyYEncHeaderRecoveries(ctx, recoveryRecords)
+		addYEncDurationMetric(metrics, "write_ms", time.Since(started))
+		if err != nil {
+			firstErr = fmt.Errorf("apply yenc recovery batch: %w", err)
+		} else {
+			metrics["recovered"] = metrics["recovered"].(int) + len(results)
+			for _, result := range results {
+				if result.Merged {
+					metrics["merged"] = metrics["merged"].(int) + 1
+				}
+			}
+		}
+	}
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	if firstErr != nil {
 		return metrics, firstErr
@@ -326,7 +351,12 @@ type yencCandidateTimings struct {
 	NotFoundWrite time.Duration
 }
 
-func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate) (*pgindex.YEncHeaderRecoveryResult, string, yencCandidateTimings, error) {
+type yencCandidateOutcome struct {
+	Result *pgindex.YEncHeaderRecoveryResult
+	Record *pgindex.YEncHeaderRecoveryRecord
+}
+
+func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate, batchWrites bool) (*yencCandidateOutcome, string, yencCandidateTimings, error) {
 	var timings yencCandidateTimings
 	groups := candidate.FetchGroups()
 	if candidate.MessageID == "" || len(groups) == 0 {
@@ -414,7 +444,7 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	}
 
 	started = time.Now()
-	result, err := s.repo.ApplyYEncHeaderRecovery(ctx, pgindex.YEncHeaderRecoveryRecord{
+	record := pgindex.YEncHeaderRecoveryRecord{
 		BinaryID:          candidate.BinaryID,
 		ArticleHeaderID:   candidate.ArticleHeaderID,
 		SourceReleaseKey:  matched.SourceReleaseKey,
@@ -442,7 +472,12 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		MatchConfidence:   matched.MatchConfidence,
 		MatchStatus:       matched.MatchStatus,
 		GroupingEvidence:  matched.GroupingEvidence,
-	})
+	}
+	if batchWrites {
+		return &yencCandidateOutcome{Record: &record}, "ready", timings, nil
+	}
+
+	result, err := s.repo.ApplyYEncHeaderRecovery(ctx, record)
 	timings.Write = time.Since(started)
 	if err != nil {
 		if pgindex.IsBinaryNotFound(err) {
@@ -459,7 +494,7 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		}
 		return nil, "", timings, fmt.Errorf("apply yenc recovery binary=%d article=%d: %w", candidate.BinaryID, candidate.ArticleHeaderID, err)
 	}
-	return result, "recovered", timings, nil
+	return &yencCandidateOutcome{Result: result}, "recovered", timings, nil
 }
 
 func DefaultStage() Options {

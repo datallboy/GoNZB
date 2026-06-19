@@ -5238,6 +5238,128 @@ func TestApplyYEncHeaderRecoveryMergesRecoveredMultipartArticlesByYEncPart(t *te
 	}
 }
 
+func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.batch-merge.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM yenc_recovery_work_items WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_core WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID)
+	})
+
+	makeBinary := func(key, fileName string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: key,
+			FileFamilyKey:    key + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         key,
+			IsMainPayload:    true,
+			ReleaseKey:       key,
+			ReleaseName:      key,
+			BinaryKey:        key + "::binary",
+			BinaryName:       fileName,
+			FileName:         fileName,
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+			IdentityStrength: "weak",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", key, err)
+		}
+		return binaryID
+	}
+
+	binaryOne := makeBinary("random-yenc-batch-one", "random-batch-one.bin")
+	binaryTwo := makeBinary("random-yenc-batch-two", "random-batch-two.bin")
+	now := time.Date(2026, 6, 18, 14, 24, 11, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{ArticleNumber: 3101, MessageID: "<random-yenc-batch-one@test>", Subject: "random-yenc-batch-one", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
+		{ArticleNumber: 3102, MessageID: "<random-yenc-batch-two@test>", Subject: "random-yenc-batch-two", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var articleOne, articleTwo int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-one@test>'`, newsgroupID).Scan(&articleOne); err != nil {
+		t.Fatalf("load article one: %v", err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-two@test>'`, newsgroupID).Scan(&articleTwo); err != nil {
+		t.Fatalf("load article two: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryOne, ArticleHeaderID: articleOne, MessageID: "<random-yenc-batch-one@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-one.bin"},
+		{BinaryID: binaryTwo, ArticleHeaderID: articleTwo, MessageID: "<random-yenc-batch-two@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-two.bin"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	record := func(binaryID, articleID int64, partNumber int) YEncHeaderRecoveryRecord {
+		return YEncHeaderRecoveryRecord{
+			BinaryID:         binaryID,
+			ArticleHeaderID:  articleID,
+			SourceReleaseKey: "5azyrs4rfboyp5fzh",
+			ReleaseFamilyKey: "5azyrs4rfboyp5fzh",
+			FileSetKey:       "5azyrs4rfboyp5fzh",
+			FileFamilyKey:    "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			IdentityStrength: "strong",
+			IdentityReason:   "yenc_header",
+			SubjectSetToken:  "5azyrs4rfboyp5fzh",
+			SubjectSetKind:   "yenc_recovered",
+			FamilyKind:       "opaque_set",
+			BaseStem:         "5azyrs4rfboyp5fzh",
+			IsMainPayload:    true,
+			ReleaseKey:       "5azyrs4rfboyp5fzh",
+			ReleaseName:      "5AzyRS4rfbOyP5fZH",
+			BinaryKey:        "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			BinaryName:       "5AzyRS4rfbOyP5fZH.part2.rar",
+			FileName:         "5AzyRS4rfbOyP5fZH.part2.rar",
+			PartNumber:       partNumber,
+			TotalParts:       732,
+			FileSize:         524288000,
+			MatchConfidence:  0.95,
+			MatchStatus:      "matched",
+			GroupingEvidence: map[string]any{"kind": "yenc_header"},
+		}
+	}
+	results, err := store.ApplyYEncHeaderRecoveries(ctx, []YEncHeaderRecoveryRecord{
+		record(binaryOne, articleOne, 1),
+		record(binaryTwo, articleTwo, 2),
+	})
+	if err != nil {
+		t.Fatalf("apply recovery batch: %v", err)
+	}
+	if len(results) != 2 || !results[1].Merged {
+		t.Fatalf("expected two batch results with second merged, got %+v", results)
+	}
+
+	var remainingSource int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_core WHERE binary_id = $1`, binaryTwo).Scan(&remainingSource); err != nil {
+		t.Fatalf("count source binary: %v", err)
+	}
+	if remainingSource != 0 {
+		t.Fatalf("expected second recovered binary to merge into first, source rows=%d", remainingSource)
+	}
+	var mergedParts int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_parts WHERE binary_id = $1 AND total_parts = 732`, binaryOne).Scan(&mergedParts); err != nil {
+		t.Fatalf("count merged parts: %v", err)
+	}
+	if mergedParts != 2 {
+		t.Fatalf("expected two merged parts on target, got %d", mergedParts)
+	}
+}
+
 func TestBackfillYEncRecoveryWorkItemsPrioritizesIndexedAndMultiFileRecoverables(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
