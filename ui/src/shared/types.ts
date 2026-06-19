@@ -390,6 +390,7 @@ export type AdminReleaseSummary = {
   hidden: boolean
   public_visible: boolean
   password_candidate_count: number
+  payload_completion_state: 'complete' | 'incomplete' | 'unknown'
 }
 
 export type AdminReleaseListResponse = {
@@ -420,6 +421,8 @@ export type AdminReleaseListParams = {
   metadata_mismatch?: string
   low_confidence?: string
   completion_state?: string
+  payload_completion_include?: string
+  payload_completion_exclude?: string
   has_nfo?: string
   has_par2?: string
   limit?: number

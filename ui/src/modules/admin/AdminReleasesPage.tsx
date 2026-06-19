@@ -24,11 +24,19 @@ const defaultFilters: AdminReleaseListParams = {
   metadata_mismatch: '',
   low_confidence: '',
   completion_state: '',
+  payload_completion_include: '',
+  payload_completion_exclude: '',
   has_nfo: '',
   has_par2: '',
   limit: 100,
   offset: 0,
 }
+
+const payloadStates: Array<{ key: AdminReleaseSummary['payload_completion_state']; label: string }> = [
+  { key: 'complete', label: 'Complete' },
+  { key: 'incomplete', label: 'Incomplete' },
+  { key: 'unknown', label: 'Unknown' },
+]
 
 function formatNZBStatus(value: string) {
   switch (value) {
@@ -53,8 +61,11 @@ function formatNZBStatus(value: string) {
 }
 
 function releaseCompletenessLabel(item: AdminReleaseSummary) {
-  if (item.archive_count > 0 && item.expected_archive_file_count <= 0) {
+  if (item.payload_completion_state === 'unknown') {
     return 'payload unknown'
+  }
+  if (item.payload_completion_state === 'complete') {
+    return 'payload complete'
   }
   if (item.expected_archive_file_count > 0) {
     const payloadFiles = Math.max((item.file_count ?? 0) - (item.par_file_count ?? 0), 0)
@@ -62,6 +73,29 @@ function releaseCompletenessLabel(item: AdminReleaseSummary) {
     return `${pct}% payload`
   }
   return `${Math.floor(item.completion_pct)}% known`
+}
+
+function csvHasValue(raw: string | undefined, value: string) {
+  return (raw ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .includes(value)
+}
+
+function setCSVValue(raw: string | undefined, value: string, enabled: boolean) {
+  const values = new Set(
+    (raw ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean),
+  )
+  if (enabled) {
+    values.add(value)
+  } else {
+    values.delete(value)
+  }
+  return Array.from(values).join(',')
 }
 
 export function AdminReleasesPage() {
@@ -84,11 +118,37 @@ export function AdminReleasesPage() {
     setSubmittedFilters({ ...filters, offset: 0 })
   }
 
+  function setPayloadFilterMode(state: AdminReleaseSummary['payload_completion_state'], mode: 'any' | 'include' | 'exclude') {
+    setFilters((current) => {
+      const includeWithout = setCSVValue(current.payload_completion_include, state, false)
+      const excludeWithout = setCSVValue(current.payload_completion_exclude, state, false)
+      return {
+        ...current,
+        payload_completion_include: mode === 'include' ? setCSVValue(includeWithout, state, true) : includeWithout,
+        payload_completion_exclude: mode === 'exclude' ? setCSVValue(excludeWithout, state, true) : excludeWithout,
+      }
+    })
+  }
+
+  function payloadFilterMode(state: AdminReleaseSummary['payload_completion_state']) {
+    if (csvHasValue(filters.payload_completion_include, state)) return 'include'
+    if (csvHasValue(filters.payload_completion_exclude, state)) return 'exclude'
+    return 'any'
+  }
+
   return (
     <div className="page-section stack">
       <div className="page-card stack">
-        <p className="eyebrow">Release Moderation</p>
-        <h1 className="page-title">Curate release overrides without mutating generated rows.</h1>
+        <div className="page-header">
+          <div>
+            <p className="eyebrow">Release Moderation</p>
+            <h1 className="page-title">Admin releases</h1>
+          </div>
+          <div className="release-list-summary">
+            <strong>{data?.total ?? 0}</strong>
+            <span>matched</span>
+          </div>
+        </div>
         <form className="toolbar-grid" onSubmit={handleSubmit}>
           <label className="field">
             <span>Search Releases</span>
@@ -236,13 +296,35 @@ export function AdminReleasesPage() {
             </select>
           </label>
           <label className="field">
-            <span>Completion</span>
+            <span>Known Completion</span>
             <select value={filters.completion_state ?? ''} onChange={(event) => setFilters((current) => ({ ...current, completion_state: event.target.value }))}>
               <option value="">Any</option>
-              <option value="exact_100">100%</option>
+              <option value="exact_100">100% known</option>
               <option value="below_100">Below 100%</option>
             </select>
           </label>
+          <div className="field release-payload-filter">
+            <span>Payload Completion</span>
+            <div className="payload-filter-grid">
+              {payloadStates.map((state) => (
+                <div className="payload-filter-row" key={state.key}>
+                  <span>{state.label}</span>
+                  <div className="segmented-control" role="group" aria-label={`${state.label} payload filter`}>
+                    {(['any', 'include', 'exclude'] as const).map((mode) => (
+                      <button
+                        className={payloadFilterMode(state.key) === mode ? 'active' : ''}
+                        key={mode}
+                        type="button"
+                        onClick={() => setPayloadFilterMode(state.key, mode)}
+                      >
+                        {mode === 'any' ? 'Any' : mode === 'include' ? 'Include' : 'Exclude'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
           <label className="field">
             <span>Has NFO</span>
             <select value={filters.has_nfo ?? ''} onChange={(event) => setFilters((current) => ({ ...current, has_nfo: event.target.value }))}>
@@ -324,7 +406,7 @@ export function AdminReleasesPage() {
                     <div>{item.hidden ? 'hidden' : item.public_visible ? 'public' : 'internal-only'}</div>
                     <div className="muted-row">
                       <span>{formatNZBStatus(item.nzb_generation_status || 'pending')}</span>
-                      <span>{releaseCompletenessLabel(item)}</span>
+                      <span className={`payload-state payload-state--${item.payload_completion_state}`}>{releaseCompletenessLabel(item)}</span>
                       <span>{item.password_candidate_count} pwd</span>
                     </div>
                   </td>
