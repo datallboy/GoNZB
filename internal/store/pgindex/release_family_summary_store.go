@@ -2499,7 +2499,7 @@ func (s *Store) RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Conte
 	if err := s.backfillReadyReleaseCandidatesFromActionableSummaries(ctx, hotLimit); err != nil {
 		return ReleaseSummaryRefreshMetrics{}, err
 	}
-	if metrics.Refreshed >= hotLimit {
+	if metrics.Refreshed > 0 {
 		return metrics, nil
 	}
 

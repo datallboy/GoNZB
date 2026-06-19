@@ -1549,6 +1549,33 @@ func TestRunSummaryRefreshOnceLeavesRemainingBacklogWhenCapIsHit(t *testing.T) {
 	}
 }
 
+func TestRunSummaryRefreshOnceStopsAfterSoftTimeBudget(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount:            30000,
+		refreshQueuedSummariesResults: []int{10000, 10000, 10000},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                 1000,
+		SummaryRefreshBatchSize:   10000,
+		SummaryRefreshMaxBatches:  5,
+		SummaryRefreshMaxDuration: time.Nanosecond,
+	})
+
+	metrics, err := svc.RunSummaryRefreshOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run summary refresh once with metrics: %v", err)
+	}
+	if repo.refreshQueuedSummariesCalls != 1 {
+		t.Fatalf("expected one refresh batch before time budget stop, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if got := metrics["summary_refresh_time_limited"]; got != true {
+		t.Fatalf("expected time-limited metrics, got %#v", got)
+	}
+	if got := metrics["summary_refresh_remaining_count"]; got != 20000 {
+		t.Fatalf("expected remaining backlog 20000, got %#v", got)
+	}
+}
+
 func TestRunOnceDoesNotDrainSummaryRefreshQueue(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		queuedSummaryCount: 1000,
