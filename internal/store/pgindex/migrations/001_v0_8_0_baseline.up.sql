@@ -2630,6 +2630,13 @@ CREATE INDEX idx_binary_identity_release_family ON public.binary_identity_curren
 
 
 --
+-- Name: idx_binary_identity_release_family_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_binary_identity_release_family_provider ON public.binary_identity_current USING btree (provider_id, release_family_key) WHERE (btrim(release_family_key) <> ''::text);
+
+
+--
 -- Name: idx_binary_inspection_artifacts_binary_stage; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3165,14 +3172,6 @@ ALTER TABLE ONLY public.binary_archive_entries
 
 
 --
--- Name: binary_archive_entries binary_archive_entries_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_archive_entries
-    ADD CONSTRAINT binary_archive_entries_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
-
-
---
 -- Name: binary_completion_keys binary_completion_keys_binary_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3205,27 +3204,11 @@ ALTER TABLE ONLY public.binary_inspection_artifacts
 
 
 --
--- Name: binary_inspection_artifacts binary_inspection_artifacts_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_inspection_artifacts
-    ADD CONSTRAINT binary_inspection_artifacts_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
-
-
---
 -- Name: binary_inspections binary_inspections_binary_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.binary_inspections
     ADD CONSTRAINT binary_inspections_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
-
-
---
--- Name: binary_inspections binary_inspections_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_inspections
-    ADD CONSTRAINT binary_inspections_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
 
 
 --
@@ -3245,14 +3228,6 @@ ALTER TABLE ONLY public.binary_media_streams
 
 
 --
--- Name: binary_media_streams binary_media_streams_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_media_streams
-    ADD CONSTRAINT binary_media_streams_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
-
-
---
 -- Name: binary_observation_stats binary_observation_stats_binary_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3266,14 +3241,6 @@ ALTER TABLE ONLY public.binary_observation_stats
 
 ALTER TABLE ONLY public.binary_par2_sets
     ADD CONSTRAINT binary_par2_sets_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
-
-
---
--- Name: binary_par2_sets binary_par2_sets_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_par2_sets
-    ADD CONSTRAINT binary_par2_sets_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
 
 
 --
@@ -3322,14 +3289,6 @@ ALTER TABLE ONLY public.binary_recovery_current
 
 ALTER TABLE ONLY public.binary_text_evidence
     ADD CONSTRAINT binary_text_evidence_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
-
-
---
--- Name: binary_text_evidence binary_text_evidence_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.binary_text_evidence
-    ADD CONSTRAINT binary_text_evidence_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(release_id) ON DELETE SET NULL;
 
 
 --
@@ -3426,14 +3385,6 @@ ALTER TABLE ONLY public.release_family_readiness_summaries
 
 ALTER TABLE ONLY public.release_family_readiness_summaries
     ADD CONSTRAINT release_family_readiness_summaries_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE;
-
-
---
--- Name: release_files release_files_binary_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.release_files
-    ADD CONSTRAINT release_files_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE SET NULL;
 
 
 --

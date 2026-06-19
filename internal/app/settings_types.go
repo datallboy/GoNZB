@@ -26,19 +26,20 @@ type RuntimeSettingsPatch struct {
 }
 
 type ServerRuntimeSettings struct {
-	ID                     string `json:"id"`
-	Host                   string `json:"host"`
-	Port                   int    `json:"port"`
-	Username               string `json:"username"`
-	Password               string `json:"password"`
-	TLS                    bool   `json:"tls"`
-	MaxConnection          int    `json:"max_connections"`
-	Priority               int    `json:"priority"`
-	DialTimeoutSeconds     int    `json:"dial_timeout_seconds"`
-	TCPKeepAliveSeconds    int    `json:"tcp_keepalive_seconds"`
-	PoolIdleTimeoutSeconds int    `json:"pool_idle_timeout_seconds"`
-	PoolMaxAgeSeconds      int    `json:"pool_max_age_seconds"`
-	EnablePoolLogging      bool   `json:"enable_pool_logging"`
+	ID                     string   `json:"id"`
+	Host                   string   `json:"host"`
+	Port                   int      `json:"port"`
+	Username               string   `json:"username"`
+	Password               string   `json:"password"`
+	TLS                    bool     `json:"tls"`
+	MaxConnection          int      `json:"max_connections"`
+	Priority               int      `json:"priority"`
+	DialTimeoutSeconds     int      `json:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int      `json:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int      `json:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int      `json:"pool_max_age_seconds"`
+	EnablePoolLogging      bool     `json:"enable_pool_logging"`
+	Roles                  []string `json:"roles,omitempty"`
 }
 
 type IndexerRuntimeSettings struct {
@@ -87,6 +88,11 @@ type IndexingStageRuntimeSettings struct {
 	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
 	LaneATargetPct          int     `json:"lane_a_target_pct,omitempty"`
 	LaneBMinPct             int     `json:"lane_b_min_pct,omitempty"`
+	TargetWindowEnabled     bool    `json:"target_window_enabled,omitempty"`
+	TargetWindowStart       string  `json:"target_window_start,omitempty"`
+	TargetWindowEnd         string  `json:"target_window_end,omitempty"`
+	TargetWindowPct         int     `json:"target_window_pct,omitempty"`
+	NewestPct               int     `json:"newest_pct"`
 }
 
 type IndexingReleaseRuntimeSettings struct {

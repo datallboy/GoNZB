@@ -13,7 +13,49 @@ const (
 	yencRecoverySeedScanLowYieldThreshold = 25
 	yencRecoveryReadyWindowMultiplier     = 8
 	yencRecoveryReadyWindowMax            = 8000
+	yencRecoveryFairnessStageName         = "recover_yenc"
+	yencRecoveryFairnessBucketSeconds     = 5 * 60
+	yencRecoveryFairnessHorizon           = 24 * time.Hour
+	yencRecoveryFairnessNewestExclusion   = 30 * time.Minute
+	yencRecoveryFairnessBaseQuota         = 25
+	yencRecoveryFairnessMaxQuota          = 60
+	yencRecoveryFairnessQuotaStep         = 10
 )
+
+type yencRecoveryFairnessState struct {
+	CursorBefore *time.Time
+	BucketStart  *time.Time
+	BucketEnd    *time.Time
+	QuotaPercent int
+	RepeatFull   int
+	WrappedCount int64
+}
+
+type yencRecoveryFairnessBucket struct {
+	Start   time.Time
+	End     time.Time
+	Quota   int
+	Wrapped bool
+}
+
+type YEncRecoverySelectionOptions struct {
+	TargetWindowStart   *time.Time
+	TargetWindowEnd     *time.Time
+	TargetWindowPercent int
+	NewestPercent       int
+}
+
+func (o YEncRecoverySelectionOptions) HasTargetWindow() bool {
+	return o.TargetWindowStart != nil && o.TargetWindowEnd != nil && o.TargetWindowStart.Before(*o.TargetWindowEnd)
+}
+
+func (o YEncRecoverySelectionOptions) HasValidSplit() bool {
+	return o.TargetWindowPercent >= 0 &&
+		o.TargetWindowPercent <= 100 &&
+		o.NewestPercent >= 0 &&
+		o.NewestPercent <= 100 &&
+		o.TargetWindowPercent+o.NewestPercent == 100
+}
 
 func yencRecoveryReadyWindowLimit(limit int) int {
 	if limit <= 0 {
@@ -30,6 +72,10 @@ func yencRecoveryReadyWindowLimit(limit int) int {
 }
 
 func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
+	return s.ListYEncRecoveryCandidatesWithOptions(ctx, limit, YEncRecoverySelectionOptions{})
+}
+
+func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit int, opts YEncRecoverySelectionOptions) ([]YEncRecoveryCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -51,7 +97,7 @@ func (s *Store) ListYEncRecoveryCandidates(ctx context.Context, limit int) ([]YE
 		}
 	}
 
-	return s.listReadyYEncRecoveryCandidates(ctx, limit)
+	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts)
 }
 
 func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (int64, int64, error) {
@@ -160,7 +206,7 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 				WHERE wi.status = 'ready'
 				  AND wi.ready_at <= NOW()
 				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
-				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
+				ORDER BY wi.priority_rank, wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
 				LIMIT $1
 			)
 			SELECT COUNT(*) FROM (SELECT 1 FROM ready_window LIMIT $2) ready`,
@@ -173,172 +219,547 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 	return count, nil
 }
 
-func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int) ([]YEncRecoveryCandidate, error) {
-	windowLimit := yencRecoveryReadyWindowLimit(limit)
+func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions) ([]YEncRecoveryCandidate, error) {
 	var out []YEncRecoveryCandidate
 	err := s.withParallelGatherDisabledTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `
-			WITH expired AS (
-				UPDATE yenc_recovery_work_items wi
-				SET status = 'ready',
-				    lease_owner = '',
-				    lease_expires_at = NULL,
-				    updated_at = NOW()
-				WHERE wi.status = 'running'
-				  AND wi.lease_expires_at <= NOW()
-				RETURNING wi.binary_id
-			),
-			ready_window AS (
-				SELECT
-					wi.binary_id,
-					wi.article_header_id,
-					wi.provider_id,
-					wi.newsgroup_id,
-					wi.newsgroup_name,
-					wi.article_number,
-					wi.message_id,
-					wi.subject,
-					wi.poster,
-					wi.date_utc,
-					wi.article_bytes,
-					wi.article_lines,
-					wi.xref,
-					wi.subject_file_name,
-					wi.subject_file_index,
-					wi.subject_file_total,
-					wi.yenc_part_number,
-					wi.yenc_total_parts,
-					wi.yenc_file_size,
-					wi.missing_count,
-					wi.ready_at,
-					wi.current_binary_key,
-					wi.current_release_family_key,
-					wi.current_base_stem,
-					wi.current_readiness_bucket,
-					wi.structured_identity_binary_matched,
-					wi.priority_rank,
-					wi.updated_at
-				FROM yenc_recovery_work_items wi
-				WHERE wi.status = 'ready'
-				  AND wi.ready_at <= NOW()
-				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
-				ORDER BY wi.priority_rank, wi.updated_at DESC, wi.binary_id
-				LIMIT $2
-				FOR UPDATE SKIP LOCKED
-			),
-			ranked AS (
-				SELECT
-					rw.binary_id,
-					ROW_NUMBER() OVER (
-						PARTITION BY rw.provider_id, rw.newsgroup_id, rw.priority_rank
-						ORDER BY rw.updated_at DESC, rw.binary_id
-					) AS group_rank
-				FROM ready_window rw
-			),
-			selected AS (
-				SELECT rw.*, r.group_rank
-				FROM ready_window rw
-				JOIN ranked r ON r.binary_id = rw.binary_id
-				ORDER BY rw.priority_rank, r.group_rank, rw.updated_at DESC, rw.binary_id
-				LIMIT $1
-			),
-			claimed AS (
-				UPDATE yenc_recovery_work_items wi
-				SET status = 'running',
-				    lease_owner = 'recover_yenc',
-				    lease_expires_at = NOW() + INTERVAL '30 minutes',
-				    updated_at = NOW()
-				FROM selected s
-				WHERE wi.binary_id = s.binary_id
-				RETURNING
-					s.binary_id,
-					s.article_header_id,
-					s.provider_id,
-					s.newsgroup_id,
-					s.newsgroup_name,
-					s.article_number,
-					s.message_id,
-					s.subject,
-					s.poster,
-					s.date_utc,
-					s.article_bytes,
-					s.article_lines,
-					s.xref,
-					s.subject_file_name,
-					s.subject_file_index,
-					s.subject_file_total,
-					s.yenc_part_number,
-					s.yenc_total_parts,
-					s.yenc_file_size,
-					s.missing_count,
-					s.ready_at,
-					s.current_binary_key,
-					s.current_release_family_key,
-					s.current_base_stem,
-					s.current_readiness_bucket,
-					s.structured_identity_binary_matched,
-					s.group_rank,
-					s.priority_rank,
-					s.updated_at
-			)
-			SELECT
-				binary_id,
-				article_header_id,
-				provider_id,
-				newsgroup_id,
-				newsgroup_name,
-				article_number,
-				message_id,
-				subject,
-				poster,
-				date_utc,
-				article_bytes,
-				article_lines,
-				xref,
-				subject_file_name,
-				subject_file_index,
-				subject_file_total,
-				yenc_part_number,
-				yenc_total_parts,
-				yenc_file_size,
-				missing_count,
-				ready_at,
-				current_binary_key,
-				current_release_family_key,
-				current_base_stem,
-				current_readiness_bucket,
-				structured_identity_binary_matched,
-				group_rank
-			FROM claimed
-			ORDER BY
-				priority_rank,
-				group_rank,
-				updated_at DESC,
-				binary_id
-			LIMIT $1`,
-			limit,
-			windowLimit,
-		)
-		if err != nil {
+		if err := expireYEncRecoveryRunningLeases(ctx, tx); err != nil {
 			return err
 		}
-		defer rows.Close()
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
-		for rows.Next() {
-			item, err := scanYEncRecoveryCandidateWithRank(rows)
+		if opts.HasTargetWindow() {
+			targetLimit := yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			if targetLimit > 0 {
+				targeted, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, targetLimit, *opts.TargetWindowStart, *opts.TargetWindowEnd, "target_window")
+				if err != nil {
+					return err
+				}
+				for i := range targeted {
+					targeted[i].FairnessBucketStart = ptrTimeUTC(*opts.TargetWindowStart)
+					targeted[i].FairnessBucketEnd = ptrTimeUTC(*opts.TargetWindowEnd)
+				}
+				out = append(out, targeted...)
+			}
+			newestLimit := yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			if newestLimit > limit-len(out) {
+				newestLimit = limit - len(out)
+			}
+			if newestLimit > 0 {
+				newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
+				if err != nil {
+					return err
+				}
+				out = append(out, newest...)
+			}
+			return nil
+		}
+
+		fixedSplit := opts.HasValidSplit()
+		fairnessLimit := yencRecoveryFairnessLimit(ctx, tx, limit)
+		if fixedSplit {
+			fairnessLimit = yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+		}
+		if fairnessLimit > 0 {
+			bucket, err := s.nextYEncRecoveryFairnessBucket(ctx, tx)
 			if err != nil {
 				return err
 			}
-			out = append(out, item)
+			if bucket != nil {
+				fairness, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, fairnessLimit, bucket.Start, bucket.End, "time_cohort_fairness")
+				if err != nil {
+					return err
+				}
+				for i := range fairness {
+					fairness[i].FairnessBucketStart = ptrTimeUTC(bucket.Start)
+					fairness[i].FairnessBucketEnd = ptrTimeUTC(bucket.End)
+				}
+				out = append(out, fairness...)
+				if err := s.updateYEncRecoveryFairnessStateAfterClaim(ctx, tx, bucket, len(fairness), fairnessLimit); err != nil {
+					return err
+				}
+			}
 		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate yenc recovery candidates: %w", err)
+
+		newestLimit := limit - len(out)
+		if fixedSplit {
+			newestLimit = yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			if newestLimit > limit-len(out) {
+				newestLimit = limit - len(out)
+			}
+		}
+		if newestLimit > 0 {
+			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
+			if err != nil {
+				return err
+			}
+			out = append(out, newest...)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
+	}
+	return out, nil
+}
+
+func yencRecoveryPercentLimit(limit, percent int) int {
+	if limit <= 1 || percent <= 0 {
+		return 0
+	}
+	if percent >= 100 {
+		return limit
+	}
+	n := (limit * percent) / 100
+	if n <= 0 {
+		n = 1
+	}
+	if n >= limit {
+		n = limit - 1
+	}
+	return n
+}
+
+func expireYEncRecoveryRunningLeases(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items wi
+		SET status = 'ready',
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE wi.status = 'running'
+		  AND wi.lease_expires_at <= NOW()`); err != nil {
+		return fmt.Errorf("expire yenc recovery leases: %w", err)
+	}
+	return nil
+}
+
+func yencRecoveryFairnessLimit(ctx context.Context, tx *sql.Tx, limit int) int {
+	if limit <= 1 {
+		return 0
+	}
+	state, err := loadYEncRecoveryFairnessState(ctx, tx)
+	if err != nil {
+		return limit / 4
+	}
+	quota := state.QuotaPercent
+	if quota <= 0 {
+		quota = yencRecoveryFairnessBaseQuota
+	}
+	if quota > yencRecoveryFairnessMaxQuota {
+		quota = yencRecoveryFairnessMaxQuota
+	}
+	n := (limit * quota) / 100
+	if n <= 0 {
+		n = 1
+	}
+	if n >= limit {
+		n = limit - 1
+	}
+	return n
+}
+
+func loadYEncRecoveryFairnessState(ctx context.Context, tx *sql.Tx) (yencRecoveryFairnessState, error) {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO yenc_recovery_fairness_state (stage_name, quota_percent)
+		VALUES ($1, $2)
+		ON CONFLICT (stage_name) DO NOTHING`,
+		yencRecoveryFairnessStageName,
+		yencRecoveryFairnessBaseQuota,
+	); err != nil {
+		return yencRecoveryFairnessState{}, fmt.Errorf("ensure yenc recovery fairness state: %w", err)
+	}
+
+	var state yencRecoveryFairnessState
+	var cursor, bucketStart, bucketEnd sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT cursor_before, bucket_start, bucket_end, quota_percent, repeat_full_count, wrapped_count
+		FROM yenc_recovery_fairness_state
+		WHERE stage_name = $1
+		FOR UPDATE`,
+		yencRecoveryFairnessStageName,
+	).Scan(&cursor, &bucketStart, &bucketEnd, &state.QuotaPercent, &state.RepeatFull, &state.WrappedCount); err != nil {
+		return state, fmt.Errorf("load yenc recovery fairness state: %w", err)
+	}
+	if cursor.Valid {
+		t := cursor.Time.UTC()
+		state.CursorBefore = &t
+	}
+	if bucketStart.Valid {
+		t := bucketStart.Time.UTC()
+		state.BucketStart = &t
+	}
+	if bucketEnd.Valid {
+		t := bucketEnd.Time.UTC()
+		state.BucketEnd = &t
+	}
+	return state, nil
+}
+
+func (s *Store) nextYEncRecoveryFairnessBucket(ctx context.Context, tx *sql.Tx) (*yencRecoveryFairnessBucket, error) {
+	state, err := loadYEncRecoveryFairnessState(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-yencRecoveryFairnessNewestExclusion)
+	horizon := now.Add(-yencRecoveryFairnessHorizon)
+	cursorBefore := cutoff
+	if state.CursorBefore != nil && state.CursorBefore.Before(cutoff) {
+		cursorBefore = *state.CursorBefore
+	}
+
+	if state.BucketStart != nil && state.BucketEnd != nil &&
+		state.BucketEnd.After(horizon) &&
+		!state.BucketStart.After(cutoff) {
+		count, err := countReadyYEncRecoveryInPostedRange(ctx, tx, *state.BucketStart, *state.BucketEnd)
+		if err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			return &yencRecoveryFairnessBucket{Start: *state.BucketStart, End: *state.BucketEnd, Quota: normalizedYEncRecoveryQuota(state.QuotaPercent)}, nil
+		}
+		cursorBefore = *state.BucketStart
+	}
+
+	bucket, err := findYEncRecoveryFairnessBucketBefore(ctx, tx, cursorBefore, horizon)
+	if err != nil {
+		return nil, err
+	}
+	if bucket != nil {
+		bucket.Quota = normalizedYEncRecoveryQuota(state.QuotaPercent)
+		return bucket, nil
+	}
+
+	bucket, err = findYEncRecoveryFairnessBucketBefore(ctx, tx, cutoff, horizon)
+	if err != nil {
+		return nil, err
+	}
+	if bucket == nil {
+		return nil, nil
+	}
+	bucket.Quota = yencRecoveryFairnessBaseQuota
+	bucket.Wrapped = true
+	return bucket, nil
+}
+
+func countReadyYEncRecoveryInPostedRange(ctx context.Context, tx *sql.Tx, start, end time.Time) (int, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items wi
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		  AND wi.date_utc >= $1
+		  AND wi.date_utc < $2`,
+		start,
+		end,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count ready yenc recovery fairness bucket: %w", err)
+	}
+	return count, nil
+}
+
+func findYEncRecoveryFairnessBucketBefore(ctx context.Context, tx *sql.Tx, before, horizon time.Time) (*yencRecoveryFairnessBucket, error) {
+	var posted sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT wi.date_utc
+		FROM yenc_recovery_work_items wi
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		  AND wi.date_utc IS NOT NULL
+		  AND wi.date_utc < $1
+		  AND wi.date_utc >= $2
+		ORDER BY wi.date_utc DESC NULLS LAST, wi.priority_rank, wi.binary_id
+		LIMIT 1`,
+		before,
+		horizon,
+	).Scan(&posted); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find yenc recovery fairness bucket: %w", err)
+	}
+	if !posted.Valid {
+		return nil, nil
+	}
+	bucketStart := yencRecoveryBucketStart(posted.Time.UTC())
+	return &yencRecoveryFairnessBucket{
+		Start: bucketStart,
+		End:   bucketStart.Add(time.Duration(yencRecoveryFairnessBucketSeconds) * time.Second),
+	}, nil
+}
+
+func yencRecoveryBucketStart(t time.Time) time.Time {
+	seconds := t.Unix()
+	bucket := int64(yencRecoveryFairnessBucketSeconds)
+	return time.Unix((seconds/bucket)*bucket, 0).UTC()
+}
+
+func (s *Store) updateYEncRecoveryFairnessStateAfterClaim(ctx context.Context, tx *sql.Tx, bucket *yencRecoveryFairnessBucket, claimed, limit int) error {
+	if bucket == nil {
+		return nil
+	}
+	remaining, err := countReadyYEncRecoveryInPostedRange(ctx, tx, bucket.Start, bucket.End)
+	if err != nil {
+		return err
+	}
+	state, err := loadYEncRecoveryFairnessState(ctx, tx)
+	if err != nil {
+		return err
+	}
+	repeat := 0
+	quota := yencRecoveryFairnessBaseQuota
+	cursorBefore := bucket.Start
+	bucketStart := sql.NullTime{}
+	bucketEnd := sql.NullTime{}
+	if claimed >= limit && remaining > 0 {
+		repeat = state.RepeatFull + 1
+		quota = yencRecoveryFairnessBaseQuota + repeat*yencRecoveryFairnessQuotaStep
+		if quota > yencRecoveryFairnessMaxQuota {
+			quota = yencRecoveryFairnessMaxQuota
+		}
+		cursorBefore = bucket.End
+		bucketStart = sql.NullTime{Time: bucket.Start, Valid: true}
+		bucketEnd = sql.NullTime{Time: bucket.End, Valid: true}
+	}
+	wrappedCount := state.WrappedCount
+	if bucket.Wrapped {
+		wrappedCount++
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE yenc_recovery_fairness_state
+		SET cursor_before = $2,
+		    bucket_start = $3,
+		    bucket_end = $4,
+		    quota_percent = $5,
+		    repeat_full_count = $6,
+		    wrapped_count = $7,
+		    updated_at = NOW()
+		WHERE stage_name = $1`,
+		yencRecoveryFairnessStageName,
+		cursorBefore,
+		bucketStart,
+		bucketEnd,
+		quota,
+		repeat,
+		wrappedCount,
+	); err != nil {
+		return fmt.Errorf("update yenc recovery fairness state: %w", err)
+	}
+	return nil
+}
+
+func normalizedYEncRecoveryQuota(quota int) int {
+	if quota <= 0 {
+		return yencRecoveryFairnessBaseQuota
+	}
+	if quota > yencRecoveryFairnessMaxQuota {
+		return yencRecoveryFairnessMaxQuota
+	}
+	return quota
+}
+
+func ptrTimeUTC(t time.Time) *time.Time {
+	v := t.UTC()
+	return &v
+}
+
+func claimNewestYEncRecoveryCandidates(ctx context.Context, tx *sql.Tx, limit int) ([]YEncRecoveryCandidate, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, claimYEncRecoveryCandidatesSQL(`
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		ORDER BY wi.priority_rank, wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+		LIMIT $2`), limit, yencRecoveryReadyWindowLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return scanClaimedYEncRecoveryCandidates(rows, "newest", nil, nil)
+}
+
+func claimYEncRecoveryCandidatesInPostedRange(ctx context.Context, tx *sql.Tx, limit int, start, end time.Time, lane string) ([]YEncRecoveryCandidate, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, claimYEncRecoveryCandidatesSQL(`
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		  AND wi.date_utc >= $2
+		  AND wi.date_utc < $3
+		ORDER BY wi.priority_rank, wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+		LIMIT $4`), limit, start, end, yencRecoveryReadyWindowLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return scanClaimedYEncRecoveryCandidates(rows, lane, &start, &end)
+}
+
+func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
+	return `
+		WITH ready_window AS (
+			SELECT
+				wi.binary_id,
+				wi.article_header_id,
+				wi.provider_id,
+				wi.newsgroup_id,
+				wi.newsgroup_name,
+				wi.article_number,
+				wi.message_id,
+				wi.subject,
+				wi.poster,
+				wi.date_utc,
+				wi.article_bytes,
+				wi.article_lines,
+				wi.xref,
+				wi.subject_file_name,
+				wi.subject_file_index,
+				wi.subject_file_total,
+				wi.yenc_part_number,
+				wi.yenc_total_parts,
+				wi.yenc_file_size,
+				wi.missing_count,
+				wi.ready_at,
+				wi.current_binary_key,
+				wi.current_release_family_key,
+				wi.current_base_stem,
+				wi.current_readiness_bucket,
+				wi.structured_identity_binary_matched,
+				wi.priority_rank,
+				wi.updated_at,
+				date_trunc('minute', COALESCE(wi.date_utc, wi.updated_at)) AS posted_minute,
+				CASE
+					WHEN POSITION('@' IN COALESCE(wi.poster, '')) > 0
+						THEN LOWER(regexp_replace(split_part(wi.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS poster_hint,
+				CASE
+					WHEN POSITION('@' IN BTRIM(COALESCE(wi.message_id, ''), '<>')) > 0
+						THEN LOWER(regexp_replace(split_part(BTRIM(wi.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS message_hint
+			FROM yenc_recovery_work_items wi
+			` + readyWindowClause + `
+			FOR UPDATE SKIP LOCKED
+		),
+		ranked AS (
+			SELECT
+				rw.binary_id,
+				ROW_NUMBER() OVER (
+					PARTITION BY rw.provider_id, rw.newsgroup_id, rw.priority_rank, rw.posted_minute, rw.poster_hint, rw.message_hint
+					ORDER BY rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+				) AS group_rank
+			FROM ready_window rw
+		),
+		selected AS (
+			SELECT rw.*, r.group_rank
+			FROM ready_window rw
+			JOIN ranked r ON r.binary_id = rw.binary_id
+			ORDER BY rw.priority_rank, rw.posted_minute DESC, rw.poster_hint, rw.message_hint, r.group_rank, rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+			LIMIT $1
+		),
+		claimed AS (
+			UPDATE yenc_recovery_work_items wi
+			SET status = 'running',
+			    lease_owner = 'recover_yenc',
+			    lease_expires_at = NOW() + INTERVAL '30 minutes',
+			    updated_at = NOW()
+			FROM selected s
+			WHERE wi.binary_id = s.binary_id
+			RETURNING
+				s.binary_id,
+				s.article_header_id,
+				s.provider_id,
+				s.newsgroup_id,
+				s.newsgroup_name,
+				s.article_number,
+				s.message_id,
+				s.subject,
+				s.poster,
+				s.date_utc,
+				s.article_bytes,
+				s.article_lines,
+				s.xref,
+				s.subject_file_name,
+				s.subject_file_index,
+				s.subject_file_total,
+				s.yenc_part_number,
+				s.yenc_total_parts,
+				s.yenc_file_size,
+				s.missing_count,
+				s.ready_at,
+				s.current_binary_key,
+				s.current_release_family_key,
+				s.current_base_stem,
+				s.current_readiness_bucket,
+				s.structured_identity_binary_matched,
+				s.group_rank,
+				s.priority_rank,
+				s.updated_at
+		)
+		SELECT
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			newsgroup_name,
+			article_number,
+			message_id,
+			subject,
+			poster,
+			date_utc,
+			article_bytes,
+			article_lines,
+			xref,
+			subject_file_name,
+			subject_file_index,
+			subject_file_total,
+			yenc_part_number,
+			yenc_total_parts,
+			yenc_file_size,
+			missing_count,
+			ready_at,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			group_rank
+		FROM claimed
+		ORDER BY
+			priority_rank,
+			date_trunc('minute', COALESCE(date_utc, updated_at)) DESC,
+			group_rank,
+			date_utc DESC NULLS LAST,
+			article_number,
+			binary_id
+		LIMIT $1`
+}
+
+func scanClaimedYEncRecoveryCandidates(rows *sql.Rows, lane string, bucketStart, bucketEnd *time.Time) ([]YEncRecoveryCandidate, error) {
+	defer rows.Close()
+	out := make([]YEncRecoveryCandidate, 0)
+	for rows.Next() {
+		item, err := scanYEncRecoveryCandidateWithRank(rows)
+		if err != nil {
+			return nil, err
+		}
+		item.RecoveryLane = lane
+		if bucketStart != nil {
+			item.FairnessBucketStart = ptrTimeUTC(*bucketStart)
+		}
+		if bucketEnd != nil {
+			item.FairnessBucketEnd = ptrTimeUTC(*bucketEnd)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate yenc recovery candidates: %w", err)
 	}
 	return out, nil
 }
@@ -478,7 +899,7 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 			if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
 				return err
 			}
-			if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
+			if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
 				return err
 			}
 			if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
@@ -491,11 +912,17 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE article_header_ingest_payloads
-			SET yenc_recovery_missing_count = 0,
+			SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
+			    yenc_total_parts = GREATEST(yenc_total_parts, $3),
+			    yenc_file_size = GREATEST(yenc_file_size, $4),
+			    yenc_recovery_missing_count = 0,
 			    yenc_recovery_last_missing_at = NULL,
 			    yenc_recovery_retry_after = NULL
 			WHERE article_header_id = $1`,
 			in.ArticleHeaderID,
+			in.PartNumber,
+			in.TotalParts,
+			in.FileSize,
 		); err != nil {
 			return fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
 		}
@@ -505,10 +932,17 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 			    ready_at = NOW(),
 			    lease_owner = '',
 			    lease_expires_at = NULL,
+			    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
+			    yenc_total_parts = GREATEST(yenc_total_parts, $5),
+			    yenc_file_size = GREATEST(yenc_file_size, $6),
 			    updated_at = NOW()
 			WHERE binary_id IN ($1, $2)`,
 			in.BinaryID,
 			targetID,
+			in.ArticleHeaderID,
+			in.PartNumber,
+			in.TotalParts,
+			in.FileSize,
 		); err != nil {
 			return fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
 		}
@@ -686,12 +1120,16 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_parts
 		SET file_name = $2,
+		    part_number = CASE WHEN $4 > 0 THEN $4 ELSE part_number END,
 		    total_parts = GREATEST(total_parts, $3),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND article_header_id = $5`,
 		binaryID,
 		in.FileName,
 		in.TotalParts,
+		in.PartNumber,
+		in.ArticleHeaderID,
 	); err != nil {
 		return fmt.Errorf("update yenc recovered binary parts %d: %w", binaryID, err)
 	}
@@ -710,7 +1148,7 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 	return nil
 }
 
-func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string) error {
+func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, part_number, segment_bytes
 		FROM binary_parts
@@ -741,6 +1179,10 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 	}
 
 	for _, p := range parts {
+		partNumber := p.PartNumber
+		if recoveredPartNumber > 0 {
+			partNumber = recoveredPartNumber
+		}
 		var existingID int64
 		var existingBytes int64
 		err := tx.QueryRowContext(ctx, `
@@ -750,10 +1192,10 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			  AND part_number = $2
 			FOR UPDATE`,
 			targetID,
-			p.PartNumber,
+			partNumber,
 		).Scan(&existingID, &existingBytes)
 		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("lock yenc target part binary=%d part=%d: %w", targetID, p.PartNumber, err)
+			return fmt.Errorf("lock yenc target part binary=%d part=%d: %w", targetID, partNumber, err)
 		}
 		if err == nil && existingBytes >= p.SegmentBytes {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE id = $1`, p.ID); err != nil {
@@ -770,11 +1212,15 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			UPDATE binary_parts
 			SET binary_id = $2,
 			    file_name = $3,
+			    part_number = $4,
+			    total_parts = GREATEST(total_parts, $5),
 			    updated_at = NOW()
 			WHERE id = $1`,
 			p.ID,
 			targetID,
 			fileName,
+			partNumber,
+			recoveredTotalParts,
 		); err != nil {
 			return fmt.Errorf("move yenc source part %d to binary %d: %w", p.ID, targetID, err)
 		}

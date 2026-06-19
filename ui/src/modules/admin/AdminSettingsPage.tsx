@@ -42,6 +42,7 @@ type StageDefinition = {
   showBinaryUpsertChunk?: boolean
   showLaneBalance?: boolean
   showMaxEffectiveConcurrency?: boolean
+  showYEncTargetWindow?: boolean
   showMaxBatches?: boolean
   defaultMaxBatches?: number
   batchHelpText?: string
@@ -56,7 +57,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
   { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
   { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
-  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showMaxEffectiveConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Effective concurrency may be capped below this value to avoid connection churn.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showYEncTargetWindow: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Higher values consume more provider connections and create more short-lived BODY sessions.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
@@ -84,6 +85,13 @@ const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'downloader', label: 'Downloader' },
   { key: 'aggregator', label: 'Aggregator' },
   { key: 'indexer', label: 'Indexer' },
+]
+
+const nntpProviderRoles = [
+  { key: 'scrape', label: 'Scrape' },
+  { key: 'yenc_recovery', label: 'yEnc recovery' },
+  { key: 'inspection', label: 'Inspection' },
+  { key: 'download', label: 'Download' },
 ]
 
 function defaultSettings(): RuntimeSettings {
@@ -116,7 +124,7 @@ function defaultSettings(): RuntimeSettings {
       poster_materialize: stageDefaults(10000),
       crosspost_popularity_refresh: stageDefaults(1000),
       assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
-      recover_yenc: stageDefaults(25, 1, { max_effective_concurrency: 4 }),
+      recover_yenc: stageDefaults(25, 1, { target_window_pct: 60, newest_pct: 40 }),
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
@@ -291,6 +299,7 @@ function serverDefaults(index: number): ServerRuntimeSettings {
     pool_idle_timeout_seconds: 45,
     pool_max_age_seconds: 600,
     enable_pool_logging: false,
+    roles: ['scrape', 'yenc_recovery', 'inspection', 'download'],
   }
 }
 
@@ -322,7 +331,16 @@ function serversForSave(servers: ServerRuntimeSettings[], prefix: string) {
   return servers.map((server, index) => ({
     ...server,
     id: deriveServerID(server, index, prefix),
+    roles: normalizedServerRoles(server),
   }))
+}
+
+function normalizedServerRoles(server: ServerRuntimeSettings) {
+  const roles = server.roles?.filter((role) => nntpProviderRoles.some((item) => item.key === role)) ?? []
+  if (roles.length === 0) {
+    return nntpProviderRoles.map((role) => role.key)
+  }
+  return roles
 }
 
 function deriveServerID(server: ServerRuntimeSettings, index: number, prefix: string) {
@@ -339,6 +357,20 @@ function serverTitle(server: ServerRuntimeSettings, index: number) {
     return host
   }
   return `Server ${index + 1}`
+}
+
+function serverRoleEnabled(server: ServerRuntimeSettings, role: string) {
+  return normalizedServerRoles(server).includes(role)
+}
+
+function patchServerRole(server: ServerRuntimeSettings, role: string, enabled: boolean) {
+  const roles = new Set(normalizedServerRoles(server))
+  if (enabled) {
+    roles.add(role)
+  } else if (roles.size > 1) {
+    roles.delete(role)
+  }
+  return Array.from(roles)
 }
 
 function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRuntimeSettings {
@@ -769,7 +801,7 @@ export function AdminSettingsPage() {
                             />
                           ) : null}
                         </div>
-                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency || definition.showLaneBalance) ? (
+                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency || definition.showLaneBalance || definition.showYEncTargetWindow) ? (
                           <div className="toolbar-grid toolbar-grid--compact">
                             {definition.showBinaryUpsertChunk ? (
                               <NumberField
@@ -807,6 +839,49 @@ export function AdminSettingsPage() {
                                 value={value.lane_b_min_pct ?? 30}
                                 helpText="Minimum share reserved for fresh queued headers when available."
                                 onChange={(next) => updateStage(key, { lane_b_min_pct: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <CheckboxField
+                                label="Target recovery window"
+                                checked={value.target_window_enabled ?? false}
+                                onChange={(next) => updateStage(key, { target_window_enabled: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <TextField
+                                label="Target window start"
+                                value={value.target_window_start ?? ''}
+                                helpText="RFC3339 timestamp, for example 2026-06-18T18:20:00Z."
+                                onChange={(next) => updateStage(key, { target_window_start: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <TextField
+                                label="Target window end"
+                                value={value.target_window_end ?? ''}
+                                helpText="RFC3339 timestamp. Must be after the start timestamp."
+                                onChange={(next) => updateStage(key, { target_window_end: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <NumberField
+                                label="Target window %"
+                                min={0}
+                                max={100}
+                                value={value.target_window_pct ?? 60}
+                                helpText="Share of each recover_yenc batch reserved for the target window."
+                                onChange={(next) => updateStage(key, { target_window_pct: next, newest_pct: 100 - next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <NumberField
+                                label="Newest %"
+                                min={0}
+                                max={100}
+                                value={value.newest_pct ?? 40}
+                                helpText="Share of each recover_yenc batch reserved for newest candidates."
+                                onChange={(next) => updateStage(key, { newest_pct: next, target_window_pct: 100 - next })}
                               />
                             ) : null}
                           </div>
@@ -1317,6 +1392,14 @@ function ServerFields({
         <NumberField label="Pool max age seconds" value={server.pool_max_age_seconds} onChange={(value) => onChange({ pool_max_age_seconds: value })} />
         <CheckboxField label="TLS" checked={server.tls} onChange={(value) => onChange({ tls: value })} />
         <CheckboxField label="Pool logging" checked={server.enable_pool_logging} onChange={(value) => onChange({ enable_pool_logging: value })} />
+        {nntpProviderRoles.map((role) => (
+          <CheckboxField
+            key={role.key}
+            label={role.label}
+            checked={serverRoleEnabled(server, role.key)}
+            onChange={(value) => onChange({ roles: patchServerRole(server, role.key, value) })}
+          />
+        ))}
       </div>
     </div>
   )

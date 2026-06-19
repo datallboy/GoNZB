@@ -63,6 +63,9 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if repo.par2Targets[0].FileName != "target.part01.rar" || repo.par2Targets[0].FileSize != 123456 {
 		t.Fatalf("unexpected par2 target %+v", repo.par2Targets[0])
 	}
+	if repo.par2Targets[0].ReleaseID != "rel-par2" {
+		t.Fatalf("expected par2 target release id rel-par2, got %+v", repo.par2Targets[0])
+	}
 	if len(repo.coverageRows) != 1 || repo.coverageRows[0].FileName != "target.part01.rar" {
 		t.Fatalf("expected par2 target coverage rows, got %+v", repo.coverageRows)
 	}
@@ -93,6 +96,12 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
+	}
+	if update.ExpectedFileCount == nil || *update.ExpectedFileCount != 1 {
+		t.Fatalf("expected total PAR2 target count update 1, got %+v", update)
+	}
+	if update.ExpectedArchiveFileCount == nil || *update.ExpectedArchiveFileCount != 1 {
+		t.Fatalf("expected archive PAR2 target count update 1, got %+v", update)
 	}
 }
 

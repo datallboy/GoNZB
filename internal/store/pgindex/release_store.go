@@ -303,7 +303,20 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH candidate_binaries AS (
+		WITH target_releases AS (
+			SELECT
+				provider_id,
+				release_family_key,
+				release_key,
+				title,
+				posted_at,
+				updated_at
+			FROM releases
+			WHERE BTRIM(release_family_key) <> ''
+			ORDER BY COALESCE(metadata_updated_at, updated_at, posted_at) NULLS FIRST, release_id
+			LIMIT $1 OFFSET $2
+		),
+		candidate_binaries AS (
 			SELECT
 				bc.binary_id AS id,
 				bc.provider_id,
@@ -312,7 +325,6 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				bic.release_key,
 				bic.release_name,
 				bic.release_family_key,
-				bic.base_stem,
 				bic.expected_file_count,
 				bic.expected_archive_file_count,
 				bic.is_main_payload,
@@ -320,18 +332,13 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				bos.posted_at,
 				bos.total_parts,
 				bos.observed_parts,
-				bos.total_bytes,
-				CASE
-					WHEN NULLIF(BTRIM(bic.base_stem), '') IS NOT NULL
-					 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
-					 AND COUNT(*) OVER (
-						PARTITION BY bic.provider_id, bic.newsgroup_id, LOWER(BTRIM(bic.base_stem)), GREATEST(bic.expected_file_count, bic.expected_archive_file_count)
-					 ) > 1
-					THEN LOWER(BTRIM(bic.base_stem))
-					ELSE bic.release_family_key
-				END AS effective_release_family_key
-			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+				bos.total_bytes
+			FROM target_releases r
+			JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.release_family_key = r.release_family_key
+			 AND BTRIM(bic.release_family_key) <> ''
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		)
 		SELECT
@@ -339,7 +346,7 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 			MIN(b.newsgroup_id)::BIGINT AS newsgroup_id,
 			'release_family' AS key_kind,
 			MAX(b.source_release_key) AS source_release_key,
-			b.effective_release_family_key,
+			b.release_family_key,
 			MAX(b.release_key) AS release_key,
 			MAX(b.release_name) AS release_name,
 			MIN(b.posted_at) AS posted_at,
@@ -355,15 +362,11 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				ELSE 'stale_cleanup_only'
 			END AS readiness_bucket,
 			COALESCE(SUM(b.total_bytes), 0)::BIGINT AS total_bytes
-		FROM releases r
-		JOIN candidate_binaries b
-		  ON b.provider_id = r.provider_id
-		 AND b.effective_release_family_key = r.release_family_key
-		GROUP BY b.provider_id, b.effective_release_family_key
+		FROM candidate_binaries b
+		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
-		ORDER BY MIN(b.posted_at) NULLS LAST, b.effective_release_family_key
-		LIMIT $1 OFFSET $2`, limit, offset)
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list existing release candidates: %w", err)
 	}
@@ -417,6 +420,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 		return nil, fmt.Errorf("release family key is required")
 	}
 
+	usesNewsgroupArg := newsgroupID > 0
 	candidateSelector := `
 			SELECT bic.binary_id
 			FROM binary_identity_current bic
@@ -441,6 +445,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 		}
 	case ReleaseCandidateKeyKindReleaseFamily:
 	case ReleaseCandidateKeyKindRecoveredFileSet:
+		usesNewsgroupArg = false
 		candidateSelector = `
 			SELECT bic.binary_id
 			FROM binary_identity_current bic
@@ -506,7 +511,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 		JOIN binary_observation_stats bos ON bos.binary_id = cb.binary_id
 		LEFT JOIN posters p ON p.id = bc.poster_id`
 	args := []any{providerID, releaseFamilyKey}
-	if newsgroupID > 0 {
+	if usesNewsgroupArg {
 		args = append(args, newsgroupID)
 	}
 	query += `
@@ -1294,6 +1299,11 @@ func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, rel
 		seenBinaryIDs[f.BinaryID] = struct{}{}
 		binaryIDs = append(binaryIDs, f.BinaryID)
 	}
+	sort.Slice(binaryIDs, func(i, j int) bool { return binaryIDs[i] < binaryIDs[j] })
+	existingBinaryIDs, err := listExistingReleaseFileBinaryIDs(ctx, runner, binaryIDs)
+	if err != nil {
+		return fmt.Errorf("list release file binaries for %s: %w", releaseID, err)
+	}
 	for start := 0; start < len(binaryIDs); start += releaseFileBinaryIDDeleteChunk {
 		end := start + releaseFileBinaryIDDeleteChunk
 		if end > len(binaryIDs) {
@@ -1331,10 +1341,14 @@ func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, rel
 			if f.PostedAt != nil {
 				postedAt = f.PostedAt.UTC()
 			}
+			binaryID := int64(0)
+			if f.BinaryID > 0 && existingBinaryIDs[f.BinaryID] {
+				binaryID = f.BinaryID
+			}
 			base := len(args)
 			args = append(args,
 				releaseID,
-				nullIfZero(f.BinaryID),
+				nullIfZero(binaryID),
 				strings.TrimSpace(f.FileName),
 				f.SizeBytes,
 				f.FileIndex,
@@ -1383,6 +1397,50 @@ func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, rel
 	}
 
 	return nil
+}
+
+func listExistingReleaseFileBinaryIDs(ctx context.Context, runner sqlExecQueryer, binaryIDs []int64) (map[int64]bool, error) {
+	existing := make(map[int64]bool, len(binaryIDs))
+	if len(binaryIDs) == 0 {
+		return existing, nil
+	}
+	for start := 0; start < len(binaryIDs); start += releaseFileBinaryIDDeleteChunk {
+		end := start + releaseFileBinaryIDDeleteChunk
+		if end > len(binaryIDs) {
+			end = len(binaryIDs)
+		}
+		args := make([]any, 0, end-start)
+		placeholders := make([]string, 0, end-start)
+		for _, binaryID := range binaryIDs[start:end] {
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return nil, fmt.Errorf("release file binary lookup chunk has %d bind parameters", len(args))
+		}
+		rows, err := runner.QueryContext(ctx, `
+			SELECT binary_id
+			FROM binary_core
+			WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			ORDER BY binary_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var binaryID int64
+			if err := rows.Scan(&binaryID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			existing[binaryID] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return existing, nil
 }
 
 // CHANGED: replace release_newsgroups atomically for one release.
@@ -1457,32 +1515,41 @@ func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer
 }
 
 func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, files []ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
+	var releaseID string
+	err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
 
-	if existing, ok, err := loadExistingReleaseSnapshotQuality(ctx, tx, in.ProviderID, in.GroupName); err != nil {
-		return "", err
-	} else if ok && releaseSnapshotWouldDowngrade(existing, in) {
-		return existing.ReleaseID, tx.Commit()
-	}
+		if existing, ok, err := loadExistingReleaseSnapshotQuality(ctx, tx, in.ProviderID, in.GroupName); err != nil {
+			return err
+		} else if ok && releaseSnapshotWouldDowngrade(existing, in) {
+			releaseID = existing.ReleaseID
+			return tx.Commit()
+		}
 
-	releaseID, err := upsertReleaseWithRunner(ctx, tx, in)
+		persistedReleaseID, err := upsertReleaseWithRunner(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if err := replaceReleaseFilesInRunner(ctx, tx, persistedReleaseID, files); err != nil {
+			return err
+		}
+		if err := replaceReleaseNewsgroupsInRunner(ctx, tx, persistedReleaseID, newsgroupIDs); err != nil {
+			return err
+		}
+		if err := upsertNZBCacheWithRunner(ctx, tx, persistedReleaseID, "pending", "", ""); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		releaseID = persistedReleaseID
+		return nil
+	})
 	if err != nil {
-		return "", err
-	}
-	if err := replaceReleaseFilesInRunner(ctx, tx, releaseID, files); err != nil {
-		return "", err
-	}
-	if err := replaceReleaseNewsgroupsInRunner(ctx, tx, releaseID, newsgroupIDs); err != nil {
-		return "", err
-	}
-	if err := upsertNZBCacheWithRunner(ctx, tx, releaseID, "pending", "", ""); err != nil {
-		return "", err
-	}
-	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return releaseID, nil

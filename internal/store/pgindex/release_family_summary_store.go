@@ -94,6 +94,10 @@ type releaseSummaryRefreshMetrics struct {
 	Refreshed                    int
 	Dequeued                     int
 	Mode                         string
+	HotAttempts                  int
+	ColdAttempts                 int
+	HotDequeued                  int
+	ColdDequeued                 int
 	DequeueDuration              time.Duration
 	SummaryRefreshDuration       time.Duration
 	SummaryAggregateDuration     time.Duration
@@ -108,6 +112,10 @@ type ReleaseSummaryRefreshMetrics struct {
 	Refreshed                    int
 	Dequeued                     int
 	Mode                         string
+	HotAttempts                  int
+	ColdAttempts                 int
+	HotDequeued                  int
+	ColdDequeued                 int
 	DequeueDuration              time.Duration
 	SummaryRefreshDuration       time.Duration
 	SummaryAggregateDuration     time.Duration
@@ -1927,7 +1935,6 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			WHERE binary_count > 0
 			  AND distinct_newsgroup_count > 1
 			  AND main_payload_binary_count >= 2
-			  AND max_expected > 1
 			  AND earliest_posted_at IS NOT NULL
 			  AND latest_posted_at IS NOT NULL
 			AND latest_posted_at - earliest_posted_at <= INTERVAL '24 hours'
@@ -2174,11 +2181,9 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 }
 
 func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExecQueryRower, row recoveredFileSetCandidateAggregate) error {
-	maxExpected := maxInt(row.ExpectedFileCount, row.ExpectedArchiveFileCount)
 	if row.BinaryCount == 0 ||
 		row.DistinctNewsgroupCount <= 1 ||
 		row.MainPayloadBinaryCount < 2 ||
-		maxExpected <= 1 ||
 		!row.EarliestPostedAt.Valid ||
 		!row.LatestPostedAt.Valid ||
 		row.LatestPostedAt.Time.Sub(row.EarliestPostedAt.Time) > 24*time.Hour {
@@ -2494,20 +2499,39 @@ func (s *Store) RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Conte
 	if err := s.backfillReadyReleaseCandidatesFromActionableSummaries(ctx, hotLimit); err != nil {
 		return ReleaseSummaryRefreshMetrics{}, err
 	}
-	if metrics.Refreshed > 0 {
+	if metrics.Refreshed >= hotLimit {
 		return metrics, nil
 	}
 
-	coldLimit := limit
+	coldLimit := limit - metrics.Refreshed
 	if coldLimit > releaseFamilySummaryRefreshColdCap {
 		coldLimit = releaseFamilySummaryRefreshColdCap
 	}
-	metrics, err = s.refreshQueuedReleaseFamilySummariesChunk(ctx, coldLimit, releaseSummaryRefreshModeCold)
+	coldMetrics, err := s.refreshQueuedReleaseFamilySummariesChunk(ctx, coldLimit, releaseSummaryRefreshModeCold)
 	if err != nil {
 		return ReleaseSummaryRefreshMetrics{}, err
 	}
 	if err := s.backfillReadyReleaseCandidatesFromActionableSummaries(ctx, coldLimit); err != nil {
 		return ReleaseSummaryRefreshMetrics{}, err
+	}
+	metrics.Refreshed += coldMetrics.Refreshed
+	metrics.Dequeued += coldMetrics.Dequeued
+	metrics.HotAttempts += coldMetrics.HotAttempts
+	metrics.ColdAttempts += coldMetrics.ColdAttempts
+	metrics.HotDequeued += coldMetrics.HotDequeued
+	metrics.ColdDequeued += coldMetrics.ColdDequeued
+	metrics.DequeueDuration += coldMetrics.DequeueDuration
+	metrics.SummaryRefreshDuration += coldMetrics.SummaryRefreshDuration
+	metrics.SummaryAggregateDuration += coldMetrics.SummaryAggregateDuration
+	metrics.SummaryDominantDuration += coldMetrics.SummaryDominantDuration
+	metrics.ReadyCandidateSyncDuration += coldMetrics.ReadyCandidateSyncDuration
+	metrics.RecoveredFileSetSyncDuration += coldMetrics.RecoveredFileSetSyncDuration
+	metrics.PhaseADuration += coldMetrics.PhaseADuration
+	metrics.PhaseBDuration += coldMetrics.PhaseBDuration
+	if metrics.Mode != "" && coldMetrics.Mode != "" && metrics.Mode != coldMetrics.Mode {
+		metrics.Mode = "mixed"
+	} else if metrics.Mode == "" {
+		metrics.Mode = coldMetrics.Mode
 	}
 	return metrics, nil
 }
@@ -2662,8 +2686,10 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 				return err
 			}
 			metrics.Mode = "hot"
+			metrics.HotAttempts = 1
 			metrics.DequeueDuration += time.Since(dequeueStart)
 			metrics.Dequeued = len(keys)
+			metrics.HotDequeued = len(keys)
 			if len(keys) == 0 {
 				if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 					return fmt.Errorf("commit empty release family summary refresh conn tx: %w", err)
@@ -2698,111 +2724,14 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 		}
 
 		phaseAStart := time.Now()
-		var rows *sql.Rows
 		dequeueStart := time.Now()
-		rows, err = conn.QueryContext(ctx, `
-				WITH scored_queue AS (
-					SELECT
-						q.ctid,
-						q.provider_id,
-						q.newsgroup_id,
-						q.key_kind,
-						q.family_key,
-						q.queued_at,
-						CASE
-							WHEN COALESCE(s.readiness_bucket, '') = $3 THEN 0
-							WHEN COALESCE(s.readiness_bucket, '') = $4 THEN 1
-							WHEN q.key_kind = 'base_stem' THEN 2
-							WHEN s.family_key IS NULL THEN 4
-							WHEN COALESCE(s.readiness_bucket, '') = $5 THEN 5
-							WHEN COALESCE(s.readiness_bucket, '') = $6 THEN 6
-							WHEN COALESCE(s.readiness_bucket, '') = $7 THEN 7
-							ELSE 8
-						END AS priority_rank
-					FROM release_family_summary_refresh_queue q
-					LEFT JOIN release_family_readiness_summaries s
-					  ON s.provider_id = q.provider_id
-					 AND s.newsgroup_id = q.newsgroup_id
-					 AND s.key_kind = q.key_kind
-					 AND s.family_key = q.family_key
-					ORDER BY
-						priority_rank,
-						q.queued_at,
-						q.provider_id,
-						q.newsgroup_id,
-						q.key_kind,
-						q.family_key
-					LIMIT $2
-				),
-				locked_queue AS (
-					SELECT
-						q.ctid,
-						q.provider_id,
-						q.newsgroup_id,
-						q.key_kind,
-						q.family_key,
-						sq.queued_at,
-						sq.priority_rank
-					FROM release_family_summary_refresh_queue q
-					JOIN scored_queue sq ON sq.ctid = q.ctid
-					FOR UPDATE OF q SKIP LOCKED
-				),
-				next_queue AS (
-					SELECT
-						lq.ctid,
-						lq.provider_id,
-						lq.newsgroup_id,
-						lq.key_kind,
-						lq.family_key
-					FROM locked_queue lq
-					WHERE lq.priority_rank >= 4
-					ORDER BY
-						lq.priority_rank,
-						lq.queued_at,
-						lq.provider_id,
-						lq.newsgroup_id,
-						lq.key_kind,
-						lq.family_key
-					LIMIT $1
-				),
-				dequeued AS (
-					DELETE FROM release_family_summary_refresh_queue q
-					USING next_queue n
-					WHERE q.ctid = n.ctid
-					RETURNING n.provider_id, n.newsgroup_id, n.key_kind, n.family_key
-				)
-				SELECT provider_id, newsgroup_id, key_kind, family_key
-				FROM dequeued`,
-			limit,
-			candidateWindowLimit,
-			releaseReadinessActionable,
-			releaseReadinessFragmentOnly,
-			releaseReadinessWeakObfuscated,
-			releaseReadinessStaleCleanupOnly,
-			releaseReadinessWeakSingle,
-		)
+		keys, err := dequeueColdReleaseFamilySummaryRefreshKeys(ctx, conn, limit, candidateWindowLimit)
 		if err != nil {
-			return fmt.Errorf("dequeue release family summary refresh batch: %w", err)
+			return err
 		}
 		metrics.Mode = "cold"
+		metrics.ColdAttempts = 1
 		metrics.DequeueDuration += time.Since(dequeueStart)
-
-		keys := make([]releaseFamilySummaryKey, 0, limit)
-		for rows.Next() {
-			var key releaseFamilySummaryKey
-			if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan release family summary refresh queue key: %w", err)
-			}
-			keys = append(keys, key)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return fmt.Errorf("iterate release family summary refresh queue: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("close release family summary refresh queue rows: %w", err)
-		}
 		if len(keys) == 0 {
 			if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 				return fmt.Errorf("commit empty release family summary refresh conn tx: %w", err)
@@ -2812,6 +2741,7 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 			return nil
 		}
 		metrics.Dequeued = len(keys)
+		metrics.ColdDequeued = len(keys)
 
 		summaryStart := time.Now()
 		phaseAMetrics, err := refreshDequeuedReleaseFamilySummaryKeysPhaseA(ctx, conn, keys)
@@ -2844,6 +2774,10 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 		Refreshed:                    metrics.Refreshed,
 		Dequeued:                     metrics.Dequeued,
 		Mode:                         metrics.Mode,
+		HotAttempts:                  metrics.HotAttempts,
+		ColdAttempts:                 metrics.ColdAttempts,
+		HotDequeued:                  metrics.HotDequeued,
+		ColdDequeued:                 metrics.ColdDequeued,
 		DequeueDuration:              metrics.DequeueDuration,
 		SummaryRefreshDuration:       metrics.SummaryRefreshDuration,
 		SummaryAggregateDuration:     metrics.SummaryAggregateDuration,
@@ -3072,6 +3006,158 @@ func dequeueHotReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Co
 		}
 		if err := rows.Close(); err != nil {
 			return nil, fmt.Errorf("close hot release family summary refresh queue rows: %w", err)
+		}
+	}
+
+	return keys, nil
+}
+
+func dequeueColdReleaseFamilySummaryRefreshKeys(ctx context.Context, conn *sql.Conn, limit, candidateWindowLimit int) ([]releaseFamilySummaryKey, error) {
+	branches := []struct {
+		query string
+		args  []any
+	}{
+		{
+			query: `
+				WITH candidate_rows AS (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					FROM release_family_readiness_summaries s
+					JOIN release_family_summary_refresh_queue q
+					  ON q.provider_id = s.provider_id
+					 AND q.newsgroup_id = s.newsgroup_id
+					 AND q.key_kind = s.key_kind
+					 AND q.family_key = s.family_key
+					WHERE s.readiness_bucket = $2
+					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
+					LIMIT $1
+					FOR UPDATE OF q SKIP LOCKED
+				),
+				dequeued AS (
+					DELETE FROM release_family_summary_refresh_queue q
+					USING candidate_rows c
+					WHERE q.ctid = c.ctid
+					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
+				)
+				SELECT provider_id, newsgroup_id, key_kind, family_key
+				FROM dequeued`,
+			args: []any{limit, releaseReadinessFragmentOnly},
+		},
+		{
+			query: `
+				WITH candidate_rows AS (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					FROM release_family_readiness_summaries s
+					JOIN release_family_summary_refresh_queue q
+					  ON q.provider_id = s.provider_id
+					 AND q.newsgroup_id = s.newsgroup_id
+					 AND q.key_kind = s.key_kind
+					 AND q.family_key = s.family_key
+					WHERE s.readiness_bucket IN ($2, $3, $4)
+					ORDER BY q.queued_at, q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
+					LIMIT $1
+					FOR UPDATE OF q SKIP LOCKED
+				),
+				dequeued AS (
+					DELETE FROM release_family_summary_refresh_queue q
+					USING candidate_rows c
+					WHERE q.ctid = c.ctid
+					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
+				)
+				SELECT provider_id, newsgroup_id, key_kind, family_key
+				FROM dequeued`,
+			args: []any{limit, releaseReadinessWeakObfuscated, releaseReadinessStaleCleanupOnly, releaseReadinessWeakSingle},
+		},
+		{
+			query: `
+				WITH ordered_queue AS MATERIALIZED (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key,
+						q.queued_at
+					FROM release_family_summary_refresh_queue q
+					ORDER BY
+						q.queued_at,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					LIMIT $2
+				),
+				candidate_rows AS (
+					SELECT
+						q.ctid,
+						q.provider_id,
+						q.newsgroup_id,
+						q.key_kind,
+						q.family_key
+					FROM release_family_summary_refresh_queue q
+					JOIN ordered_queue oq ON oq.ctid = q.ctid
+					WHERE NOT EXISTS (
+						SELECT 1
+						FROM release_family_readiness_summaries s
+						WHERE s.provider_id = oq.provider_id
+						  AND s.newsgroup_id = oq.newsgroup_id
+						  AND s.key_kind = oq.key_kind
+						  AND s.family_key = oq.family_key
+					)
+					ORDER BY oq.queued_at, oq.provider_id, oq.newsgroup_id, oq.key_kind, oq.family_key
+					LIMIT $1
+					FOR UPDATE OF q SKIP LOCKED
+				),
+				dequeued AS (
+					DELETE FROM release_family_summary_refresh_queue q
+					USING candidate_rows c
+					WHERE q.ctid = c.ctid
+					RETURNING c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
+				)
+				SELECT provider_id, newsgroup_id, key_kind, family_key
+				FROM dequeued`,
+			args: []any{limit, candidateWindowLimit},
+		},
+	}
+
+	keys := make([]releaseFamilySummaryKey, 0, limit)
+	for _, branch := range branches {
+		remaining := limit - len(keys)
+		if remaining <= 0 {
+			break
+		}
+		args := append([]any(nil), branch.args...)
+		if len(args) > 0 {
+			args[0] = remaining
+		}
+
+		rows, err := conn.QueryContext(ctx, branch.query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("dequeue cold release family summary refresh branch: %w", err)
+		}
+		for rows.Next() {
+			var key releaseFamilySummaryKey
+			if err := rows.Scan(&key.ProviderID, &key.NewsgroupID, &key.KeyKind, &key.FamilyKey); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan cold release family summary refresh queue key: %w", err)
+			}
+			keys = append(keys, key)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate cold release family summary refresh queue: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close cold release family summary refresh queue rows: %w", err)
 		}
 	}
 

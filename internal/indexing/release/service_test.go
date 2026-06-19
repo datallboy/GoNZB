@@ -825,6 +825,82 @@ func TestRunOnceSkipsWeakContextualObfuscatedClusterWithoutExpectedFileCountByDe
 	}
 }
 
+func TestRunOnceAllowsRecoveredFileSetContextualObfuscatedClusterWithoutExpectedFileCount(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 1, 30, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			KeyKind:          pgindex.ReleaseCandidateKeyKindRecoveredFileSet,
+			ReleaseFamilyKey: "recovered-file-set-family",
+			ReleaseKey:       "recovered-file-set-family",
+			ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"recovered-file-set-family": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "recovered-file-set-family",
+					ReleaseKey:       "recovered-file-set-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part1.rar",
+					BinaryName:       "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part1.rar",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       740_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         2,
+					ProviderID:       1,
+					NewsgroupID:      3,
+					ReleaseFamilyKey: "recovered-file-set-family",
+					ReleaseKey:       "recovered-file-set-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part2.rar",
+					BinaryName:       "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part2.rar",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime.Add(2 * time.Minute)),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       741_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    true,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected recovered-file-set contextual cluster to form, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_contextual_weak"]; got != 0 {
+		t.Fatalf("expected no contextual weak skip, got %#v", got)
+	}
+}
+
 func TestRunOnceSkipsNumericSubjectOpaqueExtensionlessCluster(t *testing.T) {
 	baseTime := time.Date(2026, 5, 7, 13, 38, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1964,7 +2040,7 @@ func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	}
 }
 
-func TestRunOnceSkipsLowCoverageClusterFromReadyFamily(t *testing.T) {
+func TestRunOnceFormsLowCoverageClusterWhenFileIdentityIsStrong(t *testing.T) {
 	familyKey := "fowylkl3g0x60d5wy1uc2b1athf8eswz9"
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{{
@@ -2046,14 +2122,14 @@ func TestRunOnceSkipsLowCoverageClusterFromReadyFamily(t *testing.T) {
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
-	if len(repo.upsertedReleases) != 0 {
-		t.Fatalf("expected low-coverage split cluster to be skipped, got %d releases", len(repo.upsertedReleases))
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected low-coverage split cluster with strong file identity to form an internal release, got %d releases", len(repo.upsertedReleases))
 	}
-	if len(repo.deletedStaleCalls) != 0 {
-		t.Fatalf("expected no stale delete when no replacement was formed, got %+v", repo.deletedStaleCalls)
+	if repo.upsertedReleases[0].CompletionPct >= 80 {
+		t.Fatalf("expected formed release to retain incomplete coverage, got %.2f", repo.upsertedReleases[0].CompletionPct)
 	}
 	if len(repo.ackedCandidates) != 1 {
-		t.Fatalf("expected candidate ack after skip, got %+v", repo.ackedCandidates)
+		t.Fatalf("expected candidate ack after formation, got %+v", repo.ackedCandidates)
 	}
 }
 

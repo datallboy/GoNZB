@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminReleases } from '../../shared/api/admin'
 import { formatBytes, formatDateTime } from '../../shared/lib/format'
-import type { AdminReleaseListParams, AdminReleaseListResponse } from '../../shared/types'
+import type { AdminReleaseListParams, AdminReleaseListResponse, AdminReleaseSummary } from '../../shared/types'
 
 const defaultFilters: AdminReleaseListParams = {
   q: '',
@@ -50,6 +50,18 @@ function formatNZBStatus(value: string) {
     default:
       return value || 'NZB pending'
   }
+}
+
+function releaseCompletenessLabel(item: AdminReleaseSummary) {
+  if (item.archive_count > 0 && item.expected_archive_file_count <= 0) {
+    return 'payload unknown'
+  }
+  if (item.expected_archive_file_count > 0) {
+    const payloadFiles = Math.max((item.file_count ?? 0) - (item.par_file_count ?? 0), 0)
+    const pct = Math.min(100, Math.floor((payloadFiles / item.expected_archive_file_count) * 100))
+    return `${pct}% payload`
+  }
+  return `${Math.floor(item.completion_pct)}% known`
 }
 
 export function AdminReleasesPage() {
@@ -312,7 +324,7 @@ export function AdminReleasesPage() {
                     <div>{item.hidden ? 'hidden' : item.public_visible ? 'public' : 'internal-only'}</div>
                     <div className="muted-row">
                       <span>{formatNZBStatus(item.nzb_generation_status || 'pending')}</span>
-                      <span>{Math.floor(item.completion_pct)}%</span>
+                      <span>{releaseCompletenessLabel(item)}</span>
                       <span>{item.password_candidate_count} pwd</span>
                     </div>
                   </td>

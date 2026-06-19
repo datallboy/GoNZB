@@ -3,6 +3,8 @@ import type { FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   getAdminRelease,
+  getIndexerBinary,
+  getIndexerFile,
   hideAdminRelease,
   patchAdminRelease,
   reenrichAdminRelease,
@@ -10,7 +12,7 @@ import {
   unhideAdminRelease,
 } from '../../shared/api/admin'
 import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRuntime } from '../../shared/lib/format'
-import type { AdminReleaseDetailResponse, ReleaseOverridePatch } from '../../shared/types'
+import type { AdminBinaryDetail, AdminFileDetail, AdminReleaseDetailResponse, ReleaseOverridePatch } from '../../shared/types'
 
 function stringifyJSON(value: unknown) {
   if (value == null) return 'None'
@@ -65,10 +67,24 @@ function formatNZBStatus(value: string) {
   }
 }
 
+function payloadCompletionLabel(diagnostics: AdminReleaseDetailResponse['release']['diagnostics']) {
+  if (!diagnostics.payload_completeness_known) return 'Unknown'
+  return formatPercent(diagnostics.payload_completion_pct)
+}
+
+function payloadCompleteLabel(diagnostics: AdminReleaseDetailResponse['release']['diagnostics']) {
+  if (!diagnostics.payload_completeness_known) return 'Unknown'
+  return diagnostics.payload_complete ? 'Yes' : 'No'
+}
+
 export function AdminReleaseDetailPage() {
   const { id = '' } = useParams()
   const [data, setData] = useState<AdminReleaseDetailResponse | null>(null)
   const [form, setForm] = useState<ReleaseOverridePatch>({})
+  const [fileDetailsByID, setFileDetailsByID] = useState<Record<number, AdminFileDetail>>({})
+  const [binaryDetailsByID, setBinaryDetailsByID] = useState<Record<number, AdminBinaryDetail>>({})
+  const [loadingFileIDs, setLoadingFileIDs] = useState<Record<number, boolean>>({})
+  const [loadingBinaryIDs, setLoadingBinaryIDs] = useState<Record<number, boolean>>({})
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -76,6 +92,10 @@ export function AdminReleaseDetailPage() {
     try {
       const response = await getAdminRelease(id)
       setData(response)
+      setFileDetailsByID({})
+      setBinaryDetailsByID({})
+      setLoadingFileIDs({})
+      setLoadingBinaryIDs({})
       setForm({
         display_title: response.override?.display_title ?? '',
         classification_override: response.override?.classification_override ?? '',
@@ -137,6 +157,32 @@ export function AdminReleaseDetailPage() {
     }
   }
 
+  async function loadFileDetail(fileID: number) {
+    if (fileID <= 0 || fileDetailsByID[fileID] || loadingFileIDs[fileID]) return
+    setLoadingFileIDs((current) => ({ ...current, [fileID]: true }))
+    try {
+      const detail = await getIndexerFile(fileID)
+      setFileDetailsByID((current) => ({ ...current, [fileID]: detail }))
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to load file detail')
+    } finally {
+      setLoadingFileIDs((current) => ({ ...current, [fileID]: false }))
+    }
+  }
+
+  async function loadBinaryDetail(binaryID: number) {
+    if (binaryID <= 0 || binaryDetailsByID[binaryID] || loadingBinaryIDs[binaryID]) return
+    setLoadingBinaryIDs((current) => ({ ...current, [binaryID]: true }))
+    try {
+      const detail = await getIndexerBinary(binaryID)
+      setBinaryDetailsByID((current) => ({ ...current, [binaryID]: detail }))
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to load binary detail')
+    } finally {
+      setLoadingBinaryIDs((current) => ({ ...current, [binaryID]: false }))
+    }
+  }
+
   if (error) {
     return <div className="banner error">{error}</div>
   }
@@ -153,14 +199,12 @@ export function AdminReleaseDetailPage() {
     archiveState === 'archived' ||
     archiveState === 'purge_pending' ||
     archiveState === 'purged'
-  const hasBinaryDetail = (data.binaries ?? []).length > 0
-  const fileDetails = data.files ?? []
   const releaseFileRows = (data.release.files ?? []).map((summary) => {
-    const detail =
-      fileDetails.find((item) => item.file_id > 0 && item.file_id === summary.file_id) ??
-      fileDetails.find((item) => item.file_name === summary.file_name && item.file_index === summary.file_index)
+    const detail = summary.file_id > 0 ? fileDetailsByID[summary.file_id] : undefined
     return { summary, detail }
   })
+  const loadedBinaries = Object.values(binaryDetailsByID)
+  const hasBinaryDetail = loadedBinaries.length > 0
 
   return (
     <div className="page-section stack">
@@ -187,8 +231,12 @@ export function AdminReleaseDetailPage() {
           {diagnostics.readiness_note ? <div className="banner">{diagnostics.readiness_note}</div> : null}
           <dl className="detail-grid">
             <div>
-              <dt>Completion</dt>
-              <dd>{formatPercent(release.completion_pct)}</dd>
+              <dt>Known Binary Completion</dt>
+              <dd>{formatPercent(diagnostics.known_binary_completion_pct)}</dd>
+            </div>
+            <div>
+              <dt>Payload Completion</dt>
+              <dd>{payloadCompletionLabel(diagnostics)}</dd>
             </div>
             <div>
               <dt>Identity</dt>
@@ -224,15 +272,27 @@ export function AdminReleaseDetailPage() {
             </div>
             <div>
               <dt>Payload Complete</dt>
-              <dd>{diagnostics.payload_complete ? 'Yes' : 'No'}</dd>
+              <dd>{payloadCompleteLabel(diagnostics)}</dd>
             </div>
             <div>
               <dt>Expected Files Complete</dt>
               <dd>{diagnostics.expected_file_count_complete ? 'Yes' : 'No'}</dd>
             </div>
             <div>
+              <dt>Expected Archive Files</dt>
+              <dd>{diagnostics.expected_archive_file_count_known ? release.expected_archive_file_count : 'Unknown'}</dd>
+            </div>
+            <div>
               <dt>Missing Expected Files</dt>
               <dd>{diagnostics.missing_expected_file_count}</dd>
+            </div>
+            <div>
+              <dt>Missing Payload Files</dt>
+              <dd>
+                {diagnostics.expected_archive_file_count_known
+                  ? diagnostics.missing_expected_archive_file_count
+                  : 'Unknown'}
+              </dd>
             </div>
             <div>
               <dt>Metadata Updated</dt>
@@ -468,7 +528,15 @@ export function AdminReleaseDetailPage() {
         {releaseFileRows.map(({ summary, detail }) => {
           const groups = detail?.newsgroups?.length ? detail.newsgroups : data.release.newsgroups
           return (
-            <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`}>
+            <details
+              className="detail-block"
+              key={`${summary.file_index}-${summary.file_name}`}
+              onToggle={(event) => {
+                if (event.currentTarget.open && summary.file_id > 0) {
+                  void loadFileDetail(summary.file_id)
+                }
+              }}
+            >
               <summary>
                 {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
               </summary>
@@ -497,6 +565,7 @@ export function AdminReleaseDetailPage() {
                     Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
                   </div>
                 ) : null}
+                {summary.file_id > 0 && loadingFileIDs[summary.file_id] ? <div className="banner">Loading file detail...</div> : null}
                 {detail ? (
                   <details className="detail-block detail-block--nested">
                     <summary>Article Segments ({detail.articles.length})</summary>
@@ -528,6 +597,29 @@ export function AdminReleaseDetailPage() {
                     <pre className="json-block">{stringifyJSON(detail.grouping_evidence_json)}</pre>
                   </details>
                 ) : null}
+                {summary.binary_id > 0 ? (
+                  <details
+                    className="detail-block detail-block--nested"
+                    onToggle={(event) => {
+                      if (event.currentTarget.open) {
+                        void loadBinaryDetail(summary.binary_id)
+                      }
+                    }}
+                  >
+                    <summary>
+                      Binary Evidence
+                      {binaryDetailsByID[summary.binary_id]
+                        ? ` · ${binaryEvidenceSummary(binaryDetailsByID[summary.binary_id])}`
+                        : ''}
+                    </summary>
+                    {loadingBinaryIDs[summary.binary_id] ? <div className="banner">Loading binary evidence...</div> : null}
+                    {binaryDetailsByID[summary.binary_id] ? (
+                      <pre className="json-block">
+                        {stringifyJSON(binaryDetailsByID[summary.binary_id].grouping_evidence_json)}
+                      </pre>
+                    ) : null}
+                  </details>
+                ) : null}
               </div>
             </details>
           )
@@ -544,7 +636,7 @@ export function AdminReleaseDetailPage() {
             </p>
           </div>
         </div>
-        {(data.binaries ?? []).map((binary) => (
+        {loadedBinaries.map((binary) => (
           <details className="detail-block" key={binary.binary_id}>
             <summary>
               {binary.binary_name} · {binary.match_status || 'unmatched'} · {binary.observed_parts}/{binary.total_parts} ·{' '}

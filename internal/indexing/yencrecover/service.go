@@ -30,6 +30,10 @@ type repository interface {
 	RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error
 }
 
+type repositoryWithSelectionOptions interface {
+	ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit int, opts pgindex.YEncRecoverySelectionOptions) ([]pgindex.YEncRecoveryCandidate, error)
+}
+
 type bodyPrefixFetcher interface {
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 }
@@ -39,11 +43,15 @@ type matcher interface {
 }
 
 type Options struct {
-	BatchSize               int
-	MaxHeaderBytes          int64
-	FetchTimeout            time.Duration
-	Concurrency             int
-	MaxEffectiveConcurrency int
+	BatchSize           int
+	MaxHeaderBytes      int64
+	FetchTimeout        time.Duration
+	Concurrency         int
+	TargetWindowEnabled bool
+	TargetWindowStart   string
+	TargetWindowEnd     string
+	TargetWindowPercent int
+	NewestPercent       int
 }
 
 type Service struct {
@@ -66,6 +74,10 @@ func NewService(repo repository, matcher matcher, fetcher bodyPrefixFetcher, log
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
+	}
+	if opts.TargetWindowPercent <= 0 && opts.NewestPercent <= 0 {
+		opts.TargetWindowPercent = 60
+		opts.NewestPercent = 40
 	}
 	return &Service{repo: repo, matcher: matcher, fetcher: fetcher, log: log, opts: opts}
 }
@@ -98,18 +110,54 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"not_found":              0,
 		"parse_failures":         0,
 		"stale_candidates":       0,
+		"selected_newest":        0,
+		"selected_fairness":      0,
+		"selected_target_window": 0,
+		"fairness_bucket_start":  "",
+		"fairness_bucket_end":    "",
+		"target_window_enabled":  s.opts.TargetWindowEnabled,
+		"target_window_start":    s.opts.TargetWindowStart,
+		"target_window_end":      s.opts.TargetWindowEnd,
+		"target_window_pct":      s.opts.TargetWindowPercent,
+		"newest_pct":             s.opts.NewestPercent,
 	}
 	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
 		return metrics, fmt.Errorf("yenc recovery service is not configured")
 	}
 
 	selectionStarted := time.Now()
-	candidates, err := s.repo.ListYEncRecoveryCandidates(ctx, s.opts.BatchSize)
+	selectionOpts, err := s.selectionOptions()
+	if err != nil {
+		metrics["candidate_selection_ms"] = durationMillis(time.Since(selectionStarted))
+		return metrics, err
+	}
+	var candidates []pgindex.YEncRecoveryCandidate
+	if repo, ok := s.repo.(repositoryWithSelectionOptions); ok {
+		candidates, err = repo.ListYEncRecoveryCandidatesWithOptions(ctx, s.opts.BatchSize, selectionOpts)
+	} else {
+		candidates, err = s.repo.ListYEncRecoveryCandidates(ctx, s.opts.BatchSize)
+	}
 	metrics["candidate_selection_ms"] = durationMillis(time.Since(selectionStarted))
 	if err != nil {
 		return metrics, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
 	metrics["candidates"] = len(candidates)
+	for _, candidate := range candidates {
+		switch candidate.RecoveryLane {
+		case "time_cohort_fairness":
+			metrics["selected_fairness"] = metrics["selected_fairness"].(int) + 1
+			if candidate.FairnessBucketStart != nil {
+				metrics["fairness_bucket_start"] = candidate.FairnessBucketStart.Format(time.RFC3339)
+			}
+			if candidate.FairnessBucketEnd != nil {
+				metrics["fairness_bucket_end"] = candidate.FairnessBucketEnd.Format(time.RFC3339)
+			}
+		case "target_window":
+			metrics["selected_target_window"] = metrics["selected_target_window"].(int) + 1
+		default:
+			metrics["selected_newest"] = metrics["selected_newest"].(int) + 1
+		}
+	}
 	if len(candidates) == 0 {
 		if s.log != nil {
 			s.log.Debug("recover_yenc: no recovery candidates available")
@@ -118,20 +166,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	workerCount := s.opts.Concurrency
-	if s.opts.MaxEffectiveConcurrency > 0 && workerCount > s.opts.MaxEffectiveConcurrency {
-		workerCount = s.opts.MaxEffectiveConcurrency
-		if s.log != nil {
-			s.log.Warn(
-				"recover_yenc: capped prefix fetch concurrency requested=%d effective=%d",
-				s.opts.Concurrency,
-				workerCount,
-			)
-		}
-	}
 	if workerCount > len(candidates) {
 		workerCount = len(candidates)
 	}
-	metrics["max_effective_concurrency"] = s.opts.MaxEffectiveConcurrency
+	metrics["max_effective_concurrency"] = 0
 	metrics["effective_concurrency"] = workerCount
 	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
@@ -234,6 +272,38 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		)
 	}
 	return metrics, nil
+}
+
+func (s *Service) selectionOptions() (pgindex.YEncRecoverySelectionOptions, error) {
+	if s == nil {
+		return pgindex.YEncRecoverySelectionOptions{}, nil
+	}
+	if s.opts.TargetWindowPercent < 0 || s.opts.TargetWindowPercent > 100 || s.opts.NewestPercent < 0 || s.opts.NewestPercent > 100 || s.opts.TargetWindowPercent+s.opts.NewestPercent != 100 {
+		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("recover_yenc target and newest percentages must be 0-100 and total 100")
+	}
+	if !s.opts.TargetWindowEnabled {
+		return pgindex.YEncRecoverySelectionOptions{
+			TargetWindowPercent: s.opts.TargetWindowPercent,
+			NewestPercent:       s.opts.NewestPercent,
+		}, nil
+	}
+	start, err := time.Parse(time.RFC3339, strings.TrimSpace(s.opts.TargetWindowStart))
+	if err != nil {
+		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("parse recover_yenc target window start: %w", err)
+	}
+	end, err := time.Parse(time.RFC3339, strings.TrimSpace(s.opts.TargetWindowEnd))
+	if err != nil {
+		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("parse recover_yenc target window end: %w", err)
+	}
+	if !start.Before(end) {
+		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("recover_yenc target window start must be before end")
+	}
+	return pgindex.YEncRecoverySelectionOptions{
+		TargetWindowStart:   &start,
+		TargetWindowEnd:     &end,
+		TargetWindowPercent: s.opts.TargetWindowPercent,
+		NewestPercent:       s.opts.NewestPercent,
+	}, nil
 }
 
 func durationMillis(d time.Duration) float64 {
@@ -366,7 +436,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		FileName:          matched.FileName,
 		FileIndex:         matched.FileIndex,
 		ExpectedFileCount: matched.ExpectedFileCount,
+		PartNumber:        matched.PartNumber,
 		TotalParts:        matched.TotalParts,
+		FileSize:          header.FileSize,
 		MatchConfidence:   matched.MatchConfidence,
 		MatchStatus:       matched.MatchStatus,
 		GroupingEvidence:  matched.GroupingEvidence,

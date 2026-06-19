@@ -96,3 +96,34 @@ func TestUpdateSettingsPreservesExplicitlyEmptyScrapeGroupsAcrossReload(t *testi
 		t.Fatalf("expected zero backfill cutoffs after reload, got %+v", finalRuntime.Indexing.BackfillUntilDateByGroup)
 	}
 }
+
+func TestUpdateSettingsPreservesZeroNewestPctAcrossReload(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	runtime := DefaultRuntimeSettings()
+	runtime.Indexing.RecoverYEnc.Enabled = true
+	runtime.Indexing.RecoverYEnc.BatchSize = 5000
+	runtime.Indexing.RecoverYEnc.Concurrency = 100
+	runtime.Indexing.RecoverYEnc.TargetWindowPct = 100
+	runtime.Indexing.RecoverYEnc.NewestPct = 0
+
+	if err := store.UpdateSettings(ctx, runtime); err != nil {
+		t.Fatalf("persist runtime settings: %v", err)
+	}
+
+	reloaded, err := store.GetRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("reload runtime settings: %v", err)
+	}
+	if got := reloaded.Indexing.RecoverYEnc.TargetWindowPct; got != 100 {
+		t.Fatalf("expected target window pct 100, got %d", got)
+	}
+	if got := reloaded.Indexing.RecoverYEnc.NewestPct; got != 0 {
+		t.Fatalf("expected newest pct 0, got %d", got)
+	}
+}

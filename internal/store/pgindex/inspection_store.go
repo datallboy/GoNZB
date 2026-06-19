@@ -137,6 +137,22 @@ func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
 	return releaseIDs
 }
 
+func par2SetReleaseIDs(rows []BinaryPAR2SetRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
+func par2TargetReleaseIDs(rows []BinaryPAR2TargetRecord) []string {
+	releaseIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		releaseIDs = append(releaseIDs, row.ReleaseID)
+	}
+	return releaseIDs
+}
+
 func archiveEntryReleaseIDs(rows []BinaryArchiveEntryRecord) []string {
 	releaseIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -828,18 +844,25 @@ binary_state AS (
 
 const binaryInspectionPAR2CandidateStateCTE = `
 candidate_source AS (
-	SELECT bic.binary_id
-	FROM binary_identity_current bic
-	WHERE LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2'
-	UNION
-	SELECT brc.binary_id
-	FROM binary_recovery_current brc
-	WHERE brc.recovered_kind = 'par2'
-	   OR brc.recovered_extension = '.par2'
+	SELECT DISTINCT ON (rf.binary_id)
+		rf.binary_id,
+		rf.release_id
+	FROM release_files rf
+	JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+	LEFT JOIN binary_recovery_current brc ON brc.binary_id = rf.binary_id
+	WHERE rf.binary_id > 0
+	  AND (
+		rf.is_pars = TRUE OR
+		LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' OR
+		COALESCE(brc.recovered_kind, '') = 'par2' OR
+		COALESCE(brc.recovered_extension, '') = '.par2'
+	  )
+	ORDER BY rf.binary_id, rf.updated_at DESC, rf.release_id
 ),
 binary_state AS (
 	SELECT
 		bc.binary_id AS id,
+		cs.release_id,
 		bc.provider_id,
 		bc.newsgroup_id,
 		bc.poster_id,
@@ -938,8 +961,10 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			bi.status = 'failed' OR
 			(
 				bi.status = 'running' AND
-				bi.inspection_claimed_until IS NOT NULL AND
-				bi.inspection_claimed_until < NOW()
+				(
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				)
 			) OR
 			b.updated_at > bi.updated_at OR
 			` + errorRerunPredicate
@@ -959,6 +984,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			candidate_rows AS (
 				SELECT
 					b.id,
+					b.release_id,
 					b.provider_id,
 					b.release_family_key,
 					COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS display_file_name,
@@ -1058,7 +1084,8 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					cr.*
 				FROM candidate_rows cr
 				JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
-				WHERE (
+				WHERE cr.release_linked
+				  AND (
 					cr.needs_rerun OR
 					(
 						NOT ss.has_any_targets AND
@@ -1078,7 +1105,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			SELECT
 				$1,
 				id,
-				'' AS release_id,
+				release_id,
 				provider_id,
 				'' AS title,
 				'' AS source_title,
@@ -1156,8 +1183,10 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				bi.status = 'failed' OR
 				(
 					bi.status = 'running' AND
-					bi.inspection_claimed_until IS NOT NULL AND
-					bi.inspection_claimed_until < NOW()
+					(
+						bi.inspection_claimed_until IS NULL OR
+						bi.inspection_claimed_until < NOW()
+					)
 				) OR
 				GREATEST(
 					bc.updated_at,
@@ -1285,8 +1314,10 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					bi.status = 'failed' OR
 					(
 						bi.status = 'running' AND
-						bi.inspection_claimed_until IS NOT NULL AND
-						bi.inspection_claimed_until < NOW()
+						(
+							bi.inspection_claimed_until IS NULL OR
+							bi.inspection_claimed_until < NOW()
+						)
 					) OR
 					b.updated_at > bi.updated_at OR
 					` + errorRerunPredicate + `
@@ -1614,6 +1645,8 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 		sourceUpdated = sourceUpdatedAt.UTC()
 	}
 	releaseID = strings.TrimSpace(releaseID)
+	const directInspectionClaimOwner = "inspection.start"
+	const directInspectionClaimLeaseSeconds = 900
 
 	_, err := s.db.ExecContext(ctx, `
 		WITH locked_binary AS (
@@ -1634,6 +1667,8 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			tool_provenance_json,
 			summary_json,
 			source_updated_at,
+			inspection_claimed_by,
+			inspection_claimed_until,
 			updated_at
 		)
 			SELECT
@@ -1661,6 +1696,8 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			'{}'::jsonb,
 			'{}'::jsonb,
 			$4,
+			$5,
+			NOW() + ($6::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
 		FROM locked_binary lb
 		ON CONFLICT (stage_name, binary_id) DO UPDATE
@@ -1673,11 +1710,15 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 		    tool_provenance_json = '{}'::jsonb,
 		    summary_json = '{}'::jsonb,
 		    source_updated_at = EXCLUDED.source_updated_at,
+		    inspection_claimed_by = EXCLUDED.inspection_claimed_by,
+		    inspection_claimed_until = EXCLUDED.inspection_claimed_until,
 		    updated_at = NOW()`,
 		stageName,
 		binaryID,
 		releaseID,
 		sourceUpdated,
+		directInspectionClaimOwner,
+		directInspectionClaimLeaseSeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("start binary inspection %s/%d: %w", stageName, binaryID, err)
@@ -1913,24 +1954,26 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		    archive_count = GREATEST(archive_count, COALESCE($10, archive_count)),
 		    video_count = GREATEST(video_count, COALESCE($11, video_count)),
 		    audio_count = GREATEST(audio_count, COALESCE($12, audio_count)),
-		    runtime_seconds = COALESCE($13, runtime_seconds),
-		    sample_present = COALESCE($14, sample_present),
-		    primary_resolution = CASE WHEN $15 <> '' THEN $15 ELSE primary_resolution END,
-		    primary_video_codec = CASE WHEN $16 <> '' THEN $16 ELSE primary_video_codec END,
-		    primary_audio_codec = CASE WHEN $17 <> '' THEN $17 ELSE primary_audio_codec END,
+		    expected_file_count = GREATEST(expected_file_count, COALESCE($13, expected_file_count)),
+		    expected_archive_file_count = GREATEST(expected_archive_file_count, COALESCE($14, expected_archive_file_count)),
+		    runtime_seconds = COALESCE($15, runtime_seconds),
+		    sample_present = COALESCE($16, sample_present),
+		    primary_resolution = CASE WHEN $17 <> '' THEN $17 ELSE primary_resolution END,
+		    primary_video_codec = CASE WHEN $18 <> '' THEN $18 ELSE primary_video_codec END,
+		    primary_audio_codec = CASE WHEN $19 <> '' THEN $19 ELSE primary_audio_codec END,
 		    subtitle_languages_json = CASE
-		    	WHEN jsonb_array_length($18::jsonb) > 0 THEN $18::jsonb
+		    	WHEN jsonb_array_length($20::jsonb) > 0 THEN $20::jsonb
 		    	ELSE subtitle_languages_json
 		    END,
 		    media_tags_json = CASE
-		    	WHEN jsonb_array_length($19::jsonb) > 0 THEN $19::jsonb
+		    	WHEN jsonb_array_length($21::jsonb) > 0 THEN $21::jsonb
 		    	ELSE media_tags_json
 		    END,
-		    availability_score = COALESCE($20, availability_score),
-		    availability_tier = CASE WHEN $21 <> '' THEN $21 ELSE availability_tier END,
-		    media_quality_score = GREATEST(media_quality_score, COALESCE($22, media_quality_score)),
-		    media_quality_tier = CASE WHEN $23 <> '' THEN $23 ELSE media_quality_tier END,
-		    metadata_updated_at = COALESCE($24, metadata_updated_at),
+		    availability_score = COALESCE($22, availability_score),
+		    availability_tier = CASE WHEN $23 <> '' THEN $23 ELSE availability_tier END,
+		    media_quality_score = GREATEST(media_quality_score, COALESCE($24, media_quality_score)),
+		    media_quality_tier = CASE WHEN $25 <> '' THEN $25 ELSE media_quality_tier END,
+		    metadata_updated_at = COALESCE($26, metadata_updated_at),
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		in.ReleaseID,
@@ -1945,6 +1988,8 @@ func (s *Store) ApplyReleaseInspectionUpdate(ctx context.Context, in ReleaseInsp
 		nullableInt(in.ArchiveCount),
 		nullableInt(in.VideoCount),
 		nullableInt(in.AudioCount),
+		nullableInt(in.ExpectedFileCount),
+		nullableInt(in.ExpectedArchiveFileCount),
 		nullableInt(in.RuntimeSeconds),
 		nullableBool(in.SamplePresent),
 		strings.TrimSpace(in.PrimaryResolution),
@@ -2600,6 +2645,11 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, par2SetReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load par2 set release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		metadataJSON, err := json.Marshal(sanitizeJSONMap(row.Metadata))
@@ -2607,8 +2657,8 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 			return fmt.Errorf("marshal par2 set metadata %d: %w", binaryID, err)
 		}
 		var releaseID any
-		if strings.TrimSpace(row.ReleaseID) != "" {
-			releaseID = strings.TrimSpace(row.ReleaseID)
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
@@ -2647,6 +2697,11 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 		return fmt.Errorf("delete par2 targets %d: %w", binaryID, err)
 	}
 
+	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, par2TargetReleaseIDs(rows))
+	if err != nil {
+		return fmt.Errorf("load par2 target release ids %d: %w", binaryID, err)
+	}
+
 	insertRows := make([][]any, 0, len(rows))
 	for _, row := range rows {
 		fileName := strings.TrimSpace(row.FileName)
@@ -2657,9 +2712,13 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 		if err != nil {
 			return fmt.Errorf("marshal par2 target metadata %d: %w", binaryID, err)
 		}
+		releaseID := ""
+		if trimmedReleaseID := strings.TrimSpace(row.ReleaseID); existingReleaseIDs[trimmedReleaseID] {
+			releaseID = trimmedReleaseID
+		}
 		insertRows = append(insertRows, []any{
 			binaryID,
-			strings.TrimSpace(row.ReleaseID),
+			releaseID,
 			fileName,
 			row.FileSize,
 			string(metadataJSON),

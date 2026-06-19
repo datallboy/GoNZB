@@ -77,6 +77,11 @@ type indexerStageConfigPatch struct {
 	BinaryUpsertDBChunkSize *int     `json:"binary_upsert_db_chunk_size,omitempty"`
 	LaneATargetPct          *int     `json:"lane_a_target_pct,omitempty"`
 	LaneBMinPct             *int     `json:"lane_b_min_pct,omitempty"`
+	TargetWindowEnabled     *bool    `json:"target_window_enabled,omitempty"`
+	TargetWindowStart       *string  `json:"target_window_start,omitempty"`
+	TargetWindowEnd         *string  `json:"target_window_end,omitempty"`
+	TargetWindowPct         *int     `json:"target_window_pct,omitempty"`
+	NewestPct               *int     `json:"newest_pct,omitempty"`
 }
 
 type indexerReleaseOverridePatch struct {
@@ -332,6 +337,7 @@ func aggregateNNTPSnapshots(snapshots []pgindex.NNTPRuntimeSnapshot, log interfa
 			total := providerTotals[provider.ID]
 			total.ID = provider.ID
 			total.Label = provider.Label
+			total.Roles = append([]string(nil), provider.Roles...)
 			total.Priority = provider.Priority
 			total.Capacity += provider.Capacity
 			total.Active += provider.Active
@@ -928,40 +934,11 @@ func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID s
 		return nil, err
 	}
 
-	files := make([]*pgindex.IndexerFileDetail, 0, len(release.Files))
-	binaries := make([]*pgindex.IndexerBinaryDetail, 0, len(release.Files))
-	seenBinaryIDs := make(map[int64]struct{}, len(release.Files))
-	for _, file := range release.Files {
-		if file.FileID > 0 {
-			fileDetail, err := s.store.GetIndexerFileDetail(ctx, file.FileID)
-			if err != nil {
-				return nil, err
-			}
-			if fileDetail != nil {
-				files = append(files, fileDetail)
-			}
-		}
-		if file.BinaryID <= 0 {
-			continue
-		}
-		if _, ok := seenBinaryIDs[file.BinaryID]; ok {
-			continue
-		}
-		seenBinaryIDs[file.BinaryID] = struct{}{}
-		binaryDetail, err := s.store.GetIndexerBinaryDetail(ctx, file.BinaryID)
-		if err != nil {
-			return nil, err
-		}
-		if binaryDetail != nil {
-			binaries = append(binaries, binaryDetail)
-		}
-	}
-
 	return &indexerAdminReleaseView{
 		Release:  release,
 		Override: override,
-		Files:    files,
-		Binaries: binaries,
+		Files:    []*pgindex.IndexerFileDetail{},
+		Binaries: []*pgindex.IndexerBinaryDetail{},
 	}, nil
 }
 
@@ -1404,6 +1381,21 @@ func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageCo
 	}
 	if patch.LaneBMinPct != nil {
 		dst.LaneBMinPct = *patch.LaneBMinPct
+	}
+	if patch.TargetWindowEnabled != nil {
+		dst.TargetWindowEnabled = *patch.TargetWindowEnabled
+	}
+	if patch.TargetWindowStart != nil {
+		dst.TargetWindowStart = *patch.TargetWindowStart
+	}
+	if patch.TargetWindowEnd != nil {
+		dst.TargetWindowEnd = *patch.TargetWindowEnd
+	}
+	if patch.TargetWindowPct != nil {
+		dst.TargetWindowPct = *patch.TargetWindowPct
+	}
+	if patch.NewestPct != nil {
+		dst.NewestPct = *patch.NewestPct
 	}
 }
 

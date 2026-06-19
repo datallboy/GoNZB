@@ -114,7 +114,11 @@ func (s *Store) runIndexerMaintenanceMetadataCleanup(ctx context.Context, result
 		    inspection_claimed_until = NULL,
 		    updated_at = NOW()
 		WHERE status = 'running'
-		  AND updated_at < NOW() - INTERVAL '15 minutes'`); err != nil {
+		  AND (
+		  	inspection_claimed_until IS NULL OR
+		  	inspection_claimed_until < NOW()
+		  )
+		  AND updated_at < NOW() - INTERVAL '2 minutes'`); err != nil {
 		return fmt.Errorf("abandon stale binary inspections: %w", err)
 	} else if result.AbandonedBinaryInspections, err = res.RowsAffected(); err != nil {
 		return fmt.Errorf("abandon stale binary inspections rows affected: %w", err)

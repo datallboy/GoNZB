@@ -27,19 +27,20 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ID                     string `mapstructure:"id" yaml:"id"`
-	Host                   string `mapstructure:"host" yaml:"host"`
-	Port                   int    `mapstructure:"port" yaml:"port"`
-	Username               string `mapstructure:"username" yaml:"username"`
-	Password               string `mapstructure:"password" yaml:"password"`
-	TLS                    bool   `mapstructure:"tls" yaml:"tls"`
-	MaxConnection          int    `mapstructure:"max_connections" yaml:"max_connections"`
-	Priority               int    `mapstructure:"priority" yaml:"priority"`
-	DialTimeoutSeconds     int    `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
-	TCPKeepAliveSeconds    int    `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
-	PoolIdleTimeoutSeconds int    `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
-	PoolMaxAgeSeconds      int    `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
-	EnablePoolLogging      bool   `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
+	ID                     string   `mapstructure:"id" yaml:"id"`
+	Host                   string   `mapstructure:"host" yaml:"host"`
+	Port                   int      `mapstructure:"port" yaml:"port"`
+	Username               string   `mapstructure:"username" yaml:"username"`
+	Password               string   `mapstructure:"password" yaml:"password"`
+	TLS                    bool     `mapstructure:"tls" yaml:"tls"`
+	MaxConnection          int      `mapstructure:"max_connections" yaml:"max_connections"`
+	Priority               int      `mapstructure:"priority" yaml:"priority"`
+	DialTimeoutSeconds     int      `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int      `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int      `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int      `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
+	EnablePoolLogging      bool     `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
+	Roles                  []string `mapstructure:"roles" yaml:"roles"`
 }
 
 type IndexerConfig struct {
@@ -126,6 +127,11 @@ type IndexingStageConfig struct {
 	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
 	LaneATargetPct          *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
 	LaneBMinPct             *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
+	TargetWindowEnabled     *bool    `mapstructure:"target_window_enabled" yaml:"target_window_enabled"`
+	TargetWindowStart       *string  `mapstructure:"target_window_start" yaml:"target_window_start"`
+	TargetWindowEnd         *string  `mapstructure:"target_window_end" yaml:"target_window_end"`
+	TargetWindowPct         *int     `mapstructure:"target_window_pct" yaml:"target_window_pct"`
+	NewestPct               *int     `mapstructure:"newest_pct" yaml:"newest_pct"`
 }
 
 type IndexingMatchConfig struct {

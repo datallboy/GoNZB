@@ -182,7 +182,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sample, sampleErr := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
+		sampleCtx, cancel := context.WithTimeout(ctx, discoverySampleTimeout(s.opts))
+		sample, sampleErr := inspectpkg.SampleBinaryPrefix(sampleCtx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
+		cancel()
 		if sampleErr != nil {
 			continue
 		}
@@ -303,7 +305,7 @@ func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.Binary
 	})
 
 	selected := opaque
-	const maxOpaqueSamples = 1024
+	const maxOpaqueSamples = 64
 	if len(selected) > maxOpaqueSamples {
 		selected = evenlySampleReleaseFiles(selected, maxOpaqueSamples)
 	}
@@ -317,6 +319,18 @@ func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.Binary
 		targets = append(targets, target)
 	}
 	return targets, nil
+}
+
+func discoverySampleTimeout(opts inspectpkg.Options) time.Duration {
+	timeout := opts.ToolTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	const maxDiscoverySampleTimeout = 10 * time.Second
+	if timeout > maxDiscoverySampleTimeout {
+		return maxDiscoverySampleTimeout
+	}
+	return timeout
 }
 
 func evenlySampleReleaseFiles(files []pgindex.CatalogReleaseFile, limit int) []pgindex.CatalogReleaseFile {

@@ -119,7 +119,8 @@ func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int
 
 func defaultRecoverYEncStage(enabled bool) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, 10, 25, 1)
-	stage.MaxEffectiveConcurrency = 4
+	stage.TargetWindowPct = 60
+	stage.NewestPct = 40
 	return stage
 }
 
@@ -191,6 +192,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
 			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
 			EnablePoolLogging:      s.EnablePoolLogging,
+			Roles:                  append([]string(nil), s.Roles...),
 		}
 		out.Servers = append(out.Servers, server)
 		out.DownloaderServers = append(out.DownloaderServers, server)
@@ -670,6 +672,7 @@ func toConfigServers(servers []ServerRuntimeSettings) []config.ServerConfig {
 			PoolIdleTimeoutSeconds: s.PoolIdleTimeoutSeconds,
 			PoolMaxAgeSeconds:      s.PoolMaxAgeSeconds,
 			EnablePoolLogging:      s.EnablePoolLogging,
+			Roles:                  append([]string(nil), s.Roles...),
 		})
 	}
 	return out
@@ -1107,6 +1110,31 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.LaneBMinPct > 0 {
 		base.LaneBMinPct = override.LaneBMinPct
 	}
+	if override.TargetWindowEnabled {
+		base.TargetWindowEnabled = true
+		base.TargetWindowPct = override.TargetWindowPct
+		base.NewestPct = override.NewestPct
+	}
+	if override.TargetWindowStart != "" {
+		base.TargetWindowStart = override.TargetWindowStart
+	}
+	if override.TargetWindowEnd != "" {
+		base.TargetWindowEnd = override.TargetWindowEnd
+	}
+	if !override.TargetWindowEnabled && override.TargetWindowPct > 0 {
+		base.TargetWindowPct = override.TargetWindowPct
+		base.NewestPct = 100 - override.TargetWindowPct
+	}
+	if !override.TargetWindowEnabled && override.NewestPct > 0 {
+		base.NewestPct = override.NewestPct
+		base.TargetWindowPct = 100 - override.NewestPct
+	}
+	if base.TargetWindowPct < 0 {
+		base.TargetWindowPct = 0
+	}
+	if base.NewestPct < 0 {
+		base.NewestPct = 0
+	}
 	return base
 }
 
@@ -1167,6 +1195,11 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
 		LaneATargetPct:          intValue(cfg.LaneATargetPct, 0),
 		LaneBMinPct:             intValue(cfg.LaneBMinPct, 0),
+		TargetWindowEnabled:     boolValue(cfg.TargetWindowEnabled, false),
+		TargetWindowStart:       stringValue(cfg.TargetWindowStart, ""),
+		TargetWindowEnd:         stringValue(cfg.TargetWindowEnd, ""),
+		TargetWindowPct:         intValue(cfg.TargetWindowPct, 0),
+		NewestPct:               intValue(cfg.NewestPct, 0),
 	}
 }
 
@@ -1201,6 +1234,21 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	if in.LaneBMinPct > 0 {
 		out.LaneBMinPct = intPtr(in.LaneBMinPct)
 	}
+	if in.TargetWindowEnabled {
+		out.TargetWindowEnabled = boolPtr(in.TargetWindowEnabled)
+	}
+	if in.TargetWindowStart != "" {
+		out.TargetWindowStart = stringPtr(in.TargetWindowStart)
+	}
+	if in.TargetWindowEnd != "" {
+		out.TargetWindowEnd = stringPtr(in.TargetWindowEnd)
+	}
+	if in.TargetWindowEnabled || in.TargetWindowPct > 0 {
+		out.TargetWindowPct = intPtr(in.TargetWindowPct)
+	}
+	if in.TargetWindowEnabled || in.TargetWindowPct > 0 || in.NewestPct > 0 {
+		out.NewestPct = intPtr(in.NewestPct)
+	}
 	return out
 }
 
@@ -1232,6 +1280,13 @@ func int64Value(v *int64, fallback int64) int64 {
 }
 
 func float64Value(v *float64, fallback float64) float64 {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
+func stringValue(v *string, fallback string) string {
 	if v != nil {
 		return *v
 	}
@@ -1278,5 +1333,9 @@ func int64Ptr(v int64) *int64 {
 }
 
 func float64Ptr(v float64) *float64 {
+	return &v
+}
+
+func stringPtr(v string) *string {
 	return &v
 }
