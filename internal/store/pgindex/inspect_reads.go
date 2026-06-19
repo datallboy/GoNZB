@@ -157,31 +157,34 @@ type IndexerReleaseSummary struct {
 	Hidden                   bool       `json:"hidden"`
 	PublicVisible            bool       `json:"public_visible"`
 	PasswordCandidateCount   int        `json:"password_candidate_count"`
+	PayloadCompletionState   string     `json:"payload_completion_state"`
 }
 
 type AdminIndexerReleaseListParams struct {
-	Query              string
-	Newsgroup          string
-	Limit              int
-	Offset             int
-	Sort               string
-	CategoryID         int
-	Classification     string
-	ExternalMediaType  string
-	IdentityStatus     string
-	PasswordState      string
-	MediaQualityTier   string
-	Hidden             string
-	PublicState        string
-	Inspected          string
-	Enriched           string
-	Uncategorized      string
-	PasswordCandidates string
-	MetadataMismatch   string
-	LowConfidence      string
-	CompletionState    string
-	HasNFO             *bool
-	HasPAR2            *bool
+	Query                    string
+	Newsgroup                string
+	Limit                    int
+	Offset                   int
+	Sort                     string
+	CategoryID               int
+	Classification           string
+	ExternalMediaType        string
+	IdentityStatus           string
+	PasswordState            string
+	MediaQualityTier         string
+	Hidden                   string
+	PublicState              string
+	Inspected                string
+	Enriched                 string
+	Uncategorized            string
+	PasswordCandidates       string
+	MetadataMismatch         string
+	LowConfidence            string
+	CompletionState          string
+	PayloadCompletionInclude string
+	PayloadCompletionExclude string
+	HasNFO                   *bool
+	HasPAR2                  *bool
 }
 
 type IndexerReleaseFileSummary struct {
@@ -1612,6 +1615,51 @@ func adminReleaseSortClause(sort string) string {
 	}
 }
 
+func adminReleasePayloadCompletionStateSQL(alias string) string {
+	return fmt.Sprintf(`CASE
+		WHEN %[1]s.archive_count > 0 AND %[1]s.expected_archive_file_count <= 0 THEN 'unknown'
+		WHEN %[1]s.expected_archive_file_count > 0
+		 AND GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= %[1]s.expected_archive_file_count THEN 'complete'
+		WHEN %[1]s.expected_archive_file_count <= 0
+		 AND %[1]s.archive_count <= 0
+		 AND %[1]s.completion_pct >= 100 THEN 'complete'
+		ELSE 'incomplete'
+	END`, alias)
+}
+
+func parseAdminPayloadCompletionStates(raw string) []string {
+	seen := make(map[string]struct{}, 3)
+	out := make([]string, 0, 3)
+	for _, part := range strings.Split(raw, ",") {
+		state := strings.ToLower(strings.TrimSpace(part))
+		switch state {
+		case "complete", "incomplete", "unknown":
+			if _, ok := seen[state]; ok {
+				continue
+			}
+			seen[state] = struct{}{}
+			out = append(out, state)
+		}
+	}
+	return out
+}
+
+func adminReleaseStatePlaceholders(start, count int) string {
+	parts := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		parts = append(parts, fmt.Sprintf("$%d", start+i))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func anyStrings(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
 func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 16)
@@ -1714,6 +1762,13 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	case "below_100":
 		add("r.completion_pct < 100")
 	}
+	payloadStateSQL := adminReleasePayloadCompletionStateSQL("r")
+	if states := parseAdminPayloadCompletionStates(params.PayloadCompletionInclude); len(states) > 0 {
+		add(fmt.Sprintf("(%s) IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
+	}
+	if states := parseAdminPayloadCompletionStates(params.PayloadCompletionExclude); len(states) > 0 {
+		add(fmt.Sprintf("(%s) NOT IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
+	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
 	}
@@ -1814,7 +1869,8 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			END,
 			COALESCE(ro.hidden, FALSE),
 			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
-			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id),
+			`+adminReleasePayloadCompletionStateSQL("r")+`
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
@@ -1923,7 +1979,8 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			END,
 			COALESCE(ro.hidden, FALSE),
 			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
-			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id),
+			`+adminReleasePayloadCompletionStateSQL("r")+`
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
@@ -2426,6 +2483,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.Hidden,
 		&item.PublicVisible,
 		&item.PasswordCandidateCount,
+		&item.PayloadCompletionState,
 	); err != nil {
 		return IndexerReleaseSummary{}, err
 	}
