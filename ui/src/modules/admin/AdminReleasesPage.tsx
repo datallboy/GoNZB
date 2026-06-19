@@ -142,6 +142,7 @@ export function AdminReleasesPage() {
   const [submittedFilters, setSubmittedFilters] = useState<AdminReleaseListParams>(defaultFilters)
   const [data, setData] = useState<AdminReleaseListResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [openFilter, setOpenFilter] = useState<string | null>(null)
 
   useEffect(() => {
     void getAdminReleases(submittedFilters)
@@ -152,8 +153,22 @@ export function AdminReleasesPage() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load admin releases'))
   }, [submittedFilters])
 
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-multi-select]')) {
+        return
+      }
+      setOpenFilter(null)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [])
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setOpenFilter(null)
     setSubmittedFilters({ ...filters, offset: 0 })
   }
 
@@ -172,12 +187,16 @@ export function AdminReleasesPage() {
 
   function MultiChoiceFilter({ field, label, options }: { field: keyof AdminReleaseListParams; label: string; options: FilterOption[] }) {
     const raw = String(filters[field] ?? '')
+    const isOpen = openFilter === field
     return (
       <div className="field">
         <span>{label}</span>
-        <details className="multi-select">
-          <summary>{multiFilterLabel(raw)}</summary>
-          <div className="multi-select__menu">
+        <div className={isOpen ? 'multi-select open' : 'multi-select'} data-multi-select>
+          <button className="multi-select__button" type="button" onClick={() => setOpenFilter(isOpen ? null : String(field))}>
+            {multiFilterLabel(raw)}
+          </button>
+          {isOpen ? (
+            <div className="multi-select__menu">
             {options.map((option) => (
               <label className="multi-select__option" key={option.value}>
                 <input
@@ -188,8 +207,9 @@ export function AdminReleasesPage() {
                 <span>{option.label}</span>
               </label>
             ))}
-          </div>
-        </details>
+            </div>
+          ) : null}
+        </div>
       </div>
     )
   }
@@ -312,6 +332,7 @@ export function AdminReleasesPage() {
             className="secondary-button align-end"
             type="button"
             onClick={() => {
+              setOpenFilter(null)
               setFilters(defaultFilters)
               setSubmittedFilters(defaultFilters)
             }}
