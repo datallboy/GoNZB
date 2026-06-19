@@ -50,7 +50,7 @@ func (f fakeUnassembledBacklogReader) CountUnassembledArticleHeaders(context.Con
 	return f.count, nil
 }
 
-func TestScrapeBacklogGuardBlocksScheduledScrapeWhenAssembleEnabled(t *testing.T) {
+func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
@@ -60,12 +60,39 @@ func TestScrapeBacklogGuardBlocksScheduledScrapeWhenAssembleEnabled(t *testing.T
 		repo: fakeUnassembledBacklogReader{estimate: 200000},
 	}
 
-	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
+	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
 	if err != nil {
 		t.Fatalf("allowStage returned error: %v", err)
 	}
 	if decision.Allowed {
 		t.Fatalf("expected scrape to be blocked, got %+v", decision)
+	}
+}
+
+func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T) {
+	guard := &cachedScrapeBacklogGuard{
+		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
+			Indexing: &app.IndexingRuntimeSettings{
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+			},
+		}},
+		repo: fakeUnassembledBacklogReader{estimate: 200000},
+	}
+
+	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
+	if err != nil {
+		t.Fatalf("allow latest returned error: %v", err)
+	}
+	if !latest.Allowed {
+		t.Fatalf("expected scrape_latest trickle to be allowed, got %+v", latest)
+	}
+
+	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
+	if err != nil {
+		t.Fatalf("allow backfill returned error: %v", err)
+	}
+	if backfill.Allowed {
+		t.Fatalf("expected scrape_backfill to stay blocked, got %+v", backfill)
 	}
 }
 
@@ -98,7 +125,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 		repo: fakeUnassembledBacklogReader{estimate: 200000},
 	}
 
-	stage := supervisor.Stage{Name: supervisor.StageScrapeLatest}
+	stage := supervisor.Stage{Name: supervisor.StageScrapeBackfill}
 	decision, err := guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {
 		t.Fatalf("first allowStage returned error: %v", err)
