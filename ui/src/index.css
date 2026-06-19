@@ -913,6 +913,25 @@ textarea {
   background: rgba(5, 14, 21, 0.22);
 }
 
+.release-table-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.release-table-search {
+  display: grid;
+  grid-template-columns: minmax(240px, 420px) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.release-page-size {
+  width: min(100%, 140px);
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -951,6 +970,7 @@ textarea {
   display: inline-flex;
   gap: 0.25rem;
   align-items: center;
+  white-space: nowrap;
 }
 
 .table-sort-button:hover {
@@ -1241,5 +1261,14 @@ textarea {
 
   .account-menu__panel {
     position: static;
+  }
+
+  .release-table-search {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .release-page-size {
+    width: 100%;
   }
 }

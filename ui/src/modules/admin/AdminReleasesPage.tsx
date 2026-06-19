@@ -70,6 +70,19 @@ type FilterOption = {
   label: string
 }
 
+type ReleaseSortColumn = 'title' | 'category' | 'posted' | 'size' | 'files' | 'password' | 'quality' | 'state'
+
+const releaseSortMap: Record<ReleaseSortColumn, { asc: string; desc: string }> = {
+  title: { asc: 'title_asc', desc: 'title_desc' },
+  category: { asc: 'category_asc', desc: 'category_desc' },
+  posted: { asc: 'posted_asc', desc: 'posted_desc' },
+  size: { asc: 'size_asc', desc: 'size_desc' },
+  files: { asc: 'files_asc', desc: 'files_desc' },
+  password: { asc: 'password_asc', desc: 'password_desc' },
+  quality: { asc: 'quality_asc', desc: 'quality_desc' },
+  state: { asc: 'state_asc', desc: 'state_desc' },
+}
+
 function formatNZBStatus(value: string) {
   switch (value) {
     case 'legacy_pending':
@@ -137,6 +150,15 @@ function csvCount(raw: string | undefined) {
     .filter(Boolean).length
 }
 
+function sortColumnFor(sort: string | undefined) {
+  const value = sort ?? 'posted_desc'
+  for (const [column, directions] of Object.entries(releaseSortMap)) {
+    if (directions.asc === value) return { column: column as ReleaseSortColumn, direction: 'asc' as const }
+    if (directions.desc === value) return { column: column as ReleaseSortColumn, direction: 'desc' as const }
+  }
+  return { column: 'posted' as const, direction: 'desc' as const }
+}
+
 export function AdminReleasesPage() {
   const [filters, setFilters] = useState<AdminReleaseListParams>(defaultFilters)
   const [submittedFilters, setSubmittedFilters] = useState<AdminReleaseListParams>(defaultFilters)
@@ -170,6 +192,31 @@ export function AdminReleasesPage() {
     event.preventDefault()
     setOpenFilter(null)
     setSubmittedFilters({ ...filters, offset: 0 })
+  }
+
+  function submitFilters(next: AdminReleaseListParams) {
+    setFilters(next)
+    setSubmittedFilters(next)
+  }
+
+  function handleTableSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setOpenFilter(null)
+    setSubmittedFilters({ ...filters, offset: 0 })
+  }
+
+  function handleSort(column: ReleaseSortColumn) {
+    const current = sortColumnFor(submittedFilters.sort)
+    const direction = current.column === column && current.direction === 'desc' ? 'asc' : 'desc'
+    submitFilters({ ...filters, sort: releaseSortMap[column][direction], offset: 0 })
+  }
+
+  function handlePage(nextOffset: number) {
+    submitFilters({ ...filters, offset: Math.max(0, nextOffset) })
+  }
+
+  function handlePageSize(limit: number) {
+    submitFilters({ ...filters, limit, offset: 0 })
   }
 
   function toggleMultiFilter(field: keyof AdminReleaseListParams, value: string, enabled: boolean) {
@@ -214,6 +261,27 @@ export function AdminReleasesPage() {
     )
   }
 
+  function SortableHeader({ column, label }: { column: ReleaseSortColumn; label: string }) {
+    const current = sortColumnFor(submittedFilters.sort)
+    const active = current.column === column
+    return (
+      <th>
+        <button className="table-sort-button" type="button" onClick={() => handleSort(column)}>
+          {label}
+          <span>{active ? (current.direction === 'asc' ? ' ↑' : ' ↓') : ''}</span>
+        </button>
+      </th>
+    )
+  }
+
+  const pageLimit = Number(submittedFilters.limit ?? 100)
+  const pageOffset = Number(submittedFilters.offset ?? 0)
+  const total = data?.total ?? 0
+  const pageStart = total > 0 ? pageOffset + 1 : 0
+  const pageEnd = Math.min(pageOffset + (data?.items.length ?? 0), total)
+  const canPagePrev = pageOffset > 0
+  const canPageNext = Boolean(data?.has_more)
+
   return (
     <div className="page-section stack">
       <div className="page-card stack">
@@ -247,10 +315,15 @@ export function AdminReleasesPage() {
               <option value="posted_asc">Oldest Posted</option>
               <option value="updated_desc">Recently Updated</option>
               <option value="quality_desc">Best Quality</option>
+              <option value="quality_asc">Lowest Quality</option>
               <option value="completion_desc">Best Completion</option>
               <option value="size_desc">Largest</option>
               <option value="size_asc">Smallest</option>
               <option value="title_asc">Title</option>
+              <option value="title_desc">Title Descending</option>
+              <option value="category_asc">Category</option>
+              <option value="files_desc">Most Files</option>
+              <option value="files_asc">Fewest Files</option>
             </select>
           </label>
           <label className="field">
@@ -342,19 +415,45 @@ export function AdminReleasesPage() {
         </form>
       </div>
       {error ? <div className="banner error">{error}</div> : null}
-      <div className="page-card">
+      <div className="page-card stack">
+        <div className="release-table-toolbar">
+          <form className="release-table-search" onSubmit={handleTableSearch}>
+            <label className="field">
+              <span>Table Search</span>
+              <input value={filters.q ?? ''} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} />
+            </label>
+            <button className="secondary-button align-end" type="submit">
+              Search
+            </button>
+          </form>
+          <label className="field release-page-size">
+            <span>Rows</span>
+            <select value={pageLimit} onChange={(event) => handlePageSize(Number(event.target.value))}>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+            </select>
+          </label>
+        </div>
+        <div className="pagination-row">
+          <span className="muted-copy">
+            Showing {pageStart}-{pageEnd} of {total.toLocaleString()}
+          </span>
+          <span className="muted-copy">Page {Math.floor(pageOffset / pageLimit) + 1}</span>
+        </div>
         <div className="table-shell">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Release</th>
-                <th>Category</th>
-                <th>Posted</th>
-                <th>Size</th>
-                <th>Files</th>
-                <th>Password</th>
-                <th>Quality</th>
-                <th>State</th>
+                <SortableHeader column="title" label="Release" />
+                <SortableHeader column="category" label="Category" />
+                <SortableHeader column="posted" label="Posted" />
+                <SortableHeader column="size" label="Size" />
+                <SortableHeader column="files" label="Files" />
+                <SortableHeader column="password" label="Password" />
+                <SortableHeader column="quality" label="Quality" />
+                <SortableHeader column="state" label="State" />
               </tr>
             </thead>
             <tbody>
@@ -406,6 +505,17 @@ export function AdminReleasesPage() {
               ) : null}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <button className="secondary-button" type="button" disabled={!canPagePrev} onClick={() => handlePage(pageOffset - pageLimit)}>
+            Previous
+          </button>
+          <span className="muted-copy">
+            Showing {pageStart}-{pageEnd} of {total.toLocaleString()}
+          </span>
+          <button className="secondary-button" type="button" disabled={!canPageNext} onClick={() => handlePage(pageOffset + pageLimit)}>
+            Next
+          </button>
         </div>
       </div>
     </div>

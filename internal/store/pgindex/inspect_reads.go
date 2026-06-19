@@ -1587,7 +1587,8 @@ func normalizeAdminReleaseSort(sort string) string {
 	switch strings.TrimSpace(sort) {
 	case "", "posted_desc":
 		return "posted_desc"
-	case "posted_asc", "size_desc", "size_asc", "title_asc", "updated_desc", "quality_desc", "completion_desc":
+	case "posted_asc", "size_desc", "size_asc", "title_asc", "title_desc", "updated_desc", "quality_desc", "quality_asc", "completion_desc",
+		"category_asc", "category_desc", "files_desc", "files_asc", "password_asc", "password_desc", "state_asc", "state_desc":
 		return sort
 	default:
 		return "posted_desc"
@@ -1604,12 +1605,32 @@ func adminReleaseSortClause(sort string) string {
 		return "r.size_bytes ASC, r.posted_at DESC NULLS LAST, r.title"
 	case "title_asc":
 		return "r.title ASC, r.posted_at DESC NULLS LAST"
+	case "title_desc":
+		return "r.title DESC, r.posted_at DESC NULLS LAST"
 	case "updated_desc":
 		return "r.updated_at DESC, r.posted_at DESC NULLS LAST, r.title"
 	case "quality_desc":
 		return "r.media_quality_score DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "quality_asc":
+		return "r.media_quality_score ASC, r.posted_at DESC NULLS LAST, r.title"
 	case "completion_desc":
 		return "r.completion_pct DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "category_asc":
+		return "r.category ASC, r.category_id ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "category_desc":
+		return "r.category DESC, r.category_id DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "files_desc":
+		return "r.file_count DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "files_asc":
+		return "r.file_count ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "password_asc":
+		return "r.password_state ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "password_desc":
+		return "r.password_state DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "state_asc":
+		return "COALESCE(ro.hidden, FALSE) ASC, " + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + " ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "state_desc":
+		return "COALESCE(ro.hidden, FALSE) DESC, " + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + " DESC, r.posted_at DESC NULLS LAST, r.title"
 	default:
 		return "r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title"
 	}
