@@ -1066,7 +1066,10 @@ func (t *testRuntimeIndexerService) ReleaseArchiveNZBOnce(context.Context) error
 func (t *testRuntimeIndexerService) ReleasePurgeArchivedSourcesOnce(context.Context) error {
 	return nil
 }
-func (t *testRuntimeIndexerService) ReformReleasesOnce(context.Context) error   { return nil }
+func (t *testRuntimeIndexerService) ReformReleasesOnce(context.Context) error { return nil }
+func (t *testRuntimeIndexerService) ReformSelectedReleasesOnce(context.Context, []string) error {
+	return nil
+}
 func (t *testRuntimeIndexerService) InspectOnce(context.Context) error          { return nil }
 func (t *testRuntimeIndexerService) InspectDiscoveryOnce(context.Context) error { return nil }
 func (t *testRuntimeIndexerService) InspectPAR2Once(context.Context) error      { return nil }

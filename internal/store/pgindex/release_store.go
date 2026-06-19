@@ -305,15 +305,31 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 	rows, err := s.db.QueryContext(ctx, `
 		WITH target_releases AS (
 			SELECT
-				provider_id,
-				release_family_key,
-				release_key,
-				title,
-				posted_at,
-				updated_at
-			FROM releases
-			WHERE BTRIM(release_family_key) <> ''
-			ORDER BY COALESCE(metadata_updated_at, updated_at, posted_at) NULLS FIRST, release_id
+				r.provider_id,
+				r.release_family_key,
+				r.release_key,
+				r.title,
+				r.posted_at,
+				r.updated_at
+			FROM releases r
+			LEFT JOIN LATERAL (
+				SELECT COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), 'binary-' || bic.binary_id::TEXT)))) FILTER (
+					WHERE bic.is_main_payload OR NOT bic.is_auxiliary
+				)::INTEGER AS payload_file_count
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.release_family_key = r.release_family_key
+				  AND BTRIM(bic.release_family_key) <> ''
+			) family_payload ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT COUNT(DISTINCT rf.file_name) FILTER (WHERE NOT rf.is_pars)::INTEGER AS payload_file_count
+				FROM release_files rf
+				WHERE rf.release_id = r.release_id
+			) release_payload ON TRUE
+			WHERE BTRIM(r.release_family_key) <> ''
+			ORDER BY GREATEST(COALESCE(family_payload.payload_file_count, 0) - COALESCE(release_payload.payload_file_count, 0), 0) DESC,
+				COALESCE(r.metadata_updated_at, r.updated_at, r.posted_at) NULLS FIRST,
+				r.release_id
 			LIMIT $1 OFFSET $2
 		),
 		candidate_binaries AS (
