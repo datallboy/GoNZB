@@ -27,6 +27,7 @@ const (
 	assemblePriorityHeaderMinScan          = 500
 	assemblePriorityHeaderMaxScan          = 2000
 	assembleClaimStatementTimeout          = 15 * time.Second
+	assembleDefaultLaneATimeWindowMinutes  = 15
 	refreshBinaryStatsBatchSize            = 8000
 	binaryCompletionKeySyncChunkSize       = 8000
 	binaryPartUpsertBatchRecords           = 5000
@@ -119,12 +120,13 @@ type BinaryPartRecord struct {
 }
 
 type AssemblyClaimRequest struct {
-	Limit          int
-	Owner          string
-	LeaseDuration  time.Duration
-	Lane           string
-	LaneATargetPct int
-	LaneBMinPct    int
+	Limit                  int
+	Owner                  string
+	LeaseDuration          time.Duration
+	Lane                   string
+	LaneATargetPct         int
+	LaneBMinPct            int
+	LaneATimeWindowMinutes int
 }
 
 const (
@@ -332,6 +334,9 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 	if req.LaneBMinPct < 0 {
 		req.LaneBMinPct = 0
 	}
+	if req.LaneATimeWindowMinutes <= 0 {
+		req.LaneATimeWindowMinutes = assembleDefaultLaneATimeWindowMinutes
+	}
 	if req.LaneATargetPct > 100 {
 		req.LaneATargetPct = 100
 	}
@@ -383,16 +388,6 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 	if laneBMin > limit {
 		laneBMin = limit
 	}
-	laneAWindow := laneATarget * assemblePriorityHeaderWindowMultiplier
-	if laneAWindow < assemblePriorityHeaderMinScan {
-		laneAWindow = assemblePriorityHeaderMinScan
-	}
-	if laneAWindow > assemblePriorityHeaderMaxScan {
-		laneAWindow = assemblePriorityHeaderMaxScan
-	}
-	if laneATarget == 0 {
-		laneAWindow = 0
-	}
 	claimToken := uuid.NewString()
 
 	rows, err := tx.QueryContext(ctx, `
@@ -416,14 +411,16 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 				b.binary_id,
 				b.is_main_payload,
 				b.completion_ratio,
-				b.observed_parts
+				b.observed_parts,
+				b.posted_at
 			FROM claimable_queue_keys q
 			JOIN LATERAL (
 				SELECT
 					bck.binary_id,
 					bck.is_main_payload,
 					bck.completion_ratio,
-					bck.observed_parts
+					bck.observed_parts,
+					bck.posted_at
 				FROM binary_completion_keys bck
 				WHERE bck.provider_id = q.provider_id
 				  AND bck.newsgroup_id = q.newsgroup_id
@@ -440,7 +437,6 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 				completion_ratio DESC,
 				observed_parts DESC,
 				binary_id DESC
-			LIMIT $5
 		),
 		lane_a_primary AS MATERIALIZED (
 			SELECT q.article_header_id, TRUE AS structured_identity_binary_matched
@@ -448,8 +444,19 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			JOIN LATERAL (
 				SELECT q.article_header_id
 				FROM article_header_assembly_queue q
-				WHERE q.article_header_id = b.article_header_id
+				JOIN article_headers ah ON ah.id = q.article_header_id
+				WHERE q.provider_id = b.provider_id
+				  AND q.newsgroup_id = b.newsgroup_id
+				  AND q.normalized_file_name = b.normalized_file_name
+				  AND q.normalized_file_name <> ''
 				  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+				  AND (
+					b.posted_at IS NULL
+					OR ah.date_utc IS NULL
+					OR ah.date_utc BETWEEN
+						b.posted_at - ($7::bigint * INTERVAL '1 minute')
+						AND b.posted_at + ($7::bigint * INTERVAL '1 minute')
+				  )
 				ORDER BY q.article_header_id DESC
 				LIMIT 1
 				FOR UPDATE SKIP LOCKED
@@ -473,11 +480,19 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			JOIN LATERAL (
 				SELECT q.article_header_id
 				FROM article_header_assembly_queue q
+				JOIN article_headers ah ON ah.id = q.article_header_id
 				WHERE q.provider_id = b.provider_id
 				  AND q.newsgroup_id = b.newsgroup_id
 				  AND q.normalized_file_name = b.normalized_file_name
 				  AND q.normalized_file_name <> ''
 				  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+				  AND (
+					b.posted_at IS NULL
+					OR ah.date_utc IS NULL
+					OR ah.date_utc BETWEEN
+						b.posted_at - ($7::bigint * INTERVAL '1 minute')
+						AND b.posted_at + ($7::bigint * INTERVAL '1 minute')
+				  )
 				  AND NOT EXISTS (
 					SELECT 1 FROM lane_a_primary a WHERE a.article_header_id = q.article_header_id
 				  )
@@ -501,8 +516,8 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		),
 		claimed AS (
 			UPDATE article_header_assembly_queue q
-			SET claim_owner = $6,
-			    claim_token = $7::uuid,
+			SET claim_owner = $5,
+			    claim_token = $6::uuid,
 			    claim_until = NOW() + ($2::bigint * INTERVAL '1 second'),
 			    attempt_count = attempt_count + 1,
 			    updated_at = NOW()
@@ -546,9 +561,9 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		int64(req.LeaseDuration/time.Second),
 		laneATarget,
 		laneBMin,
-		laneAWindow,
 		req.Owner,
 		claimToken,
+		req.LaneATimeWindowMinutes,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim assembly queue batch: %w", err)
@@ -2249,6 +2264,7 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 			observed_parts,
 			total_parts,
 			completion_ratio,
+			posted_at,
 			updated_at
 		)
 		SELECT
@@ -2263,6 +2279,7 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 				WHEN bos.total_parts > 0 THEN bos.observed_parts::double precision / bos.total_parts::double precision
 				ELSE 0
 			END,
+			bos.posted_at,
 			NOW()
 		FROM tmp_existing_binaries e
 		JOIN binary_identity_current bic ON bic.binary_id = e.binary_id
@@ -2278,6 +2295,7 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 		    observed_parts = EXCLUDED.observed_parts,
 		    total_parts = EXCLUDED.total_parts,
 		    completion_ratio = EXCLUDED.completion_ratio,
+		    posted_at = EXCLUDED.posted_at,
 		    updated_at = NOW()`); err != nil {
 		return fmt.Errorf("upsert staged binary completion keys: %w", err)
 	}
@@ -2356,6 +2374,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 			observed_parts,
 			total_parts,
 			completion_ratio,
+			posted_at,
 			updated_at
 		)
 		SELECT
@@ -2370,6 +2389,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 				WHEN bos.total_parts > 0 THEN bos.observed_parts::double precision / bos.total_parts::double precision
 				ELSE 0
 			END,
+			bos.posted_at,
 			NOW()
 		FROM requested r
 		JOIN binary_identity_current bic ON bic.binary_id = r.binary_id
@@ -2385,6 +2405,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 		    observed_parts = EXCLUDED.observed_parts,
 		    total_parts = EXCLUDED.total_parts,
 		    completion_ratio = EXCLUDED.completion_ratio,
+		    posted_at = EXCLUDED.posted_at,
 		    updated_at = NOW()`, requestedBinaryIDs); err != nil {
 		return fmt.Errorf("upsert binary completion keys: %w", err)
 	}

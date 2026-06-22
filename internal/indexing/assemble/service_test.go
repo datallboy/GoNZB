@@ -632,7 +632,11 @@ func intValue(v any) int {
 
 func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 	repo := &fakeRepository{}
-	svc := NewService(repo, &fakeMatcher{}, nil, testLogger{}, Options{BatchSize: 25, Lane: pgindex.AssemblyClaimLaneB})
+	svc := NewService(repo, &fakeMatcher{}, nil, testLogger{}, Options{
+		BatchSize:              25,
+		Lane:                   pgindex.AssemblyClaimLaneB,
+		LaneATimeWindowMinutes: 9,
+	})
 
 	if _, err := svc.RunOnceWithMetrics(context.Background()); err != nil {
 		t.Fatalf("run once with metrics: %v", err)
@@ -640,6 +644,9 @@ func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 
 	if repo.lastClaimRequest.Lane != pgindex.AssemblyClaimLaneB {
 		t.Fatalf("expected lane-b claim request, got %+v", repo.lastClaimRequest)
+	}
+	if repo.lastClaimRequest.LaneATimeWindowMinutes != 9 {
+		t.Fatalf("expected lane A time window to be passed through, got %+v", repo.lastClaimRequest)
 	}
 }
 

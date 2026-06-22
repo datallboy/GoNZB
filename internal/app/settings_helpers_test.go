@@ -28,6 +28,7 @@ func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 			BinaryUpsertDBChunkSize: func() *int { v := 300; return &v }(),
 			LaneATargetPct:          func() *int { v := 80; return &v }(),
 			LaneBMinPct:             func() *int { v := 20; return &v }(),
+			LaneATimeWindowMinutes:  func() *int { v := 9; return &v }(),
 		},
 		Release: config.IndexingReleaseConfig{
 			IntervalMinutes:            func() *float64 { v := 10.0; return &v }(),
@@ -158,7 +159,10 @@ func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 	if runtime.Indexing.Assemble.IntervalMinutes <= 0 || runtime.Indexing.Assemble.BatchSize <= 0 {
 		t.Fatalf("expected assemble defaults to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
-	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 250 || runtime.Indexing.Assemble.LaneATargetPct != 70 || runtime.Indexing.Assemble.LaneBMinPct != 30 {
+	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 250 ||
+		runtime.Indexing.Assemble.LaneATargetPct != 70 ||
+		runtime.Indexing.Assemble.LaneBMinPct != 30 ||
+		runtime.Indexing.Assemble.LaneATimeWindowMinutes != 15 {
 		t.Fatalf("expected assemble tuning defaults to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
 	if !runtime.Indexing.StorageGuard.Enabled || runtime.Indexing.StorageGuard.MinFreeBytes <= 0 || runtime.Indexing.StorageGuard.MinFreePercent <= 0 {
