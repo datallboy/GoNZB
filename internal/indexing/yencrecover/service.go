@@ -38,6 +38,14 @@ type repositoryWithBatchHeaderRecovery interface {
 	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
 }
 
+type repositoryWithSelectionStats interface {
+	LastYEncRecoverySelectionStats() pgindex.YEncRecoverySelectionStats
+}
+
+type repositoryWithApplyStats interface {
+	LastYEncRecoveryApplyStats() pgindex.YEncRecoveryApplyStats
+}
+
 type bodyPrefixFetcher interface {
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 }
@@ -57,6 +65,8 @@ type Options struct {
 	TargetWindowPercent int
 	NewestPercent       int
 }
+
+const yencRecoveryStreamFlushSize = 250
 
 type Service struct {
 	repo    repository
@@ -93,37 +103,80 @@ func (s *Service) RunOnce(ctx context.Context) error {
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	metrics := map[string]any{
-		"batch_size":             s.opts.BatchSize,
-		"max_header_bytes":       s.opts.MaxHeaderBytes,
-		"concurrency":            s.opts.Concurrency,
-		"effective_concurrency":  0,
-		"batch_full":             false,
-		"candidates":             0,
-		"attempted":              0,
-		"candidate_selection_ms": float64(0),
-		"processing_ms":          float64(0),
-		"fetch_ms":               float64(0),
-		"parse_ms":               float64(0),
-		"match_ms":               float64(0),
-		"write_ms":               float64(0),
-		"not_found_write_ms":     float64(0),
-		"recovered":              0,
-		"merged":                 0,
-		"noops":                  0,
-		"fetch_failures":         0,
-		"not_found":              0,
-		"parse_failures":         0,
-		"stale_candidates":       0,
-		"selected_newest":        0,
-		"selected_fairness":      0,
-		"selected_target_window": 0,
-		"fairness_bucket_start":  "",
-		"fairness_bucket_end":    "",
-		"target_window_enabled":  s.opts.TargetWindowEnabled,
-		"target_window_start":    s.opts.TargetWindowStart,
-		"target_window_end":      s.opts.TargetWindowEnd,
-		"target_window_pct":      s.opts.TargetWindowPercent,
-		"newest_pct":             s.opts.NewestPercent,
+		"batch_size":                        s.opts.BatchSize,
+		"batch_requested":                   s.opts.BatchSize,
+		"max_header_bytes":                  s.opts.MaxHeaderBytes,
+		"concurrency":                       s.opts.Concurrency,
+		"effective_concurrency":             0,
+		"batch_full":                        false,
+		"batch_selected":                    0,
+		"batch_fill_pct":                    float64(0),
+		"candidates":                        0,
+		"attempted":                         0,
+		"candidate_selection_ms":            float64(0),
+		"processing_ms":                     float64(0),
+		"fetch_ms":                          float64(0),
+		"parse_ms":                          float64(0),
+		"match_ms":                          float64(0),
+		"write_ms":                          float64(0),
+		"write_flush_ms":                    float64(0),
+		"write_flush_count":                 0,
+		"write_flush_rows":                  0,
+		"write_flush_max_size":              0,
+		"write_flush_max_ms":                float64(0),
+		"write_records_queued":              0,
+		"write_records_skipped_after_error": 0,
+		"writer_wait_ms":                    float64(0),
+		"writer_wait_count":                 0,
+		"write_failures":                    0,
+		"write_apply_records":               0,
+		"write_apply_results":               0,
+		"write_apply_merged":                0,
+		"write_apply_batches":               0,
+		"write_apply_total_ms":              float64(0),
+		"write_apply_normalize_ms":          float64(0),
+		"write_apply_begin_ms":              float64(0),
+		"write_apply_stage_ms":              float64(0),
+		"write_apply_order_ms":              float64(0),
+		"write_apply_identity_lock_ms":      float64(0),
+		"write_apply_mutation_ms":           float64(0),
+		"write_apply_seed_load_ms":          float64(0),
+		"write_apply_target_find_ms":        float64(0),
+		"write_apply_pair_lock_ms":          float64(0),
+		"write_apply_target_update_ms":      float64(0),
+		"write_apply_target_update_skipped": 0,
+		"write_apply_parts_merge_ms":        float64(0),
+		"write_apply_release_files_ms":      float64(0),
+		"write_apply_source_delete_ms":      float64(0),
+		"write_apply_source_supersede_ms":   float64(0),
+		"write_apply_ingest_payload_ms":     float64(0),
+		"write_apply_work_item_done_ms":     float64(0),
+		"write_apply_stats_refresh_ms":      float64(0),
+		"write_apply_summary_dirty_ms":      float64(0),
+		"write_apply_commit_ms":             float64(0),
+		"not_found_write_ms":                float64(0),
+		"recovered":                         0,
+		"merged":                            0,
+		"noops":                             0,
+		"fetch_failures":                    0,
+		"not_found":                         0,
+		"parse_failures":                    0,
+		"stale_candidates":                  0,
+		"selected_newest":                   0,
+		"selected_fairness":                 0,
+		"selected_target_window":            0,
+		"selected_windowed":                 0,
+		"selection_buckets":                 0,
+		"selection_empty_buckets":           0,
+		"selection_windowed_requested":      0,
+		"selection_newest_requested":        0,
+		"fairness_bucket_start":             "",
+		"fairness_bucket_end":               "",
+		"target_window_enabled":             s.opts.TargetWindowEnabled,
+		"target_window_start":               s.opts.TargetWindowStart,
+		"target_window_end":                 s.opts.TargetWindowEnd,
+		"target_window_pct":                 s.opts.TargetWindowPercent,
+		"newest_pct":                        s.opts.NewestPercent,
 	}
 	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
 		return metrics, fmt.Errorf("yenc recovery service is not configured")
@@ -146,6 +199,24 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return metrics, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
 	metrics["candidates"] = len(candidates)
+	metrics["batch_selected"] = len(candidates)
+	if s.opts.BatchSize > 0 {
+		metrics["batch_fill_pct"] = (float64(len(candidates)) / float64(s.opts.BatchSize)) * 100.0
+	}
+	if repo, ok := s.repo.(repositoryWithSelectionStats); ok {
+		stats := repo.LastYEncRecoverySelectionStats()
+		if stats.BatchRequested > 0 {
+			metrics["batch_requested"] = stats.BatchRequested
+			metrics["batch_selected"] = stats.BatchSelected
+			if stats.BatchRequested > 0 {
+				metrics["batch_fill_pct"] = (float64(stats.BatchSelected) / float64(stats.BatchRequested)) * 100.0
+			}
+			metrics["selection_buckets"] = stats.BucketsScanned
+			metrics["selection_empty_buckets"] = stats.EmptyBuckets
+			metrics["selection_windowed_requested"] = stats.WindowedRequested
+			metrics["selection_newest_requested"] = stats.NewestRequested
+		}
+	}
 	for _, candidate := range candidates {
 		switch candidate.RecoveryLane {
 		case "time_cohort_fairness":
@@ -162,6 +233,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["selected_newest"] = metrics["selected_newest"].(int) + 1
 		}
 	}
+	metrics["selected_windowed"] = metrics["selected_fairness"].(int) + metrics["selected_target_window"].(int)
 	if len(candidates) == 0 {
 		if s.log != nil {
 			s.log.Debug("recover_yenc: no recovery candidates available")
@@ -180,11 +252,24 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics["batch_writes"] = batchWrites
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
 	var (
-		mu              sync.Mutex
-		wg              sync.WaitGroup
-		firstErr        error
-		recoveryRecords []pgindex.YEncHeaderRecoveryRecord
+		recordCh   chan pgindex.YEncHeaderRecoveryRecord
+		writerDone chan error
 	)
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+	)
+	setFirstErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
 	recordResult := func(outcome *yencCandidateOutcome, kind string, timings yencCandidateTimings, err error) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -194,9 +279,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		addYEncDurationMetric(metrics, "write_ms", timings.Write)
 		addYEncDurationMetric(metrics, "not_found_write_ms", timings.NotFoundWrite)
 		metrics["attempted"] = metrics["attempted"].(int) + 1
-		if outcome != nil && outcome.Record != nil {
-			recoveryRecords = append(recoveryRecords, *outcome.Record)
-		}
 		switch kind {
 		case "not_found":
 			metrics["not_found"] = metrics["not_found"].(int) + 1
@@ -234,8 +316,35 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			firstErr = err
 		}
 	}
+	queueRecoveryRecord := func(record pgindex.YEncHeaderRecoveryRecord) error {
+		if recordCh == nil {
+			return nil
+		}
+		started := time.Now()
+		select {
+		case recordCh <- record:
+			wait := time.Since(started)
+			mu.Lock()
+			metrics["write_records_queued"] = metrics["write_records_queued"].(int) + 1
+			if wait > 0 {
+				addYEncDurationMetric(metrics, "writer_wait_ms", wait)
+				metrics["writer_wait_count"] = metrics["writer_wait_count"].(int) + 1
+			}
+			mu.Unlock()
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	processingStarted := time.Now()
+	if batchWrites {
+		recordCh = make(chan pgindex.YEncHeaderRecoveryRecord, maxYEncInt(yencRecoveryStreamFlushSize, workerCount*2))
+		writerDone = make(chan error, 1)
+		go func() {
+			writerDone <- s.runStreamingRecoveryWriter(ctx, batchRepo, recordCh, metrics, &mu)
+		}()
+	}
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -247,6 +356,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 				}
 				outcome, kind, timings, err := s.recoverCandidate(ctx, candidate, batchWrites)
 				recordResult(outcome, kind, timings, err)
+				if err == nil && outcome != nil && outcome.Record != nil {
+					if queueErr := queueRecoveryRecord(*outcome.Record); queueErr != nil {
+						setFirstErr(queueErr)
+					}
+				}
 			}
 		}()
 	}
@@ -254,30 +368,28 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		if err := ctx.Err(); err != nil {
 			close(jobs)
 			wg.Wait()
+			if recordCh != nil {
+				close(recordCh)
+				<-writerDone
+			}
 			return metrics, err
 		}
 		jobs <- candidate
 	}
 	close(jobs)
 	wg.Wait()
-	if firstErr == nil && batchWrites && len(recoveryRecords) > 0 {
-		started := time.Now()
-		results, err := batchRepo.ApplyYEncHeaderRecoveries(ctx, recoveryRecords)
-		addYEncDurationMetric(metrics, "write_ms", time.Since(started))
-		if err != nil {
-			firstErr = fmt.Errorf("apply yenc recovery batch: %w", err)
-		} else {
-			metrics["recovered"] = metrics["recovered"].(int) + len(results)
-			for _, result := range results {
-				if result.Merged {
-					metrics["merged"] = metrics["merged"].(int) + 1
-				}
-			}
+	if recordCh != nil {
+		close(recordCh)
+		if err := <-writerDone; err != nil {
+			setFirstErr(err)
 		}
 	}
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
-	if firstErr != nil {
-		return metrics, firstErr
+	mu.Lock()
+	runErr := firstErr
+	mu.Unlock()
+	if runErr != nil {
+		return metrics, runErr
 	}
 
 	if s.log != nil {
@@ -341,6 +453,102 @@ func addYEncDurationMetric(metrics map[string]any, key string, d time.Duration) 
 	}
 	current, _ := metrics[key].(float64)
 	metrics[key] = current + durationMillis(d)
+}
+
+func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositoryWithBatchHeaderRecovery, records <-chan pgindex.YEncHeaderRecoveryRecord, metrics map[string]any, mu *sync.Mutex) error {
+	batch := make([]pgindex.YEncHeaderRecoveryRecord, 0, yencRecoveryStreamFlushSize)
+	var firstErr error
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		rows := len(batch)
+		started := time.Now()
+		results, err := repo.ApplyYEncHeaderRecoveries(ctx, batch)
+		elapsed := time.Since(started)
+		mu.Lock()
+		addYEncDurationMetric(metrics, "write_ms", elapsed)
+		addYEncDurationMetric(metrics, "write_flush_ms", elapsed)
+		metrics["write_flush_count"] = metrics["write_flush_count"].(int) + 1
+		metrics["write_flush_rows"] = metrics["write_flush_rows"].(int) + rows
+		if rows > metrics["write_flush_max_size"].(int) {
+			metrics["write_flush_max_size"] = rows
+		}
+		elapsedMS := durationMillis(elapsed)
+		if elapsedMS > metrics["write_flush_max_ms"].(float64) {
+			metrics["write_flush_max_ms"] = elapsedMS
+		}
+		if statsRepo, ok := repo.(repositoryWithApplyStats); ok {
+			addYEncApplyStatsMetrics(metrics, statsRepo.LastYEncRecoveryApplyStats())
+		}
+		if err != nil {
+			metrics["write_failures"] = metrics["write_failures"].(int) + 1
+			if firstErr == nil {
+				firstErr = fmt.Errorf("apply yenc recovery stream batch: %w", err)
+			}
+		} else {
+			metrics["recovered"] = metrics["recovered"].(int) + len(results)
+			for _, result := range results {
+				if result.Merged {
+					metrics["merged"] = metrics["merged"].(int) + 1
+				}
+			}
+		}
+		mu.Unlock()
+		batch = batch[:0]
+	}
+
+	for record := range records {
+		if firstErr != nil {
+			mu.Lock()
+			metrics["write_records_skipped_after_error"] = metrics["write_records_skipped_after_error"].(int) + 1
+			mu.Unlock()
+			continue
+		}
+		batch = append(batch, record)
+		if len(batch) >= yencRecoveryStreamFlushSize {
+			flush()
+		}
+	}
+	if firstErr == nil {
+		flush()
+	}
+	return firstErr
+}
+
+func addYEncApplyStatsMetrics(metrics map[string]any, stats pgindex.YEncRecoveryApplyStats) {
+	metrics["write_apply_records"] = metrics["write_apply_records"].(int) + stats.Records
+	metrics["write_apply_results"] = metrics["write_apply_results"].(int) + stats.Results
+	metrics["write_apply_merged"] = metrics["write_apply_merged"].(int) + stats.Merged
+	metrics["write_apply_batches"] = metrics["write_apply_batches"].(int) + stats.InternalBatches
+	addYEncDurationMetric(metrics, "write_apply_total_ms", stats.TotalDuration)
+	addYEncDurationMetric(metrics, "write_apply_normalize_ms", stats.NormalizeDuration)
+	addYEncDurationMetric(metrics, "write_apply_begin_ms", stats.BeginDuration)
+	addYEncDurationMetric(metrics, "write_apply_stage_ms", stats.StageDuration)
+	addYEncDurationMetric(metrics, "write_apply_order_ms", stats.OrderDuration)
+	addYEncDurationMetric(metrics, "write_apply_identity_lock_ms", stats.IdentityLockDuration)
+	addYEncDurationMetric(metrics, "write_apply_mutation_ms", stats.MutationDuration)
+	addYEncDurationMetric(metrics, "write_apply_seed_load_ms", stats.SeedLoadDuration)
+	addYEncDurationMetric(metrics, "write_apply_target_find_ms", stats.TargetFindDuration)
+	addYEncDurationMetric(metrics, "write_apply_pair_lock_ms", stats.PairLockDuration)
+	addYEncDurationMetric(metrics, "write_apply_target_update_ms", stats.TargetUpdateDuration)
+	metrics["write_apply_target_update_skipped"] = metrics["write_apply_target_update_skipped"].(int) + stats.TargetUpdateSkipped
+	addYEncDurationMetric(metrics, "write_apply_parts_merge_ms", stats.PartsMergeDuration)
+	addYEncDurationMetric(metrics, "write_apply_release_files_ms", stats.ReleaseFilesMergeDuration)
+	addYEncDurationMetric(metrics, "write_apply_source_delete_ms", stats.SourceDeleteDuration)
+	addYEncDurationMetric(metrics, "write_apply_source_supersede_ms", stats.SourceSupersedeDuration)
+	addYEncDurationMetric(metrics, "write_apply_ingest_payload_ms", stats.IngestPayloadUpdateDuration)
+	addYEncDurationMetric(metrics, "write_apply_work_item_done_ms", stats.WorkItemDoneUpdateDuration)
+	addYEncDurationMetric(metrics, "write_apply_stats_refresh_ms", stats.StatsRefreshDuration)
+	addYEncDurationMetric(metrics, "write_apply_summary_dirty_ms", stats.SummaryDirtyDuration)
+	addYEncDurationMetric(metrics, "write_apply_commit_ms", stats.CommitDuration)
+}
+
+func maxYEncInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type yencCandidateTimings struct {

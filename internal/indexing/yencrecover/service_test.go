@@ -136,6 +136,48 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 	}
 }
 
+func TestRunOnceReportsSelectionFillMetrics(t *testing.T) {
+	repo := &fakeRepo{
+		candidates: []pgindex.YEncRecoveryCandidate{{
+			BinaryID:        12,
+			ArticleHeaderID: 22,
+			NewsgroupName:   "alt.binaries.test",
+			MessageID:       "windowed@test",
+			Subject:         `2cf281e3e9fa4a1f82d5c320fa444010`,
+			RecoveryLane:    "time_cohort_fairness",
+		}},
+		selectionStats: pgindex.YEncRecoverySelectionStats{
+			BatchRequested:    4,
+			BatchSelected:     1,
+			WindowedRequested: 4,
+			NewestRequested:   0,
+			SelectedWindowed:  1,
+			SelectedNewest:    0,
+			BucketsScanned:    3,
+			EmptyBuckets:      2,
+		},
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.rar\r\n=ypart begin=1 end=1024\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: 4, MaxHeaderBytes: 256})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["batch_requested"] != 4 || metrics["batch_selected"] != 1 {
+		t.Fatalf("expected batch fill counts from selection stats, got metrics=%v", metrics)
+	}
+	if metrics["batch_fill_pct"] != float64(25) {
+		t.Fatalf("expected 25%% batch fill, got metrics=%v", metrics)
+	}
+	if metrics["selection_buckets"] != 3 || metrics["selection_empty_buckets"] != 2 {
+		t.Fatalf("expected selection bucket metrics, got metrics=%v", metrics)
+	}
+	if metrics["selection_windowed_requested"] != 4 || metrics["selection_newest_requested"] != 0 {
+		t.Fatalf("expected selection lane request metrics, got metrics=%v", metrics)
+	}
+}
+
 func TestRunOncePersistsPlaceholderYEncFileNameAndSubjectFileCount(t *testing.T) {
 	repo := &fakeRepo{
 		candidates: []pgindex.YEncRecoveryCandidate{{
@@ -296,6 +338,43 @@ func TestRunOnceUsesConfiguredPrefixFetchConcurrency(t *testing.T) {
 	}
 }
 
+func TestRunOnceStreamsRecoveredRecordsInFlushBatches(t *testing.T) {
+	const candidateCount = yencRecoveryStreamFlushSize + 25
+	candidates := make([]pgindex.YEncRecoveryCandidate, candidateCount)
+	for i := range candidates {
+		candidates[i] = pgindex.YEncRecoveryCandidate{
+			BinaryID:        int64(i + 1),
+			ArticleHeaderID: int64(i + 100),
+			NewsgroupName:   "alt.binaries.test",
+			MessageID:       fmt.Sprintf("stream-%d@test", i),
+			Subject:         `[01/01] stream yEnc (1/1)`,
+		}
+	}
+	repo := &fakeBatchRepo{fakeRepo: &fakeRepo{candidates: candidates}}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.mkv\r\n=ypart begin=1 end=1024\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: candidateCount, MaxHeaderBytes: 256, Concurrency: 16})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["write_flush_count"] != 2 {
+		t.Fatalf("expected two streaming flushes, got metrics=%v", metrics)
+	}
+	if metrics["write_flush_rows"] != candidateCount || metrics["write_records_queued"] != candidateCount {
+		t.Fatalf("expected all records to be queued/flushed, got metrics=%v", metrics)
+	}
+	if metrics["write_flush_max_size"] != yencRecoveryStreamFlushSize {
+		t.Fatalf("expected max flush size %d, got metrics=%v", yencRecoveryStreamFlushSize, metrics)
+	}
+	if metrics["recovered"] != candidateCount {
+		t.Fatalf("expected recovered count from committed stream batches, got metrics=%v", metrics)
+	}
+	if len(repo.batchSizes) != 2 || repo.batchSizes[0] != yencRecoveryStreamFlushSize || repo.batchSizes[1] != 25 {
+		t.Fatalf("expected batch sizes %d and 25, got %+v", yencRecoveryStreamFlushSize, repo.batchSizes)
+	}
+}
+
 func TestRunOncePassesTargetWindowSelectionOptions(t *testing.T) {
 	repo := &fakeRepo{}
 	fetcher := &fakePrefixFetcher{}
@@ -398,12 +477,19 @@ func TestRunOnceRejectsInvalidTargetWindowSplit(t *testing.T) {
 type fakeRepo struct {
 	candidates         []pgindex.YEncRecoveryCandidate
 	selectionOpts      pgindex.YEncRecoverySelectionOptions
+	selectionStats     pgindex.YEncRecoverySelectionStats
 	selectionLimit     int
 	applied            pgindex.YEncHeaderRecoveryRecord
 	notFoundArticleID  int64
 	noopArticleID      int64
 	transientArticleID int64
 	applyErr           error
+}
+
+type fakeBatchRepo struct {
+	*fakeRepo
+	mu         sync.Mutex
+	batchSizes []int
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
@@ -416,12 +502,27 @@ func (f *fakeRepo) ListYEncRecoveryCandidatesWithOptions(_ context.Context, limi
 	return append([]pgindex.YEncRecoveryCandidate(nil), f.candidates...), nil
 }
 
+func (f *fakeRepo) LastYEncRecoverySelectionStats() pgindex.YEncRecoverySelectionStats {
+	return f.selectionStats
+}
+
 func (f *fakeRepo) ApplyYEncHeaderRecovery(_ context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error) {
 	f.applied = in
 	if f.applyErr != nil {
 		return nil, f.applyErr
 	}
 	return &pgindex.YEncHeaderRecoveryResult{BinaryID: in.BinaryID, TargetBinaryID: in.BinaryID}, nil
+}
+
+func (f *fakeBatchRepo) ApplyYEncHeaderRecoveries(_ context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error) {
+	f.mu.Lock()
+	f.batchSizes = append(f.batchSizes, len(in))
+	f.mu.Unlock()
+	results := make([]pgindex.YEncHeaderRecoveryResult, 0, len(in))
+	for _, record := range in {
+		results = append(results, pgindex.YEncHeaderRecoveryResult{BinaryID: record.BinaryID, TargetBinaryID: record.BinaryID})
+	}
+	return results, nil
 }
 
 func (f *fakeRepo) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {

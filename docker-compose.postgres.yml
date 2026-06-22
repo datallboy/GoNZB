@@ -7,6 +7,8 @@ services:
     command:
       - postgres
       - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
       - shared_buffers=1GB
       - -c
       - effective_cache_size=8GB

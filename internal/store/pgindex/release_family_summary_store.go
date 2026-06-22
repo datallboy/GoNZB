@@ -185,14 +185,26 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	whereClause := `
 			bc.provider_id = $1
 			AND bc.newsgroup_id = $2
-			AND bic.release_family_key = $3`
+			AND bic.release_family_key = $3
+			AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bc.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			)`
 	if key.KeyKind == "base_stem" {
 		whereClause = `
 			bc.provider_id = $1
 			AND bc.newsgroup_id = $2
 			AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 			AND BTRIM(bic.base_stem) <> ''
-			AND LOWER(BTRIM(bic.base_stem)) = $3`
+			AND LOWER(BTRIM(bic.base_stem)) = $3
+			AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bc.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			)`
 	}
 
 	var (
@@ -620,7 +632,13 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 				 AND BTRIM(bic.base_stem) <> ''
 				 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
-			 )
+				 )
+				 AND NOT EXISTS (
+					SELECT 1
+					FROM binary_lifecycle bl
+					WHERE bl.binary_id = bic.binary_id
+					  AND bl.lifecycle_status = 'superseded'
+				 )
 			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
@@ -665,6 +683,12 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 					 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 					 AND BTRIM(bic.base_stem) <> ''
 					 AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
+				 )
+				 AND NOT EXISTS (
+					SELECT 1
+					FROM binary_lifecycle bl
+					WHERE bl.binary_id = bic.binary_id
+					  AND bl.lifecycle_status = 'superseded'
 				 )
 				LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 				LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
@@ -903,6 +927,12 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 		  ON bic.provider_id = r.provider_id
 		 AND bic.newsgroup_id = r.newsgroup_id
 		 AND bic.release_family_key = r.family_key
+		 AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 		GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
@@ -970,6 +1000,12 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 		  ON bic.provider_id = r.provider_id
 		 AND bic.newsgroup_id = r.newsgroup_id
 		 AND bic.release_family_key = r.family_key
+		 AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 		ORDER BY
@@ -1045,14 +1081,26 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 	whereClause := `
 			bc.provider_id = $1
 			AND bc.newsgroup_id = $2
-			AND bic.release_family_key = $3`
+			AND bic.release_family_key = $3
+			AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bc.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			)`
 	if key.KeyKind == "base_stem" {
 		whereClause = `
 			bc.provider_id = $1
 			AND bc.newsgroup_id = $2
 			AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 			AND BTRIM(bic.base_stem) <> ''
-			AND LOWER(BTRIM(bic.base_stem)) = $3`
+			AND LOWER(BTRIM(bic.base_stem)) = $3
+			AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bc.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			)`
 	}
 
 	var row releaseFamilySummaryRow
@@ -1669,7 +1717,13 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 		WHERE bc.provider_id = $1
 		  AND bc.newsgroup_id = $2
 		  AND bic.release_family_key = $3
-		  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)`,
+		  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		  )`,
 		key.ProviderID,
 		key.NewsgroupID,
 		key.FamilyKey,
@@ -1903,6 +1957,12 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			  ON bic.provider_id = $1
 			 AND bic.file_set_key = r.file_set_key
 			 AND BTRIM(bic.file_set_key) <> ''
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
 			JOIN binary_recovery_current brc
@@ -2151,7 +2211,13 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 		  AND bic.file_set_key = $2
 		  AND COALESCE(brc.recovered_source, '') = 'yenc_header'
 		  AND BTRIM(bic.file_set_key) <> ''
-		  AND bos.posted_at IS NOT NULL`,
+		  AND bos.posted_at IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		  )`,
 		providerID,
 		fileSetKey,
 	).Scan(

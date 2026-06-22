@@ -17,6 +17,12 @@ type Store struct {
 	yencSeedScanMu               sync.Mutex
 	yencSeedScanBackoffUntil     time.Time
 	yencSeedScanConsecutiveEmpty int
+
+	yencSelectionMu        sync.Mutex
+	yencLastSelectionStats YEncRecoverySelectionStats
+
+	yencApplyMu        sync.Mutex
+	yencLastApplyStats YEncRecoveryApplyStats
 }
 
 // NewStore opens PostgreSQL by DSN and runs application-owned migrations.
