@@ -9895,26 +9895,18 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	}
 	for _, key := range []string{
 		"unassembled_headers",
+		"pending_release_summary_refresh_summaries",
+		"pending_yenc_recovery_binaries",
 		"pending_inspect_discovery_binaries",
+		"pending_inspect_par2_binaries",
 		"pending_inspect_nfo_binaries",
 		"pending_inspect_archive_binaries",
 		"pending_inspect_password_binaries",
 		"pending_inspect_media_binaries",
 	} {
-		if stat := afterByKey[key]; stat.Exact {
-			t.Fatalf("expected %s to be marked as estimated, got %#v", key, stat)
-		}
-	}
-	for _, key := range []string{
-		"pending_release_summary_refresh_summaries",
-		"pending_inspect_par2_binaries",
-	} {
 		if stat := afterByKey[key]; !stat.Exact {
 			t.Fatalf("expected %s to be marked as exact, got %#v", key, stat)
 		}
-	}
-	if stat := afterByKey["pending_yenc_recovery_binaries"]; stat.Exact {
-		t.Fatalf("expected pending_yenc_recovery_binaries to be marked as estimated, got %#v", stat)
 	}
 
 	for _, key := range []string{

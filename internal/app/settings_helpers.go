@@ -1144,6 +1144,7 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 
 func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings {
 	return map[string]IndexingMaintenanceTaskRuntimeSettings{
+		"dashboard_stats_refresh":      {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
 		"release_source_purge":         {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 50},
 		"assembly_queue_stale_cleanup": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"readiness_cleanup":            {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},

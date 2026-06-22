@@ -41,21 +41,21 @@ The compose-only instrumentation change is in `docker-compose.postgres.yml`. It 
 
 ## Exact Backlog Definitions
 
-Use exact SQL counts for audit reporting. Dashboard values can be capped or stale.
+Use exact SQL counts for audit reporting and admin dashboard cache refreshes. Dashboard reads should use `indexer_dashboard_stats`; the `maintenance.dashboard_stats_refresh` maintenance task owns periodic exact-count refreshes.
 
 | Backlog | Exact definition |
 | --- | --- |
 | Unassembled headers | `article_header_assembly_queue` rows where `claim_until IS NULL OR claim_until < now()` |
 | Claimed assembly headers | `article_header_assembly_queue` rows where `claim_until >= now()` |
 | Release summary refresh | `count(*)` from `release_family_summary_refresh_queue` |
-| yEnc ready | `yenc_recovery_work_items` rows where `status='ready' AND ready_at <= now()` |
+| yEnc ready | `yenc_recovery_work_items` rows where `status='ready' AND ready_at <= now()` and `message_id` is non-empty |
 | yEnc running | `yenc_recovery_work_items` rows where `status='running'` |
-| Inspect backlog | `binary_inspections` rows by `stage_name` and `status='pending'` |
-| Archive waiting for purge | dashboard/cache value from `indexer_dashboard_stats`, with exact archive-state counts checked as needed |
+| Inspect backlog | exact stage-specific claimable candidate count using the same inspection selection predicates as the stage |
+| Archive waiting for purge | exact `release_archive_state` counts by archive status |
 
 ## Live Baseline Results
 
-The corrected soak captured 13 snapshots. The wall-clock sample span was about 69 minutes because exact yEnc-ready counts and size/dead-tuple snapshots add visible overhead to each five-minute sample. That overhead is itself a result: exact counts on the largest hot queues are audit/admin operations, not hot dashboard operations.
+The corrected soak captured 13 snapshots. The wall-clock sample span was about 69 minutes because exact yEnc-ready counts and size/dead-tuple snapshots add visible overhead to each five-minute sample. That overhead is itself a result: exact counts on the largest hot queues should be refreshed on an admin-cache cadence, not during ordinary dashboard GET requests.
 
 ### Backlog Delta
 
@@ -551,7 +551,7 @@ Representative safe-read EXPLAIN results from `2026-06-22 10:06:23-04`:
 
 Recommendations:
 
-- Do not put exact yEnc-ready counts on hot dashboard refresh paths. Use cached/capped counters for UI and reserve exact counts for audits.
+- Keep dashboard GET paths cache-only. The admin dashboard can show exact counts, but `maintenance.dashboard_stats_refresh` should compute and persist them on a scheduled maintenance interval instead of page-load reads.
 - Keep `recover_yenc` under soak observation after the post-audit selection/write fixes; do not retune concurrency until the new 5,000-row behavior is measured under normal supervisor load.
 - Keep Lane A on the completed queue-first, time-aware selector and remeasure after a normal supervisor run. Tune `indexing.assemble.lane_a_time_window_minutes` downward only after confirming recovered and ordinary multipart posts remain covered.
 - Watch heap fetches and dead tuples on queue/projection tables. Several index-only scans are not truly heap-free under current churn.
@@ -576,7 +576,7 @@ The baseline points to these bottleneck classes:
 
 - Keep `track_io_timing=on` and `pg_stat_statements` enabled during active indexer development.
 - Prefer increasing scrape only after assemble drains below guard thresholds.
-- Avoid exact yEnc-ready counts in frequent UI refreshes.
+- Keep exact dashboard counts behind the scheduled `maintenance.dashboard_stats_refresh` cache refresh; avoid recomputing the largest counts directly from UI GET requests.
 - Keep autovacuum healthy on `binary_completion_keys`, `article_header_assembly_queue`, `yenc_recovery_work_items`, `binary_parts`, and poster queues.
 - Increase inspect concurrency only when DB claim/query time is low and NNTP/tool capacity is idle.
 
@@ -603,7 +603,7 @@ These are recommendations only; they were not applied during the baseline. Items
 - Re-rank release formation query work. The binary-family load from `binary_identity_current` was the largest statement-time consumer in the soak.
 - Addressed post-audit: release-family fan-out now includes the explicit non-empty release-family predicate and keeps cross-newsgroup binary selection, allowing PostgreSQL to use `idx_binary_identity_release_family_provider` without reducing release accuracy semantics.
 - Addressed post-audit: assemble Lane A now uses queue-first, time-aware structured-key selection with matching indexes and no fixed ranked-candidate cap.
-- Add a cheap exact-or-estimated admin-only yEnc backlog query path that does not run in normal dashboard refresh.
+- Addressed post-audit: dashboard backlog stats now prefer exact counts refreshed into `indexer_dashboard_stats` by the scheduled `maintenance.dashboard_stats_refresh` task, while dashboard GET remains cache-only.
 - Investigate index-only scan heap fetches on high-churn queue tables and tune vacuum/analyze thresholds.
 - Add a repeatable audit script under `scripts/` if this soak needs to be rerun regularly.
 

@@ -283,6 +283,8 @@ export type AdminMaintenanceTask = {
   enabled: boolean
   schedule_enabled: boolean
   interval_hours: number
+  min_interval_hours: number
+  uses_batch_size: boolean
   batch_size: number
   last_dry_run_at?: string
   last_run?: AdminRun
