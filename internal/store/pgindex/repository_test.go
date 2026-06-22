@@ -7910,6 +7910,100 @@ func TestListUnassembledArticleHeadersPrefersNearCompleteMainPayloadMatches(t *t
 	}
 }
 
+func TestClaimAssemblyQueueBatchSelectsStructuredLaneAFromQueueKeys(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.assemble.claim-lane-a.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-claim-lane-a-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	fileName := "claim.lane.a.part01.rar"
+	family := fmt.Sprintf("claim-lane-a-%d", time.Now().UnixNano())
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  family,
+		ReleaseFamilyKey:  family,
+		FileFamilyKey:     family + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "claim.lane.a",
+		IsMainPayload:     true,
+		ReleaseKey:        family,
+		ReleaseName:       "Claim Lane A",
+		BinaryKey:         family + "::binary",
+		BinaryName:        fileName,
+		FileName:          fileName,
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        20,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}); err != nil {
+		t.Fatalf("upsert seed binary: %v", err)
+	}
+
+	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 501,
+		MessageID:     fmt.Sprintf("<claim-lane-a-%d@test>", time.Now().UnixNano()),
+		Subject:       `Claim Lane A [1/2] - "claim.lane.a.part01.rar" yEnc (11/20)`,
+		Poster:        posterName,
+		DateUTC:       &baseTime,
+		Bytes:         2048,
+		Lines:         20,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+
+	got, err := store.ClaimAssemblyQueueBatch(ctx, AssemblyClaimRequest{
+		Limit:         1,
+		Owner:         "test-claim-lane-a",
+		LeaseDuration: time.Minute,
+		Lane:          AssemblyClaimLaneA,
+	})
+	if err != nil {
+		t.Fatalf("claim assembly queue batch: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 claimed header, got %d", len(got))
+	}
+	if got[0].FileName != fileName {
+		t.Fatalf("expected claimed file %q, got %q", fileName, got[0].FileName)
+	}
+	if !got[0].StructuredIdentityBinaryMatched {
+		t.Fatalf("expected structured Lane A match, got %+v", got[0])
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
