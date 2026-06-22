@@ -238,6 +238,7 @@ Baseline assessment:
 - EXPLAIN showed the broad `binary_completion_keys` ordered selector returned 140,000 rows in about `4.15 s` with `30,564` shared blocks read. General Lane B queue selection for 20,000 rows was much cheaper at about `57.5 ms`.
 - Follow-up analysis on `2026-06-22` found the active capped Lane A selector had shifted from expensive broad scans to ineffective selection: with a 2,000-row ranked completion-key window, it found zero claimable structured queue rows while recent assemble runs selected `0` Lane A and `20,000` Lane B rows. The live table shape was about `10.4M` `binary_completion_keys` rows and `2.63M` completion file keys versus about `202k` claimable queue rows and only `1,512` claimable structured queue file keys.
 - The implemented follow-up changes Lane A to start from claimable queue file keys, then choose the best matching completion key per queue key. Supporting indexes `idx_binary_completion_keys_match_rank` and `idx_article_assembly_queue_structured_latest` match this queue-first shape. Live EXPLAIN with those indexes returned `1,460` Lane A candidates in about `180 ms` and used index-only scans for both the queue key scan and completion match/rank lookup.
+- A second follow-up made Lane A time-aware instead of capped by a fixed candidate window. Completed binary samples had posting spans of `p99 ~= 1.4 minutes`; near-complete binaries had `p99 ~= 2.5 minutes`; worst sampled spans were about `30 minutes`. The runtime setting `indexing.assemble.lane_a_time_window_minutes` defaults to `15` as a conservative window around the incomplete binary's observed `posted_at`. The selector now uses `binary_completion_keys.posted_at`, maintained from `binary_observation_stats`, so recovered yEnc `name=` evidence that updates binary file identity can participate in Lane A through the same completion-key projection.
 
 ### Poster Materialize And Crosspost Popularity
 
@@ -546,12 +547,13 @@ Representative safe-read EXPLAIN results from `2026-06-22 10:06:23-04`:
 | Release-family binary fan-out selector | current shape `1.74 s`, `293,953` shared blocks read; with explicit non-empty release-family predicate `0.98 ms`, 10 shared blocks read, using `idx_binary_identity_release_family_provider` |
 | Release-family binary fan-out hydration | current shape `1.69 s`, about `294k` shared blocks read; with explicit non-empty release-family predicate `0.62 ms`, 24 shared blocks read |
 | Assemble Lane A queue-first selector | post-fix shape returned `1,460` structured candidates in about `180 ms`, using `idx_article_assembly_queue_structured_latest` and `idx_binary_completion_keys_match_rank` |
+| Assemble Lane A time-aware selector | post-refinement shape returned `1,460` structured candidates in about `288 ms` with a 15-minute time window and no fixed candidate-key cap |
 
 Recommendations:
 
 - Do not put exact yEnc-ready counts on hot dashboard refresh paths. Use cached/capped counters for UI and reserve exact counts for audits.
 - Keep `recover_yenc` under soak observation after the post-audit selection/write fixes; do not retune concurrency until the new 5,000-row behavior is measured under normal supervisor load.
-- Keep Lane A on the queue-first selector and remeasure after a normal supervisor run. The old completion-key rank-window scan either read too broadly or starved Lane A depending on the configured cap.
+- Keep Lane A on the queue-first, time-aware selector and remeasure after a normal supervisor run. Tune `indexing.assemble.lane_a_time_window_minutes` downward only after confirming recovered and ordinary multipart posts remain covered.
 - Watch heap fetches and dead tuples on queue/projection tables. Several index-only scans are not truly heap-free under current churn.
 
 ## Current Bottleneck Classification

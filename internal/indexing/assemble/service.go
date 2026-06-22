@@ -57,6 +57,7 @@ type Options struct {
 	Lane                    string
 	LaneATargetPct          int
 	LaneBMinPct             int
+	LaneATimeWindowMinutes  int
 }
 
 type recoveryCounters struct {
@@ -121,6 +122,9 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	if opts.LaneBMinPct <= 0 {
 		opts.LaneBMinPct = 30
 	}
+	if opts.LaneATimeWindowMinutes <= 0 {
+		opts.LaneATimeWindowMinutes = 15
+	}
 	switch strings.TrimSpace(strings.ToLower(opts.Lane)) {
 	case pgindex.AssemblyClaimLaneCombined:
 		opts.Lane = pgindex.AssemblyClaimLaneCombined
@@ -162,12 +166,13 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
 	}
 	headers, err := s.repo.ClaimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
-		Limit:          s.opts.BatchSize,
-		Owner:          s.opts.ClaimOwner,
-		LeaseDuration:  s.opts.ClaimLease,
-		Lane:           s.opts.Lane,
-		LaneATargetPct: s.opts.LaneATargetPct,
-		LaneBMinPct:    s.opts.LaneBMinPct,
+		Limit:                  s.opts.BatchSize,
+		Owner:                  s.opts.ClaimOwner,
+		LeaseDuration:          s.opts.ClaimLease,
+		Lane:                   s.opts.Lane,
+		LaneATargetPct:         s.opts.LaneATargetPct,
+		LaneBMinPct:            s.opts.LaneBMinPct,
+		LaneATimeWindowMinutes: s.opts.LaneATimeWindowMinutes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
@@ -312,12 +317,13 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
 	}
 	headers, err := s.repo.ClaimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
-		Limit:          batchSize,
-		Owner:          claimOwner,
-		LeaseDuration:  s.opts.ClaimLease,
-		Lane:           s.opts.Lane,
-		LaneATargetPct: s.opts.LaneATargetPct,
-		LaneBMinPct:    s.opts.LaneBMinPct,
+		Limit:                  batchSize,
+		Owner:                  claimOwner,
+		LeaseDuration:          s.opts.ClaimLease,
+		Lane:                   s.opts.Lane,
+		LaneATargetPct:         s.opts.LaneATargetPct,
+		LaneBMinPct:            s.opts.LaneBMinPct,
+		LaneATimeWindowMinutes: s.opts.LaneATimeWindowMinutes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)

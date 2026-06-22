@@ -94,6 +94,7 @@ type indexerStageConfig struct {
 	BinaryUpsertDBChunkSize int
 	LaneATargetPct          int
 	LaneBMinPct             int
+	LaneATimeWindowMinutes  int
 	TargetWindowEnabled     bool
 	TargetWindowStart       string
 	TargetWindowEnd         string
@@ -234,6 +235,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BinaryUpsertDBChunkSize: runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
 			LaneATargetPct:          runtimeCfg.Assemble.LaneATargetPct,
 			LaneBMinPct:             runtimeCfg.Assemble.LaneBMinPct,
+			LaneATimeWindowMinutes:  runtimeCfg.Assemble.LaneATimeWindowMinutes,
 		},
 	)
 	recoverYEncSvc := yencrecover.NewService(
@@ -832,6 +834,7 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
 		LaneATargetPct:          in.LaneATargetPct,
 		LaneBMinPct:             in.LaneBMinPct,
+		LaneATimeWindowMinutes:  in.LaneATimeWindowMinutes,
 		TargetWindowEnabled:     in.TargetWindowEnabled,
 		TargetWindowStart:       in.TargetWindowStart,
 		TargetWindowEnd:         in.TargetWindowEnd,

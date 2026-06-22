@@ -88,6 +88,7 @@ type IndexingStageRuntimeSettings struct {
 	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
 	LaneATargetPct          int     `json:"lane_a_target_pct,omitempty"`
 	LaneBMinPct             int     `json:"lane_b_min_pct,omitempty"`
+	LaneATimeWindowMinutes  int     `json:"lane_a_time_window_minutes,omitempty"`
 	TargetWindowEnabled     bool    `json:"target_window_enabled,omitempty"`
 	TargetWindowStart       string  `json:"target_window_start,omitempty"`
 	TargetWindowEnd         string  `json:"target_window_end,omitempty"`

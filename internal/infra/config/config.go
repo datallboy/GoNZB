@@ -127,6 +127,7 @@ type IndexingStageConfig struct {
 	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
 	LaneATargetPct          *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
 	LaneBMinPct             *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
+	LaneATimeWindowMinutes  *int     `mapstructure:"lane_a_time_window_minutes" yaml:"lane_a_time_window_minutes"`
 	TargetWindowEnabled     *bool    `mapstructure:"target_window_enabled" yaml:"target_window_enabled"`
 	TargetWindowStart       *string  `mapstructure:"target_window_start" yaml:"target_window_start"`
 	TargetWindowEnd         *string  `mapstructure:"target_window_end" yaml:"target_window_end"`
@@ -307,6 +308,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
 	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
 	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
+	v.SetDefault("indexing.assemble.lane_a_time_window_minutes", 15)
 	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
@@ -722,6 +724,9 @@ func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
 	}
 	if cfg.BinaryUpsertDBChunkSize != nil && *cfg.BinaryUpsertDBChunkSize <= 0 {
 		return fmt.Errorf("%s.binary_upsert_db_chunk_size must be greater than 0", name)
+	}
+	if cfg.LaneATimeWindowMinutes != nil && *cfg.LaneATimeWindowMinutes <= 0 {
+		return fmt.Errorf("%s.lane_a_time_window_minutes must be greater than 0", name)
 	}
 	return nil
 }

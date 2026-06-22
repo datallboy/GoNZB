@@ -114,6 +114,7 @@ func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int
 	stage.BinaryUpsertDBChunkSize = 250
 	stage.LaneATargetPct = 70
 	stage.LaneBMinPct = 30
+	stage.LaneATimeWindowMinutes = 15
 	return stage
 }
 
@@ -1110,6 +1111,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.LaneBMinPct > 0 {
 		base.LaneBMinPct = override.LaneBMinPct
 	}
+	if override.LaneATimeWindowMinutes > 0 {
+		base.LaneATimeWindowMinutes = override.LaneATimeWindowMinutes
+	}
 	if override.TargetWindowEnabled {
 		base.TargetWindowEnabled = true
 		base.TargetWindowPct = override.TargetWindowPct
@@ -1195,6 +1199,7 @@ func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled 
 		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
 		LaneATargetPct:          intValue(cfg.LaneATargetPct, 0),
 		LaneBMinPct:             intValue(cfg.LaneBMinPct, 0),
+		LaneATimeWindowMinutes:  intValue(cfg.LaneATimeWindowMinutes, 0),
 		TargetWindowEnabled:     boolValue(cfg.TargetWindowEnabled, false),
 		TargetWindowStart:       stringValue(cfg.TargetWindowStart, ""),
 		TargetWindowEnd:         stringValue(cfg.TargetWindowEnd, ""),
@@ -1233,6 +1238,9 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	}
 	if in.LaneBMinPct > 0 {
 		out.LaneBMinPct = intPtr(in.LaneBMinPct)
+	}
+	if in.LaneATimeWindowMinutes > 0 {
+		out.LaneATimeWindowMinutes = intPtr(in.LaneATimeWindowMinutes)
 	}
 	if in.TargetWindowEnabled {
 		out.TargetWindowEnabled = boolPtr(in.TargetWindowEnabled)
