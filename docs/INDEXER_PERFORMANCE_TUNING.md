@@ -236,6 +236,8 @@ Baseline assessment:
 
 - Current pressure is assemble-heavy but not exclusively assemble-bound. Representative logs showed 20,000-header batches with total run times in the tens of seconds and binary upsert/query time dominating many runs.
 - EXPLAIN showed the broad `binary_completion_keys` ordered selector returned 140,000 rows in about `4.15 s` with `30,564` shared blocks read. General Lane B queue selection for 20,000 rows was much cheaper at about `57.5 ms`.
+- Follow-up analysis on `2026-06-22` found the active capped Lane A selector had shifted from expensive broad scans to ineffective selection: with a 2,000-row ranked completion-key window, it found zero claimable structured queue rows while recent assemble runs selected `0` Lane A and `20,000` Lane B rows. The live table shape was about `10.4M` `binary_completion_keys` rows and `2.63M` completion file keys versus about `202k` claimable queue rows and only `1,512` claimable structured queue file keys.
+- The implemented follow-up changes Lane A to start from claimable queue file keys, then choose the best matching completion key per queue key. Supporting indexes `idx_binary_completion_keys_match_rank` and `idx_article_assembly_queue_structured_latest` match this queue-first shape. Live EXPLAIN with those indexes returned `1,460` Lane A candidates in about `180 ms` and used index-only scans for both the queue key scan and completion match/rank lookup.
 
 ### Poster Materialize And Crosspost Popularity
 
@@ -543,12 +545,13 @@ Representative safe-read EXPLAIN results from `2026-06-22 10:06:23-04`:
 | yEnc small ready selector | `0.18 ms`, index scan on `idx_yenc_recovery_work_items_ready_order`, 25 rows |
 | Release-family binary fan-out selector | current shape `1.74 s`, `293,953` shared blocks read; with explicit non-empty release-family predicate `0.98 ms`, 10 shared blocks read, using `idx_binary_identity_release_family_provider` |
 | Release-family binary fan-out hydration | current shape `1.69 s`, about `294k` shared blocks read; with explicit non-empty release-family predicate `0.62 ms`, 24 shared blocks read |
+| Assemble Lane A queue-first selector | post-fix shape returned `1,460` structured candidates in about `180 ms`, using `idx_article_assembly_queue_structured_latest` and `idx_binary_completion_keys_match_rank` |
 
 Recommendations:
 
 - Do not put exact yEnc-ready counts on hot dashboard refresh paths. Use cached/capped counters for UI and reserve exact counts for audits.
 - Keep `recover_yenc` under soak observation after the post-audit selection/write fixes; do not retune concurrency until the new 5,000-row behavior is measured under normal supervisor load.
-- Revisit the Lane A `binary_completion_keys` window and ranking strategy. The current ordered scan is a material contributor to assemble claim time when the table is large.
+- Keep Lane A on the queue-first selector and remeasure after a normal supervisor run. The old completion-key rank-window scan either read too broadly or starved Lane A depending on the configured cap.
 - Watch heap fetches and dead tuples on queue/projection tables. Several index-only scans are not truly heap-free under current churn.
 
 ## Current Bottleneck Classification
@@ -597,7 +600,7 @@ These are recommendations only; they were not applied during the baseline. Items
 - Addressed post-audit: change `recover_yenc` selection/write path to make real use of configured concurrency and avoid inline source deletes.
 - Re-rank release formation query work. The binary-family load from `binary_identity_current` was the largest statement-time consumer in the soak.
 - Addressed post-audit: release-family fan-out now includes the explicit non-empty release-family predicate and keeps cross-newsgroup binary selection, allowing PostgreSQL to use `idx_binary_identity_release_family_provider` without reducing release accuracy semantics.
-- Reduce or segment the assemble Lane A `binary_completion_keys` scan window.
+- Addressed post-audit: change assemble Lane A from broad completion-key rank-window scanning to queue-first structured-key selection with matching indexes.
 - Add a cheap exact-or-estimated admin-only yEnc backlog query path that does not run in normal dashboard refresh.
 - Investigate index-only scan heap fetches on high-churn queue tables and tune vacuum/analyze thresholds.
 - Add a repeatable audit script under `scripts/` if this soak needs to be rerun regularly.

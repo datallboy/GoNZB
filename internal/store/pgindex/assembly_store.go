@@ -396,16 +396,45 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 	claimToken := uuid.NewString()
 
 	rows, err := tx.QueryContext(ctx, `
-		WITH candidate_binaries AS MATERIALIZED (
+		WITH claimable_queue_keys AS MATERIALIZED (
 			SELECT
-				binary_id,
 				provider_id,
 				newsgroup_id,
 				normalized_file_name,
-				is_main_payload,
-				completion_ratio,
-				observed_parts
-			FROM binary_completion_keys
+				MAX(article_header_id) AS article_header_id
+			FROM article_header_assembly_queue
+			WHERE normalized_file_name <> ''
+			  AND (claim_until IS NULL OR claim_until < NOW())
+			GROUP BY provider_id, newsgroup_id, normalized_file_name
+		),
+		candidate_binaries AS MATERIALIZED (
+			SELECT
+				q.article_header_id,
+				q.provider_id,
+				q.newsgroup_id,
+				q.normalized_file_name,
+				b.binary_id,
+				b.is_main_payload,
+				b.completion_ratio,
+				b.observed_parts
+			FROM claimable_queue_keys q
+			JOIN LATERAL (
+				SELECT
+					bck.binary_id,
+					bck.is_main_payload,
+					bck.completion_ratio,
+					bck.observed_parts
+				FROM binary_completion_keys bck
+				WHERE bck.provider_id = q.provider_id
+				  AND bck.newsgroup_id = q.newsgroup_id
+				  AND bck.normalized_file_name = q.normalized_file_name
+				ORDER BY
+					bck.is_main_payload DESC,
+					bck.completion_ratio DESC,
+					bck.observed_parts DESC,
+					bck.binary_id DESC
+				LIMIT 1
+			) b ON TRUE
 			ORDER BY
 				is_main_payload DESC,
 				completion_ratio DESC,
@@ -419,10 +448,7 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			JOIN LATERAL (
 				SELECT q.article_header_id
 				FROM article_header_assembly_queue q
-				WHERE q.provider_id = b.provider_id
-				  AND q.newsgroup_id = b.newsgroup_id
-				  AND q.normalized_file_name = b.normalized_file_name
-				  AND q.normalized_file_name <> ''
+				WHERE q.article_header_id = b.article_header_id
 				  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 				ORDER BY q.article_header_id DESC
 				LIMIT 1
