@@ -22,6 +22,7 @@ var criticalIndexerIndexNames = []string{
 	"public.idx_binary_identity_release_family",
 	"public.binary_recovery_current_pkey",
 	"public.binary_lifecycle_pkey",
+	"public.binary_superseded_sources_pkey",
 }
 
 var criticalIndexerHeapNames = []string{
@@ -30,6 +31,7 @@ var criticalIndexerHeapNames = []string{
 	"public.binary_identity_current",
 	"public.binary_recovery_current",
 	"public.binary_lifecycle",
+	"public.binary_superseded_sources",
 }
 
 var criticalIndexerReindexNames = []string{

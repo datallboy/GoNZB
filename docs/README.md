@@ -9,6 +9,7 @@ If you are trying to understand or run GoNZB, start with:
 - [README](../README.md)
 - [Architecture](./ARCHITECTURE.md)
 - [Indexer How It Works](./INDEXER_HOW_IT_WORKS.md)
+- [Indexer Performance Tuning](./INDEXER_PERFORMANCE_TUNING.md)
 
 ## Public And Operator-Facing Docs
 
@@ -16,6 +17,8 @@ If you are trying to understand or run GoNZB, start with:
   - high-level module layout, ownership boundaries, and runtime model
 - [Indexer How It Works](./INDEXER_HOW_IT_WORKS.md)
   - detailed indexer pipeline reference for operators and engineering readers
+- [Indexer Performance Tuning](./INDEXER_PERFORMANCE_TUNING.md)
+  - indexer performance audit methodology, live baseline notes, and tuning guidance
 
 ## Internal Development Docs
 

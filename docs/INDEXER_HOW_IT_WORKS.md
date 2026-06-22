@@ -30,8 +30,8 @@ The indexer is a staged pipeline:
 At a high level:
 
 1. raw NNTP overview rows become `article_headers`
-2. `article_headers` are matched into `binaries`
-3. `binaries` are grouped into `release_files` and `releases`
+2. `article_headers` are matched into binary projection rows
+3. binary projections are grouped into `release_files` and `releases`
 4. inspect stages read release files and push metadata back onto `releases`
 5. enrich stages attach external metadata to `releases`
 
@@ -80,17 +80,20 @@ What it means:
 - matcher-side `RawOverview` is reconstructed in memory from structured ingest fields and article facts rather than stored as a JSON column
 - old assembled payload rows are eligible for retention cleanup
 
-### `binaries`
+### Binary Projections
 
-`binaries` is the assembly-time file candidate table.
+The old `binaries` compatibility table is retired for the clean v0.8 PostgreSQL baseline. Current binary state is split across `binary_core` plus side-table projections.
 
 A binary is the indexer’s current best guess that many raw article segments belong to one posted file.
 
-Important identity/grouping columns:
+`binary_core` anchors the file-level identity:
 
 - `provider_id`
 - `newsgroup_id`
 - `binary_key`
+
+`binary_identity_current` stores the current grouping identity:
+
 - `release_family_key`
 - `source_release_key`
 - `file_family_key`
@@ -103,7 +106,7 @@ Important identity/grouping columns:
 - `file_index`
 - `expected_file_count`
 
-Important quality/completeness columns:
+`binary_observation_stats` stores quality and completeness:
 
 - `total_parts`
 - `observed_parts`
@@ -116,7 +119,7 @@ Important quality/completeness columns:
 - `is_auxiliary`
 - `is_main_payload`
 
-Important recovery columns:
+`binary_recovery_current` stores recovered identity evidence:
 
 - `recovered_kind`
 - `recovered_extension`
@@ -148,7 +151,7 @@ Important columns:
 What it means:
 
 - one row is one part of one binary
-- this is the exact part map used to later materialize `release_file_articles`
+- this is the exact part map used to later emit release NZB article references
 
 ### `release_files`
 
@@ -172,19 +175,20 @@ What it means:
 - one binary usually maps to one release file
 - `release_files` is what inspect stages usually look at first
 
-### `release_file_articles`
+### Release Article Lineage
 
-This is the materialized release-to-article reference table.
+Release article lineage is derived from `release_files` plus `binary_parts`; there is no current `release_file_articles` table in the clean v0.8 PostgreSQL baseline.
 
 Important columns:
 
-- `release_file_id`
+- `release_files.binary_id`
+- `binary_parts.binary_id`
 - `article_header_id`
 - `part_number`
 
 What it means:
 
-- this is the exact article list that an NZB emitter can walk
+- this is the exact article list that an NZB emitter can walk through binary lineage
 - it is built from `binary_parts` during release formation
 
 ### `releases`
@@ -383,7 +387,7 @@ What assemble writes:
 
 What `UpsertBinary` does:
 
-- inserts or updates one `binaries` row by `(provider_id, newsgroup_id, binary_key)`
+- inserts or updates one `binary_core` anchor row and its current side-table projections by `(provider_id, newsgroup_id, binary_key)`
 - keeps the best/highest-confidence grouping data
 - updates `expected_file_count`, `total_parts`, `file_name`, `release_name`, and grouping keys
 - enqueues dirty work in `release_stage_dirty_families`
@@ -449,7 +453,7 @@ Important rules:
 
 - if the subject says `[1/5]`, the post is part of a five-file release and must not be treated as a standalone single-binary release
 - if the yEnc header says `part=156 total=807`, that article is only part `156` of one file and does not carry file-start bytes or magic-number signatures
-- `binary_parts` and `release_file_articles` are kept ordered by `part_number`, so article order is preserved per binary
+- `binary_parts` is kept ordered by `part_number`, so article order is preserved per binary
 
 That is why a release can look like many `.bin` files if assembly does not respect yEnc metadata. The current assembly path now uses yEnc metadata as first-class identity evidence to avoid that regression.
 
@@ -457,7 +461,7 @@ That is why a release can look like many `.bin` files if assembly does not respe
 
 Purpose:
 
-- group binaries into catalog releases and release files
+- group binary projection rows into catalog releases and release files
 
 Code path:
 
@@ -469,21 +473,20 @@ Normal candidate source:
 
 - `release_stage_dirty_families`
 
-This means release work is driven by changed binary families, not by rescanning the entire `binaries` table every time.
+This means release work is driven by changed binary families, not by rescanning all binary projection tables every time.
 
 What release does:
 
 1. pulls dirty families
-2. loads binaries for that family
-3. clusters binaries into one or more release candidates
+2. loads binary projection rows for that family
+3. clusters binary rows into one or more release candidates
 4. computes a `ReleaseRecord`
 5. writes `releases`
 6. writes `release_files`
-7. writes `release_file_articles`
-8. writes release newsgroup mapping
-9. updates `nzb_cache`
-10. deletes stale release rows for the same family
-11. acknowledges the dirty-family queue row
+7. writes release newsgroup mapping
+8. updates `nzb_cache`
+9. deletes stale release rows for the same family
+10. acknowledges the dirty-family queue row
 
 ### Important release formation inputs
 
@@ -586,25 +589,25 @@ Purpose:
 
 - scan opaque complete release files before archive/media filtering
 - recover likely archive or direct-media extensions from decoded payload bytes
-- canonicalize recovered names back onto `binaries`, `release_files`, and `binary_parts`
+- canonicalize recovered names back onto v2 binary projections, `release_files`, and `binary_parts`
 
 What it relies on:
 
 - `release_files.file_name`
 - `release_files.file_index`
 - `release_files.size_bytes`
-- `release_file_articles`
+- `binary_parts`
 - decoded article bodies fetched through NNTP
-- `binaries.recovered_*`
+- `binary_recovery_current.recovered_*`
 
 Current behavior:
 
 - candidates are chosen one release at a time for complete releases whose files are still opaque `.bin`
 - discovery then scans opaque files within that release instead of trusting a single fallback-sorted file
 - when a signature is found, recovery updates:
-  - `binaries.recovered_kind`
-  - `binaries.recovered_extension`
-  - `binaries.file_name` when still opaque
+  - `binary_recovery_current.recovered_kind`
+  - `binary_recovery_current.recovered_extension`
+  - `binary_identity_current.file_name` when still opaque
   - `release_files.file_name` when still opaque
   - `binary_parts.file_name` when still opaque
 - archive recovery may also rename sibling opaque files into `.7z.001`, `.zip.001`, or `.part01.rar` style families when the size/layout pattern looks like a split archive set
@@ -842,7 +845,7 @@ Many are probably obfuscated media/archive posts whose release file names degrad
 
 Yes.
 
-Later scraped headers are assembled as new pending raw headers, and they update the existing `binaries` row and `binary_parts` rows for the same `binary_key`.
+Later scraped headers are assembled as new pending raw headers, and they update the existing `binary_core` anchor, current binary side-table projections, and `binary_parts` rows for the same `binary_key`.
 
 ### “If a binary changes later, will the release update?”
 
@@ -872,7 +875,7 @@ When a release looks wrong:
    - `file_name`
    - `is_pars`
    - `binary_id`
-3. `binaries`
+3. binary projection tables
    - `file_name`
    - `binary_name`
    - `release_name`

@@ -16,11 +16,14 @@ const (
 	yencHeaderRecoveryApplyBatchSize      = 500
 	yencRecoveryFairnessStageName         = "recover_yenc"
 	yencRecoveryFairnessBucketSeconds     = 5 * 60
-	yencRecoveryFairnessHorizon           = 24 * time.Hour
-	yencRecoveryFairnessNewestExclusion   = 30 * time.Minute
-	yencRecoveryFairnessBaseQuota         = 25
-	yencRecoveryFairnessMaxQuota          = 60
-	yencRecoveryFairnessQuotaStep         = 10
+	// Historical yEnc queues can span years; keep the newest exclusion but let
+	// the fairness cursor backfill across the whole retained article window.
+	yencRecoveryFairnessHorizon          = 10 * 365 * 24 * time.Hour
+	yencRecoveryFairnessNewestExclusion  = 30 * time.Minute
+	yencRecoveryFairnessBaseQuota        = 25
+	yencRecoveryFairnessMaxQuota         = 60
+	yencRecoveryFairnessQuotaStep        = 10
+	yencRecoveryFairnessMaxBucketsPerRun = 256
 )
 
 type yencRecoveryFairnessState struct {
@@ -44,6 +47,45 @@ type YEncRecoverySelectionOptions struct {
 	TargetWindowEnd     *time.Time
 	TargetWindowPercent int
 	NewestPercent       int
+}
+
+type YEncRecoverySelectionStats struct {
+	BatchRequested    int
+	BatchSelected     int
+	WindowedRequested int
+	NewestRequested   int
+	SelectedWindowed  int
+	SelectedNewest    int
+	BucketsScanned    int
+	EmptyBuckets      int
+}
+
+type YEncRecoveryApplyStats struct {
+	Records                     int
+	Results                     int
+	Merged                      int
+	InternalBatches             int
+	NormalizeDuration           time.Duration
+	TotalDuration               time.Duration
+	BeginDuration               time.Duration
+	StageDuration               time.Duration
+	OrderDuration               time.Duration
+	IdentityLockDuration        time.Duration
+	MutationDuration            time.Duration
+	SeedLoadDuration            time.Duration
+	TargetFindDuration          time.Duration
+	PairLockDuration            time.Duration
+	TargetUpdateDuration        time.Duration
+	TargetUpdateSkipped         int
+	PartsMergeDuration          time.Duration
+	ReleaseFilesMergeDuration   time.Duration
+	SourceDeleteDuration        time.Duration
+	SourceSupersedeDuration     time.Duration
+	IngestPayloadUpdateDuration time.Duration
+	WorkItemDoneUpdateDuration  time.Duration
+	StatsRefreshDuration        time.Duration
+	SummaryDirtyDuration        time.Duration
+	CommitDuration              time.Duration
 }
 
 func (o YEncRecoverySelectionOptions) HasTargetWindow() bool {
@@ -99,6 +141,42 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	}
 
 	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts)
+}
+
+func (s *Store) LastYEncRecoverySelectionStats() YEncRecoverySelectionStats {
+	if s == nil {
+		return YEncRecoverySelectionStats{}
+	}
+	s.yencSelectionMu.Lock()
+	defer s.yencSelectionMu.Unlock()
+	return s.yencLastSelectionStats
+}
+
+func (s *Store) setYEncRecoverySelectionStats(stats YEncRecoverySelectionStats) {
+	if s == nil {
+		return
+	}
+	s.yencSelectionMu.Lock()
+	s.yencLastSelectionStats = stats
+	s.yencSelectionMu.Unlock()
+}
+
+func (s *Store) LastYEncRecoveryApplyStats() YEncRecoveryApplyStats {
+	if s == nil {
+		return YEncRecoveryApplyStats{}
+	}
+	s.yencApplyMu.Lock()
+	defer s.yencApplyMu.Unlock()
+	return s.yencLastApplyStats
+}
+
+func (s *Store) setYEncRecoveryApplyStats(stats YEncRecoveryApplyStats) {
+	if s == nil {
+		return
+	}
+	s.yencApplyMu.Lock()
+	s.yencLastApplyStats = stats
+	s.yencApplyMu.Unlock()
 }
 
 func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (int64, int64, error) {
@@ -222,6 +300,11 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 
 func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions) ([]YEncRecoveryCandidate, error) {
 	var out []YEncRecoveryCandidate
+	stats := YEncRecoverySelectionStats{BatchRequested: limit}
+	defer func() {
+		stats.BatchSelected = len(out)
+		s.setYEncRecoverySelectionStats(stats)
+	}()
 	err := s.withParallelGatherDisabledTx(ctx, false, func(tx *sql.Tx) error {
 		if err := expireYEncRecoveryRunningLeases(ctx, tx); err != nil {
 			return err
@@ -230,26 +313,28 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		out = make([]YEncRecoveryCandidate, 0, limit)
 		if opts.HasTargetWindow() {
 			targetLimit := yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			stats.WindowedRequested = targetLimit
 			if targetLimit > 0 {
-				targeted, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, targetLimit, *opts.TargetWindowStart, *opts.TargetWindowEnd, "target_window")
+				targeted, scanned, empty, err := claimYEncRecoveryPostedWindowsBackward(ctx, tx, targetLimit, *opts.TargetWindowStart, *opts.TargetWindowEnd, "target_window")
 				if err != nil {
 					return err
 				}
-				for i := range targeted {
-					targeted[i].FairnessBucketStart = ptrTimeUTC(*opts.TargetWindowStart)
-					targeted[i].FairnessBucketEnd = ptrTimeUTC(*opts.TargetWindowEnd)
-				}
+				stats.BucketsScanned += scanned
+				stats.EmptyBuckets += empty
+				stats.SelectedWindowed += len(targeted)
 				out = append(out, targeted...)
 			}
 			newestLimit := yencRecoveryPercentLimit(limit, opts.NewestPercent)
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
 			}
+			stats.NewestRequested = newestLimit
 			if newestLimit > 0 {
 				newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 				if err != nil {
 					return err
 				}
+				stats.SelectedNewest += len(newest)
 				out = append(out, newest...)
 			}
 			return nil
@@ -260,25 +345,16 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		if fixedSplit {
 			fairnessLimit = yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
 		}
+		stats.WindowedRequested = fairnessLimit
 		if fairnessLimit > 0 {
-			bucket, err := s.nextYEncRecoveryFairnessBucket(ctx, tx)
+			fairness, scanned, empty, err := s.claimYEncRecoveryFairnessCandidatesBackward(ctx, tx, fairnessLimit)
 			if err != nil {
 				return err
 			}
-			if bucket != nil {
-				fairness, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, fairnessLimit, bucket.Start, bucket.End, "time_cohort_fairness")
-				if err != nil {
-					return err
-				}
-				for i := range fairness {
-					fairness[i].FairnessBucketStart = ptrTimeUTC(bucket.Start)
-					fairness[i].FairnessBucketEnd = ptrTimeUTC(bucket.End)
-				}
-				out = append(out, fairness...)
-				if err := s.updateYEncRecoveryFairnessStateAfterClaim(ctx, tx, bucket, len(fairness), fairnessLimit); err != nil {
-					return err
-				}
-			}
+			stats.BucketsScanned += scanned
+			stats.EmptyBuckets += empty
+			stats.SelectedWindowed += len(fairness)
+			out = append(out, fairness...)
 		}
 
 		newestLimit := limit - len(out)
@@ -288,11 +364,13 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 				newestLimit = limit - len(out)
 			}
 		}
+		stats.NewestRequested = newestLimit
 		if newestLimit > 0 {
 			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 			if err != nil {
 				return err
 			}
+			stats.SelectedNewest += len(newest)
 			out = append(out, newest...)
 		}
 		return nil
@@ -301,6 +379,76 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
 	return out, nil
+}
+
+func claimYEncRecoveryPostedWindowsBackward(ctx context.Context, tx *sql.Tx, limit int, start, end time.Time, lane string) ([]YEncRecoveryCandidate, int, int, error) {
+	if limit <= 0 || !start.Before(end) {
+		return nil, 0, 0, nil
+	}
+	window := end.Sub(start)
+	if window <= 0 {
+		return nil, 0, 0, nil
+	}
+	out := make([]YEncRecoveryCandidate, 0, limit)
+	bucketsScanned := 0
+	emptyBuckets := 0
+	windowStart := start
+	windowEnd := end
+	for len(out) < limit && bucketsScanned < yencRecoveryFairnessMaxBucketsPerRun {
+		bucketsScanned++
+		remaining := limit - len(out)
+		candidates, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, remaining, windowStart, windowEnd, lane)
+		if err != nil {
+			return nil, bucketsScanned, emptyBuckets, err
+		}
+		if len(candidates) == 0 {
+			emptyBuckets++
+		}
+		for i := range candidates {
+			candidates[i].FairnessBucketStart = ptrTimeUTC(windowStart)
+			candidates[i].FairnessBucketEnd = ptrTimeUTC(windowEnd)
+		}
+		out = append(out, candidates...)
+		windowEnd = windowStart
+		windowStart = windowStart.Add(-window)
+	}
+	return out, bucketsScanned, emptyBuckets, nil
+}
+
+func (s *Store) claimYEncRecoveryFairnessCandidatesBackward(ctx context.Context, tx *sql.Tx, limit int) ([]YEncRecoveryCandidate, int, int, error) {
+	if limit <= 0 {
+		return nil, 0, 0, nil
+	}
+	out := make([]YEncRecoveryCandidate, 0, limit)
+	bucketsScanned := 0
+	emptyBuckets := 0
+	for len(out) < limit && bucketsScanned < yencRecoveryFairnessMaxBucketsPerRun {
+		bucket, err := s.nextYEncRecoveryFairnessBucket(ctx, tx)
+		if err != nil {
+			return nil, bucketsScanned, emptyBuckets, err
+		}
+		if bucket == nil {
+			break
+		}
+		bucketsScanned++
+		remaining := limit - len(out)
+		fairness, err := claimYEncRecoveryCandidatesInPostedRange(ctx, tx, remaining, bucket.Start, bucket.End, "time_cohort_fairness")
+		if err != nil {
+			return nil, bucketsScanned, emptyBuckets, err
+		}
+		if len(fairness) == 0 {
+			emptyBuckets++
+		}
+		for i := range fairness {
+			fairness[i].FairnessBucketStart = ptrTimeUTC(bucket.Start)
+			fairness[i].FairnessBucketEnd = ptrTimeUTC(bucket.End)
+		}
+		out = append(out, fairness...)
+		if err := s.updateYEncRecoveryFairnessStateAfterClaim(ctx, tx, bucket, len(fairness), remaining); err != nil {
+			return nil, bucketsScanned, emptyBuckets, err
+		}
+	}
+	return out, bucketsScanned, emptyBuckets, nil
 }
 
 func yencRecoveryPercentLimit(limit, percent int) int {
@@ -881,8 +1029,12 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 
 		var targetID int64
 		var keys []releaseFamilySummaryKey
-		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true)
+		supersededSources := []yencRecoverySupersededSource{}
+		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil)
 		if err != nil {
+			return err
+		}
+		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {
 			return err
 		}
 		statKeys, err := refreshBinaryStatsInTx(ctx, tx, targetID)
@@ -905,10 +1057,17 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 }
 
 func (s *Store) ApplyYEncHeaderRecoveries(ctx context.Context, records []YEncHeaderRecoveryRecord) ([]YEncHeaderRecoveryResult, error) {
+	stats := YEncRecoveryApplyStats{Records: len(records)}
+	startedTotal := time.Now()
+	defer func() {
+		stats.TotalDuration = time.Since(startedTotal)
+		s.setYEncRecoveryApplyStats(stats)
+	}()
 	if len(records) == 0 {
 		return nil, nil
 	}
 
+	normalizeStarted := time.Now()
 	normalized := make([]YEncHeaderRecoveryRecord, 0, len(records))
 	for _, record := range records {
 		if record.BinaryID <= 0 {
@@ -920,6 +1079,7 @@ func (s *Store) ApplyYEncHeaderRecoveries(ctx context.Context, records []YEncHea
 		normalizeYEncHeaderRecoveryRecord(&record)
 		normalized = append(normalized, record)
 	}
+	stats.NormalizeDuration += time.Since(normalizeStarted)
 
 	out := make([]YEncHeaderRecoveryResult, 0, len(normalized))
 	for start := 0; start < len(normalized); start += yencHeaderRecoveryApplyBatchSize {
@@ -927,46 +1087,77 @@ func (s *Store) ApplyYEncHeaderRecoveries(ctx context.Context, records []YEncHea
 		if end > len(normalized) {
 			end = len(normalized)
 		}
-		results, err := s.applyYEncHeaderRecoveryBatch(ctx, normalized[start:end])
+		results, err := s.applyYEncHeaderRecoveryBatch(ctx, normalized[start:end], &stats)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, results...)
+		stats.Results += len(results)
+		for _, result := range results {
+			if result.Merged {
+				stats.Merged++
+			}
+		}
 	}
 	return out, nil
 }
 
-func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEncHeaderRecoveryRecord) ([]YEncHeaderRecoveryResult, error) {
+func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEncHeaderRecoveryRecord, stats *YEncRecoveryApplyStats) ([]YEncHeaderRecoveryResult, error) {
 	results := make([]YEncHeaderRecoveryResult, 0, len(records))
 	if len(records) == 0 {
 		return results, nil
 	}
 	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		if stats != nil {
+			stats.InternalBatches++
+		}
+		started := time.Now()
 		tx, err := s.db.BeginTx(ctx, nil)
+		if stats != nil {
+			stats.BeginDuration += time.Since(started)
+		}
 		if err != nil {
 			return fmt.Errorf("begin yenc recovery batch tx: %w", err)
 		}
 		defer rollbackTx(tx)
 
+		started = time.Now()
 		if err := stageYEncHeaderRecoveryBatch(ctx, tx, records); err != nil {
 			return err
 		}
+		if stats != nil {
+			stats.StageDuration += time.Since(started)
+		}
+		started = time.Now()
 		orderedRowIDs, locks, err := loadYEncHeaderRecoveryBatchOrder(ctx, tx)
+		if stats != nil {
+			stats.OrderDuration += time.Since(started)
+		}
 		if err != nil {
 			return err
 		}
+		started = time.Now()
 		if err := lockBinaryIdentityKeys(ctx, tx, locks); err != nil {
 			return err
+		}
+		if stats != nil {
+			stats.IdentityLockDuration += time.Since(started)
 		}
 
 		targetIDs := make([]int64, 0, len(orderedRowIDs))
 		summaryKeys := make([]releaseFamilySummaryKey, 0, len(orderedRowIDs)*4)
 		chunkResults := make([]YEncHeaderRecoveryResult, 0, len(orderedRowIDs))
+		targetUpdates := make(map[int64]struct{}, len(orderedRowIDs))
+		supersededSources := make([]yencRecoverySupersededSource, 0, len(orderedRowIDs))
 		for _, rowID := range orderedRowIDs {
 			if rowID < 0 || rowID >= len(records) {
 				continue
 			}
-			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false)
+			started = time.Now()
+			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false, targetUpdates, &supersededSources, stats)
+			if stats != nil {
+				stats.MutationDuration += time.Since(started)
+			}
 			if err != nil {
 				if IsBinaryNotFound(err) {
 					continue
@@ -977,17 +1168,36 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 			targetIDs = append(targetIDs, targetID)
 			summaryKeys = append(summaryKeys, keys...)
 		}
+		started = time.Now()
+		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.SourceSupersedeDuration += time.Since(started)
+		}
+		started = time.Now()
 		statKeys, err := refreshBinaryStatsIDsInTx(ctx, tx, dedupeYEncRecoveryInt64s(targetIDs))
+		if stats != nil {
+			stats.StatsRefreshDuration += time.Since(started)
+		}
 		if err != nil {
 			return err
 		}
 		summaryKeys = append(summaryKeys, statKeys...)
+		started = time.Now()
 		if err := markReleaseFamiliesDirtyBatch(ctx, tx, dedupeYEncRecoverySummaryKeys(summaryKeys)); err != nil {
 			return err
 		}
+		if stats != nil {
+			stats.SummaryDirtyDuration += time.Since(started)
+		}
 
+		started = time.Now()
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit yenc recovery batch tx: %w", err)
+		}
+		if stats != nil {
+			stats.CommitDuration += time.Since(started)
 		}
 		results = chunkResults
 		return nil
@@ -997,52 +1207,118 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 	return results, nil
 }
 
-func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
+func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool, targetUpdates map[int64]struct{}, supersededSources *[]yencRecoverySupersededSource, stats *YEncRecoveryApplyStats) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
+	started := time.Now()
 	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
+	if stats != nil {
+		stats.SeedLoadDuration += time.Since(started)
+	}
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	if lockIdentity {
+		started = time.Now()
 		if err := lockBinaryIdentityKey(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey); err != nil {
 			return nil, 0, nil, err
 		}
+		if stats != nil {
+			stats.IdentityLockDuration += time.Since(started)
+		}
 	}
 
+	started = time.Now()
 	targetID, err := findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+	if stats != nil {
+		stats.TargetFindDuration += time.Since(started)
+	}
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
 	if targetID > 0 && targetID != in.BinaryID {
+		started = time.Now()
 		if err := lockYEncRecoveryBinaryPair(ctx, tx, in.BinaryID, targetID); err != nil {
 			return nil, 0, nil, err
 		}
+		if stats != nil {
+			stats.PairLockDuration += time.Since(started)
+		}
 	}
 
+	started = time.Now()
 	targetID, err = findYEncRecoveryTargetBinary(ctx, tx, seed.ProviderID, seed.NewsgroupID, in.BinaryKey)
+	if stats != nil {
+		stats.TargetFindDuration += time.Since(started)
+	}
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	if targetID == 0 || targetID == in.BinaryID {
+		started = time.Now()
 		if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
 			return nil, 0, nil, err
 		}
+		if stats != nil {
+			stats.TargetUpdateDuration += time.Since(started)
+		}
 		targetID = in.BinaryID
 	} else {
-		if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
-			return nil, 0, nil, err
+		updateTarget := true
+		if targetUpdates != nil {
+			if _, ok := targetUpdates[targetID]; ok {
+				updateTarget = false
+			}
 		}
+		if updateTarget {
+			started = time.Now()
+			if err := updateBinaryFromYEncRecovery(ctx, tx, targetID, in); err != nil {
+				return nil, 0, nil, err
+			}
+			if targetUpdates != nil {
+				targetUpdates[targetID] = struct{}{}
+			}
+			if stats != nil {
+				stats.TargetUpdateDuration += time.Since(started)
+			}
+		} else if stats != nil {
+			stats.TargetUpdateSkipped++
+		}
+		started = time.Now()
 		if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
 			return nil, 0, nil, err
 		}
+		if stats != nil {
+			stats.PartsMergeDuration += time.Since(started)
+		}
+		started = time.Now()
 		if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
 			return nil, 0, nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM binary_core WHERE binary_id = $1`, in.BinaryID); err != nil {
-			return nil, 0, nil, fmt.Errorf("delete merged yenc source binary core %d: %w", in.BinaryID, err)
+		if stats != nil {
+			stats.ReleaseFilesMergeDuration += time.Since(started)
+		}
+		record := yencRecoverySupersededSource{
+			SourceBinaryID:   in.BinaryID,
+			TargetBinaryID:   targetID,
+			ProviderID:       seed.ProviderID,
+			NewsgroupID:      seed.NewsgroupID,
+			ReleaseFamilyKey: seed.ReleaseFamilyKey,
+			SourceBinaryKey:  seed.BinaryKey,
+		}
+		if supersededSources != nil {
+			*supersededSources = append(*supersededSources, record)
+		} else {
+			started = time.Now()
+			if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, []yencRecoverySupersededSource{record}); err != nil {
+				return nil, 0, nil, err
+			}
+			if stats != nil {
+				stats.SourceSupersedeDuration += time.Since(started)
+			}
 		}
 	}
 
+	started = time.Now()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE article_header_ingest_payloads
 		SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
@@ -1059,6 +1335,10 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 	); err != nil {
 		return nil, 0, nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
 	}
+	if stats != nil {
+		stats.IngestPayloadUpdateDuration += time.Since(started)
+	}
+	started = time.Now()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE yenc_recovery_work_items
 		SET status = 'done',
@@ -1078,6 +1358,9 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		in.FileSize,
 	); err != nil {
 		return nil, 0, nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
+	}
+	if stats != nil {
+		stats.WorkItemDoneUpdateDuration += time.Since(started)
 	}
 
 	keys := []releaseFamilySummaryKey{
@@ -1226,6 +1509,16 @@ type yencRecoveryBinarySeed struct {
 	NewsgroupID      int64
 	ReleaseFamilyKey string
 	BaseStem         string
+	BinaryKey        string
+}
+
+type yencRecoverySupersededSource struct {
+	SourceBinaryID   int64
+	TargetBinaryID   int64
+	ProviderID       int64
+	NewsgroupID      int64
+	ReleaseFamilyKey string
+	SourceBinaryKey  string
 }
 
 func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (yencRecoveryBinarySeed, error) {
@@ -1236,13 +1529,14 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 			bc.provider_id,
 			bc.newsgroup_id,
 			bic.release_family_key,
-			bic.base_stem
+			bic.base_stem,
+			bc.binary_key
 		FROM binary_core bc
 		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
 		WHERE bc.binary_id = $1
 		FOR UPDATE OF bc, bic`,
 		binaryID,
-	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem)
+	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
 	if err == sql.ErrNoRows {
 		return seed, fmt.Errorf("%w: %d for yenc recovery", ErrBinaryNotFound, binaryID)
 	}
@@ -1250,6 +1544,143 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 		return seed, fmt.Errorf("load yenc recovery binary %d: %w", binaryID, err)
 	}
 	return seed, nil
+}
+
+func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, records []yencRecoverySupersededSource) error {
+	if len(records) == 0 {
+		return nil
+	}
+	bySource := make(map[int64]yencRecoverySupersededSource, len(records))
+	targetIDs := make([]int64, 0, len(records))
+	seenTargets := make(map[int64]struct{}, len(records))
+	for _, record := range records {
+		if record.SourceBinaryID <= 0 || record.TargetBinaryID <= 0 || record.SourceBinaryID == record.TargetBinaryID {
+			continue
+		}
+		bySource[record.SourceBinaryID] = record
+		if _, ok := seenTargets[record.TargetBinaryID]; !ok {
+			seenTargets[record.TargetBinaryID] = struct{}{}
+			targetIDs = append(targetIDs, record.TargetBinaryID)
+		}
+	}
+	if len(bySource) == 0 {
+		return nil
+	}
+	sort.Slice(targetIDs, func(i, j int) bool { return targetIDs[i] < targetIDs[j] })
+	targetPlaceholders := make([]string, 0, len(targetIDs))
+	targetArgs := make([]any, 0, len(targetIDs))
+	for _, targetID := range targetIDs {
+		targetArgs = append(targetArgs, targetID)
+		targetPlaceholders = append(targetPlaceholders, fmt.Sprintf("$%d", len(targetArgs)))
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT binary_id, binary_key
+		FROM binary_core
+		WHERE binary_id IN (`+strings.Join(targetPlaceholders, ",")+`)`,
+		targetArgs...,
+	)
+	if err != nil {
+		return fmt.Errorf("load yenc superseded target binaries: %w", err)
+	}
+	targetKeys := make(map[int64]string, len(targetIDs))
+	for rows.Next() {
+		var targetID int64
+		var targetBinaryKey string
+		if err := rows.Scan(&targetID, &targetBinaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan yenc superseded target binary: %w", err)
+		}
+		targetKeys[targetID] = targetBinaryKey
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate yenc superseded target binaries: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close yenc superseded target binaries: %w", err)
+	}
+
+	sourceIDs := make([]int64, 0, len(bySource))
+	for sourceID := range bySource {
+		sourceIDs = append(sourceIDs, sourceID)
+	}
+	sort.Slice(sourceIDs, func(i, j int) bool { return sourceIDs[i] < sourceIDs[j] })
+
+	values := make([]string, 0, len(sourceIDs))
+	args := make([]any, 0, len(sourceIDs)*7)
+	for _, sourceID := range sourceIDs {
+		record := bySource[sourceID]
+		targetBinaryKey, ok := targetKeys[record.TargetBinaryID]
+		if !ok {
+			return fmt.Errorf("load yenc superseded target binary %d: %w", record.TargetBinaryID, sql.ErrNoRows)
+		}
+		base := len(args) + 1
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,'yenc_recovery_merge',NOW())", base, base+1, base+2, base+3, base+4, base+5, base+6))
+		args = append(args,
+			record.SourceBinaryID,
+			record.TargetBinaryID,
+			record.ProviderID,
+			record.NewsgroupID,
+			record.ReleaseFamilyKey,
+			record.SourceBinaryKey,
+			targetBinaryKey,
+		)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO binary_superseded_sources (
+			source_binary_id,
+			target_binary_id,
+			provider_id,
+			newsgroup_id,
+			release_family_key,
+			source_binary_key,
+			target_binary_key,
+			superseded_reason,
+			superseded_at
+		)
+		VALUES `+strings.Join(values, ",")+`
+		ON CONFLICT (source_binary_id) DO UPDATE
+		SET target_binary_id = EXCLUDED.target_binary_id,
+		    provider_id = EXCLUDED.provider_id,
+		    newsgroup_id = EXCLUDED.newsgroup_id,
+		    release_family_key = EXCLUDED.release_family_key,
+		    source_binary_key = EXCLUDED.source_binary_key,
+		    target_binary_key = EXCLUDED.target_binary_key,
+		    superseded_reason = EXCLUDED.superseded_reason,
+		    superseded_at = EXCLUDED.superseded_at,
+		    purged_at = NULL`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("record %d yenc superseded source binaries: %w", len(sourceIDs), err)
+	}
+
+	values = values[:0]
+	args = args[:0]
+	for _, sourceID := range sourceIDs {
+		record := bySource[sourceID]
+		base := len(args) + 1
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,'superseded',NOW())", base, base+1, base+2))
+		args = append(args, record.SourceBinaryID, record.ProviderID, record.NewsgroupID)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO binary_lifecycle (
+			binary_id,
+			provider_id,
+			newsgroup_id,
+			lifecycle_status,
+			updated_at
+		)
+		VALUES `+strings.Join(values, ",")+`
+		ON CONFLICT (binary_id) DO UPDATE
+		SET provider_id = EXCLUDED.provider_id,
+		    newsgroup_id = EXCLUDED.newsgroup_id,
+		    lifecycle_status = 'superseded',
+		    updated_at = NOW()`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("mark %d yenc source binaries superseded: %w", len(sourceIDs), err)
+	}
+	return nil
 }
 
 func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, binaryKey string) (int64, error) {

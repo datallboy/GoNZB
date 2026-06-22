@@ -438,6 +438,7 @@ Purge prerequisites:
 - catalog/detail snapshots exist.
 - required inspection gate is complete.
 - source lineage rows were captured before archive/purge.
+- yEnc merge sources were marked in `binary_superseded_sources` instead of deleted inline by `recover_yenc`.
 
 Purge may delete binary source rows through `binary_core`, but it must not overlap active binary writers. It is serialized with `assemble` under the supervisor `assemble/purge` group.
 

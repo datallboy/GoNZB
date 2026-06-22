@@ -536,29 +536,58 @@ func purgeArchivedReleaseSourcesTx(ctx context.Context, tx *sql.Tx, releaseID st
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT lb.binary_id
-		FROM release_archive_lineage_binaries lb
-		WHERE lb.release_id = $1
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM release_files other_rf
-			LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
-			WHERE other_rf.binary_id = lb.binary_id
-			  AND other_rf.release_id <> $1
-			  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
-		  )`, releaseID)
+		WITH release_lineage AS (
+			SELECT lb.binary_id
+			FROM release_archive_lineage_binaries lb
+			WHERE lb.release_id = $1
+		),
+		purge_roots AS (
+			SELECT lb.binary_id
+			FROM release_lineage lb
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_files other_rf
+				LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
+				WHERE other_rf.binary_id = lb.binary_id
+				  AND other_rf.release_id <> $1
+				  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
+			)
+		),
+		purge_superseded AS (
+			SELECT bss.source_binary_id AS binary_id
+			FROM binary_superseded_sources bss
+			JOIN purge_roots pr ON pr.binary_id = bss.target_binary_id
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_files other_rf
+				LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
+				WHERE other_rf.binary_id = bss.source_binary_id
+				  AND other_rf.release_id <> $1
+				  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
+			)
+		)
+		SELECT DISTINCT binary_id, TRUE AS is_lineage
+		FROM purge_roots
+		UNION
+		SELECT DISTINCT binary_id, FALSE AS is_lineage
+		FROM purge_superseded`, releaseID)
 	if err != nil {
 		return fmt.Errorf("list purgeable binaries %s: %w", releaseID, err)
 	}
 	defer rows.Close()
 
 	binaryIDs := make([]int64, 0, 64)
+	var purgeableLineageBinaries int64
 	for rows.Next() {
 		var binaryID int64
-		if err := rows.Scan(&binaryID); err != nil {
+		var isLineage bool
+		if err := rows.Scan(&binaryID, &isLineage); err != nil {
 			return fmt.Errorf("scan purgeable binary id: %w", err)
 		}
 		binaryIDs = append(binaryIDs, binaryID)
+		if isLineage {
+			purgeableLineageBinaries++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate purgeable binary ids: %w", err)
@@ -566,12 +595,24 @@ func purgeArchivedReleaseSourcesTx(ctx context.Context, tx *sql.Tx, releaseID st
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close purgeable binary ids: %w", err)
 	}
-	result.SkippedSharedBinaryRows = totalLineageBinaries - int64(len(binaryIDs))
+	result.SkippedSharedBinaryRows = totalLineageBinaries - purgeableLineageBinaries
 
 	if len(binaryIDs) > 0 {
 		if err := stageReleasePurgeBinaryIDs(ctx, tx, binaryIDs); err != nil {
 			return fmt.Errorf("stage purgeable binary ids for %s: %w", releaseID, err)
 		}
+		var supersededSourceRows int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM binary_superseded_sources bss
+			WHERE EXISTS (
+				SELECT 1
+				FROM tmp_release_purge_binary_ids staged
+				WHERE staged.binary_id IN (bss.source_binary_id, bss.target_binary_id)
+			)`).Scan(&supersededSourceRows); err != nil {
+			return fmt.Errorf("count superseded source rows for %s: %w", releaseID, err)
+		}
+		result.DeletedRowsByTable["binary_superseded_sources"] = supersededSourceRows
 		for _, table := range []string{
 			"binary_parts",
 			"binary_grouping_evidence",

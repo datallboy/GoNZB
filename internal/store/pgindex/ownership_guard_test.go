@@ -22,6 +22,7 @@ func TestBinaryStorageV2WritesStayInExplicitOwners(t *testing.T) {
 		"binary_identity_current",
 		"binary_recovery_current",
 		"binary_lifecycle",
+		"binary_superseded_sources",
 		"binary_projection_events",
 	}
 

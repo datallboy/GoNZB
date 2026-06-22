@@ -320,6 +320,12 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				WHERE bic.provider_id = r.provider_id
 				  AND bic.release_family_key = r.release_family_key
 				  AND BTRIM(bic.release_family_key) <> ''
+				  AND NOT EXISTS (
+					SELECT 1
+					FROM binary_lifecycle bl
+					WHERE bl.binary_id = bic.binary_id
+					  AND bl.lifecycle_status = 'superseded'
+				  )
 			) family_payload ON TRUE
 			LEFT JOIN LATERAL (
 				SELECT COUNT(DISTINCT rf.file_name) FILTER (WHERE NOT rf.is_pars)::INTEGER AS payload_file_count
@@ -354,6 +360,12 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 			  ON bic.provider_id = r.provider_id
 			 AND bic.release_family_key = r.release_family_key
 			 AND BTRIM(bic.release_family_key) <> ''
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		)
@@ -480,6 +492,12 @@ func (s *Store) ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, 
 			  ON bic.provider_id = r.provider_id
 			 AND bic.release_family_key = r.release_family_key
 			 AND BTRIM(bic.release_family_key) <> ''
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
 		)
@@ -567,7 +585,13 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			SELECT bic.binary_id
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
-			  AND bic.release_family_key = $2`
+			  AND bic.release_family_key = $2
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`
 	if newsgroupID > 0 {
 		candidateSelector += `
 			  AND bic.newsgroup_id = $3`
@@ -580,7 +604,13 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			WHERE bic.provider_id = $1
 			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 			  AND BTRIM(bic.base_stem) <> ''
-			  AND LOWER(BTRIM(bic.base_stem)) = $2`
+			  AND LOWER(BTRIM(bic.base_stem)) = $2
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`
 		if newsgroupID > 0 {
 			candidateSelector += `
 			  AND bic.newsgroup_id = $3`
@@ -593,7 +623,13 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND BTRIM(bic.file_set_key) <> ''
-			  AND bic.file_set_key = $2`
+			  AND bic.file_set_key = $2
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`
 	default:
 		candidateSelector += `
 			UNION
@@ -602,7 +638,13 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			WHERE bic.provider_id = $1
 			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
 			  AND BTRIM(bic.base_stem) <> ''
-			  AND LOWER(BTRIM(bic.base_stem)) = $2`
+			  AND LOWER(BTRIM(bic.base_stem)) = $2
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`
 		if newsgroupID > 0 {
 			candidateSelector += `
 			  AND bic.newsgroup_id = $3`
@@ -797,7 +839,13 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 			  AND bic.expected_file_count > 1
 			  AND bic.file_index > 0
 			  AND BTRIM(COALESCE(bic.base_stem, '')) <> ''
-			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)`,
+			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`,
 			providerID,
 			newsgroupID,
 			releaseFamilyKey,

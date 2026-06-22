@@ -320,12 +320,13 @@ This matrix is the schema contract for current and near-term code changes.
 | `scrape_checkpoints` | runtime/work | `scrape_*` | none | Canonical latest/backfill cursor and cutoff state per provider/newsgroup. |
 | `scrape_runs` | runtime/work | `scrape_*` | `indexer_maintenance` stale-run cleanup only | Scrape run history and current running/completed/failed state. |
 | `posters` | support dimension | `poster_materialize` | none | Shared support dimension; scrape and assemble do not write it inline. |
-| `binary_core` | v2 canonical anchor | `assemble` | `recover_yenc` merge cleanup, purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. |
+| `binary_core` | v2 canonical anchor | `assemble` | purge terminal cleanup | Assemble-owned immutable/near-immutable binary anchor projection and canonical FK/cascade root. `recover_yenc` must not delete source rows inline. |
 | `binary_observation_stats` | v2 canonical projection | `assemble` | `recover_yenc` after merge/stat refresh only | Mutable counts, byte totals, article bounds, and posted timestamp. |
 | `binary_identity_current` | v2 canonical projection | `assemble` | `recover_yenc` for recovered stronger identity only | Current release-family/file-set grouping identity and readiness-affecting identity scalars. |
 | `binary_completion_keys` | derived selector projection | `assemble` | `recover_yenc` after recovered identity/stat changes only | Binary-derived incomplete normalized filename keys for internal Lane A. Keeps the hot selector off broad identity/stat joins. |
 | `binary_recovery_current` | v2 canonical projection | `recover_yenc` | binary recovery helpers only | Recovered kind/extension/source/confidence and recovered filename. |
-| `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `maintenance.release_source_purge` | none | Archive/purge lifecycle state for binary lineage. |
+| `binary_lifecycle` | v2 lifecycle projection | `release_archive` / `maintenance.release_source_purge` | `recover_yenc` superseded-source marker only | Archive/purge lifecycle state for binary lineage. |
+| `binary_superseded_sources` | v2 lifecycle bridge | `recover_yenc` | purge terminal cleanup | Deferred source-to-target lineage for yEnc merges. Purge uses this bridge to delete superseded source binaries only after the target release is archive-safe. |
 | `binary_projection_events` | append-only event bridge | stage emitting event | none | Future cross-stage projector input; append-only, not a shared mutable row. |
 | `binary_parts` | canonical fact | `assemble` | `recover_yenc` merge/refinement only | Canonical article-to-binary membership bridge. |
 | `binary_grouping_evidence` | legacy audit | none in normal runtime | purge/maintenance cleanup only | Legacy detailed matcher evidence. New assemble writes keep compact scalar summaries in `binary_identity_current`; full matcher traces are no longer persisted to PostgreSQL by default. |
@@ -841,6 +842,8 @@ Allowed writes:
 - stronger recovered identity fields in `binary_identity_current`
 - stat refreshes in `binary_observation_stats` after recovered merge/refinement
 - recovered source/name state in `binary_recovery_current`
+- superseded-source lifecycle markers in `binary_lifecycle`
+- superseded source-to-target lineage in `binary_superseded_sources`
 - completion-key refreshes in `binary_completion_keys` after recovered identity/stat changes
 - merge/refinement updates on `binary_parts` where recovered identity changes require it
 - release-family refresh queue enqueue only
@@ -850,6 +853,7 @@ Not allowed:
 - mutating `article_headers`
 - materializing readiness summaries directly
 - writing release catalog rows to reflect recovery progress
+- deleting `binary_core` source rows inline; purge owns terminal source deletion after archive eligibility
 
 Rationale:
 
@@ -1205,6 +1209,7 @@ Purge owns deletion of temporary source lineage and heavy build surfaces, includ
 - `article_headers` rows that exist only to support the purged release lineage
 - `article_header_ingest_payloads` tied only to that purged lineage
 - `binary_core`
+- `binary_superseded_sources`
 - `binary_parts`
 - `binary_grouping_evidence` legacy rows
 - inspection evidence tables tied only to purged binaries
@@ -1216,7 +1221,7 @@ Exact delete scope must continue to honor shared-lineage safety. If a row is sti
 Current delete order:
 
 1. lock and validate `release_archive_state`
-2. compute purgeable lineage binaries that are not shared with another non-purged release
+2. compute purgeable lineage binaries and superseded yEnc source binaries that are not shared with another non-purged release
 3. delete binary-owned evidence/runtime rows by deleting the owning `binary_core` rows
 4. delete release-scoped transitional rows:
    - `release_files`
