@@ -2792,6 +2792,63 @@ func TestListBinariesForReleaseCandidateReadsBinaryV2Projections(t *testing.T) {
 	}
 }
 
+func TestListBinariesForReleaseCandidateReleaseFamilyCrossesNewsgroups(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.release.cross-group.a.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.release.cross-group.b.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group a: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group b: %v", err)
+	}
+	defer func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id IN ($1, $2)`, groupAID, groupBID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID)
+	}()
+
+	family := fmt.Sprintf("cross-group-family-%d", time.Now().UnixNano())
+	for i, newsgroupID := range []int64{groupAID, groupBID} {
+		if _, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			ReleaseKey:        family,
+			ReleaseName:       "Cross Group Family",
+			BinaryKey:         fmt.Sprintf("%s-%d", family, i),
+			BinaryName:        fmt.Sprintf("cross.group.part%02d.rar", i+1),
+			FileName:          fmt.Sprintf("cross.group.part%02d.rar", i+1),
+			FileIndex:         i + 1,
+			ExpectedFileCount: 2,
+			TotalParts:        1,
+			IsMainPayload:     true,
+		}); err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, 1, groupAID, ReleaseCandidateKeyKindReleaseFamily, family)
+	if err != nil {
+		t.Fatalf("list binaries for release-family candidate: %v", err)
+	}
+	if len(binaries) != 2 {
+		t.Fatalf("expected release-family fan-out across both newsgroups, got %d", len(binaries))
+	}
+	gotGroups := map[int64]bool{}
+	for _, binary := range binaries {
+		gotGroups[binary.NewsgroupID] = true
+	}
+	if !gotGroups[groupAID] || !gotGroups[groupBID] {
+		t.Fatalf("expected groups %d and %d, got %+v", groupAID, groupBID, gotGroups)
+	}
+}
+
 func TestAckReleaseCandidateStoresAckWithoutMutatingSummaryRow(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

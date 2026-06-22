@@ -616,6 +616,19 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND bic.newsgroup_id = $3`
 		}
 	case ReleaseCandidateKeyKindReleaseFamily:
+		usesNewsgroupArg = false
+		candidateSelector = `
+			SELECT bic.binary_id
+			FROM binary_identity_current bic
+			WHERE bic.provider_id = $1
+			  AND BTRIM(bic.release_family_key) <> ''
+			  AND bic.release_family_key = $2
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_lifecycle bl
+				WHERE bl.binary_id = bic.binary_id
+				  AND bl.lifecycle_status = 'superseded'
+			  )`
 	case ReleaseCandidateKeyKindRecoveredFileSet:
 		usesNewsgroupArg = false
 		candidateSelector = `
