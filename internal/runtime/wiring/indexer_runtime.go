@@ -510,6 +510,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return marshalStageMetrics(enrichTMDBSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
+		maintenanceTaskStage(runtimeCfg, "dashboard_stats_refresh", supervisor.StageName("maintenance.dashboard_stats_refresh"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			stats, err := appCtx.PGIndexStore.RefreshIndexerDashboardStats(ctx)
+			return dashboardStatsMaintenanceMetrics(stats), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "release_source_purge", supervisor.StageMaintenanceReleaseSourcePurge, func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, cfg.BatchSize, runtimeCfg.ReleaseReadyPolicy)
 			return maintenanceTaskMetrics(result), err
@@ -679,6 +683,30 @@ func maintenanceTaskMetrics(result *pgindex.MaintenanceTaskResult) map[string]an
 		"blockers":              result.Blockers,
 		"warnings":              result.Warnings,
 	}
+}
+
+func dashboardStatsMaintenanceMetrics(stats *pgindex.IndexerDashboardStats) map[string]any {
+	if stats == nil {
+		return map[string]any{}
+	}
+	metrics := map[string]any{"stat_count": stats.Count}
+	var available, exact, failed int
+	for _, item := range stats.Items {
+		if item.Available {
+			available++
+		}
+		if item.Exact {
+			exact++
+		}
+		if item.LastError != "" {
+			failed++
+		}
+	}
+	metrics["available_count"] = available
+	metrics["exact_count"] = exact
+	metrics["failed_count"] = failed
+	metrics["unavailable_count"] = stats.Count - available
+	return metrics
 }
 
 func newIndexerStageOwner() string {

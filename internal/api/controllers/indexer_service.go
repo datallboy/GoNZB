@@ -97,19 +97,21 @@ type indexerReleaseOverridePatch struct {
 }
 
 type indexerMaintenanceTaskView struct {
-	TaskKey         string                         `json:"task_key"`
-	Label           string                         `json:"label"`
-	Purpose         string                         `json:"purpose"`
-	Destructive     bool                           `json:"destructive"`
-	Enabled         bool                           `json:"enabled"`
-	ScheduleEnabled bool                           `json:"schedule_enabled"`
-	IntervalHours   int                            `json:"interval_hours"`
-	BatchSize       int                            `json:"batch_size"`
-	LastDryRunAt    string                         `json:"last_dry_run_at,omitempty"`
-	LastRun         *pgindex.IndexerStageRun       `json:"last_run,omitempty"`
-	LastDryRun      *indexerMaintenanceTaskRunView `json:"last_dry_run,omitempty"`
-	Warnings        []string                       `json:"warnings,omitempty"`
-	Blockers        []string                       `json:"blockers,omitempty"`
+	TaskKey          string                         `json:"task_key"`
+	Label            string                         `json:"label"`
+	Purpose          string                         `json:"purpose"`
+	Destructive      bool                           `json:"destructive"`
+	Enabled          bool                           `json:"enabled"`
+	ScheduleEnabled  bool                           `json:"schedule_enabled"`
+	IntervalHours    int                            `json:"interval_hours"`
+	MinIntervalHours int                            `json:"min_interval_hours"`
+	UsesBatchSize    bool                           `json:"uses_batch_size"`
+	BatchSize        int                            `json:"batch_size"`
+	LastDryRunAt     string                         `json:"last_dry_run_at,omitempty"`
+	LastRun          *pgindex.IndexerStageRun       `json:"last_run,omitempty"`
+	LastDryRun       *indexerMaintenanceTaskRunView `json:"last_dry_run,omitempty"`
+	Warnings         []string                       `json:"warnings,omitempty"`
+	Blockers         []string                       `json:"blockers,omitempty"`
 }
 
 type indexerMaintenanceTaskRunView struct {
@@ -739,8 +741,8 @@ func (s *runtimeIndexerService) UpdateMaintenanceTask(ctx context.Context, taskK
 	if patch.BatchSize != nil {
 		cfg.BatchSize = *patch.BatchSize
 	}
-	if cfg.ScheduleEnabled && cfg.IntervalHours < 6 {
-		return nil, fmt.Errorf("maintenance task %q scheduled interval must be at least 6 hours", def.TaskKey)
+	if cfg.ScheduleEnabled && cfg.IntervalHours < maintenanceTaskMinIntervalHours(def) {
+		return nil, fmt.Errorf("maintenance task %q scheduled interval must be at least %d hours", def.TaskKey, maintenanceTaskMinIntervalHours(def))
 	}
 	next.Indexing.MaintenanceTasks[def.TaskKey] = cfg
 	if _, err := s.settingsAdmin.Update(ctx, &app.RuntimeSettingsPatch{Indexing: next.Indexing}); err != nil {
@@ -782,6 +784,36 @@ func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, task
 		return nil, fmt.Errorf("maintenance task %q is disabled", taskKey)
 	}
 	switch taskKey {
+	case "dashboard_stats_refresh":
+		if dryRun {
+			stats, err := s.store.GetIndexerDashboardStats(ctx)
+			if err != nil {
+				return nil, err
+			}
+			count := int64(0)
+			if stats != nil {
+				count = int64(stats.Count)
+			}
+			return &pgindex.MaintenanceTaskResult{
+				TaskKey:              taskKey,
+				DryRun:               true,
+				EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+				Warnings:             []string{"dry-run reports cached stat rows without recomputing counts"},
+			}, nil
+		}
+		stats, err := s.store.RefreshIndexerDashboardStats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		count := int64(0)
+		if stats != nil {
+			count = int64(stats.Count)
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey:              taskKey,
+			DryRun:               false,
+			EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+		}, nil
 	case "release_source_purge":
 		if dryRun {
 			return store.DryRunReleaseSourcePurge(ctx, cfg.BatchSize, s.releaseReadyPolicy(ctx))
@@ -1202,21 +1234,24 @@ var allIndexerStages = []string{
 }
 
 type maintenanceTaskDefinition struct {
-	TaskKey     string
-	Label       string
-	Purpose     string
-	Destructive bool
-	Warnings    []string
+	TaskKey          string
+	Label            string
+	Purpose          string
+	Destructive      bool
+	UsesBatchSize    bool
+	MinIntervalHours int
+	Warnings         []string
 }
 
 var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
-	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true},
-	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Destructive: true},
-	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Destructive: true, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
-	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Destructive: true},
-	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Destructive: true},
-	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Destructive: true, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
-	{TaskKey: "header_payload_purge", Label: "Header Payload Purge", Purpose: "Runs the existing aged article-header payload purge.", Destructive: true, Warnings: []string{"disabled by default"}},
+	{TaskKey: "dashboard_stats_refresh", Label: "Dashboard Stats Refresh", Purpose: "Refreshes exact admin dashboard backlog counts into the cached dashboard stats table.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
+	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
+	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
+	{TaskKey: "header_payload_purge", Label: "Header Payload Purge", Purpose: "Runs the existing aged article-header payload purge.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"disabled by default"}},
 }
 
 func parseMaintenanceTask(taskKey string) (maintenanceTaskDefinition, error) {
@@ -1250,17 +1285,26 @@ func maintenanceTaskConfig(runtime *app.RuntimeSettings, taskKey string) app.Ind
 func maintenanceTaskViewFromSettings(def maintenanceTaskDefinition, runtime *app.RuntimeSettings) indexerMaintenanceTaskView {
 	cfg := maintenanceTaskConfig(runtime, def.TaskKey)
 	return indexerMaintenanceTaskView{
-		TaskKey:         def.TaskKey,
-		Label:           def.Label,
-		Purpose:         def.Purpose,
-		Destructive:     def.Destructive,
-		Enabled:         cfg.Enabled,
-		ScheduleEnabled: cfg.ScheduleEnabled,
-		IntervalHours:   cfg.IntervalHours,
-		BatchSize:       cfg.BatchSize,
-		LastDryRunAt:    cfg.LastDryRunAt,
-		Warnings:        append([]string(nil), def.Warnings...),
+		TaskKey:          def.TaskKey,
+		Label:            def.Label,
+		Purpose:          def.Purpose,
+		Destructive:      def.Destructive,
+		Enabled:          cfg.Enabled,
+		ScheduleEnabled:  cfg.ScheduleEnabled,
+		IntervalHours:    cfg.IntervalHours,
+		MinIntervalHours: maintenanceTaskMinIntervalHours(def),
+		UsesBatchSize:    def.UsesBatchSize,
+		BatchSize:        cfg.BatchSize,
+		LastDryRunAt:     cfg.LastDryRunAt,
+		Warnings:         append([]string(nil), def.Warnings...),
 	}
+}
+
+func maintenanceTaskMinIntervalHours(def maintenanceTaskDefinition) int {
+	if def.MinIntervalHours > 0 {
+		return def.MinIntervalHours
+	}
+	return 6
 }
 
 func maintenanceTaskRunView(result *pgindex.MaintenanceTaskResult) *indexerMaintenanceTaskRunView {

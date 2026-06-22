@@ -462,15 +462,14 @@ type indexerDashboardStatDefinition struct {
 	Limit       int64
 }
 
-const dashboardBacklogEstimateLimit = 1000
-const dashboardStatRefreshTimeout = 20 * time.Second
+const dashboardStatRefreshTimeout = 45 * time.Second
 
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "unassembled_headers",
 		Label:       "Unassembled Header Inventory",
-		Description: "Planner-estimated article headers not yet assembled. This is broad upstream inventory, not the current claimable assemble queue.",
-		Exact:       false,
+		Description: "Exact count of article headers still waiting in the active assemble queue.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_release_summary_refresh_summaries",
@@ -517,16 +516,14 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_yenc_recovery_binaries",
 		Label:       "yEnc Recovery Backlog",
-		Description: "Bounded count of joinable yEnc recovery candidates that recover_yenc can inspect now. Values at the cap mean more joinable work may exist behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of ready yEnc recovery work items recover_yenc can inspect now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_discovery_binaries",
 		Label:       "Discovery Backlog",
-		Description: "Bounded count of binaries inspect_discovery can claim now. Values at the cap mean there may be more work behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of binaries inspect_discovery can claim now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_par2_binaries",
@@ -537,9 +534,8 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_inspect_nfo_binaries",
 		Label:       "NFO Inspection Backlog",
-		Description: "Bounded count of binaries inspect_nfo can claim now. Values at the cap mean there may be more work behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of binaries inspect_nfo can claim now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_archive_binaries",
@@ -550,9 +546,8 @@ var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "pending_inspect_password_binaries",
 		Label:       "Password Inspection Backlog",
-		Description: "Bounded count of encrypted archive binaries inspect_password can claim now. Values at the cap mean there may be more work behind the current snapshot.",
-		Exact:       false,
-		Limit:       dashboardBacklogEstimateLimit,
+		Description: "Exact count of encrypted archive binaries inspect_password can claim now.",
+		Exact:       true,
 	},
 	{
 		Key:         "pending_inspect_media_binaries",
@@ -761,6 +756,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "crosspost_popularity_refresh", Label: "Crosspost Popularity", ItemLabel: "groups"},
 	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
+	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
@@ -976,6 +972,8 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"processed_headers"}
 	case "recover_yenc":
 		return []string{"recovered", "attempted", "candidates"}
+	case "maintenance.dashboard_stats_refresh":
+		return []string{"available_count", "stat_count"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
 	case "release_generate_nzb":
@@ -1057,7 +1055,7 @@ func dashboardStatKeys() []string {
 func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (int64, error) {
 	switch key {
 	case "unassembled_headers":
-		return s.EstimateUnassembledArticleHeaders(ctx)
+		return s.CountUnassembledArticleHeaders(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
 	case "generate_nzb_pending_releases":
@@ -1266,11 +1264,16 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 }
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
-	count, err := s.countReadyYEncRecoveryCandidates(ctx, int(dashboardBacklogEstimateLimit))
-	if err != nil {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE status = 'ready'
+		  AND ready_at <= NOW()
+		  AND BTRIM(COALESCE(message_id, '')) <> ''`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
-	return int64(count), nil
+	return count, nil
 }
 
 func (s *Store) CountClaimableAssembleBacklog(ctx context.Context) (int64, error) {
@@ -1289,14 +1292,117 @@ func (s *Store) CountClaimableAssembleBacklog(ctx context.Context) (int64, error
 }
 
 func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
-	if strings.TrimSpace(stageName) == "inspect_par2" {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "inspect_par2" {
 		return s.CountPendingPAR2InspectionBacklog(ctx)
 	}
-	candidates, err := s.ListBinaryInspectionCandidates(ctx, stageName, dashboardBacklogEstimateLimit)
+	count, err := s.countPendingBinaryInspectionBacklog(ctx, stageName)
 	if err != nil {
 		return 0, err
 	}
-	return int64(len(candidates)), nil
+	return count, nil
+}
+
+func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
+	filter, err := inspectCandidateFilter(stageName, false)
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				(
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				)
+			) OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate
+	filteredPredicate := `
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_inspections cfi
+			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.binary_id = b.id
+			  AND cfi.status = 'completed'
+			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
+		  )`
+
+	var count int64
+	if stageName == "inspect_discovery" {
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM binary_identity_current bic
+			JOIN binary_core bc ON bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			LEFT JOIN binary_inspections bi
+				ON bi.stage_name = $1
+				AND bi.binary_id = bic.binary_id
+			WHERE COALESCE(brc.recovered_extension, '') = ''
+			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+			  AND (
+				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+			  )
+			  AND (
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					(
+						bi.inspection_claimed_until IS NULL OR
+						bi.inspection_claimed_until < NOW()
+					)
+				) OR
+				GREATEST(
+					bc.updated_at,
+					bic.updated_at,
+					bos.updated_at,
+					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+				) > bi.updated_at OR
+				`+errorRerunPredicate+`
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
+				bi.inspection_claimed_until < NOW()
+			  )`, stageName).Scan(&count); err != nil {
+			return 0, fmt.Errorf("count pending %s backlog: %w", stageName, err)
+		}
+		return count, nil
+	}
+
+	if err := s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`
+		SELECT COUNT(DISTINCT b.id)
+		FROM binary_state b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+			ON bi.stage_name = $1
+			AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+			ON abi.stage_name = 'inspect_archive'
+			AND abi.binary_id = b.id
+		WHERE `+filter+`
+		  AND (
+			`+rerunPredicate+`
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
+		  )`+filteredPredicate, stageName).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending %s backlog: %w", stageName, err)
+	}
+	return count, nil
 }
 
 func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {

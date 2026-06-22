@@ -375,11 +375,11 @@ export function AdminDashboardPage() {
           <div>
             <h2 className="section-title">Operational Backlog</h2>
             <p className="muted-copy">
-              Queue-focused snapshots for the stages operators tune most often. Refresh recomputes backlog counts without storage diagnostics.
+              Queue-focused snapshots for the stages operators tune most often. The dashboard reads cached values; manual refresh recomputes the cache immediately.
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
-            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Backlog'}
+            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Cache Now'}
           </button>
         </div>
         {statsError ? <div className="banner error">{statsError}</div> : null}

@@ -61,7 +61,7 @@ function MaintenanceTaskCard({ task, onRefresh }: { task: AdminMaintenanceTask; 
       await patchAdminMaintenanceTask(task.task_key, {
         schedule_enabled: scheduleEnabled,
         interval_hours: intervalHours,
-        batch_size: batchSize,
+        ...(task.uses_batch_size ? { batch_size: batchSize } : {}),
       })
       setMessage('Schedule saved.')
       await onRefresh()
@@ -80,7 +80,8 @@ function MaintenanceTaskCard({ task, onRefresh }: { task: AdminMaintenanceTask; 
           <h2 className="section-title">{task.label}</h2>
           <p className="muted-copy">{task.purpose}</p>
           <p className="muted-copy">
-            {task.destructive ? 'Destructive' : 'Non-destructive'} · schedule {task.schedule_enabled ? 'enabled' : 'disabled'} · batch {task.batch_size}
+            {task.destructive ? 'Destructive' : 'Non-destructive'} · schedule {task.schedule_enabled ? 'enabled' : 'disabled'}
+            {task.uses_batch_size ? ` · batch ${task.batch_size}` : ''}
           </p>
           <p className="muted-copy">
             Last dry-run: {task.last_dry_run_at ? new Date(task.last_dry_run_at).toLocaleString() : 'never'} · latest run:{' '}
@@ -109,12 +110,14 @@ function MaintenanceTaskCard({ task, onRefresh }: { task: AdminMaintenanceTask; 
         </label>
         <label className="field">
           <span>Interval hours</span>
-          <input type="number" min={6} value={intervalHours} onChange={(event) => setIntervalHours(Number(event.target.value))} />
+          <input type="number" min={task.min_interval_hours || 6} value={intervalHours} onChange={(event) => setIntervalHours(Number(event.target.value))} />
         </label>
-        <label className="field">
-          <span>Batch size</span>
-          <input type="number" min={1} value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} />
-        </label>
+        {task.uses_batch_size ? (
+          <label className="field">
+            <span>Batch size</span>
+            <input type="number" min={1} value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} />
+          </label>
+        ) : null}
         <div className="button-row">
           <button className="secondary-button" type="button" onClick={() => void saveSchedule()}>
             Save
