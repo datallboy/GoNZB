@@ -353,6 +353,8 @@ Throughput controls:
 Baseline assessment:
 
 - Release formation was active and became the largest DB consumer by total statement time during the corrected soak. The hottest statement family loaded binary candidates from `binary_identity_current` by provider/family and consumed about 3,562 seconds across 1,707 calls. This indicates release formation query shape is at least as important as assemble for v0.8.0 performance follow-up.
+- Follow-up EXPLAIN on `2026-06-22` found the release-family fan-out selector was not using the existing `(provider_id, release_family_key)` partial index unless the query explicitly included `BTRIM(release_family_key) <> ''`. For representative family `leif billy s05e02 1080p h264 havsorn`, the current selector read about `294k` shared blocks and took `1.74 s` for 15 rows. The semantically equivalent selector with the explicit non-empty predicate used `idx_binary_identity_release_family_provider`, read 10 shared blocks, and took `0.98 ms`. The full hydration query showed the same shift, from `1.69 s` and about `294k` block reads to `0.62 ms` and 24 block reads.
+- Any release formation query change must preserve cross-newsgroup binary selection for release-family and recovered-file-set candidates, the auto-reform path for more complete binary sets, inspect-derived title metadata, and public status gating. The recommended first change is exposing the existing non-empty release-family predicate to the planner, not narrowing candidate scope or weakening release quality checks.
 
 ### Recover yEnc
 
@@ -539,6 +541,8 @@ Representative safe-read EXPLAIN results from `2026-06-22 10:06:23-04`:
 | Broad assemble Lane A source | `4.15 s`, index scan on `idx_binary_completion_keys_rank`, `30,564` shared blocks read for 140,000 rows |
 | General assembly Lane B source | `57.5 ms`, backward primary-key scan, 20,000 rows |
 | yEnc small ready selector | `0.18 ms`, index scan on `idx_yenc_recovery_work_items_ready_order`, 25 rows |
+| Release-family binary fan-out selector | current shape `1.74 s`, `293,953` shared blocks read; with explicit non-empty release-family predicate `0.98 ms`, 10 shared blocks read, using `idx_binary_identity_release_family_provider` |
+| Release-family binary fan-out hydration | current shape `1.69 s`, about `294k` shared blocks read; with explicit non-empty release-family predicate `0.62 ms`, 24 shared blocks read |
 
 Recommendations:
 
@@ -592,6 +596,7 @@ These are recommendations only; they were not applied during the baseline. Items
 - Addressed post-audit: review and fix `recover_yenc` ready-window/fairness selection against the exact 18M+ ready backlog.
 - Addressed post-audit: change `recover_yenc` selection/write path to make real use of configured concurrency and avoid inline source deletes.
 - Re-rank release formation query work. The binary-family load from `binary_identity_current` was the largest statement-time consumer in the soak.
+- For release formation, first add the explicit non-empty release-family predicate to the release-family fan-out selector so PostgreSQL can use the existing provider/family partial index. This preserves cross-newsgroup selection and avoids changing release accuracy semantics.
 - Reduce or segment the assemble Lane A `binary_completion_keys` scan window.
 - Add a cheap exact-or-estimated admin-only yEnc backlog query path that does not run in normal dashboard refresh.
 - Investigate index-only scan heap fetches on high-churn queue tables and tune vacuum/analyze thresholds.
