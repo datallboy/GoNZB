@@ -2666,6 +2666,10 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 	if len(records) == 0 {
 		return nil
 	}
+	records = dedupeBinaryPartRecords(records)
+	if len(records) == 0 {
+		return nil
+	}
 
 	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -2942,6 +2946,16 @@ func dedupeBinaryPartRecords(records []BinaryPartRecord) []BinaryPartRecord {
 		return records
 	}
 
+	records = dedupeBinaryPartRecordsByPart(records)
+	records = dedupeBinaryPartRecordsByArticle(records)
+	return dedupeBinaryPartRecordsByPart(records)
+}
+
+func dedupeBinaryPartRecordsByPart(records []BinaryPartRecord) []BinaryPartRecord {
+	if len(records) <= 1 {
+		return records
+	}
+
 	type binaryPartKey struct {
 		BinaryID   int64
 		PartNumber int
@@ -2963,6 +2977,36 @@ func dedupeBinaryPartRecords(records []BinaryPartRecord) []BinaryPartRecord {
 	out := make([]BinaryPartRecord, 0, len(order))
 	for _, key := range order {
 		out = append(out, bestByKey[key])
+	}
+	return out
+}
+
+func dedupeBinaryPartRecordsByArticle(records []BinaryPartRecord) []BinaryPartRecord {
+	if len(records) <= 1 {
+		return records
+	}
+
+	bestByArticle := make(map[int64]BinaryPartRecord, len(records))
+	order := make([]int64, 0, len(records))
+	passthrough := make([]BinaryPartRecord, 0)
+	for _, record := range records {
+		if record.ArticleHeaderID <= 0 {
+			passthrough = append(passthrough, record)
+			continue
+		}
+		existing, ok := bestByArticle[record.ArticleHeaderID]
+		if !ok {
+			bestByArticle[record.ArticleHeaderID] = record
+			order = append(order, record.ArticleHeaderID)
+			continue
+		}
+		bestByArticle[record.ArticleHeaderID] = preferBinaryPartRecord(existing, record)
+	}
+
+	out := make([]BinaryPartRecord, 0, len(passthrough)+len(order))
+	out = append(out, passthrough...)
+	for _, articleHeaderID := range order {
+		out = append(out, bestByArticle[articleHeaderID])
 	}
 	return out
 }
