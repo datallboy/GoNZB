@@ -540,6 +540,27 @@ func (f *fakeRepo) RecordYEncRecoveryTransientFailure(_ context.Context, article
 	return nil
 }
 
+func (f *fakeBatchRepo) RecordYEncRecoveryNotFoundBatch(_ context.Context, articleHeaderIDs []int64) error {
+	if len(articleHeaderIDs) > 0 {
+		f.notFoundArticleID = articleHeaderIDs[len(articleHeaderIDs)-1]
+	}
+	return nil
+}
+
+func (f *fakeBatchRepo) RecordYEncRecoveryNoopBatch(_ context.Context, articleHeaderIDs []int64) error {
+	if len(articleHeaderIDs) > 0 {
+		f.noopArticleID = articleHeaderIDs[len(articleHeaderIDs)-1]
+	}
+	return nil
+}
+
+func (f *fakeBatchRepo) RecordYEncRecoveryTransientFailureBatch(_ context.Context, articleHeaderIDs []int64) error {
+	if len(articleHeaderIDs) > 0 {
+		f.transientArticleID = articleHeaderIDs[len(articleHeaderIDs)-1]
+	}
+	return nil
+}
+
 type fakePrefixFetcher struct {
 	body      []byte
 	err       error

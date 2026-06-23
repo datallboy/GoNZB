@@ -1074,17 +1074,17 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 	case "pending_yenc_recovery_binaries":
 		return s.CountPendingYEncRecoveryBinaries(ctx)
 	case "pending_inspect_discovery_binaries":
-		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_discovery")
+		return s.CountInspectDiscoveryReadyQueue(ctx)
 	case "pending_inspect_par2_binaries":
-		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_par2")
+		return s.CountInspectionReadyQueue(ctx, "inspect_par2")
 	case "pending_inspect_nfo_binaries":
 		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_nfo")
 	case "pending_inspect_archive_binaries":
-		return s.CountPendingInspectArchiveBinaries(ctx)
+		return s.CountInspectionReadyQueue(ctx, "inspect_archive")
 	case "pending_inspect_password_binaries":
 		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_password")
 	case "pending_inspect_media_binaries":
-		return s.CountPendingInspectMediaBinaries(ctx)
+		return s.CountInspectionReadyQueue(ctx, "inspect_media")
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
 	}
@@ -1408,10 +1408,11 @@ func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
-		WITH `+binaryInspectionCandidateStateCTE+`,
+		WITH `+binaryInspectionPAR2CandidateStateCTE+`,
 		candidate_rows AS (
 			SELECT
 				b.id,
+				b.release_id,
 				b.updated_at AS source_updated_at,
 				COALESCE(bi.status, '') AS current_status,
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
@@ -1437,14 +1438,22 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 					), ''), '0')::integer
 					ELSE 0
 				END AS volume_number,
-				EXISTS (
-					SELECT 1
-					FROM binary_par2_targets bpt
-					WHERE bpt.binary_id = b.id
-				) AS has_targets,
-				(
-					bi.id IS NULL OR
-					bi.status = 'failed' OR
+					EXISTS (
+						SELECT 1
+						FROM binary_par2_targets bpt
+						WHERE bpt.binary_id = b.id
+					) AS has_targets,
+					(
+						COALESCE(bi.status, '') = 'completed' AND
+						CASE
+							WHEN COALESCE(bi.summary_json->>'target_count', '') ~ '^[0-9]+$'
+							THEN (bi.summary_json->>'target_count')::integer = 0
+							ELSE FALSE
+						END
+					) AS completed_zero_targets,
+					(
+						bi.id IS NULL OR
+						bi.status = 'failed' OR
 					(
 						bi.status = 'running' AND
 						(
@@ -1452,7 +1461,11 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 							bi.inspection_claimed_until < NOW()
 						)
 					) OR
-					b.updated_at > bi.updated_at
+					b.updated_at > bi.updated_at OR
+					COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''
 				) AS needs_rerun
 			FROM binary_state b
 			LEFT JOIN binary_inspections bi
@@ -1477,6 +1490,16 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 				BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun,
 				BOOL_OR(
 					current_status = 'completed' AND
+					(
+						COALESCE(current_summary_json->>'probe_skip_reason', '') = 'article_not_found' OR
+						(
+							COALESCE(current_summary_json->>'probe_skip_reason', '') = 'prefix_sample_failed' AND
+							COALESCE(current_summary_json->>'probe_error_detail', '') ILIKE '%article not found (430)%'
+						)
+					)
+				) AS has_completed_missing_article_probe,
+				BOOL_OR(
+					current_status = 'completed' AND
 					CASE
 						WHEN COALESCE(current_summary_json->>'target_count', '') ~ '^[0-9]+$'
 						THEN (current_summary_json->>'target_count')::integer = 0
@@ -1490,10 +1513,13 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 			SELECT cr.*
 			FROM candidate_rows cr
 			JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
-			WHERE (
+			WHERE cr.release_id <> ''
+			  AND NOT (cr.volume_rank = 1 AND ss.has_completed_zero_targets)
+			  AND (
 				cr.needs_rerun OR
 				(
 					NOT ss.has_any_targets AND
+					NOT ss.has_completed_missing_article_probe AND
 					NOT ss.has_completed_zero_targets
 				)
 			)
@@ -1539,8 +1565,7 @@ func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, 
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
 					(
 						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND

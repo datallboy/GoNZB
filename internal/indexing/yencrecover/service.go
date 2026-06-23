@@ -38,6 +38,12 @@ type repositoryWithBatchHeaderRecovery interface {
 	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
 }
 
+type repositoryWithBatchRecoveryBackoff interface {
+	RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHeaderIDs []int64) error
+	RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderIDs []int64) error
+	RecordYEncRecoveryTransientFailureBatch(ctx context.Context, articleHeaderIDs []int64) error
+}
+
 type repositoryWithSelectionStats interface {
 	LastYEncRecoverySelectionStats() pgindex.YEncRecoverySelectionStats
 }
@@ -256,9 +262,12 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		writerDone chan error
 	)
 	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		firstErr error
+		mu                  sync.Mutex
+		wg                  sync.WaitGroup
+		firstErr            error
+		notFoundArticleIDs  []int64
+		noopArticleIDs      []int64
+		transientArticleIDs []int64
 	)
 	setFirstErr := func(err error) {
 		if err == nil {
@@ -282,14 +291,26 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		switch kind {
 		case "not_found":
 			metrics["not_found"] = metrics["not_found"].(int) + 1
+			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
+				notFoundArticleIDs = append(notFoundArticleIDs, outcome.ArticleHeaderID)
+			}
 		case "fetch_failure":
 			metrics["fetch_failures"] = metrics["fetch_failures"].(int) + 1
+			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
+				transientArticleIDs = append(transientArticleIDs, outcome.ArticleHeaderID)
+			}
 		case "parse_failure":
 			metrics["parse_failures"] = metrics["parse_failures"].(int) + 1
+			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
+				notFoundArticleIDs = append(notFoundArticleIDs, outcome.ArticleHeaderID)
+			}
 		case "stale":
 			metrics["stale_candidates"] = metrics["stale_candidates"].(int) + 1
 		case "noop":
 			metrics["noops"] = metrics["noops"].(int) + 1
+			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
+				noopArticleIDs = append(noopArticleIDs, outcome.ArticleHeaderID)
+			}
 		case "recovered":
 			metrics["recovered"] = metrics["recovered"].(int) + 1
 			if outcome != nil && outcome.Result != nil && outcome.Result.Merged {
@@ -384,6 +405,18 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			setFirstErr(err)
 		}
 	}
+	if batchWrites {
+		started := time.Now()
+		mu.Lock()
+		notFoundBatch := append([]int64(nil), notFoundArticleIDs...)
+		noopBatch := append([]int64(nil), noopArticleIDs...)
+		transientBatch := append([]int64(nil), transientArticleIDs...)
+		mu.Unlock()
+		if err := s.recordBatchRecoveryBackoffs(ctx, notFoundBatch, noopBatch, transientBatch); err != nil {
+			setFirstErr(err)
+		}
+		addYEncDurationMetric(metrics, "not_found_write_ms", time.Since(started))
+	}
 	metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
 	mu.Lock()
 	runErr := firstErr
@@ -409,6 +442,46 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		)
 	}
 	return metrics, nil
+}
+
+func (s *Service) recordBatchRecoveryBackoffs(ctx context.Context, notFoundArticleIDs, noopArticleIDs, transientArticleIDs []int64) error {
+	if len(notFoundArticleIDs) == 0 && len(noopArticleIDs) == 0 && len(transientArticleIDs) == 0 {
+		return nil
+	}
+	if repo, ok := s.repo.(repositoryWithBatchRecoveryBackoff); ok {
+		if len(notFoundArticleIDs) > 0 {
+			if err := repo.RecordYEncRecoveryNotFoundBatch(ctx, notFoundArticleIDs); err != nil {
+				return fmt.Errorf("record yenc recovery not-found batch: %w", err)
+			}
+		}
+		if len(noopArticleIDs) > 0 {
+			if err := repo.RecordYEncRecoveryNoopBatch(ctx, noopArticleIDs); err != nil {
+				return fmt.Errorf("record yenc recovery noop batch: %w", err)
+			}
+		}
+		if len(transientArticleIDs) > 0 {
+			if err := repo.RecordYEncRecoveryTransientFailureBatch(ctx, transientArticleIDs); err != nil {
+				return fmt.Errorf("record yenc recovery transient batch: %w", err)
+			}
+		}
+		return nil
+	}
+	for _, articleID := range notFoundArticleIDs {
+		if err := s.repo.RecordYEncRecoveryNotFound(ctx, articleID); err != nil {
+			return err
+		}
+	}
+	for _, articleID := range noopArticleIDs {
+		if err := s.repo.RecordYEncRecoveryNoop(ctx, articleID); err != nil {
+			return err
+		}
+	}
+	for _, articleID := range transientArticleIDs {
+		if err := s.repo.RecordYEncRecoveryTransientFailure(ctx, articleID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) selectionOptions() (pgindex.YEncRecoverySelectionOptions, error) {
@@ -560,8 +633,9 @@ type yencCandidateTimings struct {
 }
 
 type yencCandidateOutcome struct {
-	Result *pgindex.YEncHeaderRecoveryResult
-	Record *pgindex.YEncHeaderRecoveryRecord
+	Result          *pgindex.YEncHeaderRecoveryResult
+	Record          *pgindex.YEncHeaderRecoveryRecord
+	ArticleHeaderID int64
 }
 
 func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate, batchWrites bool) (*yencCandidateOutcome, string, yencCandidateTimings, error) {
@@ -579,6 +653,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	timings.Fetch = time.Since(started)
 	if err != nil {
 		if errors.Is(err, nntp.ErrArticleNotFound) {
+			if batchWrites {
+				return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "not_found", timings, nil
+			}
 			started = time.Now()
 			if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 				s.log.Warn("recover_yenc: failed to persist not_found backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
@@ -588,6 +665,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		}
 		if s.log != nil {
 			s.log.Warn("recover_yenc: fetch prefix failed article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
+		}
+		if batchWrites {
+			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "fetch_failure", timings, nil
 		}
 		started = time.Now()
 		if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
@@ -601,6 +681,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	header, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
 	timings.Parse = time.Since(started)
 	if err != nil {
+		if batchWrites {
+			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "parse_failure", timings, nil
+		}
 		started = time.Now()
 		if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 			s.log.Warn("recover_yenc: failed to persist parse backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
@@ -609,6 +692,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 		return nil, "parse_failure", timings, nil
 	}
 	if strings.TrimSpace(header.FileName) == "" {
+		if batchWrites {
+			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "noop", timings, nil
+		}
 		started = time.Now()
 		if markErr := s.repo.RecordYEncRecoveryNoop(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 			s.log.Warn("recover_yenc: failed to persist noop backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
@@ -643,6 +729,9 @@ func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRe
 	})
 	timings.Match = time.Since(started)
 	if strings.TrimSpace(matched.FileName) == "" || strings.HasSuffix(strings.ToLower(matched.FileName), ".bin") {
+		if batchWrites {
+			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "noop", timings, nil
+		}
 		started = time.Now()
 		if markErr := s.repo.RecordYEncRecoveryNoop(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
 			s.log.Warn("recover_yenc: failed to persist noop backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)

@@ -197,18 +197,20 @@ func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 
 func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.zip.001":    true,
-		"example.part01.rar": true,
-		"example.r00":        true,
-		"example.tar":        true,
-		"example.tgz":        true,
-		"example.tar.gz":     true,
-		"example.tar.xz":     true,
-		"example.txz":        true,
-		"example.tar.zst":    true,
-		"example.tzst":       true,
-		"example.par2":       false,
+		"example.7z.001":      true,
+		"example.zip.001":     true,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.r00":         true,
+		"example.tar":         true,
+		"example.tgz":         true,
+		"example.tar.gz":      true,
+		"example.tar.xz":      true,
+		"example.txz":         true,
+		"example.tar.zst":     true,
+		"example.tzst":        true,
+		"example.par2":        false,
 	}
 
 	for fileName, want := range tests {
@@ -220,15 +222,17 @@ func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 
 func TestIsArchiveRepresentativeUsesFirstSplitVolume(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.7z.002":     false,
-		"example.part01.rar": true,
-		"example.part02.rar": false,
-		"example.rar":        true,
-		"example.r00":        false,
-		"example.tar":        true,
-		"example.tar.gz":     true,
-		"example.tar.zst":    true,
+		"example.7z.001":      true,
+		"example.7z.002":      false,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.part02.rar":  false,
+		"example.rar":         true,
+		"example.r00":         false,
+		"example.tar":         true,
+		"example.tar.gz":      true,
+		"example.tar.zst":     true,
 	}
 
 	for fileName, want := range tests {

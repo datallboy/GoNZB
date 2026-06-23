@@ -1300,6 +1300,45 @@ func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID 
 	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
 }
 
+func (s *Store) RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHeaderIDs []int64) error {
+	articleHeaderIDs = dedupeYEncRecoveryInt64s(articleHeaderIDs)
+	if len(articleHeaderIDs) == 0 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		WITH requested(article_header_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		),
+		updated_payloads AS (
+			UPDATE article_header_ingest_payloads p
+			SET yenc_recovery_missing_count = p.yenc_recovery_missing_count + 1,
+			    yenc_recovery_last_missing_at = NOW(),
+			    yenc_recovery_retry_after = NOW() + CASE
+				WHEN p.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '1 hour'
+				WHEN p.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '6 hours'
+				WHEN p.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '24 hours'
+				ELSE INTERVAL '72 hours'
+			    END
+			FROM requested r
+			WHERE p.article_header_id = r.article_header_id
+			RETURNING p.article_header_id, p.yenc_recovery_missing_count, p.yenc_recovery_retry_after
+		)
+		UPDATE yenc_recovery_work_items wi
+		SET status = 'ready',
+		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW()),
+		    missing_count = COALESCE(p.yenc_recovery_missing_count, wi.missing_count),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		FROM updated_payloads p
+		WHERE wi.article_header_id = p.article_header_id`,
+		articleHeaderIDs,
+	); err != nil {
+		return fmt.Errorf("record yenc recovery not found batch count=%d: %w", len(articleHeaderIDs), err)
+	}
+	return nil
+}
+
 func (s *Store) RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error {
 	if articleHeaderID <= 0 {
 		return fmt.Errorf("article header id is required")
@@ -1321,6 +1360,45 @@ func (s *Store) RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int6
 		return fmt.Errorf("record yenc recovery noop for article header %d: %w", articleHeaderID, err)
 	}
 	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
+}
+
+func (s *Store) RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderIDs []int64) error {
+	articleHeaderIDs = dedupeYEncRecoveryInt64s(articleHeaderIDs)
+	if len(articleHeaderIDs) == 0 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		WITH requested(article_header_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		),
+		updated_payloads AS (
+			UPDATE article_header_ingest_payloads p
+			SET yenc_recovery_missing_count = p.yenc_recovery_missing_count + 1,
+			    yenc_recovery_last_missing_at = NOW(),
+			    yenc_recovery_retry_after = NOW() + CASE
+				WHEN p.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '15 minutes'
+				WHEN p.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '1 hour'
+				WHEN p.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '6 hours'
+				ELSE INTERVAL '24 hours'
+			    END
+			FROM requested r
+			WHERE p.article_header_id = r.article_header_id
+			RETURNING p.article_header_id, p.yenc_recovery_missing_count, p.yenc_recovery_retry_after
+		)
+		UPDATE yenc_recovery_work_items wi
+		SET status = 'ready',
+		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW()),
+		    missing_count = COALESCE(p.yenc_recovery_missing_count, wi.missing_count),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		FROM updated_payloads p
+		WHERE wi.article_header_id = p.article_header_id`,
+		articleHeaderIDs,
+	); err != nil {
+		return fmt.Errorf("record yenc recovery noop batch count=%d: %w", len(articleHeaderIDs), err)
+	}
+	return nil
 }
 
 func (s *Store) syncYEncRecoveryWorkItemRetryState(ctx context.Context, articleHeaderID int64) error {

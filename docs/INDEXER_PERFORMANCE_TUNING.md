@@ -564,8 +564,8 @@ The baseline points to these bottleneck classes:
 | --- | --- | --- |
 | Assemble | DB query shape and write amplification | large ordered `binary_completion_keys` scan, binary upsert chunks, stats refresh, summary/yEnc sync |
 | Release formation | DB query shape | binary-family load from `binary_identity_current` was the top `pg_stat_statements` family |
-| Release summary refresh | DB aggregation and stage budget | thousands of dirty keys after assemble; runs can hit duration budget |
-| Recover yEnc | Largely addressed post-audit; monitor under normal load | selection now fills 5,000-row batches and write time is about `9 s`; remaining risk is backlog growth versus normal scrape/assemble input |
+| Release summary refresh | Largely addressed post-audit; monitor hot key quality | dirty-key queue contention was removed, base-stem refresh was batched, and opaque base-stem keys are now suppressed because they overgrouped tens of thousands of binaries |
+| Recover yEnc | Largely addressed post-audit; monitor under normal load | selection now fills 5,000-row batches and write time is about `12-13 s` for roughly `2.6k-2.9k` recovered rows; remaining risk is backlog growth versus normal scrape/assemble input |
 | Scrape | Stage gating by assemble backlog | scrape paused for assemble catch-up around the observed window |
 | Inspection | Candidate query shape and external tool cost | no archive/media backlog, but PAR2/discovery selection can still consume DB time |
 | Storage | Table/index size and churn | largest tables are tens of GB; queue/projection dead tuples are visible |
@@ -602,10 +602,28 @@ These are recommendations only; they were not applied during the baseline. Items
 - Addressed post-audit: change `recover_yenc` selection/write path to make real use of configured concurrency and avoid inline source deletes.
 - Re-rank release formation query work. The binary-family load from `binary_identity_current` was the largest statement-time consumer in the soak.
 - Addressed post-audit: release-family fan-out now includes the explicit non-empty release-family predicate and keeps cross-newsgroup binary selection, allowing PostgreSQL to use `idx_binary_identity_release_family_provider` without reducing release accuracy semantics.
+- Addressed post-audit: release summary refresh no longer serializes writers on a unique dirty-key queue. The refresh queue is append-only and refresh-time deduped, which keeps assemble summary marking in the tens of milliseconds.
+- Addressed post-audit: release summary refresh batches `base_stem` keys with a matching `idx_binary_identity_base_stem_summary` index, but suppresses opaque base-stem tokens such as 32-character random names. The live root cause was not lock waits: opaque base-stem summaries had fanout up to `126,720` binaries under one key, causing hot refresh batches to spend `9-15 s` in aggregate/dominant sorting. After removing derived cache rows for those keys and preventing new opaque base-stem enqueues, post-cleanup refresh samples were about `0.12-1.99 s` for real work batches.
 - Addressed post-audit: assemble Lane A now uses queue-first, time-aware structured-key selection with matching indexes and no fixed ranked-candidate cap.
 - Addressed post-audit: dashboard backlog stats now prefer exact counts refreshed into `indexer_dashboard_stats` by the scheduled `maintenance.dashboard_stats_refresh` task, while dashboard GET remains cache-only.
 - Investigate index-only scan heap fetches on high-churn queue tables and tune vacuum/analyze thresholds.
 - Add a repeatable audit script under `scripts/` if this soak needs to be rerun regularly.
+
+## Inspection Ready Queue Migration Notes
+
+Discovery is the first inspection stage moved to an indexed ready queue. The queue preserves the existing discovery scope: unrecovered opaque `.bin` or extensionless binaries from `binary_identity_current`, restricted to main payload or non-auxiliary rows, with failed, stale-running, source-updated, and probe-error rows eligible for retry. Discovery still performs byte-signature/content-filter sampling only after claim; the queue only materializes claimability and does not broaden discovery into already identified archive/media/PAR2 files.
+
+Dashboard discovery backlog should count `binary_inspection_ready_queue` rows where `stage_name='inspect_discovery'`, `status='ready'`, and `ready_at <= now()`. This makes the dashboard exact for the backlog the stage actually consumes without replaying the full selector on dashboard refresh.
+
+Do not migrate the other inspection stages by copying discovery blindly. Preserve these selector semantics when each stage gets its own queued ready state:
+
+| Stage | Current candidate-selection behavior to preserve |
+| --- | --- |
+| `inspect_par2` | PAR2 candidates come from release-linked PAR2 files, `.par2` names, or recovered PAR2 identity. The selector deduplicates by PAR2 set, prefers manifests over volume files, prioritizes release-linked complete sets, reruns failed/stale/source-updated rows, skips completed missing-article probes, and suppresses zero-target volume sets when appropriate. A queue key may need to be set-level rather than binary-only. |
+| `inspect_archive` | Archive candidates require payload completion and representative archive names such as `.rar`, `.part01.rar`, `.r00`, `.7z`, `.7z.001`, `.zip`, or `.zip.001`. The selector dedupes archive families so later RAR volumes do not create duplicate work, and reruns probe-error/source-updated rows. |
+| `inspect_media` | Media candidates require payload completion and either direct media names (`.mkv`, `.mp4`, `.avi`, `.ts`, `.flac`, `.mp3`, `.m4a`) or archive representatives that already have archive-entry metadata from `inspect_archive`. It must continue to rerun after refreshed archive metadata. |
+
+Queue migrations for PAR2, archive, and media should follow the same pattern as discovery only where the stage's claimable unit is truly a binary. Where the stage naturally dedupes a family or set, the queue should store that family/set key plus the chosen representative binary so dashboard counts match work units, not raw file rows.
 
 ## Maintenance Expectations
 

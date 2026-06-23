@@ -1493,8 +1493,8 @@ func TestRunSummaryRefreshOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) 
 	if repo.refreshQueuedSummariesCalls != 1 {
 		t.Fatalf("expected one summary refresh call, got %d", repo.refreshQueuedSummariesCalls)
 	}
-	if repo.lastRefreshQueuedSummariesLimit != 10000 {
-		t.Fatalf("expected default summary refresh batch size 10000, got %d", repo.lastRefreshQueuedSummariesLimit)
+	if repo.lastRefreshQueuedSummariesLimit != 1000 {
+		t.Fatalf("expected timed effective summary refresh batch size 1000, got %d", repo.lastRefreshQueuedSummariesLimit)
 	}
 }
 
@@ -1522,6 +1522,9 @@ func TestRunSummaryRefreshOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) 
 	}
 	if got := metrics["summary_refresh_count"]; got != 25000 {
 		t.Fatalf("expected summary_refresh_count=25000, got %#v", got)
+	}
+	if got := metrics["summary_refresh_effective_batch_size"]; got != 1000 {
+		t.Fatalf("expected effective summary refresh batch size 1000, got %#v", got)
 	}
 }
 
@@ -2826,6 +2829,10 @@ func (f *fakeReleaseRepository) ListExistingReleaseCandidates(_ context.Context,
 	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates[offset:end]...), nil
 }
 
+func (f *fakeReleaseRepository) ListAutoReformReleaseCandidates(_ context.Context, limit int, _ time.Duration) ([]pgindex.ReleaseCandidate, error) {
+	return f.ListExistingReleaseCandidates(context.Background(), limit, 0)
+}
+
 func (f *fakeReleaseRepository) ListExistingReleaseCandidatesForReleaseIDs(context.Context, []string) ([]pgindex.ReleaseCandidate, error) {
 	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates...), nil
 }
@@ -2861,21 +2868,21 @@ func (f *fakeReleaseRepository) UpsertRelease(_ context.Context, in pgindex.Rele
 	return fmt.Sprintf("rel-%d", len(f.upsertedReleases)), nil
 }
 
-func (f *fakeReleaseRepository) PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
+func (f *fakeReleaseRepository) PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (pgindex.ReleaseSnapshotResult, error) {
 	releaseID, err := f.UpsertRelease(ctx, in)
 	if err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.ReplaceReleaseNewsgroups(ctx, releaseID, newsgroupIDs); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
-	return releaseID, nil
+	return pgindex.ReleaseSnapshotResult{ReleaseID: releaseID, Status: pgindex.ReleaseSnapshotStatusInserted}, nil
 }
 
 func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error {

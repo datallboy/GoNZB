@@ -912,6 +912,37 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 	if limit <= 0 {
 		limit = 100
 	}
+	if isQueuedInspectionStage(stageName) {
+		candidates, err := s.listInspectionReadyQueueCandidates(ctx, q, stageName, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidates) > 0 {
+			return candidates, nil
+		}
+		if db, ok := q.(*sql.DB); ok && db == s.db {
+			refreshLimit := limit * 10
+			if refreshLimit < 1000 {
+				refreshLimit = 1000
+			}
+			if _, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit); err != nil {
+				return nil, err
+			}
+			return s.listInspectionReadyQueueCandidates(ctx, q, stageName, limit)
+		}
+		return candidates, nil
+	}
+	return s.listBinaryInspectionCandidatesRaw(ctx, q, stageName, limit, opts)
+}
+
+func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		return nil, fmt.Errorf("stage name is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
 
 	filter, err := inspectCandidateFilter(stageName, opts.RequireExpectedFileCount)
 	if err != nil {
@@ -936,8 +967,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
 					(
 						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
@@ -1034,6 +1064,14 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 						WHERE bpt.binary_id = b.id
 					) AS has_targets,
 					(
+						COALESCE(bi.status, '') = 'completed' AND
+						CASE
+							WHEN COALESCE(bi.summary_json->>'target_count', '') ~ '^[0-9]+$'
+							THEN (bi.summary_json->>'target_count')::integer = 0
+							ELSE FALSE
+						END
+					) AS completed_zero_targets,
+					(
 						` + rerunPredicate + `
 					) AS needs_rerun
 				FROM binary_state b
@@ -1085,6 +1123,7 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 				FROM candidate_rows cr
 				JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
 				WHERE cr.release_linked
+				  AND NOT (cr.volume_rank = 1 AND ss.has_completed_zero_targets)
 				  AND (
 					cr.needs_rerun OR
 					(
@@ -1499,6 +1538,15 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
+	if isQueuedInspectionStage(req.StageName) {
+		refreshLimit := req.Limit * 10
+		if refreshLimit < 1000 {
+			refreshLimit = 1000
+		}
+		if _, err := s.RefreshInspectionReadyQueue(ctx, req.StageName, refreshLimit); err != nil {
+			return nil, err
+		}
+	}
 
 	var candidates []BinaryInspectionCandidate
 	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
@@ -1619,6 +1667,11 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		    updated_at = NOW()`, strings.Join(values, ",")), args...); err != nil {
 			return fmt.Errorf("claim %d binary inspections for %s: %w", len(attemptCandidates), req.StageName, err)
 		}
+		if isQueuedInspectionStage(req.StageName) {
+			if err := markInspectReadyQueueRowsRunning(ctx, tx, req.StageName, attemptCandidates, req.Owner, req.LeaseDuration); err != nil {
+				return err
+			}
+		}
 
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit binary inspection claim tx: %w", err)
@@ -1722,6 +1775,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	)
 	if err != nil {
 		return fmt.Errorf("start binary inspection %s/%d: %w", stageName, binaryID, err)
+	}
+	if err := s.markInspectReadyQueueRunning(ctx, stageName, binaryID, directInspectionClaimOwner, directInspectionClaimLeaseSeconds*time.Second, sourceUpdatedAt); err != nil {
+		return err
 	}
 
 	return nil
@@ -2950,6 +3006,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 		return fmt.Errorf("finish binary inspection %s/%d: %w", in.StageName, in.BinaryID, err)
 	}
 	if rows, rowsErr := res.RowsAffected(); rowsErr == nil && rows > 0 {
+		if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -3020,6 +3079,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 	)
 	if err != nil {
 		return fmt.Errorf("finish binary inspection %s/%d: %w", in.StageName, in.BinaryID, err)
+	}
+	if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
+		return err
 	}
 
 	return nil
@@ -3115,8 +3177,7 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
 			(
 				LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
@@ -3134,8 +3195,7 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
 			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part01.rar' OR
-			LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.part1.rar'
+			LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$'
 		)`, nil
 	case "inspect_media":
 		return payloadCompleteGate + ` AND
@@ -3156,8 +3216,7 @@ func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (st
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part01\.rar$' OR
-					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
 					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
 					(
 						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND

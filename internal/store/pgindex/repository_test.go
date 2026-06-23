@@ -3197,7 +3197,7 @@ func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	releaseID, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
+	result, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
 		ReleaseID:         fmt.Sprintf("rel-snapshot-%d", now.UnixNano()),
 		GUID:              fmt.Sprintf("guid-snapshot-%d", now.UnixNano()),
 		ProviderID:        1,
@@ -3222,6 +3222,10 @@ func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist release snapshot: %v", err)
 	}
+	if result.Status != ReleaseSnapshotStatusInserted {
+		t.Fatalf("expected inserted snapshot status, got %q", result.Status)
+	}
+	releaseID := result.ReleaseID
 
 	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
 	if err != nil {
@@ -3290,10 +3294,14 @@ func TestPersistReleaseSnapshotDoesNotReplaceBetterSnapshotWithFragment(t *testi
 			FileIndex: i,
 		})
 	}
-	releaseID, err := store.PersistReleaseSnapshot(ctx, strong, files, nil)
+	result, err := store.PersistReleaseSnapshot(ctx, strong, files, nil)
 	if err != nil {
 		t.Fatalf("persist strong snapshot: %v", err)
 	}
+	if result.Status != ReleaseSnapshotStatusInserted {
+		t.Fatalf("expected strong snapshot insert, got %q", result.Status)
+	}
+	releaseID := result.ReleaseID
 
 	weak := strong
 	weak.ReleaseID = fmt.Sprintf("rel-downgrade-weak-%d", now.UnixNano())
@@ -3302,15 +3310,18 @@ func TestPersistReleaseSnapshotDoesNotReplaceBetterSnapshotWithFragment(t *testi
 	weak.SizeBytes = 8_143_389
 	weak.FileCount = 2
 	weak.CompletionPct = 7.43
-	gotReleaseID, err := store.PersistReleaseSnapshot(ctx, weak, []ReleaseFileRecord{
+	gotResult, err := store.PersistReleaseSnapshot(ctx, weak, []ReleaseFileRecord{
 		{FileName: "strong.part01.rar", SizeBytes: 7_403_203, FileIndex: 1},
 		{FileName: "strong.part02.rar", SizeBytes: 740_186, FileIndex: 2},
 	}, nil)
 	if err != nil {
 		t.Fatalf("persist weak snapshot: %v", err)
 	}
-	if gotReleaseID != releaseID {
-		t.Fatalf("expected existing release id %s, got %s", releaseID, gotReleaseID)
+	if gotResult.ReleaseID != releaseID {
+		t.Fatalf("expected existing release id %s, got %s", releaseID, gotResult.ReleaseID)
+	}
+	if gotResult.Status != ReleaseSnapshotStatusSkippedDowngrade {
+		t.Fatalf("expected weak snapshot downgrade skip, got %q", gotResult.Status)
 	}
 
 	var fileCount int
@@ -9456,6 +9467,35 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolume
 	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
 		t.Fatalf("seed observed_parts: %v", err)
 	}
+	siblingID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Zero Targets",
+		BinaryKey:         baseKey + "::sibling",
+		BinaryName:        "example.vol02+03.par2",
+		FileName:          "example.vol02+03.par2",
+		FileIndex:         2,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert sibling par2 volume: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, siblingID); err != nil {
+		t.Fatalf("seed sibling observed_parts: %v", err)
+	}
 
 	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{{
 		BinaryID:     binaryID,
@@ -9477,13 +9517,19 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolume
 	}); err != nil {
 		t.Fatalf("complete par2 inspection: %v", err)
 	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_identity_current
+		SET updated_at = NOW() + INTERVAL '1 minute'
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("advance par2 volume source timestamp: %v", err)
+	}
 
 	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
 	if err != nil {
 		t.Fatalf("list inspect par2 candidates: %v", err)
 	}
 	for _, candidate := range candidates {
-		if candidate.BinaryID == binaryID {
+		if candidate.BinaryID == binaryID || candidate.BinaryID == siblingID {
 			t.Fatalf("did not expect completed zero-target volume candidate to rerun, got %+v", candidate)
 		}
 	}

@@ -66,6 +66,17 @@ type ReleaseCandidate struct {
 	TotalBytes                     int64
 }
 
+type ReleaseSnapshotResult struct {
+	ReleaseID string
+	Status    string
+}
+
+const (
+	ReleaseSnapshotStatusInserted         = "inserted"
+	ReleaseSnapshotStatusUpdated          = "updated"
+	ReleaseSnapshotStatusSkippedDowngrade = "skipped_downgrade"
+)
+
 const (
 	ReleaseCandidateKeyKindReleaseFamily    = "release_family"
 	ReleaseCandidateKeyKindBaseStem         = "base_stem"
@@ -295,30 +306,61 @@ func (s *Store) ListReleaseCandidates(ctx context.Context, limit int, opts Relea
 }
 
 func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]ReleaseCandidate, error) {
+	return s.listExistingReleaseCandidates(ctx, limit, offset, 0)
+}
+
+func (s *Store) ListAutoReformReleaseCandidates(ctx context.Context, limit int, minReformAge time.Duration) ([]ReleaseCandidate, error) {
+	return s.listExistingReleaseCandidates(ctx, limit, 0, minReformAge)
+}
+
+func (s *Store) listExistingReleaseCandidates(ctx context.Context, limit, offset int, minReformAge time.Duration) ([]ReleaseCandidate, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 	if offset < 0 {
 		offset = 0
 	}
+	minReformAgeSeconds := minReformAge.Seconds()
 
 	rows, err := s.db.QueryContext(ctx, `
-		WITH target_releases AS (
+		WITH target_families AS (
 			SELECT
-				r.provider_id,
-				r.release_family_key,
-				r.release_key,
-				r.title,
-				r.posted_at,
-				r.updated_at
-			FROM releases r
+				f.provider_id,
+				f.release_family_key,
+				rep.source_release_key,
+				rep.release_key,
+				rep.title,
+				rep.posted_at,
+				rep.updated_at,
+				rep.metadata_updated_at,
+				COALESCE(family_payload.payload_file_count, 0) AS family_payload_file_count,
+				COALESCE(release_payload.payload_file_count, 0) AS release_payload_file_count
+			FROM (
+				SELECT DISTINCT provider_id, release_family_key
+				FROM releases
+				WHERE BTRIM(release_family_key) <> ''
+			) f
+			LEFT JOIN LATERAL (
+				SELECT
+					r.source_release_key,
+					r.release_key,
+					r.title,
+					r.posted_at,
+					r.updated_at,
+					r.metadata_updated_at
+				FROM releases r
+				WHERE r.provider_id = f.provider_id
+				  AND r.release_family_key = f.release_family_key
+				ORDER BY COALESCE(r.metadata_updated_at, r.updated_at, r.posted_at) DESC NULLS LAST, r.release_id
+				LIMIT 1
+			) rep ON TRUE
 			LEFT JOIN LATERAL (
 				SELECT COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), 'binary-' || bic.binary_id::TEXT)))) FILTER (
 					WHERE bic.is_main_payload OR NOT bic.is_auxiliary
 				)::INTEGER AS payload_file_count
 				FROM binary_identity_current bic
-				WHERE bic.provider_id = r.provider_id
-				  AND bic.release_family_key = r.release_family_key
+				WHERE bic.provider_id = f.provider_id
+				  AND bic.release_family_key = f.release_family_key
 				  AND BTRIM(bic.release_family_key) <> ''
 				  AND NOT EXISTS (
 					SELECT 1
@@ -329,13 +371,19 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 			) family_payload ON TRUE
 			LEFT JOIN LATERAL (
 				SELECT COUNT(DISTINCT rf.file_name) FILTER (WHERE NOT rf.is_pars)::INTEGER AS payload_file_count
-				FROM release_files rf
-				WHERE rf.release_id = r.release_id
+				FROM releases rr
+				JOIN release_files rf ON rf.release_id = rr.release_id
+				WHERE rr.provider_id = f.provider_id
+				  AND rr.release_family_key = f.release_family_key
 			) release_payload ON TRUE
-			WHERE BTRIM(r.release_family_key) <> ''
+			WHERE COALESCE(family_payload.payload_file_count, 0) > COALESCE(release_payload.payload_file_count, 0)
+			  AND (
+				$3::DOUBLE PRECISION <= 0 OR
+				COALESCE(rep.metadata_updated_at, rep.updated_at, rep.posted_at, TIMESTAMPTZ 'epoch') < NOW() - ($3::DOUBLE PRECISION * INTERVAL '1 second')
+			  )
 			ORDER BY GREATEST(COALESCE(family_payload.payload_file_count, 0) - COALESCE(release_payload.payload_file_count, 0), 0) DESC,
-				COALESCE(r.metadata_updated_at, r.updated_at, r.posted_at) NULLS FIRST,
-				r.release_id
+				COALESCE(rep.metadata_updated_at, rep.updated_at, rep.posted_at) NULLS FIRST,
+				f.release_family_key
 			LIMIT $1 OFFSET $2
 		),
 		candidate_binaries AS (
@@ -355,7 +403,7 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 				bos.total_parts,
 				bos.observed_parts,
 				bos.total_bytes
-			FROM target_releases r
+			FROM target_families r
 			JOIN binary_identity_current bic
 			  ON bic.provider_id = r.provider_id
 			 AND bic.release_family_key = r.release_family_key
@@ -382,6 +430,11 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 			COUNT(*) FILTER (
 				WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
 			)::INTEGER AS complete_binary_count,
+			0::INTEGER AS complete_main_payload_binary_count,
+			COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0)::INTEGER AS expected_file_count,
+			0::INTEGER AS expected_archive_file_count,
+			0::DOUBLE PRECISION AS expected_file_coverage_pct,
+			0::DOUBLE PRECISION AS archive_file_coverage_pct,
 			CASE
 				WHEN COUNT(*) FILTER (
 					WHERE b.total_parts > 0 AND b.observed_parts = b.total_parts
@@ -394,7 +447,7 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
-		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, limit, offset)
+		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, limit, offset, minReformAgeSeconds)
 	if err != nil {
 		return nil, fmt.Errorf("list existing release candidates: %w", err)
 	}
@@ -416,6 +469,11 @@ func (s *Store) ListExistingReleaseCandidates(ctx context.Context, limit, offset
 			&postedAt,
 			&item.BinaryCount,
 			&item.CompleteBinaryCount,
+			&item.CompleteMainPayloadBinaryCount,
+			&item.ExpectedFileCount,
+			&item.ExpectedArchiveFileCount,
+			&item.ExpectedFileCoveragePct,
+			&item.ArchiveFileCoveragePct,
 			&item.ReadinessBucket,
 			&item.TotalBytes,
 		); err != nil {
@@ -1022,19 +1080,23 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 
 // CHANGED: create/update a release row and keep its id stable.
 func (s *Store) UpsertRelease(ctx context.Context, in ReleaseRecord) (string, error) {
-	return upsertReleaseWithRunner(ctx, s.db, in)
+	result, err := upsertReleaseWithRunner(ctx, s.db, in)
+	if err != nil {
+		return "", err
+	}
+	return result.ReleaseID, nil
 }
 
-func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in ReleaseRecord) (string, error) {
+func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in ReleaseRecord) (ReleaseSnapshotResult, error) {
 	if in.ProviderID <= 0 {
-		return "", fmt.Errorf("provider id is required")
+		return ReleaseSnapshotResult{}, fmt.Errorf("provider id is required")
 	}
 	normalizeReleaseIdentity(&in)
 	if in.ReleaseFamilyKey == "" {
-		return "", fmt.Errorf("release family key is required")
+		return ReleaseSnapshotResult{}, fmt.Errorf("release family key is required")
 	}
 	if in.GroupName == "" {
-		return "", fmt.Errorf("group name is required")
+		return ReleaseSnapshotResult{}, fmt.Errorf("group name is required")
 	}
 	if strings.TrimSpace(in.ReleaseID) == "" {
 		in.ReleaseID = ksuid.New().String()
@@ -1057,14 +1119,17 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 	}
 	subtitleJSON, err := json.Marshal(sanitizeStringSlice(in.SubtitleLanguages))
 	if err != nil {
-		return "", fmt.Errorf("marshal subtitle languages for %q: %w", in.GroupName, err)
+		return ReleaseSnapshotResult{}, fmt.Errorf("marshal subtitle languages for %q: %w", in.GroupName, err)
 	}
 	mediaTagsJSON, err := json.Marshal(sanitizeStringSlice(in.MediaTags))
 	if err != nil {
-		return "", fmt.Errorf("marshal media tags for %q: %w", in.GroupName, err)
+		return ReleaseSnapshotResult{}, fmt.Errorf("marshal media tags for %q: %w", in.GroupName, err)
 	}
 
-	var releaseID string
+	var (
+		releaseID string
+		inserted  bool
+	)
 	err = runner.QueryRowContext(ctx, `
 		INSERT INTO releases (
 			release_id,
@@ -1232,7 +1297,7 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		    END,
 		    metadata_updated_at = GREATEST(releases.metadata_updated_at, EXCLUDED.metadata_updated_at),
 		    updated_at = NOW()
-		RETURNING release_id`,
+		RETURNING release_id, (xmax = 0) AS inserted`,
 		in.ReleaseID,
 		in.GUID,
 		in.ProviderID,
@@ -1284,15 +1349,19 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		subtitleJSON,
 		mediaTagsJSON,
 		metadataUpdatedAt,
-	).Scan(&releaseID)
+	).Scan(&releaseID, &inserted)
 	if err != nil {
-		return "", fmt.Errorf("upsert release %q: %w", in.GroupName, err)
+		return ReleaseSnapshotResult{}, fmt.Errorf("upsert release %q: %w", in.GroupName, err)
 	}
 	if err := refreshReleaseCategoryRunner(ctx, runner, releaseID); err != nil {
-		return "", err
+		return ReleaseSnapshotResult{}, err
 	}
 
-	return releaseID, nil
+	status := ReleaseSnapshotStatusUpdated
+	if inserted {
+		status = ReleaseSnapshotStatusInserted
+	}
+	return ReleaseSnapshotResult{ReleaseID: releaseID, Status: status}, nil
 }
 
 func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error {
@@ -1717,8 +1786,8 @@ func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer
 	return nil
 }
 
-func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, files []ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
-	var releaseID string
+func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, files []ReleaseFileRecord, newsgroupIDs []int64) (ReleaseSnapshotResult, error) {
+	var result ReleaseSnapshotResult
 	err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -1729,33 +1798,33 @@ func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, fi
 		if existing, ok, err := loadExistingReleaseSnapshotQuality(ctx, tx, in.ProviderID, in.GroupName); err != nil {
 			return err
 		} else if ok && releaseSnapshotWouldDowngrade(existing, in) {
-			releaseID = existing.ReleaseID
+			result = ReleaseSnapshotResult{ReleaseID: existing.ReleaseID, Status: ReleaseSnapshotStatusSkippedDowngrade}
 			return tx.Commit()
 		}
 
-		persistedReleaseID, err := upsertReleaseWithRunner(ctx, tx, in)
+		persisted, err := upsertReleaseWithRunner(ctx, tx, in)
 		if err != nil {
 			return err
 		}
-		if err := replaceReleaseFilesInRunner(ctx, tx, persistedReleaseID, files); err != nil {
+		if err := replaceReleaseFilesInRunner(ctx, tx, persisted.ReleaseID, files); err != nil {
 			return err
 		}
-		if err := replaceReleaseNewsgroupsInRunner(ctx, tx, persistedReleaseID, newsgroupIDs); err != nil {
+		if err := replaceReleaseNewsgroupsInRunner(ctx, tx, persisted.ReleaseID, newsgroupIDs); err != nil {
 			return err
 		}
-		if err := upsertNZBCacheWithRunner(ctx, tx, persistedReleaseID, "pending", "", ""); err != nil {
+		if err := upsertNZBCacheWithRunner(ctx, tx, persisted.ReleaseID, "pending", "", ""); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		releaseID = persistedReleaseID
+		result = persisted
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return ReleaseSnapshotResult{}, err
 	}
-	return releaseID, nil
+	return result, nil
 }
 
 type releaseSnapshotQuality struct {
