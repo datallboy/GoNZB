@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -15,18 +17,29 @@ type databaseStorageStatusReader interface {
 	DatabaseStorageStatus(ctx context.Context) (*pgindex.DatabaseStorageStatus, error)
 }
 
-type cachedStorageGuard struct {
-	repo       databaseStorageStatusReader
-	config     pgindex.DatabaseStorageGuardConfig
-	lastCheck  time.Time
-	lastResult supervisor.StageGateDecision
-	mu         sync.Mutex
+type storageGuardSettingsReader interface {
+	GetRuntimeSettings(ctx context.Context, base ...*config.Config) (*app.RuntimeSettings, error)
 }
 
-func newIndexerStageResourceGuard(repo databaseStorageStatusReader, storageCfg pgindex.DatabaseStorageGuardConfig, memoryCfg IndexerMemoryGuardConfig) supervisor.StageGateFunc {
+type cachedStorageGuard struct {
+	repo            databaseStorageStatusReader
+	settingsStore   storageGuardSettingsReader
+	bootstrapConfig *config.Config
+	config          pgindex.DatabaseStorageGuardConfig
+	lastCheck       time.Time
+	lastResult      supervisor.StageGateDecision
+	mu              sync.Mutex
+}
+
+func newIndexerStageResourceGuard(repo databaseStorageStatusReader, storageCfg pgindex.DatabaseStorageGuardConfig, memoryCfg IndexerMemoryGuardConfig, settingsStore storageGuardSettingsReader, bootstrapConfig *config.Config) supervisor.StageGateFunc {
 	var gates []supervisor.StageGateFunc
-	if repo != nil && storageCfg.Enabled {
-		guard := &cachedStorageGuard{repo: repo, config: storageCfg}
+	if repo != nil {
+		guard := &cachedStorageGuard{
+			repo:            repo,
+			settingsStore:   settingsStore,
+			bootstrapConfig: bootstrapConfig,
+			config:          storageCfg,
+		}
 		gates = append(gates, guard.allowStage)
 	}
 	if memoryCfg.Enabled {
@@ -67,12 +80,16 @@ func (g *cachedStorageGuard) allowStage(ctx context.Context, stage supervisor.St
 	if err != nil {
 		return supervisor.StageGateDecision{}, fmt.Errorf("check postgres storage status: %w", err)
 	}
-	if dataDirectory := strings.TrimSpace(g.config.DataDirectory); dataDirectory != "" {
+	cfg, err := g.currentConfig(ctx)
+	if err != nil {
+		return supervisor.StageGateDecision{}, err
+	}
+	if dataDirectory := strings.TrimSpace(cfg.DataDirectory); dataDirectory != "" {
 		if err := pgindex.PopulateDatabaseStorageFilesystemStatus(status, dataDirectory); err != nil {
 			return supervisor.StageGateDecision{}, fmt.Errorf("check configured postgres storage path: %w", err)
 		}
 	}
-	evaluation := pgindex.EvaluateDatabaseStorageGuard(*status, g.config)
+	evaluation := pgindex.EvaluateDatabaseStorageGuard(*status, cfg)
 	decision := supervisor.StageGateDecision{
 		Allowed: !evaluation.Blocked,
 		Reason:  evaluation.Reason,
@@ -83,6 +100,26 @@ func (g *cachedStorageGuard) allowStage(ctx context.Context, stage supervisor.St
 	g.lastResult = decision
 	g.mu.Unlock()
 	return decision, nil
+}
+
+func (g *cachedStorageGuard) currentConfig(ctx context.Context) (pgindex.DatabaseStorageGuardConfig, error) {
+	cfg := g.config
+	if g.settingsStore == nil {
+		return cfg, nil
+	}
+	runtime, err := g.settingsStore.GetRuntimeSettings(ctx, g.bootstrapConfig)
+	if err != nil {
+		return cfg, fmt.Errorf("load runtime storage guard settings: %w", err)
+	}
+	if runtime == nil || runtime.Indexing == nil {
+		return cfg, nil
+	}
+	storage := runtime.Indexing.StorageGuard
+	cfg.Enabled = storage.Enabled
+	cfg.DataDirectory = storage.DataDirectory
+	cfg.MinFreeBytes = storage.MinFreeBytes
+	cfg.MinFreePercent = storage.MinFreePercent
+	return cfg, nil
 }
 
 func shouldAlwaysAllowOnLowDBSpace(name supervisor.StageName) bool {

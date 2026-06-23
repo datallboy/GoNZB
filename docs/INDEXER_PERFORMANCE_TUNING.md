@@ -586,13 +586,7 @@ Low-space exemptions are intentionally narrow. Only archive and purge-specific s
 
 Broad `indexer_maintenance` and `release_generate_nzb` are not low-space exemptions. They can write runtime/cache rows and should not continue during a critical storage event unless an operator explicitly runs a command.
 
-The CLI now supports a non-destructive emergency estimate path:
-
-```bash
-go run ./cmd/gonzb --config config.yaml indexer release purge-archived-sources --dry-run --batch-size 1
-```
-
-The live validation run completed without deleting rows and estimated one purge candidate. It reported 88 `release_archive_state` rows in `purge_pending` before the dry run. Use a small `--batch-size` while the partition is critically full because dry-run estimation still has to stage candidate lineage inside a rollback transaction.
+The admin maintenance task API/UI is the supported non-destructive estimate path for source purge. The live validation run completed without deleting rows and estimated one purge candidate. It reported 88 `release_archive_state` rows in `purge_pending` before the dry run. Dry-run estimation still has to stage candidate lineage inside a rollback transaction, so run it only after writers are stopped when the partition is critically full.
 
 Important storage caveat: deleting rows from PostgreSQL usually makes space reusable inside tables, but it does not immediately return large amounts of disk space to the OS. `VACUUM FULL` or similar rewrite tools can return filesystem space, but they require extra free disk and exclusive locks. On a partition already at 100%, the immediate operational fix is to add/move storage or stop writers, then use archive/source purge to reduce future growth and internal table pressure.
 

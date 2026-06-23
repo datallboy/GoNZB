@@ -738,7 +738,7 @@ func (s *runtimeIndexerService) UpdateMaintenanceTask(ctx context.Context, taskK
 	if patch.IntervalHours != nil {
 		cfg.IntervalHours = *patch.IntervalHours
 	}
-	if patch.BatchSize != nil {
+	if patch.BatchSize != nil && def.UsesBatchSize {
 		cfg.BatchSize = *patch.BatchSize
 	}
 	if cfg.ScheduleEnabled && cfg.IntervalHours < maintenanceTaskMinIntervalHours(def) {
@@ -1245,7 +1245,7 @@ type maintenanceTaskDefinition struct {
 
 var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
 	{TaskKey: "dashboard_stats_refresh", Label: "Dashboard Stats Refresh", Purpose: "Refreshes exact admin dashboard backlog counts into the cached dashboard stats table.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
-	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true, UsesBatchSize: false, MinIntervalHours: 6},
 	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
 	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
 	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},

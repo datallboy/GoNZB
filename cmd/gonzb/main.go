@@ -18,17 +18,15 @@ var (
 	serveWithoutIndexerSupervisor      bool
 	disableReleasePurgeArchivedSources bool
 
-	scrapeOnce            bool
-	assembleOnce          bool
-	recoverYEncOnce       bool
-	releaseOnce           bool
-	releasePurgeDryRun    bool
-	releasePurgeBatchSize int
-	releaseReform         bool
-	releaseIDs            []string
-	pipelineOnce          bool
-	inspectOnce           bool
-	enrichOnce            bool
+	scrapeOnce      bool
+	assembleOnce    bool
+	recoverYEncOnce bool
+	releaseOnce     bool
+	releaseReform   bool
+	releaseIDs      []string
+	pipelineOnce    bool
+	inspectOnce     bool
+	enrichOnce      bool
 
 	indexerReclaimFull                 bool
 	indexerReclaimCheck                bool
@@ -149,7 +147,7 @@ var indexerReleasePurgeArchivedSourcesCmd = &cobra.Command{
 	Use:   "purge-archived-sources",
 	Short: "Purge source rows for archived releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerReleasePurgeArchivedSources(releaseOnce, releasePurgeDryRun, releasePurgeBatchSize)
+		commands.New(cfgFile).ExecuteIndexerReleasePurgeArchivedSources(releaseOnce)
 	},
 }
 
@@ -378,8 +376,6 @@ func init() {
 	indexerReleaseGenerateNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one NZB pre-generation pass and exit instead of continuous mode")
 	indexerReleaseArchiveNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archive NZB pass and exit instead of continuous mode")
 	indexerReleasePurgeArchivedSourcesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archived-source purge pass and exit instead of continuous mode")
-	indexerReleasePurgeArchivedSourcesCmd.Flags().BoolVar(&releasePurgeDryRun, "dry-run", false, "Estimate archived-source purge work and exit without deleting rows")
-	indexerReleasePurgeArchivedSourcesCmd.Flags().IntVar(&releasePurgeBatchSize, "batch-size", 0, "Override archived-source purge batch size for this command")
 	indexerPipelineCmd.Flags().BoolVar(&pipelineOnce, "once", false, "Run one full pipeline pass and exit")
 	indexerInspectCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run all inspect submodules once and exit")
 	indexerInspectDiscoveryCmd.Flags().BoolVar(&inspectOnce, "once", false, "Run one discovery inspection pass and exit")

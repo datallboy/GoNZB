@@ -506,14 +506,24 @@ func validateIndexerMaintenanceTasks(next *app.RuntimeSettings) error {
 		return nil
 	}
 	for key, cfg := range next.Indexing.MaintenanceTasks {
-		if cfg.ScheduleEnabled && cfg.IntervalHours < 6 {
-			return fmt.Errorf("maintenance task %q scheduled interval must be at least 6 hours", key)
+		minIntervalHours := maintenanceTaskMinIntervalHours(key)
+		if cfg.ScheduleEnabled && cfg.IntervalHours < minIntervalHours {
+			return fmt.Errorf("maintenance task %q scheduled interval must be at least %d hours", key, minIntervalHours)
 		}
 		if cfg.BatchSize < 0 {
 			return fmt.Errorf("maintenance task %q batch size cannot be negative", key)
 		}
 	}
 	return nil
+}
+
+func maintenanceTaskMinIntervalHours(taskKey string) int {
+	switch strings.TrimSpace(strings.ToLower(taskKey)) {
+	case "dashboard_stats_refresh":
+		return 1
+	default:
+		return 6
+	}
 }
 
 func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.ControlPlaneCapabilities {
