@@ -3,6 +3,7 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,11 @@ func (g *cachedStorageGuard) allowStage(ctx context.Context, stage supervisor.St
 	if err != nil {
 		return supervisor.StageGateDecision{}, fmt.Errorf("check postgres storage status: %w", err)
 	}
+	if dataDirectory := strings.TrimSpace(g.config.DataDirectory); dataDirectory != "" {
+		if err := pgindex.PopulateDatabaseStorageFilesystemStatus(status, dataDirectory); err != nil {
+			return supervisor.StageGateDecision{}, fmt.Errorf("check configured postgres storage path: %w", err)
+		}
+	}
 	evaluation := pgindex.EvaluateDatabaseStorageGuard(*status, g.config)
 	decision := supervisor.StageGateDecision{
 		Allowed: !evaluation.Blocked,
@@ -81,10 +87,9 @@ func (g *cachedStorageGuard) allowStage(ctx context.Context, stage supervisor.St
 
 func shouldAlwaysAllowOnLowDBSpace(name supervisor.StageName) bool {
 	switch name {
-	case supervisor.StageReleaseGenerateNZB,
-		supervisor.StageReleaseArchiveNZB,
+	case supervisor.StageReleaseArchiveNZB,
 		supervisor.StageReleasePurgeArchivedSources,
-		supervisor.StageMaintenance:
+		supervisor.StageMaintenanceReleaseSourcePurge:
 		return true
 	default:
 		return false

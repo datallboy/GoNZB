@@ -188,6 +188,7 @@ type IndexingInspectConfig struct {
 
 type IndexingStorageGuardConfig struct {
 	Enabled        *bool    `mapstructure:"enabled" yaml:"enabled"`
+	DataDirectory  string   `mapstructure:"data_directory" yaml:"data_directory"`
 	MinFreeBytes   *int64   `mapstructure:"min_free_bytes" yaml:"min_free_bytes"`
 	MinFreePercent *float64 `mapstructure:"min_free_percent" yaml:"min_free_percent"`
 }
@@ -364,6 +365,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
 	v.SetDefault("indexing.storage_guard.enabled", true)
+	v.SetDefault("indexing.storage_guard.data_directory", "")
 	v.SetDefault("indexing.storage_guard.min_free_bytes", int64(8*1024*1024*1024))
 	v.SetDefault("indexing.storage_guard.min_free_percent", 5.0)
 	v.SetDefault("indexing.inspect_discovery.enabled", false)

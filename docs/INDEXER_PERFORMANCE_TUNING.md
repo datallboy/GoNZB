@@ -570,6 +570,32 @@ The baseline points to these bottleneck classes:
 | Inspection | Candidate query shape and external tool cost | no archive/media backlog, but PAR2/discovery selection can still consume DB time |
 | Storage | Table/index size and churn | largest tables are tens of GB; queue/projection dead tuples are visible |
 
+## Storage Guard And Emergency Purge Notes
+
+The 2026-06-23 emergency disk check found the PostgreSQL data partition at `100%` used with about `64 MB` free and the live database at about `266 GB`. The normal application role could not read `current_setting('data_directory')`, and in Docker-style deployments the Postgres container path (`/var/lib/postgresql/data`) is not necessarily visible from the Go process even when the setting is readable. The previous storage guard treated this unknown filesystem state as allowed, which meant supervisor stages could continue writing while the Postgres partition was critically full.
+
+The storage guard now fails closed when it is enabled and filesystem free space is unavailable. Operators should configure `indexing.storage_guard.data_directory` to the host-visible Postgres data path when the app and Postgres do not share the same filesystem namespace. For this audit host, the correct path is `/mnt/vm-store/docker-vols/gonzb_gonzb_postgres_data`. When the path is not configured, non-exempt supervisor stages are blocked until filesystem visibility is fixed.
+
+Low-space exemptions are intentionally narrow. Only archive and purge-specific stages may bypass the low-space block:
+
+| Stage | Reason |
+| --- | --- |
+| `release_archive_nzb` | can move ready releases into archived/purge-pending state |
+| `release_purge_archived_sources` | legacy purge runner for terminal source cleanup |
+| `maintenance.release_source_purge` | scheduled maintenance task for terminal source cleanup |
+
+Broad `indexer_maintenance` and `release_generate_nzb` are not low-space exemptions. They can write runtime/cache rows and should not continue during a critical storage event unless an operator explicitly runs a command.
+
+The CLI now supports a non-destructive emergency estimate path:
+
+```bash
+go run ./cmd/gonzb --config config.yaml indexer release purge-archived-sources --dry-run --batch-size 1
+```
+
+The live validation run completed without deleting rows and estimated one purge candidate. It reported 88 `release_archive_state` rows in `purge_pending` before the dry run. Use a small `--batch-size` while the partition is critically full because dry-run estimation still has to stage candidate lineage inside a rollback transaction.
+
+Important storage caveat: deleting rows from PostgreSQL usually makes space reusable inside tables, but it does not immediately return large amounts of disk space to the OS. `VACUUM FULL` or similar rewrite tools can return filesystem space, but they require extra free disk and exclusive locks. On a partition already at 100%, the immediate operational fix is to add/move storage or stop writers, then use archive/source purge to reduce future growth and internal table pressure.
+
 ## Tuning Guidance
 
 ### Homelab

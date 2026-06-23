@@ -20,6 +20,7 @@ type DatabaseStorageStatus struct {
 
 type DatabaseStorageGuardConfig struct {
 	Enabled        bool
+	DataDirectory  string
 	MinFreeBytes   int64
 	MinFreePercent float64
 }
@@ -60,15 +61,25 @@ func (s *Store) DatabaseStorageStatus(ctx context.Context) (*DatabaseStorageStat
 		return nil, fmt.Errorf("read postgres data directory: %w", err)
 	}
 
-	dataDir := filepath.Clean(status.DataDirectory)
+	if err := PopulateDatabaseStorageFilesystemStatus(status, status.DataDirectory); err != nil {
+		return nil, err
+	}
+	return status, nil
+}
+
+func PopulateDatabaseStorageFilesystemStatus(status *DatabaseStorageStatus, dataDirectory string) error {
+	if status == nil {
+		return fmt.Errorf("database storage status is nil")
+	}
+	dataDir := filepath.Clean(dataDirectory)
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(dataDir, &fs); err != nil {
 		if os.IsNotExist(err) || err == syscall.ENOENT || err == syscall.EPERM || err == syscall.EACCES {
 			status.DataDirectory = dataDir
 			status.FilesystemVisible = false
-			return status, nil
+			return nil
 		}
-		return nil, fmt.Errorf("stat postgres data directory %s: %w", dataDir, err)
+		return fmt.Errorf("stat postgres data directory %s: %w", dataDir, err)
 	}
 	blockSize := uint64(fs.Bsize)
 	status.FilesystemFreeBytes = int64(fs.Bavail * blockSize)
@@ -78,7 +89,7 @@ func (s *Store) DatabaseStorageStatus(ctx context.Context) (*DatabaseStorageStat
 	}
 	status.DataDirectory = dataDir
 	status.FilesystemVisible = true
-	return status, nil
+	return nil
 }
 
 func EvaluateDatabaseStorageGuard(status DatabaseStorageStatus, cfg DatabaseStorageGuardConfig) DatabaseStorageGuardEvaluation {
@@ -87,6 +98,8 @@ func EvaluateDatabaseStorageGuard(status DatabaseStorageStatus, cfg DatabaseStor
 		return evaluation
 	}
 	if !status.FilesystemVisible {
+		evaluation.Blocked = true
+		evaluation.Reason = "postgres data directory free space is unavailable; configure indexing.storage_guard.data_directory or grant filesystem visibility"
 		return evaluation
 	}
 

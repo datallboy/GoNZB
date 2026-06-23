@@ -290,6 +290,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	}
 	out.StorageGuard = IndexingStorageGuardRuntimeSettings{
 		Enabled:        boolValue(cfg.StorageGuard.Enabled, true),
+		DataDirectory:  cfg.StorageGuard.DataDirectory,
 		MinFreeBytes:   int64Value(cfg.StorageGuard.MinFreeBytes, 8*1024*1024*1024),
 		MinFreePercent: float64Value(cfg.StorageGuard.MinFreePercent, 5),
 	}
@@ -458,6 +459,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		}
 		effective.Indexing.StorageGuard = config.IndexingStorageGuardConfig{
 			Enabled:        boolPtr(indexing.StorageGuard.Enabled),
+			DataDirectory:  indexing.StorageGuard.DataDirectory,
 			MinFreeBytes:   int64Ptr(indexing.StorageGuard.MinFreeBytes),
 			MinFreePercent: float64Ptr(indexing.StorageGuard.MinFreePercent),
 		}
@@ -1055,7 +1057,7 @@ func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInsp
 }
 
 func normalizeStorageGuardRuntimeSettings(in IndexingStorageGuardRuntimeSettings) IndexingStorageGuardRuntimeSettings {
-	if !in.Enabled && in.MinFreeBytes == 0 && in.MinFreePercent == 0 {
+	if !in.Enabled && in.DataDirectory == "" && in.MinFreeBytes == 0 && in.MinFreePercent == 0 {
 		return IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5}
 	}
 	return in
