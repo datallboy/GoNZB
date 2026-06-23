@@ -181,33 +181,16 @@ func (r *Runner) ExecuteIndexerReleaseArchiveNZB(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool, dryRun bool, batchSizeOverride int) {
+func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
 	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
 	batchSize := indexing.ReleasePurgeArchivedSources.BatchSize
-	if batchSizeOverride > 0 {
-		batchSize = batchSizeOverride
-	}
 	if batchSize <= 0 {
 		batchSize = 50
 	}
 	policy := releaseSourcePurgeReadyPolicy(indexing)
-
-	if dryRun {
-		result, err := appCtx.PGIndexStore.DryRunReleaseSourcePurge(ctx, batchSize, policy)
-		if err != nil {
-			appCtx.Logger.Fatal("indexer release purge-archived-sources --dry-run failed: %v", err)
-		}
-		appCtx.Logger.Info(
-			"indexer release purge-archived-sources --dry-run completed estimated_rows=%v blockers=%v warnings=%v",
-			result.EstimatedRowsByTable,
-			result.Blockers,
-			result.Warnings,
-		)
-		return
-	}
 
 	if once {
 		if _, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, batchSize, policy); err != nil {

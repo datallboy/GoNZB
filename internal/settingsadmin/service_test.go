@@ -128,6 +128,34 @@ func TestValidateRuntimeSettingsRejectsInvalidMemoryGuardThresholds(t *testing.T
 	}
 }
 
+func TestValidateRuntimeSettingsAllowsDashboardMaintenanceOneHourInterval(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	task := runtime.Indexing.MaintenanceTasks["dashboard_stats_refresh"]
+	task.ScheduleEnabled = true
+	task.IntervalHours = 1
+	runtime.Indexing.MaintenanceTasks["dashboard_stats_refresh"] = task
+
+	if err := ValidateRuntimeSettingsMutation(&config.Config{}, runtime, runtime); err != nil {
+		t.Fatalf("expected dashboard stats refresh one-hour interval to be valid, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsSourcePurgeBelowMinimumInterval(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	task := runtime.Indexing.MaintenanceTasks["release_source_purge"]
+	task.ScheduleEnabled = true
+	task.IntervalHours = 1
+	runtime.Indexing.MaintenanceTasks["release_source_purge"] = task
+
+	err := ValidateRuntimeSettingsMutation(&config.Config{}, runtime, runtime)
+	if err == nil {
+		t.Fatalf("expected source purge interval validation error")
+	}
+	if !strings.Contains(err.Error(), "at least 6 hours") {
+		t.Fatalf("expected minimum interval detail, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsAggregatorMissingSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	caps := BuildCapabilities(&config.Config{

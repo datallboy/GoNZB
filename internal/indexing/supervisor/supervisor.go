@@ -186,6 +186,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageInspectMedia,
 		StageEnrichPreDB,
 		StageEnrichTMDB,
+		StageName("maintenance.dashboard_stats_refresh"),
 		StageMaintenanceReleaseSourcePurge,
 		StageName("maintenance.assembly_queue_stale_cleanup"),
 		StageName("maintenance.readiness_cleanup"),

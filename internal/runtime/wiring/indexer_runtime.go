@@ -564,7 +564,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			newIndexerScrapeBacklogGuard(appCtx),
 			newIndexerPipelineBacklogGuard(appCtx),
 			newIndexerNNTPTrafficGuard(appCtx, nntpStats),
-			newIndexerStageResourceGuard(appCtx.PGIndexStore, runtimeCfg.StorageGuard, runtimeCfg.MemoryGuard),
+			newIndexerStageResourceGuard(appCtx.PGIndexStore, runtimeCfg.StorageGuard, runtimeCfg.MemoryGuard, appCtx.SettingsStore, appCtx.BootstrapConfig),
 		),
 	})
 

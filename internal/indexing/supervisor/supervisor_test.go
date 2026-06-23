@@ -96,6 +96,7 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		{Name: StageInspectMedia},
 		{Name: StageEnrichPreDB},
 		{Name: StageEnrichTMDB},
+		{Name: StageName("maintenance.dashboard_stats_refresh")},
 		{Name: StageMaintenanceReleaseSourcePurge},
 		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
 		{Name: StageName("maintenance.readiness_cleanup")},
