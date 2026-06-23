@@ -42,7 +42,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			MaintenanceTasks:            defaultMaintenanceTasks(),
 			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
 			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
-			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5},
+			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15},
 			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
 			InspectDiscovery:            defaultStage(false, 10, 100, 1),
 			InspectPAR2:                 defaultStage(false, 10, 100, 4),
@@ -291,8 +291,8 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.StorageGuard = IndexingStorageGuardRuntimeSettings{
 		Enabled:        boolValue(cfg.StorageGuard.Enabled, true),
 		DataDirectory:  cfg.StorageGuard.DataDirectory,
-		MinFreeBytes:   int64Value(cfg.StorageGuard.MinFreeBytes, 8*1024*1024*1024),
-		MinFreePercent: float64Value(cfg.StorageGuard.MinFreePercent, 5),
+		MinFreeBytes:   int64Value(cfg.StorageGuard.MinFreeBytes, 0),
+		MinFreePercent: float64Value(cfg.StorageGuard.MinFreePercent, 15),
 	}
 	out.MemoryGuard = IndexingMemoryGuardRuntimeSettings{
 		Enabled:             boolValue(cfg.MemoryGuard.Enabled, true),
@@ -1058,7 +1058,7 @@ func cloneInspectRuntimeSettings(in IndexingInspectRuntimeSettings) IndexingInsp
 
 func normalizeStorageGuardRuntimeSettings(in IndexingStorageGuardRuntimeSettings) IndexingStorageGuardRuntimeSettings {
 	if !in.Enabled && in.DataDirectory == "" && in.MinFreeBytes == 0 && in.MinFreePercent == 0 {
-		return IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 8 * 1024 * 1024 * 1024, MinFreePercent: 5}
+		return IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15}
 	}
 	return in
 }
