@@ -7622,6 +7622,46 @@ func TestUpsertBinaryPartsDeduplicatesConflictingBatchRows(t *testing.T) {
 	}
 }
 
+func TestDedupeBinaryPartRecordsRemovesArticleHeaderConflicts(t *testing.T) {
+	records := []BinaryPartRecord{
+		{
+			BinaryID:        10,
+			ArticleHeaderID: 100,
+			MessageID:       "<article-100-a@test>",
+			PartNumber:      1,
+			TotalParts:      2,
+			SegmentBytes:    100,
+			FileName:        "sample.part01.rar",
+		},
+		{
+			BinaryID:        20,
+			ArticleHeaderID: 100,
+			MessageID:       "<article-100-b@test>",
+			PartNumber:      2,
+			TotalParts:      2,
+			SegmentBytes:    200,
+			FileName:        "sample.part02.rar",
+		},
+		{
+			BinaryID:        20,
+			ArticleHeaderID: 101,
+			MessageID:       "<article-101@test>",
+			PartNumber:      2,
+			TotalParts:      2,
+			SegmentBytes:    150,
+			FileName:        "sample.part02.rar",
+		},
+	}
+
+	got := dedupeBinaryPartRecords(records)
+	if len(got) != 1 {
+		t.Fatalf("expected one record after resolving article and part conflicts, got %d: %+v", len(got), got)
+	}
+	if got[0].ArticleHeaderID != 100 || got[0].BinaryID != 20 || got[0].PartNumber != 2 {
+		t.Fatalf("unexpected winning record: %+v", got[0])
+	}
+}
+
 func TestUniqueSortedArticleHeaderIDs(t *testing.T) {
 	got := uniqueSortedArticleHeaderIDs([]BinaryPartRecord{
 		{ArticleHeaderID: 42},
