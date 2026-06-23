@@ -181,32 +181,36 @@ func (r *Runner) ExecuteIndexerReleaseArchiveNZB(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
+func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool, dryRun bool, batchSizeOverride int) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
-	if once {
-		indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
-		batchSize := indexing.ReleasePurgeArchivedSources.BatchSize
-		if batchSize <= 0 {
-			batchSize = 50
+	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
+	batchSize := indexing.ReleasePurgeArchivedSources.BatchSize
+	if batchSizeOverride > 0 {
+		batchSize = batchSizeOverride
+	}
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	policy := releaseSourcePurgeReadyPolicy(indexing)
+
+	if dryRun {
+		result, err := appCtx.PGIndexStore.DryRunReleaseSourcePurge(ctx, batchSize, policy)
+		if err != nil {
+			appCtx.Logger.Fatal("indexer release purge-archived-sources --dry-run failed: %v", err)
 		}
-		if _, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, batchSize, pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
-			MinMatchConfidence:                   indexing.Release.PublicMinMatchConfidence,
-			MinCompletionPct:                     indexing.Release.PublicMinCompletionPct,
-			MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
-			RequireInspection:                    indexing.Release.PublicRequireInspection,
-			RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
-			RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
-			RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
-			RequirePAR2:                          indexing.Release.PublicRequirePAR2,
-			RequireNFO:                           indexing.Release.PublicRequireNFO,
-			RequireSFV:                           indexing.Release.PublicRequireSFV,
-			RetainUntilExpectedFileCountComplete: indexing.Release.RetainUntilExpectedFileCountComplete,
-			RetainRequirePAR2:                    indexing.Release.RetainRequirePAR2,
-			RetainRequireNFO:                     indexing.Release.RetainRequireNFO,
-			RetainRequireSFV:                     indexing.Release.RetainRequireSFV,
-		})); err != nil {
+		appCtx.Logger.Info(
+			"indexer release purge-archived-sources --dry-run completed estimated_rows=%v blockers=%v warnings=%v",
+			result.EstimatedRowsByTable,
+			result.Blockers,
+			result.Warnings,
+		)
+		return
+	}
+
+	if once {
+		if _, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, batchSize, policy); err != nil {
 			appCtx.Logger.Fatal("indexer release purge-archived-sources --once failed: %v", err)
 		}
 		appCtx.Logger.Info("indexer release purge-archived-sources --once completed")
@@ -216,6 +220,25 @@ func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
 	if err := wiring.RunIndexerReleasePurgeArchivedSourcesScheduler(ctx, appCtx); err != nil {
 		appCtx.Logger.Fatal("indexer release purge-archived-sources scheduler failed: %v", err)
 	}
+}
+
+func releaseSourcePurgeReadyPolicy(indexing app.IndexingRuntimeSettings) pgindex.ReleaseReadyPolicy {
+	return pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+		MinMatchConfidence:                   indexing.Release.PublicMinMatchConfidence,
+		MinCompletionPct:                     indexing.Release.PublicMinCompletionPct,
+		MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
+		RequireInspection:                    indexing.Release.PublicRequireInspection,
+		RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
+		RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
+		RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
+		RequirePAR2:                          indexing.Release.PublicRequirePAR2,
+		RequireNFO:                           indexing.Release.PublicRequireNFO,
+		RequireSFV:                           indexing.Release.PublicRequireSFV,
+		RetainUntilExpectedFileCountComplete: indexing.Release.RetainUntilExpectedFileCountComplete,
+		RetainRequirePAR2:                    indexing.Release.RetainRequirePAR2,
+		RetainRequireNFO:                     indexing.Release.RetainRequireNFO,
+		RetainRequireSFV:                     indexing.Release.RetainRequireSFV,
+	})
 }
 
 func (r *Runner) ExecuteIndexerInspect(once bool) {

@@ -31,3 +31,13 @@ func TestEvaluateDatabaseStorageGuardAllowsHealthyStatus(t *testing.T) {
 		t.Fatalf("expected evaluation to allow stage execution, got %+v", evaluation)
 	}
 }
+
+func TestEvaluateDatabaseStorageGuardBlocksWhenFilesystemUnavailable(t *testing.T) {
+	evaluation := EvaluateDatabaseStorageGuard(
+		DatabaseStorageStatus{FilesystemVisible: false},
+		DatabaseStorageGuardConfig{Enabled: true, MinFreeBytes: 8 * 1024, MinFreePercent: 5},
+	)
+	if !evaluation.Blocked {
+		t.Fatalf("expected evaluation to block without filesystem visibility, got %+v", evaluation)
+	}
+}

@@ -814,6 +814,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		}),
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
+			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,
 			MinFreeBytes:   indexingCfg.StorageGuard.MinFreeBytes,
 			MinFreePercent: indexingCfg.StorageGuard.MinFreePercent,
 		},

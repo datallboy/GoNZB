@@ -149,6 +149,7 @@ type IndexingInspectRuntimeSettings struct {
 
 type IndexingStorageGuardRuntimeSettings struct {
 	Enabled        bool    `json:"enabled,omitempty"`
+	DataDirectory  string  `json:"data_directory,omitempty"`
 	MinFreeBytes   int64   `json:"min_free_bytes,omitempty"`
 	MinFreePercent float64 `json:"min_free_percent,omitempty"`
 }
