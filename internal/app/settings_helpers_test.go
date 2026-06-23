@@ -165,7 +165,7 @@ func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 		runtime.Indexing.Assemble.LaneATimeWindowMinutes != 15 {
 		t.Fatalf("expected assemble tuning defaults to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
-	if !runtime.Indexing.StorageGuard.Enabled || runtime.Indexing.StorageGuard.MinFreeBytes <= 0 || runtime.Indexing.StorageGuard.MinFreePercent <= 0 {
+	if !runtime.Indexing.StorageGuard.Enabled || runtime.Indexing.StorageGuard.MinFreeBytes != 0 || runtime.Indexing.StorageGuard.MinFreePercent < 15 {
 		t.Fatalf("expected storage guard defaults to be backfilled, got %+v", runtime.Indexing.StorageGuard)
 	}
 }
