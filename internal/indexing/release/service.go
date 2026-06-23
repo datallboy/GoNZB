@@ -21,12 +21,13 @@ type repository interface {
 	RefreshQueuedReleaseFamilySummaries(ctx context.Context, limit int) (int, error)
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
+	ListAutoReformReleaseCandidates(ctx context.Context, limit int, minReformAge time.Duration) ([]pgindex.ReleaseCandidate, error)
 	ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, releaseIDs []string) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseFamilyKey string) ([]pgindex.BinarySummary, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
-	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
+	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (pgindex.ReleaseSnapshotResult, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseFamilyKey string, keepGroupNames []string) error
 	DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
@@ -37,6 +38,11 @@ type repository interface {
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 }
+
+const (
+	autoReformMinAge                   = 15 * time.Minute
+	releaseSummaryRefreshTimedBatchCap = 1000
+)
 
 type summaryRefreshMetricsProvider interface {
 	RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Context, limit int) (pgindex.ReleaseSummaryRefreshMetrics, error)
@@ -161,6 +167,17 @@ func (s *Service) RunSummaryRefreshOnce(ctx context.Context) error {
 	return err
 }
 
+func (s *Service) effectiveSummaryRefreshBatchSize() int {
+	limit := s.opts.SummaryRefreshBatchSize
+	if limit <= 0 {
+		limit = 10000
+	}
+	if s.opts.SummaryRefreshMaxDuration > 0 && limit > releaseSummaryRefreshTimedBatchCap {
+		return releaseSummaryRefreshTimedBatchCap
+	}
+	return limit
+}
+
 func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("release repo is required")
@@ -196,10 +213,11 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 			timeLimited = true
 			break
 		}
+		refreshLimit := s.effectiveSummaryRefreshBatchSize()
 		refreshStart := time.Now()
 		refreshedBatch := 0
 		if metricsRepo, ok := s.repo.(summaryRefreshMetricsProvider); ok {
-			refreshMetrics, batchErr := metricsRepo.RefreshQueuedReleaseFamilySummariesWithMetrics(ctx, s.opts.SummaryRefreshBatchSize)
+			refreshMetrics, batchErr := metricsRepo.RefreshQueuedReleaseFamilySummariesWithMetrics(ctx, refreshLimit)
 			if batchErr != nil {
 				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
 			}
@@ -218,7 +236,7 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 			hotDequeued += refreshMetrics.HotDequeued
 			coldDequeued += refreshMetrics.ColdDequeued
 		} else {
-			batchCount, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, s.opts.SummaryRefreshBatchSize)
+			batchCount, batchErr := s.repo.RefreshQueuedReleaseFamilySummaries(ctx, refreshLimit)
 			if batchErr != nil {
 				return nil, fmt.Errorf("refresh queued release family summaries: %w", batchErr)
 			}
@@ -244,6 +262,7 @@ func (s *Service) RunSummaryRefreshOnceWithMetrics(ctx context.Context) (map[str
 
 	metrics := map[string]any{
 		"summary_refresh_batch_size":              s.opts.SummaryRefreshBatchSize,
+		"summary_refresh_effective_batch_size":    s.effectiveSummaryRefreshBatchSize(),
 		"summary_refresh_max_batches":             s.opts.SummaryRefreshMaxBatches,
 		"summary_refresh_max_duration_ms":         durationMillis(s.opts.SummaryRefreshMaxDuration),
 		"summary_refresh_time_limited":            timeLimited,
@@ -340,6 +359,8 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			return nil, fmt.Errorf("list release candidates: %w", err)
 		}
 	}
+	newCandidateFamilies := len(candidates)
+	autoReformStartIndex := len(candidates)
 	metrics := map[string]any{
 		"reform":                                  reform,
 		"batch_size":                              s.opts.BatchSize,
@@ -351,7 +372,15 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		"min_completion_pct":                      s.opts.ReleaseMinCompletion,
 		"min_expected_file_coverage_pct":          s.opts.ReleaseMinExpectedFileCoveragePct,
 		"candidate_families":                      len(candidates),
+		"new_candidate_families":                  newCandidateFamilies,
+		"auto_reform_candidates":                  0,
+		"total_candidate_families":                len(candidates),
 		"formed":                                  0,
+		"new_candidate_snapshots_persisted":       0,
+		"auto_reform_snapshots_persisted":         0,
+		"release_rows_inserted":                   0,
+		"release_rows_updated":                    0,
+		"release_snapshots_skipped_downgrade":     0,
 		"skipped_fragments":                       0,
 		"skipped_fragments_no_main_payload":       0,
 		"skipped_fragments_single_main":           0,
@@ -371,13 +400,17 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 		autoReformCandidates := 0
 		if s.opts.AutoReformBatchSize > 0 && len(candidates) < s.opts.BatchSize {
 			start := time.Now()
-			existing, existingErr := s.repo.ListExistingReleaseCandidates(ctx, s.opts.AutoReformBatchSize, 0)
+			existing, existingErr := s.repo.ListAutoReformReleaseCandidates(ctx, s.opts.AutoReformBatchSize, autoReformMinAge)
 			timings.candidateList += time.Since(start)
 			if existingErr != nil {
 				return nil, fmt.Errorf("list existing release candidates for auto reform: %w", existingErr)
 			}
+			autoReformStartIndex = len(candidates)
 			candidates, autoReformCandidates = mergeAutoReformCandidates(candidates, existing)
 		}
+		metrics["candidate_families"] = len(candidates)
+		metrics["total_candidate_families"] = len(candidates)
+		metrics["new_candidate_families"] = newCandidateFamilies
 		metrics["summary_refresh_initial_count"] = initialSummaryBacklog
 		metrics["summary_refresh_remaining_count"] = remainingSummaryBacklog
 		metrics["summary_refresh_batches"] = summaryRefreshBatches
@@ -411,8 +444,13 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	skippedContextualWeak := 0
 	skippedConfidence := 0
 	skippedCompletion := 0
+	newCandidateSnapshotsPersisted := 0
+	autoReformSnapshotsPersisted := 0
+	releaseRowsInserted := 0
+	releaseRowsUpdated := 0
+	releaseSnapshotsSkippedDowngrade := 0
 	deferredAcks := make([]pgindex.ReleaseCandidateAck, 0, 128)
-	for _, candidate := range candidates {
+	for idx, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			if flushErr := s.flushDeferredAcks(ctx, deferredAcks, &timings); flushErr != nil {
 				return metrics, flushErr
@@ -445,6 +483,14 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 			return metrics, fmt.Errorf("form release candidate %s: %w", candidateFamilyKey(candidate), err)
 		}
 		formed += outcome.formed
+		if !reform && idx >= autoReformStartIndex {
+			autoReformSnapshotsPersisted += outcome.formed
+		} else {
+			newCandidateSnapshotsPersisted += outcome.formed
+		}
+		releaseRowsInserted += outcome.releaseRowsInserted
+		releaseRowsUpdated += outcome.releaseRowsUpdated
+		releaseSnapshotsSkippedDowngrade += outcome.releaseSnapshotsSkippedDowngrade
 		cooledDownFragmentOnly += outcome.cooledDownFragmentOnly
 		cooledDownLowCoverage += outcome.cooledDownLowCoverage
 		cooledDownWeakSingle += outcome.cooledDownWeakSingle
@@ -474,6 +520,11 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	}
 	metrics["candidate_families_inspected"] = candidateFamiliesInspected
 	metrics["formed"] = formed
+	metrics["new_candidate_snapshots_persisted"] = newCandidateSnapshotsPersisted
+	metrics["auto_reform_snapshots_persisted"] = autoReformSnapshotsPersisted
+	metrics["release_rows_inserted"] = releaseRowsInserted
+	metrics["release_rows_updated"] = releaseRowsUpdated
+	metrics["release_snapshots_skipped_downgrade"] = releaseSnapshotsSkippedDowngrade
 	metrics["fragment_only_families"] = cooledDownFragmentOnly
 	metrics["cooled_down_low_coverage_families"] = cooledDownLowCoverage
 	metrics["cooled_down_weak_single_families"] = cooledDownWeakSingle
@@ -491,9 +542,17 @@ func (s *Service) runOnceWithMetrics(ctx context.Context, reform bool) (map[stri
 	timings.addMetrics(metrics)
 
 	s.log.Info(
-		"release: candidate_families=%d formed=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d cooled_down_weak_single_families=%d cooled_down_weak_obfuscated_families=%d cooled_down_overgrouped_families=%d cooled_down_prefer_base_stem_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_fragments_no_main_payload=%d skipped_fragments_single_main=%d skipped_fragments_multi_file=%d skipped_fragments_contextual_weak=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
+		"release: candidate_families=%d inspected=%d new_candidate_families=%d auto_reform_candidates=%d formed=%d new_candidate_snapshots=%d auto_reform_snapshots=%d inserted=%d updated=%d skipped_downgrade=%d cooled_down_fragment_only_families=%d cooled_down_low_coverage_families=%d cooled_down_weak_single_families=%d cooled_down_weak_obfuscated_families=%d cooled_down_overgrouped_families=%d cooled_down_prefer_base_stem_families=%d stale_cleanup_only_families=%d skipped_fragments=%d skipped_fragments_no_main_payload=%d skipped_fragments_single_main=%d skipped_fragments_multi_file=%d skipped_fragments_contextual_weak=%d skipped_confidence=%d skipped_completion=%d batch_size=%d min_confidence=%.2f min_completion_pct=%.2f min_expected_file_coverage_pct=%.2f reform=%t",
+		len(candidates),
 		candidateFamiliesInspected,
+		newCandidateFamilies,
+		metrics["auto_reform_candidates"],
 		formed,
+		newCandidateSnapshotsPersisted,
+		autoReformSnapshotsPersisted,
+		releaseRowsInserted,
+		releaseRowsUpdated,
+		releaseSnapshotsSkippedDowngrade,
 		cooledDownFragmentOnly,
 		cooledDownLowCoverage,
 		cooledDownWeakSingle,
@@ -555,22 +614,25 @@ func durationMillis(d time.Duration) float64 {
 }
 
 type candidateOutcome struct {
-	formed                   int
-	cooledDownFragmentOnly   int
-	cooledDownLowCoverage    int
-	cooledDownWeakSingle     int
-	cooledDownWeakObfuscated int
-	cooledDownOvergrouped    int
-	cooledDownPreferBaseStem int
-	staleCleanupOnly         int
-	skippedFragments         int
-	skippedNoMainPayload     int
-	skippedSingleMain        int
-	skippedMultiFileSingle   int
-	skippedContextualWeak    int
-	skippedConfidence        int
-	skippedCompletion        int
-	deferredAck              *pgindex.ReleaseCandidateAck
+	formed                           int
+	releaseRowsInserted              int
+	releaseRowsUpdated               int
+	releaseSnapshotsSkippedDowngrade int
+	cooledDownFragmentOnly           int
+	cooledDownLowCoverage            int
+	cooledDownWeakSingle             int
+	cooledDownWeakObfuscated         int
+	cooledDownOvergrouped            int
+	cooledDownPreferBaseStem         int
+	staleCleanupOnly                 int
+	skippedFragments                 int
+	skippedNoMainPayload             int
+	skippedSingleMain                int
+	skippedMultiFileSingle           int
+	skippedContextualWeak            int
+	skippedConfidence                int
+	skippedCompletion                int
+	deferredAck                      *pgindex.ReleaseCandidateAck
 }
 
 const (
@@ -803,7 +865,7 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 
 		newsgroupIDs := newsgroupIDsForCluster(cluster.Binaries)
 		start = time.Now()
-		persistedReleaseID, err := s.repo.PersistReleaseSnapshot(ctx, record, files, newsgroupIDs)
+		persisted, err := s.repo.PersistReleaseSnapshot(ctx, record, files, newsgroupIDs)
 		if timings != nil {
 			elapsed := time.Since(start)
 			timings.upsertRelease += elapsed
@@ -812,18 +874,26 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			return outcome, fmt.Errorf("persist release snapshot %s: %w", record.GroupName, err)
 		}
 		if s.opts.ReopenArchivedNZBOnReleaseChange {
-			if err := s.repo.ReopenArchivedReleaseForRegeneration(ctx, persistedReleaseID); err != nil {
+			if err := s.repo.ReopenArchivedReleaseForRegeneration(ctx, persisted.ReleaseID); err != nil {
 				return outcome, fmt.Errorf("reopen archived release %s for regeneration: %w", record.GroupName, err)
 			}
 		}
 		if baseStem := clusterPrimaryBaseStem(cluster.Binaries); baseStem != "" && candidate.NewsgroupID > 0 {
-			if err := s.repo.DeleteAuxiliaryOnlySiblingReleases(ctx, candidate.ProviderID, candidate.NewsgroupID, baseStem, []string{persistedReleaseID}); err != nil {
+			if err := s.repo.DeleteAuxiliaryOnlySiblingReleases(ctx, candidate.ProviderID, candidate.NewsgroupID, baseStem, []string{persisted.ReleaseID}); err != nil {
 				return outcome, fmt.Errorf("delete auxiliary-only sibling releases for %s: %w", record.GroupName, err)
 			}
 		}
 
 		keepGroupNames = append(keepGroupNames, record.GroupName)
 		outcome.formed++
+		switch persisted.Status {
+		case pgindex.ReleaseSnapshotStatusInserted:
+			outcome.releaseRowsInserted++
+		case pgindex.ReleaseSnapshotStatusSkippedDowngrade:
+			outcome.releaseSnapshotsSkippedDowngrade++
+		default:
+			outcome.releaseRowsUpdated++
+		}
 	}
 
 	start = time.Now()

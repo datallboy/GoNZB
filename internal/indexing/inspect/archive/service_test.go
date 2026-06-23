@@ -92,12 +92,12 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &fakeArchiveRepository{
 		candidates: []pgindex.BinaryInspectionCandidate{
-			{BinaryID: 41, ReleaseID: "rel-archive", FileName: "random.part01.rar", SourceUpdatedAt: &now},
+			{BinaryID: 41, ReleaseID: "rel-archive", FileName: "random.part001.rar", SourceUpdatedAt: &now},
 			{BinaryID: 42, ReleaseID: "rel-archive", FileName: "other.part02.rar", SourceUpdatedAt: &now},
 			{BinaryID: 43, ReleaseID: "rel-archive", FileName: "third.part03.rar", SourceUpdatedAt: &now},
 		},
 		files: []pgindex.CatalogReleaseFile{
-			{ID: 501, BinaryID: 41, FileName: "random.part01.rar", FileIndex: 1, SizeBytes: 2048},
+			{ID: 501, BinaryID: 41, FileName: "random.part001.rar", FileIndex: 1, SizeBytes: 2048},
 			{ID: 502, BinaryID: 42, FileName: "other.part02.rar", FileIndex: 2, SizeBytes: 2048},
 			{ID: 503, BinaryID: 43, FileName: "third.part03.rar", FileIndex: 3, SizeBytes: 2048},
 		},
@@ -113,7 +113,7 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 		t.Fatalf("expected one deduped archive candidate, got %d", len(candidates))
 	}
 	if candidates[0].BinaryID != 41 {
-		t.Fatalf("expected part01 representative to win, got %+v", candidates[0])
+		t.Fatalf("expected first RAR part representative to win, got %+v", candidates[0])
 	}
 }
 

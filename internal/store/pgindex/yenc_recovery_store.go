@@ -949,6 +949,31 @@ func (s *Store) RecordYEncRecoveryTransientFailure(ctx context.Context, articleH
 	return nil
 }
 
+func (s *Store) RecordYEncRecoveryTransientFailureBatch(ctx context.Context, articleHeaderIDs []int64) error {
+	articleHeaderIDs = dedupeYEncRecoveryInt64s(articleHeaderIDs)
+	if len(articleHeaderIDs) == 0 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		WITH requested(article_header_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		)
+		UPDATE yenc_recovery_work_items wi
+		SET status = 'ready',
+		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW() + INTERVAL '15 minutes'),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		FROM requested r
+		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = r.article_header_id
+		WHERE wi.article_header_id = r.article_header_id`,
+		articleHeaderIDs,
+	); err != nil {
+		return fmt.Errorf("record yenc recovery transient failure batch count=%d: %w", len(articleHeaderIDs), err)
+	}
+	return nil
+}
+
 func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
 	return scanYEncRecoveryCandidateDest(scanner, nil)
 }

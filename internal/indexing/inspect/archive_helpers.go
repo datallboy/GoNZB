@@ -16,6 +16,7 @@ var (
 	splitZipRE      = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	rarPartRE       = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	rarPartNumRE    = regexp.MustCompile(`(?i)\.part(\d+)\.rar$`)
+	rarFirstPartRE  = regexp.MustCompile(`(?i)\.part0*1\.rar$`)
 	rarVolNumRE     = regexp.MustCompile(`(?i)\.r(\d{2,3})$`)
 )
 
@@ -41,7 +42,7 @@ func IsArchiveRepresentative(fileName string) bool {
 	switch {
 	case splitSevenZipRE.MatchString(lower), splitZipRE.MatchString(lower):
 		return strings.HasSuffix(lower, ".001")
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		return true
 	case rarPartRE.MatchString(lower):
 		return false
@@ -68,7 +69,7 @@ func ArchiveFamilyKey(fileName string) string {
 		return splitSevenZipRE.ReplaceAllString(lower, ".7z")
 	case splitZipRE.MatchString(lower):
 		return splitZipRE.ReplaceAllString(lower, ".zip")
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		idx := strings.LastIndex(lower, ".part")
 		if idx > 0 {
 			return lower[:idx] + ".rar"

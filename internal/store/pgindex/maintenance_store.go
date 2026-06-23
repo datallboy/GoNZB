@@ -15,6 +15,18 @@ type IndexerMaintenanceResult struct {
 	AbandonedBinaryInspections int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
+	InspectDiscoveryReadyRows  int64
+	InspectDiscoveryRetired    int64
+	InspectDiscoveryRequeued   int64
+	InspectPAR2ReadyRows       int64
+	InspectPAR2Retired         int64
+	InspectPAR2Requeued        int64
+	InspectArchiveReadyRows    int64
+	InspectArchiveRetired      int64
+	InspectArchiveRequeued     int64
+	InspectMediaReadyRows      int64
+	InspectMediaRetired        int64
+	InspectMediaRequeued       int64
 	BackfilledCatalogFiles     int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64
@@ -48,6 +60,36 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 	} else {
 		result.YEncWorkItemsUpserted = upserted
 		result.YEncWorkItemsRetired = retired
+	}
+
+	if refreshed, err := s.RefreshInspectDiscoveryReadyQueue(ctx, inspectDiscoveryReadyQueueSeedLimit); err != nil {
+		return nil, err
+	} else if refreshed != nil {
+		result.InspectDiscoveryReadyRows = refreshed.ReadyUpserted
+		result.InspectDiscoveryRetired = refreshed.Retired
+		result.InspectDiscoveryRequeued = refreshed.Requeued
+	}
+
+	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_par2", inspectReadyQueueSeedLimit); err != nil {
+		return nil, err
+	} else if refreshed != nil {
+		result.InspectPAR2ReadyRows = refreshed.ReadyUpserted
+		result.InspectPAR2Retired = refreshed.Retired
+		result.InspectPAR2Requeued = refreshed.Requeued
+	}
+	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_archive", inspectReadyQueueSeedLimit); err != nil {
+		return nil, err
+	} else if refreshed != nil {
+		result.InspectArchiveReadyRows = refreshed.ReadyUpserted
+		result.InspectArchiveRetired = refreshed.Retired
+		result.InspectArchiveRequeued = refreshed.Requeued
+	}
+	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_media", inspectReadyQueueSeedLimit); err != nil {
+		return nil, err
+	} else if refreshed != nil {
+		result.InspectMediaReadyRows = refreshed.ReadyUpserted
+		result.InspectMediaRetired = refreshed.Retired
+		result.InspectMediaRequeued = refreshed.Requeued
 	}
 
 	for {

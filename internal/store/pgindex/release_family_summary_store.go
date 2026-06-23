@@ -57,6 +57,9 @@ func normalizeReleaseFamilySummaryKey(providerID, newsgroupID int64, keyKind, fa
 	}
 	if keyKind == "base_stem" {
 		familyKey = strings.ToLower(familyKey)
+		if summaryIsOpaqueBaseStemKey(familyKey) {
+			return releaseFamilySummaryKey{}, false
+		}
 	}
 
 	return releaseFamilySummaryKey{
@@ -65,6 +68,14 @@ func normalizeReleaseFamilySummaryKey(providerID, newsgroupID int64, keyKind, fa
 		KeyKind:     keyKind,
 		FamilyKey:   familyKey,
 	}, true
+}
+
+func summaryIsOpaqueBaseStemKey(familyKey string) bool {
+	familyKey = strings.TrimSpace(strings.ToLower(familyKey))
+	if familyKey == "" {
+		return false
+	}
+	return summaryOpaqueTokenRE.MatchString(strings.ReplaceAll(familyKey, " ", ""))
 }
 
 type releaseFamilySummaryRow struct {
@@ -1067,6 +1078,229 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 		return metrics, nil
 	}
 
+	if err := mergeReleaseFamilySummaryRows(ctx, conn, summaries); err != nil {
+		return metrics, err
+	}
+	return metrics, nil
+}
+
+func refreshBaseStemSummariesBatchCopyWithMetrics(ctx context.Context, conn *sql.Conn, keys []releaseFamilySummaryKey) (releaseSummaryRefreshMetrics, error) {
+	metrics := releaseSummaryRefreshMetrics{}
+	if conn == nil {
+		return metrics, fmt.Errorf("release family summary conn is required")
+	}
+	if len(keys) == 0 {
+		return metrics, nil
+	}
+
+	for start := 0; start < len(keys); start += releaseFamilySummaryRefreshQueryBatchCap {
+		end := start + releaseFamilySummaryRefreshQueryBatchCap
+		if end > len(keys) {
+			end = len(keys)
+		}
+		chunkMetrics, err := refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx, conn, keys[start:end])
+		if err != nil {
+			return metrics, err
+		}
+		metrics.SummaryAggregateDuration += chunkMetrics.SummaryAggregateDuration
+		metrics.SummaryDominantDuration += chunkMetrics.SummaryDominantDuration
+		metrics.SummaryRefreshDuration += chunkMetrics.SummaryAggregateDuration + chunkMetrics.SummaryDominantDuration
+	}
+	return metrics, nil
+}
+
+func refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx context.Context, conn *sql.Conn, keys []releaseFamilySummaryKey) (releaseSummaryRefreshMetrics, error) {
+	metrics := releaseSummaryRefreshMetrics{}
+	if conn == nil {
+		return metrics, fmt.Errorf("release family summary conn is required")
+	}
+	if len(keys) == 0 {
+		return metrics, nil
+	}
+
+	values, args := releaseFamilySummaryBatchValues(keys)
+	aggregateStart := time.Now()
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+			VALUES %s
+		)
+		SELECT
+			r.provider_id,
+			r.newsgroup_id,
+			r.key_kind,
+			r.family_key,
+			COALESCE(MAX(bic.source_release_key), '') AS source_release_key,
+			COALESCE(MAX(bic.release_key), '') AS release_key,
+			COALESCE(MAX(bic.release_name), '') AS release_name,
+			COUNT(bc.binary_id)::INTEGER AS binary_count,
+			COALESCE(SUM(
+				CASE
+					WHEN bos.observed_parts = bos.total_parts AND bos.total_parts > 0 THEN 1
+					ELSE 0
+				END
+			), 0)::INTEGER AS complete_binary_count,
+			COALESCE(SUM(
+				CASE
+					WHEN (bic.is_main_payload OR NOT bic.is_auxiliary)
+					 AND bos.observed_parts = bos.total_parts
+					 AND bos.total_parts > 0 THEN 1
+					ELSE 0
+				END
+			), 0)::INTEGER AS complete_main_payload_binary_count,
+			COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
+			COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+			COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
+			COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
+			MIN(bos.posted_at) AS earliest_posted_at
+		FROM requested r
+		LEFT JOIN binary_identity_current bic
+		  ON bic.provider_id = r.provider_id
+		 AND bic.newsgroup_id = r.newsgroup_id
+		 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+		 AND BTRIM(bic.base_stem) <> ''
+		 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+		 AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		 )
+		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
+		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
+		ORDER BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key`,
+		values), args...)
+	if err != nil {
+		return metrics, fmt.Errorf("query base stem aggregate batch count=%d: %w", len(keys), err)
+	}
+	defer rows.Close()
+
+	summaryByKey := make(map[releaseFamilySummaryKey]releaseFamilySummaryRow, len(keys))
+	for rows.Next() {
+		var row releaseFamilySummaryRow
+		if err := rows.Scan(
+			&row.ProviderID,
+			&row.NewsgroupID,
+			&row.KeyKind,
+			&row.FamilyKey,
+			&row.SourceReleaseKey,
+			&row.ReleaseKey,
+			&row.ReleaseName,
+			&row.BinaryCount,
+			&row.CompleteBinaryCount,
+			&row.CompleteMainPayloadBinaryCount,
+			&row.ExpectedFileCount,
+			&row.ExpectedArchiveFileCount,
+			&row.HasExpectedFileCount,
+			&row.HasExpectedArchiveFileCount,
+			&row.TotalBytes,
+			&row.EarliestPostedAt,
+		); err != nil {
+			return metrics, fmt.Errorf("scan base stem aggregate batch row: %w", err)
+		}
+		key := releaseFamilySummaryKey{
+			ProviderID:  row.ProviderID,
+			NewsgroupID: row.NewsgroupID,
+			KeyKind:     row.KeyKind,
+			FamilyKey:   row.FamilyKey,
+		}
+		summaryByKey[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		return metrics, fmt.Errorf("iterate base stem aggregate batch rows: %w", err)
+	}
+	metrics.SummaryAggregateDuration += time.Since(aggregateStart)
+	if len(summaryByKey) == 0 {
+		return metrics, nil
+	}
+
+	dominantStart := time.Now()
+	rows, err = conn.QueryContext(ctx, fmt.Sprintf(`
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+			VALUES %s
+		)
+		SELECT DISTINCT ON (r.provider_id, r.newsgroup_id, r.key_kind, r.family_key)
+			r.provider_id,
+			r.newsgroup_id,
+			r.key_kind,
+			r.family_key,
+			COALESCE(bic.family_kind, '') AS dominant_family_kind,
+			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS dominant_file_name,
+			COALESCE(bic.match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
+		FROM requested r
+		LEFT JOIN binary_identity_current bic
+		  ON bic.provider_id = r.provider_id
+		 AND bic.newsgroup_id = r.newsgroup_id
+		 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+		 AND BTRIM(bic.base_stem) <> ''
+		 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+		 AND NOT EXISTS (
+			SELECT 1
+			FROM binary_lifecycle bl
+			WHERE bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
+		 )
+		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
+		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		ORDER BY
+			r.provider_id,
+			r.newsgroup_id,
+			r.key_kind,
+			r.family_key,
+			CASE WHEN (COALESCE(bic.is_main_payload, FALSE) OR NOT COALESCE(bic.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
+			CASE WHEN COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) = COALESCE(bos.total_parts, 0) THEN 0 ELSE 1 END ASC,
+			COALESCE(bos.observed_parts, 0) DESC,
+			COALESCE(bos.total_bytes, 0) DESC,
+			COALESCE(bic.match_confidence, 0) DESC,
+			COALESCE(bc.binary_id, 0) ASC`,
+		values), args...)
+	if err != nil {
+		return metrics, fmt.Errorf("query base stem dominant batch count=%d: %w", len(keys), err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			key                     releaseFamilySummaryKey
+			dominantFamilyKind      string
+			dominantFileName        string
+			dominantMatchConfidence float64
+		)
+		if err := rows.Scan(
+			&key.ProviderID,
+			&key.NewsgroupID,
+			&key.KeyKind,
+			&key.FamilyKey,
+			&dominantFamilyKind,
+			&dominantFileName,
+			&dominantMatchConfidence,
+		); err != nil {
+			return metrics, fmt.Errorf("scan base stem dominant batch row: %w", err)
+		}
+		row, ok := summaryByKey[key]
+		if !ok {
+			continue
+		}
+		row.DominantFamilyKind = dominantFamilyKind
+		row.DominantFileName = dominantFileName
+		row.DominantMatchConfidence = dominantMatchConfidence
+		summaryByKey[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		return metrics, fmt.Errorf("iterate base stem dominant batch rows: %w", err)
+	}
+	metrics.SummaryDominantDuration += time.Since(dominantStart)
+
+	summaries := make([]releaseFamilySummaryRow, 0, len(summaryByKey))
+	for _, key := range keys {
+		if row, ok := summaryByKey[key]; ok {
+			summaries = append(summaries, row)
+		}
+	}
+	if len(summaries) == 0 {
+		return metrics, nil
+	}
 	if err := mergeReleaseFamilySummaryRows(ctx, conn, summaries); err != nil {
 		return metrics, err
 	}
@@ -2526,8 +2760,7 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 			family_key,
 			queued_at
 		)
-		VALUES %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO NOTHING`,
+		VALUES %s`,
 			strings.Join(queueValues, ",")), queueArgs...); err != nil {
 			return fmt.Errorf("enqueue release family summary refresh batch count=%d: %w", len(batch), err)
 		}
@@ -2754,8 +2987,10 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 			metrics.Mode = "hot"
 			metrics.HotAttempts = 1
 			metrics.DequeueDuration += time.Since(dequeueStart)
-			metrics.Dequeued = len(keys)
-			metrics.HotDequeued = len(keys)
+			dequeued := len(keys)
+			keys = dedupeReleaseFamilySummaryKeys(keys)
+			metrics.Dequeued = dequeued
+			metrics.HotDequeued = dequeued
 			if len(keys) == 0 {
 				if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 					return fmt.Errorf("commit empty release family summary refresh conn tx: %w", err)
@@ -2806,8 +3041,10 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 			metrics.PhaseADuration += time.Since(phaseAStart)
 			return nil
 		}
-		metrics.Dequeued = len(keys)
-		metrics.ColdDequeued = len(keys)
+		dequeued := len(keys)
+		keys = dedupeReleaseFamilySummaryKeys(keys)
+		metrics.Dequeued = dequeued
+		metrics.ColdDequeued = dequeued
 
 		summaryStart := time.Now()
 		phaseAMetrics, err := refreshDequeuedReleaseFamilySummaryKeysPhaseA(ctx, conn, keys)
@@ -2855,19 +3092,51 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 	}, nil
 }
 
+func dedupeReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) []releaseFamilySummaryKey {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]releaseFamilySummaryKey, 0, len(keys))
+	seen := make(map[releaseFamilySummaryKey]struct{}, len(keys))
+	for _, candidate := range keys {
+		key, ok := normalizeReleaseFamilySummaryKey(candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.FamilyKey)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	sortReleaseFamilySummaryKeys(out)
+	return out
+}
+
 func refreshDequeuedReleaseFamilySummaryKeysPhaseA(ctx context.Context, conn *sql.Conn, keys []releaseFamilySummaryKey) (releaseSummaryRefreshMetrics, error) {
 	metrics := releaseSummaryRefreshMetrics{}
 	releaseFamilyKeys := make([]releaseFamilySummaryKey, 0, len(keys))
+	baseStemKeys := make([]releaseFamilySummaryKey, 0, len(keys))
 	otherKeys := make([]releaseFamilySummaryKey, 0, len(keys))
 	for _, key := range keys {
-		if key.KeyKind == "release_family" {
+		switch key.KeyKind {
+		case "release_family":
 			releaseFamilyKeys = append(releaseFamilyKeys, key)
-			continue
+		case "base_stem":
+			baseStemKeys = append(baseStemKeys, key)
+		default:
+			otherKeys = append(otherKeys, key)
 		}
-		otherKeys = append(otherKeys, key)
 	}
 
 	phaseMetrics, err := refreshReleaseFamilySummariesBatchCopyWithMetrics(ctx, conn, releaseFamilyKeys)
+	if err != nil {
+		return metrics, err
+	}
+	metrics.SummaryRefreshDuration += phaseMetrics.SummaryRefreshDuration
+	metrics.SummaryAggregateDuration += phaseMetrics.SummaryAggregateDuration
+	metrics.SummaryDominantDuration += phaseMetrics.SummaryDominantDuration
+	phaseMetrics, err = refreshBaseStemSummariesBatchCopyWithMetrics(ctx, conn, baseStemKeys)
 	if err != nil {
 		return metrics, err
 	}
