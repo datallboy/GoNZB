@@ -12,6 +12,11 @@ type nntpClient interface {
 	XOver(ctx context.Context, group string, from, to int64) ([]nntp.OverviewHeader, error)
 }
 
+type providerAwareNNTPClient interface {
+	GroupStatsWithProvider(ctx context.Context, group string) (nntp.GroupStats, string, error)
+	XOverWithProvider(ctx context.Context, group string, from, to int64) ([]nntp.OverviewHeader, string, error)
+}
+
 type NNTPAdapter struct {
 	p nntpClient
 }
@@ -25,6 +30,17 @@ func (a *NNTPAdapter) ID() string {
 }
 
 func (a *NNTPAdapter) GroupStats(ctx context.Context, group string) (GroupStats, error) {
+	if aware, ok := a.p.(providerAwareNNTPClient); ok {
+		gs, providerID, err := aware.GroupStatsWithProvider(ctx, group)
+		if err != nil {
+			return GroupStats{}, err
+		}
+		return GroupStats{
+			Low:        gs.Low,
+			High:       gs.High,
+			ProviderID: providerID,
+		}, nil
+	}
 	gs, err := a.p.GroupStats(ctx, group)
 	if err != nil {
 		return GroupStats{}, err
@@ -36,9 +52,24 @@ func (a *NNTPAdapter) GroupStats(ctx context.Context, group string) (GroupStats,
 }
 
 func (a *NNTPAdapter) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
-	rows, err := a.p.XOver(ctx, group, from, to)
+	rows, _, err := a.XOverWithProvider(ctx, group, from, to)
+	return rows, err
+}
+
+func (a *NNTPAdapter) XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error) {
+	var (
+		rows       []nntp.OverviewHeader
+		providerID string
+		err        error
+	)
+	if aware, ok := a.p.(providerAwareNNTPClient); ok {
+		rows, providerID, err = aware.XOverWithProvider(ctx, group, from, to)
+	} else {
+		rows, err = a.p.XOver(ctx, group, from, to)
+		providerID = a.ID()
+	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	out := make([]OverviewHeader, 0, len(rows))
@@ -55,5 +86,5 @@ func (a *NNTPAdapter) XOver(ctx context.Context, group string, from, to int64) (
 			RawOverview:   r.RawOverview,
 		})
 	}
-	return out, nil
+	return out, providerID, nil
 }

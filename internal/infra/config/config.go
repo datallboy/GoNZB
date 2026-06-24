@@ -27,19 +27,20 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ID                     string `mapstructure:"id" yaml:"id"`
-	Host                   string `mapstructure:"host" yaml:"host"`
-	Port                   int    `mapstructure:"port" yaml:"port"`
-	Username               string `mapstructure:"username" yaml:"username"`
-	Password               string `mapstructure:"password" yaml:"password"`
-	TLS                    bool   `mapstructure:"tls" yaml:"tls"`
-	MaxConnection          int    `mapstructure:"max_connections" yaml:"max_connections"`
-	Priority               int    `mapstructure:"priority" yaml:"priority"`
-	DialTimeoutSeconds     int    `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
-	TCPKeepAliveSeconds    int    `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
-	PoolIdleTimeoutSeconds int    `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
-	PoolMaxAgeSeconds      int    `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
-	EnablePoolLogging      bool   `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
+	ID                     string   `mapstructure:"id" yaml:"id"`
+	Host                   string   `mapstructure:"host" yaml:"host"`
+	Port                   int      `mapstructure:"port" yaml:"port"`
+	Username               string   `mapstructure:"username" yaml:"username"`
+	Password               string   `mapstructure:"password" yaml:"password"`
+	TLS                    bool     `mapstructure:"tls" yaml:"tls"`
+	MaxConnection          int      `mapstructure:"max_connections" yaml:"max_connections"`
+	Priority               int      `mapstructure:"priority" yaml:"priority"`
+	DialTimeoutSeconds     int      `mapstructure:"dial_timeout_seconds" yaml:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int      `mapstructure:"tcp_keepalive_seconds" yaml:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int      `mapstructure:"pool_idle_timeout_seconds" yaml:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int      `mapstructure:"pool_max_age_seconds" yaml:"pool_max_age_seconds"`
+	EnablePoolLogging      bool     `mapstructure:"enable_pool_logging" yaml:"enable_pool_logging"`
+	Roles                  []string `mapstructure:"roles" yaml:"roles"`
 }
 
 type IndexerConfig struct {
@@ -60,6 +61,8 @@ type LogConfig struct {
 	Path          string `mapstructure:"path" yaml:"path"`
 	Level         string `mapstructure:"level" yaml:"level"`
 	IncludeStdout bool   `mapstructure:"include_stdout" yaml:"include_stdout"`
+	MaxSizeMB     int    `mapstructure:"max_size_mb" yaml:"max_size_mb"`
+	MaxBackups    int    `mapstructure:"max_backups" yaml:"max_backups"`
 }
 
 type StoreConfig struct {
@@ -69,10 +72,10 @@ type StoreConfig struct {
 	SearchPersistenceEnabled bool   `mapstructure:"search_persistence_enabled" yaml:"search_persistence_enabled"`
 
 	// PostgreSQL DSN for Usenet/NZB Indexer module.
-	PGDSN string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
+	PGDSN            string `mapstructure:"pg_dsn" yaml:"pg_dsn"`
+	PGMaintenanceDSN string `mapstructure:"pg_maintenance_dsn" yaml:"pg_maintenance_dsn"`
 }
 type APIConfig struct {
-	Key                string   `mapstructure:"key" yaml:"key"`
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
 }
 
@@ -86,31 +89,35 @@ type AggregatorSourcesConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
-	AssembleLaneA               IndexingStageConfig        `mapstructure:"assemble_lane_a" yaml:"assemble_lane_a"`
-	AssembleLaneB               IndexingStageConfig        `mapstructure:"assemble_lane_b" yaml:"assemble_lane_b"`
-	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
-	ReleaseGenerateNZB          IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
-	ReleaseArchiveNZB           IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
-	ReleasePurgeArchivedSources IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
-	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
-	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
-	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
-	MemoryGuard                 IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
-	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive              IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword             IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia                IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB                 IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB                  IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                   []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup     map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                 IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill               IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	PosterMaterialize            IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
+	CrosspostPopularityRefresh   IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
+	Assemble                     IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
+	RecoverYEnc                  IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh        IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                      IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB           IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
+	ReleaseArchiveNZB            IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources  IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	InspectDiscoveryReadyRefresh IndexingStageConfig        `mapstructure:"inspect_discovery_ready_refresh" yaml:"inspect_discovery_ready_refresh"`
+	InspectPAR2ReadyRefresh      IndexingStageConfig        `mapstructure:"inspect_par2_ready_refresh" yaml:"inspect_par2_ready_refresh"`
+	InspectArchiveReadyRefresh   IndexingStageConfig        `mapstructure:"inspect_archive_ready_refresh" yaml:"inspect_archive_ready_refresh"`
+	InspectMediaReadyRefresh     IndexingStageConfig        `mapstructure:"inspect_media_ready_refresh" yaml:"inspect_media_ready_refresh"`
+	Match                        IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
+	Inspect                      IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
+	StorageGuard                 IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	MemoryGuard                  IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
+	InspectDiscovery             IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                  IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                   IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive               IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword              IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                 IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                  IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                   IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -119,8 +126,17 @@ type IndexingStageConfig struct {
 	BatchSize               *int     `mapstructure:"batch_size" yaml:"batch_size"`
 	MaxBatches              *int     `mapstructure:"max_batches" yaml:"max_batches"`
 	Concurrency             *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	MaxEffectiveConcurrency *int     `mapstructure:"max_effective_concurrency" yaml:"max_effective_concurrency"`
 	BackoffSeconds          *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
+	LaneATargetPct          *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
+	LaneBMinPct             *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
+	LaneATimeWindowMinutes  *int     `mapstructure:"lane_a_time_window_minutes" yaml:"lane_a_time_window_minutes"`
+	TargetWindowEnabled     *bool    `mapstructure:"target_window_enabled" yaml:"target_window_enabled"`
+	TargetWindowStart       *string  `mapstructure:"target_window_start" yaml:"target_window_start"`
+	TargetWindowEnd         *string  `mapstructure:"target_window_end" yaml:"target_window_end"`
+	TargetWindowPct         *int     `mapstructure:"target_window_pct" yaml:"target_window_pct"`
+	NewestPct               *int     `mapstructure:"newest_pct" yaml:"newest_pct"`
 }
 
 type IndexingMatchConfig struct {
@@ -133,6 +149,7 @@ type IndexingReleaseConfig struct {
 	Enabled                                         *bool    `mapstructure:"enabled" yaml:"enabled"`
 	IntervalMinutes                                 *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
 	BatchSize                                       *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	AutoReformBatchSize                             *int     `mapstructure:"auto_reform_batch_size" yaml:"auto_reform_batch_size"`
 	BackoffSeconds                                  *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
 	MinConfidence                                   *float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 	MinCompletionPct                                *float64 `mapstructure:"min_completion_pct" yaml:"min_completion_pct"`
@@ -143,27 +160,39 @@ type IndexingReleaseConfig struct {
 	PublicMinIdentityStatus                         string   `mapstructure:"public_min_identity_status" yaml:"public_min_identity_status"`
 	PublicRequireInspection                         *bool    `mapstructure:"public_require_inspection" yaml:"public_require_inspection"`
 	PublicRequireEnrichment                         *bool    `mapstructure:"public_require_enrichment" yaml:"public_require_enrichment"`
+	PublicRequirePayloadComplete                    *bool    `mapstructure:"public_require_payload_complete" yaml:"public_require_payload_complete"`
+	PublicRequireExpectedFileCountComplete          *bool    `mapstructure:"public_require_expected_file_count_complete" yaml:"public_require_expected_file_count_complete"`
+	PublicRequirePAR2                               *bool    `mapstructure:"public_require_par2" yaml:"public_require_par2"`
+	PublicRequireNFO                                *bool    `mapstructure:"public_require_nfo" yaml:"public_require_nfo"`
+	PublicRequireSFV                                *bool    `mapstructure:"public_require_sfv" yaml:"public_require_sfv"`
+	RetainUntilExpectedFileCountComplete            *bool    `mapstructure:"retain_until_expected_file_count_complete" yaml:"retain_until_expected_file_count_complete"`
+	RetainRequirePAR2                               *bool    `mapstructure:"retain_require_par2" yaml:"retain_require_par2"`
+	RetainRequireNFO                                *bool    `mapstructure:"retain_require_nfo" yaml:"retain_require_nfo"`
+	RetainRequireSFV                                *bool    `mapstructure:"retain_require_sfv" yaml:"retain_require_sfv"`
+	ReopenArchivedNZBOnReleaseChange                *bool    `mapstructure:"reopen_archived_nzb_on_release_change" yaml:"reopen_archived_nzb_on_release_change"`
 }
 
 type IndexingInspectConfig struct {
-	WorkDir          string   `mapstructure:"work_dir" yaml:"work_dir"`
-	WorkspaceBackend string   `mapstructure:"workspace_backend" yaml:"workspace_backend"`
-	MemoryWorkDir    string   `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
-	MaxBytes         int64    `mapstructure:"max_bytes" yaml:"max_bytes"`
-	MinBinaryBytes   int64    `mapstructure:"min_binary_bytes" yaml:"min_binary_bytes"`
-	MaxBinaryBytes   int64    `mapstructure:"max_binary_bytes" yaml:"max_binary_bytes"`
-	BlockedMagicHex  []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
-	MaxArchiveDepth  int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
-	ToolTimeoutSecs  int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
-	FFmpegPath       string   `mapstructure:"ffmpeg_path" yaml:"ffmpeg_path"`
-	FFProbePath      string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
-	SevenZipPath     string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
-	UnrarPath        string   `mapstructure:"unrar_path" yaml:"unrar_path"`
-	PAR2Path         string   `mapstructure:"par2_path" yaml:"par2_path"`
+	WorkDir                  string   `mapstructure:"work_dir" yaml:"work_dir"`
+	WorkspaceBackend         string   `mapstructure:"workspace_backend" yaml:"workspace_backend"`
+	MemoryWorkDir            string   `mapstructure:"memory_work_dir" yaml:"memory_work_dir"`
+	MaxBytes                 int64    `mapstructure:"max_bytes" yaml:"max_bytes"`
+	MinBinaryBytes           int64    `mapstructure:"min_binary_bytes" yaml:"min_binary_bytes"`
+	MaxBinaryBytes           int64    `mapstructure:"max_binary_bytes" yaml:"max_binary_bytes"`
+	RequireExpectedFileCount bool     `mapstructure:"require_expected_file_count" yaml:"require_expected_file_count"`
+	BlockedMagicHex          []string `mapstructure:"blocked_magic_hex" yaml:"blocked_magic_hex"`
+	MaxArchiveDepth          int      `mapstructure:"max_archive_depth" yaml:"max_archive_depth"`
+	ToolTimeoutSecs          int      `mapstructure:"tool_timeout_seconds" yaml:"tool_timeout_seconds"`
+	FFmpegPath               string   `mapstructure:"ffmpeg_path" yaml:"ffmpeg_path"`
+	FFProbePath              string   `mapstructure:"ffprobe_path" yaml:"ffprobe_path"`
+	SevenZipPath             string   `mapstructure:"seven_zip_path" yaml:"seven_zip_path"`
+	UnrarPath                string   `mapstructure:"unrar_path" yaml:"unrar_path"`
+	PAR2Path                 string   `mapstructure:"par2_path" yaml:"par2_path"`
 }
 
 type IndexingStorageGuardConfig struct {
 	Enabled        *bool    `mapstructure:"enabled" yaml:"enabled"`
+	DataDirectory  string   `mapstructure:"data_directory" yaml:"data_directory"`
 	MinFreeBytes   *int64   `mapstructure:"min_free_bytes" yaml:"min_free_bytes"`
 	MinFreePercent *float64 `mapstructure:"min_free_percent" yaml:"min_free_percent"`
 }
@@ -260,31 +289,35 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
+	v.SetDefault("log.max_size_mb", 32)
+	v.SetDefault("log.max_backups", 5)
 	v.SetDefault("store.payload_cache_enabled", true)
 	v.SetDefault("store.search_persistence_enabled", true)
 
 	v.SetDefault("store.pg_dsn", "")
+	v.SetDefault("store.pg_maintenance_dsn", "")
 	v.SetDefault("indexing.newsgroups", []string{})
 	v.SetDefault("indexing.backfill_until_date_by_group", map[string]string{})
 	v.SetDefault("indexing.scrape_latest.enabled", false)
 	v.SetDefault("indexing.scrape_latest.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_latest.batch_size", 5000)
+	v.SetDefault("indexing.scrape_latest.concurrency", 1)
+	v.SetDefault("indexing.scrape_latest.max_batches", 1)
 	v.SetDefault("indexing.scrape_latest.backoff_seconds", 0)
 	v.SetDefault("indexing.scrape_backfill.enabled", false)
 	v.SetDefault("indexing.scrape_backfill.interval_minutes", 10.0)
 	v.SetDefault("indexing.scrape_backfill.batch_size", 5000)
+	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
+	v.SetDefault("indexing.scrape_backfill.max_batches", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.enabled", false)
-	v.SetDefault("indexing.assemble.interval_minutes", 10.0)
-	v.SetDefault("indexing.assemble.batch_size", 5000)
-	v.SetDefault("indexing.assemble.concurrency", 1)
-	v.SetDefault("indexing.assemble.backoff_seconds", 0)
 	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
-	v.SetDefault("indexing.assemble_lane_a.binary_upsert_db_chunk_size", 250)
-	v.SetDefault("indexing.assemble_lane_b.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
+	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
+	v.SetDefault("indexing.assemble.lane_a_time_window_minutes", 15)
 	v.SetDefault("indexing.release.enabled", false)
 	v.SetDefault("indexing.release.interval_minutes", 10.0)
 	v.SetDefault("indexing.release.batch_size", 1000)
+	v.SetDefault("indexing.release.auto_reform_batch_size", 25)
 	v.SetDefault("indexing.release.backoff_seconds", 0)
 	v.SetDefault("indexing.release.min_confidence", 0.55)
 	v.SetDefault("indexing.release.min_completion_pct", 0.0)
@@ -293,8 +326,19 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.public_min_match_confidence", 0.55)
 	v.SetDefault("indexing.release.public_min_completion_pct", 100.0)
 	v.SetDefault("indexing.release.public_min_identity_status", "probable")
-	v.SetDefault("indexing.release.public_require_inspection", false)
+	v.SetDefault("indexing.release.public_require_inspection", true)
 	v.SetDefault("indexing.release.public_require_enrichment", false)
+	v.SetDefault("indexing.release.public_require_payload_complete", true)
+	v.SetDefault("indexing.release.public_require_expected_file_count_complete", false)
+	v.SetDefault("indexing.release.public_require_par2", false)
+	v.SetDefault("indexing.release.public_require_nfo", false)
+	v.SetDefault("indexing.release.public_require_sfv", false)
+	v.SetDefault("indexing.release.retain_until_expected_file_count_complete", false)
+	v.SetDefault("indexing.release.retain_require_par2", false)
+	v.SetDefault("indexing.release.retain_require_nfo", false)
+	v.SetDefault("indexing.release.retain_require_sfv", false)
+	v.SetDefault("indexing.release.reopen_archived_nzb_on_release_change", false)
+	v.SetDefault("indexing.inspect.require_expected_file_count", false)
 	v.SetDefault("indexing.release_generate_nzb.enabled", false)
 	v.SetDefault("indexing.release_generate_nzb.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_generate_nzb.batch_size", 100)
@@ -307,6 +351,22 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release_purge_archived_sources.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_purge_archived_sources.batch_size", 50)
 	v.SetDefault("indexing.release_purge_archived_sources.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_media_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_media_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_media_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_media_ready_refresh.backoff_seconds", 0)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
@@ -325,8 +385,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect.unrar_path", "unrar")
 	v.SetDefault("indexing.inspect.par2_path", "par2")
 	v.SetDefault("indexing.storage_guard.enabled", true)
-	v.SetDefault("indexing.storage_guard.min_free_bytes", int64(8*1024*1024*1024))
-	v.SetDefault("indexing.storage_guard.min_free_percent", 5.0)
+	v.SetDefault("indexing.storage_guard.data_directory", "")
+	v.SetDefault("indexing.storage_guard.min_free_bytes", int64(0))
+	v.SetDefault("indexing.storage_guard.min_free_percent", 15.0)
 	v.SetDefault("indexing.inspect_discovery.enabled", false)
 	v.SetDefault("indexing.inspect_discovery.interval_minutes", 10.0)
 	v.SetDefault("indexing.inspect_discovery.batch_size", 100)
@@ -447,16 +508,28 @@ func (c *Config) validate() error {
 	if err := validateIndexingStageConfig("indexing.scrape_backfill", c.Indexing.ScrapeBackfill); err != nil {
 		return err
 	}
+	if err := validateIndexingStageConfig("indexing.poster_materialize", c.Indexing.PosterMaterialize); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.crosspost_popularity_refresh", c.Indexing.CrosspostPopularityRefresh); err != nil {
+		return err
+	}
 	if err := validateIndexingStageConfig("indexing.assemble", c.Indexing.Assemble); err != nil {
 		return err
 	}
-	if err := validateIndexingStageConfig("indexing.assemble_lane_a", c.Indexing.AssembleLaneA); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.assemble_lane_b", c.Indexing.AssembleLaneB); err != nil {
-		return err
-	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_discovery_ready_refresh", c.Indexing.InspectDiscoveryReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_par2_ready_refresh", c.Indexing.InspectPAR2ReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_archive_ready_refresh", c.Indexing.InspectArchiveReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_media_ready_refresh", c.Indexing.InspectMediaReadyRefresh); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
@@ -677,11 +750,17 @@ func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
 	if cfg.Concurrency != nil && *cfg.Concurrency <= 0 {
 		return fmt.Errorf("%s.concurrency must be greater than 0", name)
 	}
+	if cfg.MaxEffectiveConcurrency != nil && *cfg.MaxEffectiveConcurrency <= 0 {
+		return fmt.Errorf("%s.max_effective_concurrency must be greater than 0", name)
+	}
 	if cfg.BackoffSeconds != nil && *cfg.BackoffSeconds < 0 {
 		return fmt.Errorf("%s.backoff_seconds must be greater than or equal to 0", name)
 	}
 	if cfg.BinaryUpsertDBChunkSize != nil && *cfg.BinaryUpsertDBChunkSize <= 0 {
 		return fmt.Errorf("%s.binary_upsert_db_chunk_size must be greater than 0", name)
+	}
+	if cfg.LaneATimeWindowMinutes != nil && *cfg.LaneATimeWindowMinutes <= 0 {
+		return fmt.Errorf("%s.lane_a_time_window_minutes must be greater than 0", name)
 	}
 	return nil
 }

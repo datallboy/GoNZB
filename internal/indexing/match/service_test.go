@@ -217,6 +217,29 @@ func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
 	}
 }
 
+func TestMatchCanonicalizesReadablePunctuationAcrossReleaseFamilies(t *testing.T) {
+	svc := NewService()
+
+	dotted := svc.Match(Candidate{
+		MessageID: "<directory-opus-dotted@host.example>",
+		Subject:   `[1/8] - "Directory.Opus.13.23.part01.rar" yEnc (1/10)`,
+	})
+	spaced := svc.Match(Candidate{
+		MessageID: "<directory-opus-spaced@host.example>",
+		Subject:   `[2/8] - "Directory Opus 13 23.part02.rar" yEnc (1/10)`,
+	})
+
+	if dotted.ReleaseFamilyKey != "directory opus 13 23" {
+		t.Fatalf("expected dotted family key to canonicalize punctuation, got %q", dotted.ReleaseFamilyKey)
+	}
+	if spaced.ReleaseFamilyKey != dotted.ReleaseFamilyKey {
+		t.Fatalf("expected punctuation variants to share family key, got %q vs %q", spaced.ReleaseFamilyKey, dotted.ReleaseFamilyKey)
+	}
+	if spaced.SourceReleaseKey != dotted.SourceReleaseKey {
+		t.Fatalf("expected punctuation variants to share source key, got %q vs %q", spaced.SourceReleaseKey, dotted.SourceReleaseKey)
+	}
+}
+
 func TestMatchPrefersLargestNestedPartMarker(t *testing.T) {
 	svc := NewService()
 
@@ -534,7 +557,10 @@ func TestMatchClassifiesNumericPrefixAsWeakSubjectSet(t *testing.T) {
 	if got.ReleaseKey != "80894690 n yuo" {
 		t.Fatalf("expected release key to preserve set token, got %q", got.ReleaseKey)
 	}
-	if got.FileSetKey != "80894690 n yuo files 4" {
-		t.Fatalf("expected file set key to include expected files, got %q", got.FileSetKey)
+	if got.ReleaseFamilyKey != "" {
+		t.Fatalf("expected promotable release family identity to be deferred, got %q", got.ReleaseFamilyKey)
+	}
+	if got.FileSetKey != "" {
+		t.Fatalf("expected promotable file set identity to be deferred, got %q", got.FileSetKey)
 	}
 }

@@ -197,11 +197,20 @@ func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 
 func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.zip.001":    true,
-		"example.part01.rar": true,
-		"example.r00":        true,
-		"example.par2":       false,
+		"example.7z.001":      true,
+		"example.zip.001":     true,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.r00":         true,
+		"example.tar":         true,
+		"example.tgz":         true,
+		"example.tar.gz":      true,
+		"example.tar.xz":      true,
+		"example.txz":         true,
+		"example.tar.zst":     true,
+		"example.tzst":        true,
+		"example.par2":        false,
 	}
 
 	for fileName, want := range tests {
@@ -213,17 +222,40 @@ func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 
 func TestIsArchiveRepresentativeUsesFirstSplitVolume(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.7z.002":     false,
-		"example.part01.rar": true,
-		"example.part02.rar": false,
-		"example.rar":        true,
-		"example.r00":        false,
+		"example.7z.001":      true,
+		"example.7z.002":      false,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.part02.rar":  false,
+		"example.rar":         true,
+		"example.r00":         false,
+		"example.tar":         true,
+		"example.tar.gz":      true,
+		"example.tar.zst":     true,
 	}
 
 	for fileName, want := range tests {
 		if got := IsArchiveRepresentative(fileName); got != want {
 			t.Fatalf("expected IsArchiveRepresentative(%q)=%v, got %v", fileName, want, got)
+		}
+	}
+}
+
+func TestArchiveFamilyKeyPreservesTarCompoundExtensions(t *testing.T) {
+	tests := map[string]string{
+		"Example.TAR":     "example.tar",
+		"Example.tar.gz":  "example.tar.gz",
+		"Example.tgz":     "example.tgz",
+		"Example.tar.xz":  "example.tar.xz",
+		"Example.txz":     "example.txz",
+		"Example.tar.zst": "example.tar.zst",
+		"Example.tzst":    "example.tzst",
+	}
+
+	for fileName, want := range tests {
+		if got := ArchiveFamilyKey(fileName); got != want {
+			t.Fatalf("expected ArchiveFamilyKey(%q)=%q, got %q", fileName, want, got)
 		}
 	}
 }

@@ -2,11 +2,13 @@ import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
+import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
 import { AdminRolesPage } from './modules/admin/AdminRolesPage'
 import { AdminRunDetailPage } from './modules/admin/AdminRunDetailPage'
 import { AdminRunsPage } from './modules/admin/AdminRunsPage'
+import { AdminScrapePage } from './modules/admin/AdminScrapePage'
 import { AdminSettingsPage } from './modules/admin/AdminSettingsPage'
 import { AdminStagesPage } from './modules/admin/AdminStagesPage'
 import { AdminUserDetailPage } from './modules/admin/AdminUserDetailPage'
@@ -94,6 +96,14 @@ export default function App() {
             }
           />
           <Route
+            path="indexer/maintenance"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminMaintenancePage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="indexer/runs"
             element={
               <RequireAuth permission="indexer.runtime.read">
@@ -106,6 +116,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminRunDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/scrape"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminScrapePage />
               </RequireAuth>
             }
           />

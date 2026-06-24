@@ -16,3 +16,17 @@ func TestHasAnySettingsPatchFieldAcceptsNNTPPoolOnlyPatch(t *testing.T) {
 		t.Fatalf("expected nntp_pool-only patch to be treated as non-empty")
 	}
 }
+
+func TestHasAnySettingsPatchFieldAcceptsScopedServerPatch(t *testing.T) {
+	downloaderServers := []app.ServerRuntimeSettings{}
+	indexerServers := []app.ServerRuntimeSettings{}
+
+	for name, patch := range map[string]*settingsPatch{
+		"downloader": {DownloaderServers: &downloaderServers},
+		"indexer":    {IndexerServers: &indexerServers},
+	} {
+		if !hasAnySettingsPatchField(patch) {
+			t.Fatalf("expected %s server patch to be treated as non-empty", name)
+		}
+	}
+}

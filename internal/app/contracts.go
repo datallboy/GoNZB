@@ -129,23 +129,24 @@ type NNTPScopeRuntimeStats struct {
 }
 
 type NNTPProviderRuntimeStats struct {
-	ID                string `json:"id"`
-	Label             string `json:"label"`
-	Priority          int    `json:"priority"`
-	Capacity          int    `json:"capacity"`
-	Active            int    `json:"active"`
-	Idle              int    `json:"idle"`
-	Dials             int64  `json:"dials"`
-	DialFailures      int64  `json:"dial_failures"`
-	PoolReuses        int64  `json:"pool_reuses"`
-	PoolReturns       int64  `json:"pool_returns"`
-	PoolDiscardIdle   int64  `json:"pool_discard_idle"`
-	PoolDiscardAge    int64  `json:"pool_discard_age"`
-	PoolDiscardError  int64  `json:"pool_discard_error"`
-	FetchRetries      int64  `json:"fetch_retries"`
-	GroupStatsRetries int64  `json:"group_stats_retries"`
-	XOverRetries      int64  `json:"xover_retries"`
-	RecoverableErrors int64  `json:"recoverable_errors"`
+	ID                string   `json:"id"`
+	Label             string   `json:"label"`
+	Roles             []string `json:"roles,omitempty"`
+	Priority          int      `json:"priority"`
+	Capacity          int      `json:"capacity"`
+	Active            int      `json:"active"`
+	Idle              int      `json:"idle"`
+	Dials             int64    `json:"dials"`
+	DialFailures      int64    `json:"dial_failures"`
+	PoolReuses        int64    `json:"pool_reuses"`
+	PoolReturns       int64    `json:"pool_returns"`
+	PoolDiscardIdle   int64    `json:"pool_discard_idle"`
+	PoolDiscardAge    int64    `json:"pool_discard_age"`
+	PoolDiscardError  int64    `json:"pool_discard_error"`
+	FetchRetries      int64    `json:"fetch_retries"`
+	GroupStatsRetries int64    `json:"group_stats_retries"`
+	XOverRetries      int64    `json:"xover_retries"`
+	RecoverableErrors int64    `json:"recoverable_errors"`
 }
 
 // Manager defines the contract for our NZB search and download engine.
@@ -178,7 +179,7 @@ type UsenetIndexStore interface {
 	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
 	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
 	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
-	ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]pgindex.ReleasePurgeCandidate, error)
+	ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error)
 	PurgeArchivedReleaseSources(ctx context.Context, releaseID string) (*pgindex.ReleasePurgeResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error
@@ -195,6 +196,11 @@ type UsenetIndexStore interface {
 	GetIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
 	RefreshIndexerDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
 	GetIndexerBackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
+	GetIndexerCrosspostNewsgroupPopularity(ctx context.Context, limit int) ([]pgindex.IndexerCrosspostPopularityItem, error)
+	ReplaceIndexerProviderGroupInventory(ctx context.Context, rows []pgindex.IndexerProviderGroupInventoryItem) error
+	GetIndexerProviderGroupInventoryStats(ctx context.Context) (pgindex.IndexerProviderGroupInventoryStats, error)
+	ListIndexerProviderGroupInventoryCandidates(ctx context.Context, query string, patternHints []string) ([]pgindex.IndexerProviderGroupInventoryItem, error)
+	ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int, sortKey, direction string) (pgindex.IndexerProviderGroupInventoryPage, error)
 	GetIndexerStageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
@@ -223,8 +229,11 @@ type UsenetIndexStore interface {
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	ClaimAssemblyQueueBatch(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
+	CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (int, error)
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
-	EnsurePoster(ctx context.Context, posterName string) (int64, error)
+	RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int64) error
+	RecordYEncRecoveryTransientFailure(ctx context.Context, articleHeaderID int64) error
 	UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error)
 	UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error)
 	UpsertBinaryPart(ctx context.Context, in pgindex.BinaryPartRecord) error
@@ -237,22 +246,37 @@ type UsenetIndexStore interface {
 	ListReleaseCandidates(ctx context.Context, limit int, opts pgindex.ReleaseCandidateSelectionOptions) ([]pgindex.ReleaseCandidate, error)
 	ListReleaseNZBGenerateCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseNZBGenerateCandidate, error)
 	ListExistingReleaseCandidates(ctx context.Context, limit, offset int) ([]pgindex.ReleaseCandidate, error)
+	ListAutoReformReleaseCandidates(ctx context.Context, limit int, minReformAge time.Duration) ([]pgindex.ReleaseCandidate, error)
+	ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, releaseIDs []string) ([]pgindex.ReleaseCandidate, error)
 	ListBinariesForReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, releaseKey string) ([]pgindex.BinarySummary, error)
 	ListBinaryPartArticles(ctx context.Context, binaryID int64) ([]pgindex.ReleaseFileArticleRecord, error)
 	ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int64) (map[int64][]pgindex.ReleaseFileArticleRecord, error)
 	ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int64) ([]pgindex.ReleaseTitleCandidate, error)
 	UpsertRelease(ctx context.Context, in pgindex.ReleaseRecord) (string, error)
-	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error)
+	PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (pgindex.ReleaseSnapshotResult, error)
 	DeleteStaleReleasesForSourceKey(ctx context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error
+	DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error
 	ReplaceReleaseFiles(ctx context.Context, releaseID string, files []pgindex.ReleaseFileRecord) error
 	ReplaceReleaseNewsgroups(ctx context.Context, releaseID string, newsgroupIDs []int64) error
 	AckReleaseCandidate(ctx context.Context, providerID, newsgroupID int64, keyKind, familyKey string) error
 	AckReleaseCandidates(ctx context.Context, candidates []pgindex.ReleaseCandidateAck) error
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
+	ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
+	DryRunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
+	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
+	BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*pgindex.IndexerCrosspostBackfillResult, error)
+	MaterializeArticleHeaderPosters(ctx context.Context, limit int) (*pgindex.IndexerPosterMaterializationResult, error)
+	RefreshCrosspostPopularity(ctx context.Context, limit int) (*pgindex.IndexerCrosspostPopularityRefreshResult, error)
 	RunIndexerStorageReclaim(ctx context.Context, options pgindex.IndexerStorageReclaimOptions) (*pgindex.IndexerStorageReclaimResult, error)
+	CheckCriticalIndexerIntegrity(ctx context.Context, ensureExtension bool) (*pgindex.IndexerIntegrityReport, error)
+	ReindexCriticalIndexerIndexes(ctx context.Context) (*pgindex.IndexerIntegrityRepairResult, error)
 	DatabaseStorageStatus(ctx context.Context) (*pgindex.DatabaseStorageStatus, error)
 	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	ListBinaryInspectionCandidatesWithOptions(ctx context.Context, stageName string, limit int, opts pgindex.BinaryInspectionCandidateOptions) ([]pgindex.BinaryInspectionCandidate, error)
 	ClaimBinaryInspectionCandidates(ctx context.Context, req pgindex.BinaryInspectionClaimRequest) ([]pgindex.BinaryInspectionCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
@@ -298,8 +322,6 @@ type UsenetIndexerService interface {
 	ScrapeLatestOnce(ctx context.Context) error
 	ScrapeBackfillOnce(ctx context.Context) error
 	AssembleOnce(ctx context.Context) error
-	AssembleLaneAOnce(ctx context.Context) error
-	AssembleLaneBOnce(ctx context.Context) error
 	RecoverYEncOnce(ctx context.Context) error
 	ReleaseSummaryRefreshOnce(ctx context.Context) error
 	ReleaseOnce(ctx context.Context) error
@@ -307,6 +329,7 @@ type UsenetIndexerService interface {
 	ReleaseArchiveNZBOnce(ctx context.Context) error
 	ReleasePurgeArchivedSourcesOnce(ctx context.Context) error
 	ReformReleasesOnce(ctx context.Context) error
+	ReformSelectedReleasesOnce(ctx context.Context, releaseIDs []string) error
 	InspectOnce(ctx context.Context) error
 	InspectDiscoveryOnce(ctx context.Context) error
 	InspectPAR2Once(ctx context.Context) error

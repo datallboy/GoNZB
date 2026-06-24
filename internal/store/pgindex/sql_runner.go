@@ -14,3 +14,5 @@ type sqlExecQueryRower interface {
 	sqlExecQueryer
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
+
+const postgresBindParameterSoftLimit = 50000

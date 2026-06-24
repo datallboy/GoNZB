@@ -70,6 +70,9 @@ func (s *Store) RefreshReleaseArchiveDetailSnapshot(ctx context.Context, release
 	if err := syncReleaseCatalogFiles(ctx, tx, releaseID); err != nil {
 		return err
 	}
+	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit release archive detail snapshot refresh tx: %w", err)
 	}

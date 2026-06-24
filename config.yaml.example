@@ -16,9 +16,9 @@ modules:
   api:
     enabled: true
 
-# API authentication (optional)
+# Browser and API clients authenticate with users, sessions, and account API tokens.
+# Newznab/NZB clients should use a generated account API token as their `apikey`.
 api:
-  key: "" # Set to a non-empty value to require apikey on /api and /nzb routes
   cors_allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
@@ -38,6 +38,8 @@ log:
   path: "gonzb.log" # Set to "" or "none" to disable file logging (recommended for Docker)
   level: "info"     # debug, info, warn, error
   include_stdout: true
+  max_size_mb: 32   # Rotate active log file after this size.
+  max_backups: 5    # Keep this many rotated files: gonzb.log.1, gonzb.log.2, ...
 
 # Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir is the single
 # filesystem root for cached and archived NZBs.
@@ -48,7 +50,10 @@ store:
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
   
   # PostgreSQL DSN for the Usenet/NZB Indexer module when modules.usenet_indexer.enabled is true.
-  pg_dsn: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable"
+  pg_dsn: "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable"
+  # Optional privileged PostgreSQL DSN for explicit offline maintenance commands only.
+  # Do not use this DSN for serve/supervisor runtime.
+  pg_maintenance_dsn: ""
 
 # After first launch, create the initial admin user at /setup, then configure NNTP,
 # aggregator sources, downloader paths, and indexer stages in /admin/settings.

@@ -23,12 +23,20 @@ var (
 	recoverYEncOnce bool
 	releaseOnce     bool
 	releaseReform   bool
+	releaseIDs      []string
 	pipelineOnce    bool
 	inspectOnce     bool
 	enrichOnce      bool
 
-	indexerReclaimFull  bool
-	indexerReclaimCheck bool
+	indexerReclaimFull                 bool
+	indexerReclaimCheck                bool
+	indexerMaintenanceTaskDryRun       bool
+	indexerMaintenanceTaskBatchSize    int
+	indexerIntegrityEnsureExtension    bool
+	indexerCrosspostBackfillBatchSize  int
+	indexerCrosspostBackfillMaxBatches int
+	indexerPosterMaterializeBatchSize  int
+	indexerCrosspostRefreshBatchSize   int
 )
 
 var rootCmd = &cobra.Command{
@@ -60,8 +68,8 @@ var serveCmd = &cobra.Command{
 	Short: "Starts GoNZB in server mode. Start HTTP server.",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteServerWithOptions(commands.ServerOptions{
-			DisableIndexerSupervisor:             serveWithoutIndexerSupervisor,
-			DisableReleasePurgeArchivedSources:  disableReleasePurgeArchivedSources,
+			DisableIndexerSupervisor:           serveWithoutIndexerSupervisor,
+			DisableReleasePurgeArchivedSources: disableReleasePurgeArchivedSources,
 		})
 	},
 }
@@ -99,25 +107,9 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 
 var indexerAssembleCmd = &cobra.Command{
 	Use:   "assemble",
-	Short: "Assemble binaries and parts continuously; use --once for a single pass",
+	Short: "Assemble binaries from queued article headers",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerAssemble(assembleOnce)
-	},
-}
-
-var indexerAssembleLaneACmd = &cobra.Command{
-	Use:   "lane-a",
-	Short: "Run the priority assemble lane that feeds existing incomplete binaries first",
-	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerAssembleLaneA(assembleOnce)
-	},
-}
-
-var indexerAssembleLaneBCmd = &cobra.Command{
-	Use:   "lane-b",
-	Short: "Run the backlog-drain assemble lane for recent unmatched headers",
-	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerAssembleLaneB(assembleOnce)
 	},
 }
 
@@ -125,7 +117,7 @@ var indexerReleaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Form releases continuously; use --once for a single pass",
 	Run: func(cmd *cobra.Command, args []string) {
-		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform)
+		commands.New(cfgFile).ExecuteIndexerRelease(releaseOnce, releaseReform, releaseIDs)
 	},
 }
 
@@ -193,6 +185,54 @@ var indexerMaintenanceRepairRuntimeCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenanceCheckIntegrityCmd = &cobra.Command{
+	Use:   "check-integrity",
+	Short: "Check critical PostgreSQL article-header indexes for corruption",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerCheckIntegrity(indexerIntegrityEnsureExtension)
+	},
+}
+
+var indexerMaintenanceReindexCriticalCmd = &cobra.Command{
+	Use:   "reindex-critical",
+	Short: "Reindex the critical article-header indexes used by scrape ingest",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerReindexCritical()
+	},
+}
+
+var indexerMaintenancePurgeHeaderPayloadsCmd = &cobra.Command{
+	Use:   "purge-header-payloads",
+	Short: "Manually purge aged article_header_ingest_payloads rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerPurgeHeaderPayloads()
+	},
+}
+
+var indexerMaintenanceBackfillCrosspostGroupsCmd = &cobra.Command{
+	Use:   "backfill-crosspost-groups",
+	Short: "Backfill cross-post telemetry from existing article_header_ingest_payloads xref rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerBackfillCrosspostGroups(indexerCrosspostBackfillBatchSize, indexerCrosspostBackfillMaxBatches)
+	},
+}
+
+var indexerMaintenanceMaterializePostersCmd = &cobra.Command{
+	Use:   "materialize-posters",
+	Short: "Materialize queued article-header posters into poster dimension rows",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerMaterializePosters(indexerPosterMaterializeBatchSize)
+	},
+}
+
+var indexerMaintenanceRefreshCrosspostPopularityCmd = &cobra.Command{
+	Use:   "refresh-crosspost-popularity",
+	Short: "Refresh queued cross-post popularity summaries from raw Xref observations",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerRefreshCrosspostPopularity(indexerCrosspostRefreshBatchSize)
+	},
+}
+
 var indexerReclaimStorageCmd = &cobra.Command{
 	Use:   "reclaim-storage [table...]",
 	Short: "Run allowlisted PostgreSQL vacuum maintenance for the growth-trim tables",
@@ -203,6 +243,15 @@ var indexerReclaimStorageCmd = &cobra.Command{
 		"Use --full only when you need bytes returned to the Docker volume and host filesystem.",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerStorageReclaim(args, indexerReclaimFull, indexerReclaimCheck)
+	},
+}
+
+var indexerMaintenanceTaskCmd = &cobra.Command{
+	Use:   "task <task-key>",
+	Short: "Run or dry-run one supported indexer maintenance task",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerMaintenanceTask(args[0], indexerMaintenanceTaskDryRun, indexerMaintenanceTaskBatchSize)
 	},
 }
 
@@ -330,11 +379,10 @@ func init() {
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
 
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
-	indexerAssembleLaneACmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane A assemble pass and exit instead of continuous mode")
-	indexerAssembleLaneBCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one lane B assemble pass and exit instead of continuous mode")
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release pass and exit instead of continuous mode")
 	indexerReleaseCmd.Flags().BoolVar(&releaseReform, "reform", false, "Re-form existing releases from current binaries; requires --once")
+	indexerReleaseCmd.Flags().StringArrayVar(&releaseIDs, "release-id", nil, "Limit --reform to a specific release id; repeatable")
 	indexerReleaseRefreshSummariesCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one release summary refresh pass and exit instead of continuous mode")
 	indexerReleaseGenerateNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one NZB pre-generation pass and exit instead of continuous mode")
 	indexerReleaseArchiveNZBCmd.Flags().BoolVar(&releaseOnce, "once", false, "Run one archive NZB pass and exit instead of continuous mode")
@@ -355,14 +403,19 @@ func init() {
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimCheck, "check", false, "Report current bytes for the allowlisted reclaim tables without running VACUUM")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
+	indexerMaintenanceTaskCmd.Flags().BoolVar(&indexerMaintenanceTaskDryRun, "dry-run", true, "Estimate the task without committing deletes")
+	indexerMaintenanceTaskCmd.Flags().IntVar(&indexerMaintenanceTaskBatchSize, "batch-size", 1000, "Maximum rows or units processed by the task")
+	indexerMaintenanceCheckIntegrityCmd.Flags().BoolVar(&indexerIntegrityEnsureExtension, "ensure-extension", false, "Install the amcheck extension before running the integrity check")
+	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillBatchSize, "batch-size", 5000, "Number of article headers to process per batch")
+	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
+	indexerMaintenanceMaterializePostersCmd.Flags().IntVar(&indexerPosterMaterializeBatchSize, "batch-size", 10000, "Maximum queued poster rows to materialize")
+	indexerMaintenanceRefreshCrosspostPopularityCmd.Flags().IntVar(&indexerCrosspostRefreshBatchSize, "batch-size", 1000, "Maximum queued observed cross-post groups to refresh")
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
 
 	indexerCmd.AddCommand(indexerAssembleCmd)
-	indexerAssembleCmd.AddCommand(indexerAssembleLaneACmd)
-	indexerAssembleCmd.AddCommand(indexerAssembleLaneBCmd)
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
 	indexerCmd.AddCommand(indexerReleaseCmd)
 	indexerReleaseCmd.AddCommand(indexerReleaseRefreshSummariesCmd)
@@ -372,6 +425,13 @@ func init() {
 	indexerCmd.AddCommand(indexerPipelineCmd)
 	indexerCmd.AddCommand(indexerMaintenanceCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRepairRuntimeCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceCheckIntegrityCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceReindexCriticalCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenancePurgeHeaderPayloadsCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceBackfillCrosspostGroupsCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceMaterializePostersCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRefreshCrosspostPopularityCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceTaskCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)

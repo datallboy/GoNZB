@@ -41,3 +41,13 @@ func TestPAR2CoverageFileIndexSupportsArchiveFamilies(t *testing.T) {
 		}
 	}
 }
+
+func TestPAR2CoverageUpdateChunkSizeStaysUnderPostgresParameterLimit(t *testing.T) {
+	const fixedArgs = 2
+	const argsPerUpdatedBinary = 3
+
+	totalArgs := fixedArgs + (par2CoverageUpdateChunkSize * argsPerUpdatedBinary)
+	if totalArgs >= 65535 {
+		t.Fatalf("par2 coverage update chunk size %d yields %d bind args; must stay below postgres 65535 limit", par2CoverageUpdateChunkSize, totalArgs)
+	}
+}

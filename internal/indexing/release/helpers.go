@@ -53,6 +53,7 @@ var (
 	splitSevenZipRE      = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
 	splitZipRE           = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	parVolumeRE          = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
+	bareParVolumeRE      = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
 	numericNoiseOnlyRE   = regexp.MustCompile(`^[a-f0-9]{8,}$`)
 	longOpaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 	numberedNoiseTitleRE = regexp.MustCompile(`^\d{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
@@ -288,8 +289,9 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	passwordedKnown := false
 	passwordedUnknown := false
 	passwordState := derivePasswordState(passworded, passwordedKnown, passwordedUnknown)
-	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(cluster.Binaries)
-	classification := classifyCluster(cluster.Binaries, archiveCount, videoCount, audioCount)
+	releaseFileBinaries := selectReleaseFileBinaries(cluster.Binaries)
+	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(releaseFileBinaries)
+	classification := classifyCluster(releaseFileBinaries, archiveCount, videoCount, audioCount)
 	subtitles := detectSubtitleLanguages(cluster.Binaries)
 	postedAt := earliestPostedAt(candidate.PostedAt, cluster.Binaries)
 	now := time.Now().UTC()
@@ -322,13 +324,13 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		Category:                 category.Name,
 		Classification:           classification,
 		Poster:                   dominantPoster(cluster.Binaries),
-		SizeBytes:                totalBytes(cluster.Binaries),
+		SizeBytes:                totalBytes(releaseFileBinaries),
 		PostedAt:                 postedAt,
-		FileCount:                clusterObservedFileCount(cluster.Binaries),
-		ExpectedFileCount:        clusterExpectedFileCount(cluster.Binaries),
-		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(cluster.Binaries),
-		ParFileCount:             countPARFiles(cluster.Binaries),
-		CompletionPct:            clusterCompletionPct(cluster.Binaries),
+		FileCount:                clusterObservedFileCount(releaseFileBinaries),
+		ExpectedFileCount:        clusterExpectedFileCount(releaseFileBinaries),
+		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(releaseFileBinaries),
+		ParFileCount:             countPARFiles(releaseFileBinaries),
+		CompletionPct:            clusterCompletionPct(releaseFileBinaries),
 		MatchConfidence:          clamp01(cluster.MatchConfidence),
 		IdentityStatus:           identityStatus,
 		Passworded:               passworded,
@@ -444,6 +446,27 @@ func newsgroupIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 	return out
 }
 
+func selectReleaseFileBinaries(binaries []pgindex.BinarySummary) []pgindex.BinarySummary {
+	selected := make([]pgindex.BinarySummary, 0, len(binaries))
+	byName := make(map[string]int, len(binaries))
+	for _, binary := range binaries {
+		fileName := pickFileName(binary)
+		key := strings.ToLower(strings.TrimSpace(fileName))
+		if key == "" {
+			key = fmt.Sprintf("binary-%d", binary.BinaryID)
+		}
+		if existingIdx, ok := byName[key]; ok {
+			if prefersBinaryForReleaseFile(binary, selected[existingIdx]) {
+				selected[existingIdx] = binary
+			}
+			continue
+		}
+		byName[key] = len(selected)
+		selected = append(selected, binary)
+	}
+	return selected
+}
+
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
 	seed := strings.Join([]string{
 		releaseFamilyKey(candidate, binaries),
@@ -548,11 +571,11 @@ func clusterTimeBucket(binaries []pgindex.BinarySummary) string {
 func representativeTitle(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
 	title := strings.TrimSpace(candidate.ReleaseName)
 	if title != "" {
-		return title
+		return cleanRepresentativeTitle(title)
 	}
 	for _, binary := range binaries {
 		if value := strings.TrimSpace(binary.ReleaseName); value != "" {
-			return value
+			return cleanRepresentativeTitle(value)
 		}
 	}
 	if stem := representativeStem(binaries); stem != "" {
@@ -666,6 +689,8 @@ func normalizeStem(name string) string {
 	switch {
 	case parVolumeRE.MatchString(lower):
 		lower = parVolumeRE.ReplaceAllString(lower, "")
+	case bareParVolumeRE.MatchString(lower):
+		lower = bareParVolumeRE.ReplaceAllString(lower, "")
 	case strings.HasSuffix(lower, ".par2"):
 		lower = strings.TrimSuffix(lower, ".par2")
 	case rarPartRE.MatchString(lower):
@@ -676,6 +701,22 @@ func normalizeStem(name string) string {
 	lower = separatorRE.ReplaceAllString(lower, " ")
 	lower = multiSpaceRE.ReplaceAllString(lower, " ")
 	return strings.TrimSpace(lower)
+}
+
+func cleanRepresentativeTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	if parVolumeRE.MatchString(title) || bareParVolumeRE.MatchString(title) {
+		stem := parVolumeRE.ReplaceAllString(title, "")
+		stem = bareParVolumeRE.ReplaceAllString(stem, "")
+		stem = strings.TrimSpace(stem)
+		if stem != "" && looksReadableReleaseTitle(stem) {
+			return humanizeTitle(stem)
+		}
+	}
+	return title
 }
 
 func stemsRelated(a, b string) bool {
@@ -1538,10 +1579,14 @@ func shouldAdoptLocalTitleCandidate(sourceTitle string, candidate localTitleCand
 	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
 		return false
 	}
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	if sourceTitle != "" && looksReadableReleaseTitle(sourceTitle) && !looksObfuscatedReleaseTitle(sourceTitle) && !titlesLookRelated(candidate.DisplayTitle, sourceTitle) {
+		return false
+	}
 	if candidate.Confidence >= 0.82 {
 		return true
 	}
-	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedReleaseTitle(sourceTitle) || !looksReadableReleaseTitle(sourceTitle))
+	return candidate.Confidence >= 0.70 && (sourceTitle == "" || looksObfuscatedReleaseTitle(sourceTitle) || !looksReadableReleaseTitle(sourceTitle))
 }
 
 func titleCandidateLooksCloserToSource(candidateTitle, sourceTitle, currentBest string) bool {

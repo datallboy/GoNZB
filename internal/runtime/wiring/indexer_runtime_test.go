@@ -74,7 +74,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 			Priority:      1,
 		}},
 		Store: config.StoreConfig{
-			PGDSN: "postgres://postgres:postgres@localhost:5432/gonzb?sslmode=disable",
+			PGDSN: "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable",
 		},
 		Modules: config.ModulesConfig{
 			UsenetIndexer: config.ModuleToggle{Enabled: true},
@@ -87,6 +87,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		Enabled:         &enabled,
 		IntervalMinutes: &interval,
 		BatchSize:       &batch,
+		Concurrency:     &concurrency,
 		BackoffSeconds:  &backoff,
 	}
 	cfg.Indexing.Assemble = config.IndexingStageConfig{
@@ -106,6 +107,10 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		MinCompletionPct:           func() *float64 { v := 25.0; return &v }(),
 		MinExpectedFileCoveragePct: func() *float64 { v := 92.0; return &v }(),
 		RequireExpectedFileCountForContextualObfuscated: func() *bool { v := true; return &v }(),
+		PublicRequirePayloadComplete:                    func() *bool { v := true; return &v }(),
+		PublicRequireExpectedFileCountComplete:          func() *bool { v := true; return &v }(),
+		RetainUntilExpectedFileCountComplete:            func() *bool { v := true; return &v }(),
+		ReopenArchivedNZBOnReleaseChange:                func() *bool { v := true; return &v }(),
 	}
 	cfg.Indexing.InspectMedia = config.IndexingStageConfig{
 		Enabled:     &enabled,
@@ -137,16 +142,17 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 		TMDBAccessToken:    "tmdb-token",
 	}
 	cfg.Indexing.Inspect = config.IndexingInspectConfig{
-		WorkDir:          "/tmp/inspect",
-		WorkspaceBackend: "memory",
-		MemoryWorkDir:    "/dev/shm/gonzb-inspect-test",
-		FFProbePath:      "ffprobe",
-		SevenZipPath:     "7z",
-		UnrarPath:        "unrar",
-		PAR2Path:         "par2",
-		MaxBytes:         1024,
-		MaxArchiveDepth:  2,
-		ToolTimeoutSecs:  15,
+		WorkDir:                  "/tmp/inspect",
+		WorkspaceBackend:         "memory",
+		MemoryWorkDir:            "/dev/shm/gonzb-inspect-test",
+		FFProbePath:              "ffprobe",
+		SevenZipPath:             "7z",
+		UnrarPath:                "unrar",
+		PAR2Path:                 "par2",
+		MaxBytes:                 1024,
+		MaxArchiveDepth:          2,
+		ToolTimeoutSecs:          15,
+		RequireExpectedFileCount: true,
 	}
 
 	got, err := deriveUsenetIndexerConfig(cfg)
@@ -157,14 +163,17 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.ScrapeLatest.Interval != 90*time.Second || got.ScrapeLatest.BatchSize != batch {
 		t.Fatalf("unexpected scrape_latest stage config: %+v", got.ScrapeLatest)
 	}
-	if got.ScrapeLatest.Backoff != 9*time.Second || got.Assemble.Concurrency != concurrency {
-		t.Fatalf("unexpected scrape_latest backoff or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
+	if got.ScrapeLatest.Backoff != 9*time.Second || got.ScrapeLatest.Concurrency != concurrency || got.Assemble.Concurrency != concurrency {
+		t.Fatalf("unexpected scrape/latest or assemble concurrency: scrape=%+v assemble=%+v", got.ScrapeLatest, got.Assemble)
 	}
 	if got.Match.ArticleBucketSize != articleBucket || got.Match.HighConfidenceThreshold != matchHigh {
 		t.Fatalf("unexpected match config: %+v", got.Match)
 	}
 	if got.ReleaseMinConfidence != matchHigh || got.ReleaseMinCompletion != 25 || got.ReleaseMinExpectedFileCoveragePct != 92 || !got.RequireExpectedFileCountForContextualObfuscated {
 		t.Fatalf("unexpected release thresholds: min_confidence=%v min_completion=%v min_expected_file_coverage_pct=%v require_expected=%v", got.ReleaseMinConfidence, got.ReleaseMinCompletion, got.ReleaseMinExpectedFileCoveragePct, got.RequireExpectedFileCountForContextualObfuscated)
+	}
+	if !got.ReopenArchivedNZBOnReleaseChange || !got.ReleaseReadyPolicy.RequirePayloadComplete || !got.ReleaseReadyPolicy.RequireExpectedFileCountComplete || !got.ReleaseReadyPolicy.RetainUntilExpectedFileCountComplete {
+		t.Fatalf("expected release policy toggles to reach runtime config, got %+v / %+v", got.ReleaseReadyPolicy, got)
 	}
 	if !got.ReleaseSummaryRefreshStage.Enabled || got.ReleaseSummaryRefreshStage.BatchSize != 10000 || got.ReleaseSummaryRefreshStage.MaxBatches != 10 || got.ReleaseSummaryRefreshStage.Interval != 2*time.Minute {
 		t.Fatalf("unexpected release summary refresh stage config: %+v", got.ReleaseSummaryRefreshStage)
@@ -181,6 +190,9 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	if got.Inspect.WorkspaceBackend != "memory" || got.Inspect.MemoryWorkDir != "/dev/shm/gonzb-inspect-test" {
 		t.Fatalf("expected inspect workspace backend settings, got %+v", got.Inspect)
 	}
+	if !got.Inspect.RequireExpectedFileCount {
+		t.Fatalf("expected inspect expected-file gate to reach runtime options, got %+v", got.Inspect)
+	}
 	if got.EnrichPreDB.Limit != batch || got.EnrichPreDB.HTTPTimeout != 22*time.Second {
 		t.Fatalf("unexpected predb options: %+v", got.EnrichPreDB)
 	}
@@ -192,7 +204,57 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 }
 
-func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
+func TestDeriveUsenetIndexerConfigAppliesSourceWindowBackfillCutoff(t *testing.T) {
+	cfg := &config.Config{
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.test"},
+		},
+	}
+
+	before := time.Now().UTC().AddDate(0, 0, -7).Add(-1 * time.Minute)
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	after := time.Now().UTC().AddDate(0, 0, -7).Add(1 * time.Minute)
+
+	cutoff, ok := got.BackfillUntilDateByGroup["alt.binaries.test"]
+	if !ok {
+		t.Fatalf("expected source-window cutoff for group, got %+v", got.BackfillUntilDateByGroup)
+	}
+	if cutoff.Before(before) || cutoff.After(after) {
+		t.Fatalf("expected cutoff around 7 days ago, got %s outside %s - %s", cutoff, before, after)
+	}
+}
+
+func TestDeriveUsenetIndexerConfigKeepsExplicitBackfillCutoff(t *testing.T) {
+	cfg := &config.Config{
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.test"},
+			BackfillUntilDateByGroup: map[string]string{
+				"alt.binaries.test": "2026-06-01",
+			},
+		},
+	}
+
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+
+	want := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if got.BackfillUntilDateByGroup["alt.binaries.test"] != want {
+		t.Fatalf("expected explicit cutoff %s, got %+v", want, got.BackfillUntilDateByGroup)
+	}
+}
+
+func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
 		SettingsStore: fakeSettingsStore{
@@ -219,14 +281,40 @@ func TestScopedIndexerServersPrefersIndexerScopedRuntimeServers(t *testing.T) {
 
 	servers := scopedIndexerServers(appCtx)
 	if len(servers) != 1 {
-		t.Fatalf("expected one indexer-scoped server, got %+v", servers)
+		t.Fatalf("expected one shared indexer server, got %+v", servers)
 	}
-	if servers[0].ID != "indexer" || servers[0].Host != "indexer.example.com" || servers[0].Username != "indexer-user" {
-		t.Fatalf("expected indexer-scoped server selection, got %+v", servers[0])
+	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
+		t.Fatalf("expected shared server selection, got %+v", servers[0])
 	}
 }
 
-func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing.T) {
+func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{ID: "easynews", Host: "easy.example.com", Port: 563, MaxConnection: 20},
+			{ID: "newshosting", Host: "newshosting.example.com", Port: 563, MaxConnection: 30, Priority: 1},
+		},
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+	}
+
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("deriveUsenetIndexerConfig: %v", err)
+	}
+	if got.ScrapeServer == nil || got.ScrapeServer.ID != "easynews" {
+		t.Fatalf("expected first server retained as compatibility scrape server, got %+v", got.ScrapeServer)
+	}
+	if len(got.ScrapeServers) != 2 {
+		t.Fatalf("expected all indexer servers to be preserved, got %+v", got.ScrapeServers)
+	}
+	if got.ScrapeServers[1].ID != "newshosting" {
+		t.Fatalf("expected newshosting as second scrape server, got %+v", got.ScrapeServers)
+	}
+}
+
+func TestScopedDownloaderServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
 		SettingsStore: fakeSettingsStore{
@@ -253,14 +341,14 @@ func TestScopedDownloaderServersPrefersDownloaderScopedRuntimeServers(t *testing
 
 	servers := scopedDownloaderServers(appCtx)
 	if len(servers) != 1 {
-		t.Fatalf("expected one downloader-scoped server, got %+v", servers)
+		t.Fatalf("expected one shared downloader server, got %+v", servers)
 	}
-	if servers[0].ID != "downloader" || servers[0].Host != "downloader.example.com" || servers[0].Username != "downloader-user" {
-		t.Fatalf("expected downloader-scoped server selection, got %+v", servers[0])
+	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
+		t.Fatalf("expected shared server selection, got %+v", servers[0])
 	}
 }
 
-func TestIndexerNNTPManagerDoesNotReuseSharedDownloaderManager(t *testing.T) {
+func TestIndexerNNTPManagerReusesSharedDownloaderManager(t *testing.T) {
 	indexerAddr := startTestNNTPServer(t)
 	downloaderAddr := startTestNNTPServer(t)
 
@@ -303,13 +391,12 @@ func TestIndexerNNTPManagerDoesNotReuseSharedDownloaderManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("indexerNNTPManager: %v", err)
 	}
-	defer manager.Close()
 
-	if !owned {
-		t.Fatalf("expected indexer manager to be owned, got owned=%v", owned)
+	if owned {
+		t.Fatalf("expected shared downloader manager reuse, got owned=%v", owned)
 	}
-	if manager == sharedManager {
-		t.Fatalf("expected dedicated indexer manager, but shared downloader manager was reused")
+	if manager != sharedManager {
+		t.Fatalf("expected shared downloader manager to be reused")
 	}
 }
 

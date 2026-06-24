@@ -473,7 +473,7 @@ func looksBooks(classification, combined string) bool {
 }
 
 func looksPC(combined string) bool {
-	return hasAny(combined, "windows", "mac", "android", "ios", "ipa", "apk", "game", "steam", "software", "0day", "trainer", "stl")
+	return hasAny(combined, "windows", "mac", "android", "ios", "ipa", "apk", "game", "steam", "software", "0day", "trainer", "stl", "steinberg", "cubase", "nuendo", "ableton", "autodesk", "adobe", "microsoft office")
 }
 
 func resolveMovieCategory(combined string, resolution int) int {
@@ -622,6 +622,8 @@ func resolvePCCategory(combined string) int {
 	case hasAny(combined, "stl", "3d print", "3dprint"):
 		return PC3DModels
 	case hasAny(combined, "0day"):
+		return PC0Day
+	case hasAny(combined, "steinberg", "cubase", "nuendo", "ableton", "autodesk", "adobe", "microsoft office", "software"):
 		return PC0Day
 	default:
 		return PCRoot

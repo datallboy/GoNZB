@@ -387,6 +387,15 @@ func (s *Store) RepairIndexerStageRuntime(ctx context.Context) (*IndexerStageRep
 		defer rollbackTx(tx)
 
 		abandonedResult, err := tx.ExecContext(ctx, `
+			WITH expired_stage_state AS MATERIALIZED (
+				SELECT stage_name, last_run_id
+				FROM indexer_stage_state
+				WHERE lease_owner <> ''
+				  AND lease_expires_at IS NOT NULL
+				  AND lease_expires_at < NOW()
+				ORDER BY stage_name
+				FOR UPDATE
+			)
 			UPDATE indexer_stage_runs r
 			SET status = 'abandoned',
 			    error_text = CASE
@@ -395,11 +404,9 @@ func (s *Store) RepairIndexerStageRuntime(ctx context.Context) (*IndexerStageRep
 			    END,
 			    heartbeat_at = COALESCE(r.heartbeat_at, NOW()),
 			    finished_at = COALESCE(r.finished_at, NOW())
-			FROM indexer_stage_state s
+			FROM expired_stage_state s
 			WHERE s.last_run_id = r.id
-			  AND r.status = 'running'
-			  AND s.lease_expires_at IS NOT NULL
-			  AND s.lease_expires_at < NOW()`)
+			  AND r.status = 'running'`)
 		if err != nil {
 			return fmt.Errorf("abandon stale indexer stage runs: %w", err)
 		}
@@ -408,13 +415,21 @@ func (s *Store) RepairIndexerStageRuntime(ctx context.Context) (*IndexerStageRep
 		}
 
 		clearedResult, err := tx.ExecContext(ctx, `
-			UPDATE indexer_stage_state
+			WITH expired_stage_state AS MATERIALIZED (
+				SELECT stage_name
+				FROM indexer_stage_state
+				WHERE lease_owner <> ''
+				  AND lease_expires_at IS NOT NULL
+				  AND lease_expires_at < NOW()
+				ORDER BY stage_name
+				FOR UPDATE
+			)
+			UPDATE indexer_stage_state s
 			SET lease_owner = '',
 			    lease_expires_at = NULL,
 			    updated_at = NOW()
-			WHERE lease_owner <> ''
-			  AND lease_expires_at IS NOT NULL
-			  AND lease_expires_at < NOW()`)
+			FROM expired_stage_state e
+			WHERE s.stage_name = e.stage_name`)
 		if err != nil {
 			return fmt.Errorf("clear stale indexer stage leases: %w", err)
 		}

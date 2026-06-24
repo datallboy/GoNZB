@@ -16,6 +16,7 @@ var (
 	splitZipRE      = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	rarPartRE       = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	rarPartNumRE    = regexp.MustCompile(`(?i)\.part(\d+)\.rar$`)
+	rarFirstPartRE  = regexp.MustCompile(`(?i)\.part0*1\.rar$`)
 	rarVolNumRE     = regexp.MustCompile(`(?i)\.r(\d{2,3})$`)
 )
 
@@ -24,6 +25,13 @@ func IsArchiveFile(fileName string) bool {
 	return strings.HasSuffix(lower, ".rar") ||
 		strings.HasSuffix(lower, ".zip") ||
 		strings.HasSuffix(lower, ".7z") ||
+		strings.HasSuffix(lower, ".tar") ||
+		strings.HasSuffix(lower, ".tgz") ||
+		strings.HasSuffix(lower, ".tar.gz") ||
+		strings.HasSuffix(lower, ".tar.xz") ||
+		strings.HasSuffix(lower, ".txz") ||
+		strings.HasSuffix(lower, ".tar.zst") ||
+		strings.HasSuffix(lower, ".tzst") ||
 		splitSevenZipRE.MatchString(lower) ||
 		splitZipRE.MatchString(lower) ||
 		rarPartRE.MatchString(lower)
@@ -34,11 +42,20 @@ func IsArchiveRepresentative(fileName string) bool {
 	switch {
 	case splitSevenZipRE.MatchString(lower), splitZipRE.MatchString(lower):
 		return strings.HasSuffix(lower, ".001")
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		return true
 	case rarPartRE.MatchString(lower):
 		return false
-	case strings.HasSuffix(lower, ".7z"), strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".rar"):
+	case strings.HasSuffix(lower, ".7z"),
+		strings.HasSuffix(lower, ".zip"),
+		strings.HasSuffix(lower, ".rar"),
+		strings.HasSuffix(lower, ".tar"),
+		strings.HasSuffix(lower, ".tgz"),
+		strings.HasSuffix(lower, ".tar.gz"),
+		strings.HasSuffix(lower, ".tar.xz"),
+		strings.HasSuffix(lower, ".txz"),
+		strings.HasSuffix(lower, ".tar.zst"),
+		strings.HasSuffix(lower, ".tzst"):
 		return true
 	default:
 		return false
@@ -52,7 +69,7 @@ func ArchiveFamilyKey(fileName string) string {
 		return splitSevenZipRE.ReplaceAllString(lower, ".7z")
 	case splitZipRE.MatchString(lower):
 		return splitZipRE.ReplaceAllString(lower, ".zip")
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		idx := strings.LastIndex(lower, ".part")
 		if idx > 0 {
 			return lower[:idx] + ".rar"

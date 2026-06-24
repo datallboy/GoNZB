@@ -1,0 +1,1240 @@
+package pgindex
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+const staleNonreleaseSourceRetentionDays = 7
+
+type MaintenanceTaskResult struct {
+	TaskKey              string                          `json:"task_key"`
+	DryRun               bool                            `json:"dry_run"`
+	EstimatedRowsByTable map[string]int64                `json:"estimated_rows_by_table,omitempty"`
+	DeletedRowsByTable   map[string]int64                `json:"deleted_rows_by_table,omitempty"`
+	VacuumedTables       []string                        `json:"vacuumed_tables,omitempty"`
+	EstimatedBytes       int64                           `json:"estimated_bytes,omitempty"`
+	BeforeStorage        *MaintenanceTaskStorageSnapshot `json:"before_storage,omitempty"`
+	AfterStorage         *MaintenanceTaskStorageSnapshot `json:"after_storage,omitempty"`
+	Blockers             []string                        `json:"blockers,omitempty"`
+	Warnings             []string                        `json:"warnings,omitempty"`
+}
+
+type MaintenanceTaskStorageSnapshot struct {
+	GeneratedAt            time.Time        `json:"generated_at"`
+	DatabaseBytes          int64            `json:"database_bytes"`
+	DataDirectory          string           `json:"data_directory,omitempty"`
+	FilesystemFreeBytes    int64            `json:"filesystem_free_bytes,omitempty"`
+	FilesystemTotalBytes   int64            `json:"filesystem_total_bytes,omitempty"`
+	FilesystemFreePercent  float64          `json:"filesystem_free_percent,omitempty"`
+	FilesystemVisible      bool             `json:"filesystem_visible"`
+	TableTotalBytesByTable map[string]int64 `json:"table_total_bytes_by_table,omitempty"`
+	TableLiveRowsByTable   map[string]int64 `json:"table_live_rows_by_table,omitempty"`
+	TableDeadRowsByTable   map[string]int64 `json:"table_dead_rows_by_table,omitempty"`
+}
+
+type maintenanceVacuumCandidate struct {
+	TableName  string
+	LiveRows   int64
+	DeadRows   int64
+	TotalBytes int64
+	DeadPct    float64
+}
+
+func (s *Store) DryRunReleaseSourcePurge(ctx context.Context, limit int, policy ReleaseReadyPolicy) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	candidates, err := s.ClaimReleasePurgeCandidates(ctx, limit, policy)
+	if err != nil {
+		return nil, err
+	}
+	result := &MaintenanceTaskResult{
+		TaskKey:              "release_source_purge",
+		DryRun:               true,
+		EstimatedRowsByTable: map[string]int64{"release_archive_state": int64(len(candidates))},
+		Warnings:             []string{"article headers are only purgeable when no remaining binary parts reference them"},
+	}
+	for _, candidate := range candidates {
+		estimate, err := s.estimateArchivedReleaseSourcePurge(ctx, candidate.ReleaseID)
+		if err != nil {
+			result.Blockers = append(result.Blockers, err.Error())
+			continue
+		}
+		for table, count := range estimate.DeletedRowsByTable {
+			result.EstimatedRowsByTable[table] += count
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) RunReleaseSourcePurge(ctx context.Context, limit int, policy ReleaseReadyPolicy) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	candidates, err := s.ClaimReleasePurgeCandidates(ctx, limit, policy)
+	if err != nil {
+		return nil, err
+	}
+	result := &MaintenanceTaskResult{
+		TaskKey:            "release_source_purge",
+		DryRun:             false,
+		DeletedRowsByTable: map[string]int64{"release_archive_state": 0},
+		Warnings:           []string{"article headers are only purged when no remaining binary parts reference them"},
+	}
+	for _, candidate := range candidates {
+		purged, err := s.PurgeArchivedReleaseSources(ctx, candidate.ReleaseID)
+		if err != nil {
+			result.Blockers = append(result.Blockers, err.Error())
+			continue
+		}
+		if purged == nil {
+			continue
+		}
+		result.DeletedRowsByTable["release_archive_state"]++
+		for table, count := range purged.DeletedRowsByTable {
+			result.DeletedRowsByTable[table] += count
+		}
+	}
+	s.vacuumDeletedMaintenanceTables(ctx, result)
+	return result, nil
+}
+
+func (s *Store) estimateArchivedReleaseSourcePurge(ctx context.Context, releaseID string) (*ReleasePurgeResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin purge dry-run tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	result := &ReleasePurgeResult{
+		ReleaseID:          releaseID,
+		DeletedRowsByTable: map[string]int64{},
+	}
+	if err := estimateArchivedReleaseSourcesTx(ctx, tx, releaseID, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func estimateArchivedReleaseSourcesTx(ctx context.Context, tx *sql.Tx, releaseID string, result *ReleasePurgeResult) error {
+	preflight, err := loadReleasePurgePreflight(ctx, tx, releaseID, false)
+	if err != nil {
+		return err
+	}
+	if preflight.ArchiveStatus != "purge_pending" {
+		return fmt.Errorf("release %s is not purge_pending", releaseID)
+	}
+	if preflight.ObjectKey == "" || !preflight.ReleaseExists || !preflight.HasCatalogFiles || !preflight.HasCompletedMediaInspect {
+		return fmt.Errorf("release %s does not satisfy purge preflight", releaseID)
+	}
+
+	var totalLineageBinaries int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM release_archive_lineage_binaries WHERE release_id = $1`, releaseID).Scan(&totalLineageBinaries); err != nil {
+		return fmt.Errorf("count release lineage binaries %s: %w", releaseID, err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT lb.binary_id
+		FROM release_archive_lineage_binaries lb
+		WHERE lb.release_id = $1
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM release_files other_rf
+			LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
+			WHERE other_rf.binary_id = lb.binary_id
+			  AND other_rf.release_id <> $1
+			  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
+		  )`, releaseID)
+	if err != nil {
+		return fmt.Errorf("list purgeable binaries %s: %w", releaseID, err)
+	}
+	defer rows.Close()
+	binaryIDs := make([]int64, 0, 64)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			return fmt.Errorf("scan purgeable binary id: %w", err)
+		}
+		binaryIDs = append(binaryIDs, binaryID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate purgeable binary ids: %w", err)
+	}
+	result.SkippedSharedBinaryRows = totalLineageBinaries - int64(len(binaryIDs))
+	if len(binaryIDs) > 0 {
+		if err := stageReleasePurgeBinaryIDs(ctx, tx, binaryIDs); err != nil {
+			return fmt.Errorf("stage purgeable binary ids for %s: %w", releaseID, err)
+		}
+		for _, table := range []string{"binary_parts", "binary_grouping_evidence", "binary_inspections", "binary_inspection_artifacts", "binary_archive_entries", "binary_text_evidence", "binary_media_streams", "binary_par2_sets", "binary_par2_targets", "yenc_recovery_work_items"} {
+			count, err := countRowsByStagedBinaryIDs(ctx, tx, table)
+			if err != nil {
+				return fmt.Errorf("count %s rows for %s: %w", table, releaseID, err)
+			}
+			result.DeletedRowsByTable[table] = count
+		}
+		result.DeletedRowsByTable["binary_core"] = int64(len(binaryIDs))
+		result.DeletedBinaryRows = int64(len(binaryIDs))
+	}
+	countQueries := map[string]string{
+		"release_files":      `SELECT COUNT(*) FROM release_files WHERE release_id = $1`,
+		"release_newsgroups": `SELECT COUNT(*) FROM release_newsgroups WHERE release_id = $1`,
+		"nzb_cache":          `SELECT COUNT(*) FROM nzb_cache WHERE release_id = $1`,
+		"article_header_ingest_payloads": `
+			SELECT COUNT(*)
+			FROM article_header_ingest_payloads p
+			WHERE p.article_header_id IN (
+				SELECT lah.article_header_id
+				FROM release_archive_lineage_article_headers lah
+				WHERE lah.release_id = $1
+			)
+			  AND NOT EXISTS (
+				SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = p.article_header_id
+			  )`,
+		"article_headers": `
+			SELECT COUNT(*)
+			FROM article_headers ah
+			WHERE ah.id IN (
+				SELECT lah.article_header_id
+				FROM release_archive_lineage_article_headers lah
+				WHERE lah.release_id = $1
+			)
+			  AND NOT EXISTS (
+				SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id
+			  )`,
+		"release_archive_lineage_binaries":        `SELECT COUNT(*) FROM release_archive_lineage_binaries WHERE release_id = $1`,
+		"release_archive_lineage_article_headers": `SELECT COUNT(*) FROM release_archive_lineage_article_headers WHERE release_id = $1`,
+	}
+	for table, query := range countQueries {
+		var count int64
+		if err := tx.QueryRowContext(ctx, query, releaseID).Scan(&count); err != nil {
+			return fmt.Errorf("count %s rows for %s: %w", table, releaseID, err)
+		}
+		result.DeletedRowsByTable[table] = count
+	}
+	result.DeletedArticlePayloadRows = result.DeletedRowsByTable["article_header_ingest_payloads"]
+	result.DeletedArticleHeaderRows = result.DeletedRowsByTable["article_headers"]
+	return nil
+}
+
+func (s *Store) DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.runSimpleMaintenanceTask(ctx, taskKey, true, batchSize)
+}
+
+func (s *Store) RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.runSimpleMaintenanceTask(ctx, taskKey, false, batchSize)
+}
+
+func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	result := &MaintenanceTaskResult{TaskKey: taskKey, DryRun: dryRun}
+	if dryRun {
+		result.EstimatedRowsByTable = map[string]int64{}
+	} else {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	add := func(table string, count int64) {
+		if dryRun {
+			result.EstimatedRowsByTable[table] += count
+		} else {
+			result.DeletedRowsByTable[table] += count
+		}
+	}
+	switch taskKey {
+	case "vacuum_dead_tuple_tables":
+		candidates, err := s.maintenanceVacuumCandidates(ctx, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.EstimatedRowsByTable = map[string]int64{}
+		tables := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			tables = append(tables, candidate.TableName)
+			result.EstimatedRowsByTable[candidate.TableName] = candidate.DeadRows
+			result.EstimatedBytes += candidate.TotalBytes
+		}
+		if len(tables) > 0 {
+			before, err := s.maintenanceStorageSnapshot(ctx, tables...)
+			if err != nil {
+				return nil, err
+			}
+			result.BeforeStorage = before
+		}
+		result.Warnings = append(result.Warnings,
+			"runs plain VACUUM (ANALYZE) only; it deletes no application rows",
+			"space becomes reusable inside PostgreSQL but OS disk space is not returned without VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+			"batch size limits the number of tables vacuumed per run",
+		)
+		if dryRun {
+			break
+		}
+		for _, candidate := range candidates {
+			if _, err := s.db.ExecContext(ctx, `VACUUM (ANALYZE) `+quoteIdentifier(candidate.TableName)); err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("VACUUM (ANALYZE) failed for %s: %v", candidate.TableName, err))
+				continue
+			}
+			result.VacuumedTables = append(result.VacuumedTables, candidate.TableName)
+		}
+		if len(result.VacuumedTables) > 0 {
+			after, err := s.maintenanceStorageSnapshot(ctx, result.VacuumedTables...)
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("post-vacuum storage snapshot failed: %v", err))
+			} else {
+				result.AfterStorage = after
+			}
+		}
+	case "poster_queue_done_cleanup":
+		const table = "poster_materialization_queue"
+		from := `FROM poster_materialization_queue WHERE status = 'done'`
+		before, err := s.maintenanceStorageSnapshot(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		result.BeforeStorage = before
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, from)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			if before != nil {
+				result.EstimatedBytes = before.TableTotalBytesByTable[table]
+			}
+			result.Warnings = append(result.Warnings,
+				"dry-run estimates all done rows; run deletes at most the configured batch size",
+				"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+			)
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `
+				DELETE FROM poster_materialization_queue q
+				WHERE q.article_header_id IN (
+					SELECT article_header_id
+					FROM poster_materialization_queue
+					WHERE status = 'done'
+					ORDER BY article_header_id
+					LIMIT $1
+				)`, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			after, err := s.maintenanceStorageSnapshot(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+			result.AfterStorage = after
+			result.Warnings = append(result.Warnings,
+				"batch-limited delete completed; rerun or schedule the task to continue draining done rows",
+				"OS free space is not expected to increase until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite runs",
+			)
+		}
+	case "inspect_ready_queue_cleanup":
+		const table = "binary_inspection_ready_queue"
+		from := `
+			FROM binary_inspection_ready_queue q
+			WHERE q.status IN ('completed', 'blocked')
+			  AND EXISTS (
+				SELECT 1
+				FROM binary_inspections bi
+				WHERE bi.stage_name = q.stage_name
+				  AND bi.binary_id = q.binary_id
+				  AND bi.status IN ('completed', 'failed')
+			  )`
+		before, err := s.maintenanceStorageSnapshot(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		result.BeforeStorage = before
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, from)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			if before != nil {
+				result.EstimatedBytes = before.TableTotalBytesByTable[table]
+			}
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `
+				WITH eligible AS (
+					SELECT q.stage_name, q.binary_id
+					FROM binary_inspection_ready_queue q
+					WHERE q.status IN ('completed', 'blocked')
+					  AND EXISTS (
+						SELECT 1
+						FROM binary_inspections bi
+						WHERE bi.stage_name = q.stage_name
+						  AND bi.binary_id = q.binary_id
+						  AND bi.status IN ('completed', 'failed')
+					  )
+					ORDER BY q.updated_at, q.stage_name, q.binary_id
+					LIMIT $1
+				)
+				DELETE FROM binary_inspection_ready_queue q
+				USING eligible e
+				WHERE q.stage_name = e.stage_name
+				  AND q.binary_id = e.binary_id`, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			after, err := s.maintenanceStorageSnapshot(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+			result.AfterStorage = after
+		}
+	case "assembly_queue_stale_cleanup":
+		const table = "article_header_assembly_queue"
+		before, err := s.maintenanceStorageSnapshot(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		result.BeforeStorage = before
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, `FROM article_header_assembly_queue q WHERE EXISTS (SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = q.article_header_id)`)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			if before != nil {
+				result.EstimatedBytes = before.TableTotalBytesByTable[table]
+			}
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `
+				WITH eligible AS (
+					SELECT q.article_header_id
+					FROM article_header_assembly_queue q
+					WHERE EXISTS (
+						SELECT 1
+						FROM binary_parts bp
+						WHERE bp.article_header_id = q.article_header_id
+					)
+					ORDER BY q.article_header_id
+					LIMIT $1
+				)
+				DELETE FROM article_header_assembly_queue q
+				USING eligible e
+				WHERE q.article_header_id = e.article_header_id`, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			after, err := s.maintenanceStorageSnapshot(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+			result.AfterStorage = after
+		}
+	case "runtime_history_cleanup":
+		tasks := []struct {
+			table       string
+			countQuery  string
+			deleteQuery string
+		}{
+			{
+				table:      "indexer_stage_runs",
+				countQuery: `FROM indexer_stage_runs WHERE (status IN ('completed', 'abandoned') AND started_at < NOW() - INTERVAL '14 days') OR (status = 'failed' AND started_at < NOW() - INTERVAL '30 days')`,
+				deleteQuery: `
+					WITH eligible AS (
+						SELECT id
+						FROM indexer_stage_runs
+						WHERE (status IN ('completed', 'abandoned') AND started_at < NOW() - INTERVAL '14 days')
+						   OR (status = 'failed' AND started_at < NOW() - INTERVAL '30 days')
+						ORDER BY started_at, id
+						LIMIT $1
+					)
+					DELETE FROM indexer_stage_runs r
+					USING eligible e
+					WHERE r.id = e.id`,
+			},
+			{
+				table:      "scrape_runs",
+				countQuery: `FROM scrape_runs WHERE (status IN ('completed', 'abandoned') AND started_at < NOW() - INTERVAL '14 days') OR (status = 'failed' AND started_at < NOW() - INTERVAL '30 days')`,
+				deleteQuery: `
+					WITH eligible AS (
+						SELECT id
+						FROM scrape_runs
+						WHERE (status IN ('completed', 'abandoned') AND started_at < NOW() - INTERVAL '14 days')
+						   OR (status = 'failed' AND started_at < NOW() - INTERVAL '30 days')
+						ORDER BY started_at, id
+						LIMIT $1
+					)
+					DELETE FROM scrape_runs r
+					USING eligible e
+					WHERE r.id = e.id`,
+			},
+		}
+		result.BeforeStorage, _ = s.maintenanceStorageSnapshot(ctx, "indexer_stage_runs", "scrape_runs")
+		result.Warnings = append(result.Warnings, "binary_inspections are retained because completed rows gate release generation/archive and suppress unnecessary reinspection")
+		for _, task := range tasks {
+			var (
+				count int64
+				err   error
+			)
+			if dryRun {
+				count, err = countRowsFrom(ctx, s.db, task.countQuery)
+			} else {
+				count, err = execDeleteCount(ctx, s.db, task.deleteQuery, batchSize)
+			}
+			if err != nil {
+				return nil, err
+			}
+			add(task.table, count)
+		}
+		if !dryRun {
+			result.AfterStorage, _ = s.maintenanceStorageSnapshot(ctx, "indexer_stage_runs", "scrape_runs")
+		}
+	case "grouping_evidence_cleanup":
+		from := `FROM binary_grouping_evidence bge JOIN binary_identity_current bic ON bic.binary_id = bge.binary_id WHERE bge.updated_at < NOW() - INTERVAL '24 hours' AND bic.match_confidence >= 0.85 AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional') AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set') AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false AND bge.payload_json ? 'summary'`
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, from)
+			if err != nil {
+				return nil, err
+			}
+			add("binary_grouping_evidence", count)
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `WITH eligible AS (SELECT bge.binary_id `+from+`) DELETE FROM binary_grouping_evidence bge USING eligible e WHERE bge.binary_id = e.binary_id`)
+			if err != nil {
+				return nil, err
+			}
+			add("binary_grouping_evidence", count)
+		}
+	case "crosspost_group_raw_purge":
+		const table = "article_header_crosspost_groups"
+		from := `
+			FROM article_header_crosspost_groups g
+			JOIN article_header_crosspost_group_summary s
+			  ON s.observed_group_name = g.observed_group_name
+			JOIN crosspost_popularity_refresh_queue q
+			  ON q.observed_group_name = g.observed_group_name
+			 AND q.status = 'done'
+			WHERE g.observed_at < NOW() - INTERVAL '72 hours'
+			  AND g.article_header_id <= COALESCE(s.last_refreshed_article_header_id, 0)`
+		before, err := s.maintenanceStorageSnapshot(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		result.BeforeStorage = before
+		result.Warnings = append(result.Warnings,
+			"deletes only raw Xref telemetry already consumed by crosspost popularity summary and older than 72h",
+			"does not delete crosspost summaries, refresh queue rows, article headers, binaries, releases, catalog files, or archived NZBs",
+			"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+		)
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, from)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			if before != nil {
+				result.EstimatedBytes = before.TableTotalBytesByTable[table]
+			}
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `
+				WITH eligible AS (
+					SELECT g.article_header_id, g.observed_group_name
+					FROM article_header_crosspost_groups g
+					JOIN article_header_crosspost_group_summary s
+					  ON s.observed_group_name = g.observed_group_name
+					JOIN crosspost_popularity_refresh_queue q
+					  ON q.observed_group_name = g.observed_group_name
+					 AND q.status = 'done'
+					WHERE g.observed_at < NOW() - INTERVAL '72 hours'
+					  AND g.article_header_id <= COALESCE(s.last_refreshed_article_header_id, 0)
+					ORDER BY g.observed_at, g.article_header_id, g.observed_group_name
+					LIMIT $1
+				)
+				DELETE FROM article_header_crosspost_groups g
+				USING eligible e
+				WHERE g.article_header_id = e.article_header_id
+				  AND g.observed_group_name = e.observed_group_name`, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			after, err := s.maintenanceStorageSnapshot(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+			result.AfterStorage = after
+		}
+	case "yenc_done_work_item_cleanup":
+		const table = "yenc_recovery_work_items"
+		from := `
+			FROM yenc_recovery_work_items wi
+			JOIN binary_recovery_current brc
+			  ON brc.binary_id = wi.binary_id
+			 AND brc.recovered_source = 'yenc_header'
+			WHERE wi.status = 'done'
+			  AND wi.updated_at < NOW() - INTERVAL '72 hours'
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM release_files rf
+				WHERE rf.binary_id = wi.binary_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM release_archive_lineage_binaries lb
+				WHERE lb.binary_id = wi.binary_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_inspection_ready_queue rq
+				WHERE rq.binary_id = wi.binary_id
+				  AND rq.status = 'running'
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_inspections bi
+				WHERE bi.binary_id = wi.binary_id
+				  AND bi.status = 'running'
+			  )`
+		before, err := s.maintenanceStorageSnapshot(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		result.BeforeStorage = before
+		result.Warnings = append(result.Warnings,
+			"deletes only completed yEnc recovery work receipts older than 72h after durable binary_recovery_current yEnc projection exists",
+			"keeps ready/running yEnc backlog, article headers, payloads, binary roots, release files, archive lineage, catalog data, and NZBs",
+			"delete creates PostgreSQL reusable space after post-delete VACUUM (ANALYZE) but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+		)
+		if dryRun {
+			count, err := countRowsFrom(ctx, s.db, from)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			if before != nil {
+				result.EstimatedBytes = before.TableTotalBytesByTable[table]
+			}
+		} else {
+			count, err := execDeleteCount(ctx, s.db, `
+				WITH eligible AS (
+					SELECT wi.binary_id
+					FROM yenc_recovery_work_items wi
+					JOIN binary_recovery_current brc
+					  ON brc.binary_id = wi.binary_id
+					 AND brc.recovered_source = 'yenc_header'
+					WHERE wi.status = 'done'
+					  AND wi.updated_at < NOW() - INTERVAL '72 hours'
+					  AND NOT EXISTS (
+						SELECT 1
+						FROM release_files rf
+						WHERE rf.binary_id = wi.binary_id
+					  )
+					  AND NOT EXISTS (
+						SELECT 1
+						FROM release_archive_lineage_binaries lb
+						WHERE lb.binary_id = wi.binary_id
+					  )
+					  AND NOT EXISTS (
+						SELECT 1
+						FROM binary_inspection_ready_queue rq
+						WHERE rq.binary_id = wi.binary_id
+						  AND rq.status = 'running'
+					  )
+					  AND NOT EXISTS (
+						SELECT 1
+						FROM binary_inspections bi
+						WHERE bi.binary_id = wi.binary_id
+						  AND bi.status = 'running'
+					  )
+					ORDER BY wi.updated_at, wi.binary_id
+					LIMIT $1
+				)
+				DELETE FROM yenc_recovery_work_items wi
+				USING eligible e
+				WHERE wi.binary_id = e.binary_id`, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			add(table, count)
+			after, err := s.maintenanceStorageSnapshot(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+			result.AfterStorage = after
+		}
+	case "header_payload_purge":
+		result.EstimatedRowsByTable = map[string]int64{"article_header_ingest_payloads": 0}
+		result.Warnings = []string{
+			"legacy payload purge is disabled because assembled_at is not authoritative in the queue-based assembly path",
+			"use the storage audit source-window and stale-source sections before implementing relationship-guarded payload cleanup",
+		}
+		if !dryRun {
+			result.Blockers = append(result.Blockers, "header_payload_purge is audit-blocked until it is rewritten without assembled_at")
+		}
+	case "stale_nonrelease_source_purge":
+		if err := s.runStaleNonreleaseSourcePurge(ctx, result, dryRun, batchSize); err != nil {
+			return nil, err
+		}
+	case "emergency_source_window_reset":
+		if err := s.runEmergencySourceWindowReset(ctx, result, dryRun, batchSize); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported maintenance task %q", taskKey)
+	}
+	if !dryRun {
+		s.vacuumDeletedMaintenanceTables(ctx, result)
+	}
+	return result, nil
+}
+
+func (s *Store) maintenanceVacuumCandidates(ctx context.Context, limit int) ([]maintenanceVacuumCandidate, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			c.relname,
+			COALESCE(st.n_live_tup, 0)::bigint,
+			COALESCE(st.n_dead_tup, 0)::bigint,
+			pg_total_relation_size(c.oid)::bigint,
+			CASE
+				WHEN COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0) = 0 THEN 0
+				ELSE (COALESCE(st.n_dead_tup, 0)::numeric * 100.0 / (COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0)))
+			END::float8 AS dead_pct
+		FROM pg_stat_user_tables st
+		JOIN pg_class c ON c.oid = st.relid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relkind IN ('r', 'p')
+		  AND COALESCE(st.n_dead_tup, 0) >= 5000
+		  AND (
+			COALESCE(st.n_dead_tup, 0) >= 1000000
+			OR (
+				COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0) > 0
+				AND COALESCE(st.n_dead_tup, 0) >= 50000
+				AND COALESCE(st.n_dead_tup, 0)::numeric / (COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0)) >= 0.02
+			)
+			OR (
+				pg_total_relation_size(c.oid) >= 1073741824
+				AND COALESCE(st.n_dead_tup, 0) >= 250000
+				AND COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0) > 0
+				AND COALESCE(st.n_dead_tup, 0)::numeric / (COALESCE(st.n_live_tup, 0) + COALESCE(st.n_dead_tup, 0)) >= 0.01
+			)
+		  )
+		ORDER BY COALESCE(st.n_dead_tup, 0) DESC, pg_total_relation_size(c.oid) DESC, c.relname
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := []maintenanceVacuumCandidate{}
+	for rows.Next() {
+		var candidate maintenanceVacuumCandidate
+		if err := rows.Scan(&candidate.TableName, &candidate.LiveRows, &candidate.DeadRows, &candidate.TotalBytes, &candidate.DeadPct); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+func (s *Store) runStaleNonreleaseSourcePurge(ctx context.Context, result *MaintenanceTaskResult, dryRun bool, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	tables := []string{
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"poster_materialization_queue",
+	}
+	before, err := s.maintenanceStorageSnapshot(ctx, tables...)
+	if err != nil {
+		return err
+	}
+	result.BeforeStorage = before
+	result.Warnings = append(result.Warnings,
+		fmt.Sprintf("high-risk source purge uses a fixed %d-day default retention window", staleNonreleaseSourceRetentionDays),
+		"only headers with no assembly queue row, no binary_parts row, no yEnc work item, and no archive lineage are eligible",
+		"deleting article_headers cascades associated ingest payload, crosspost, poster-ref, and poster queue rows",
+		"dry-run and run are batch-limited; dry-run estimates only the next batch, not the full table",
+		"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+	)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin stale source purge tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if err := stageStaleNonreleaseSourceHeaders(ctx, tx, batchSize); err != nil {
+		return err
+	}
+	counts, err := countStagedStaleSourceRows(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		for table, count := range counts {
+			addMaintenanceTaskCount(result.EstimatedRowsByTable, table, count)
+		}
+		if before != nil {
+			result.EstimatedBytes = before.TableTotalBytesByTable["article_headers"] +
+				before.TableTotalBytesByTable["article_header_ingest_payloads"] +
+				before.TableTotalBytesByTable["article_header_crosspost_groups"] +
+				before.TableTotalBytesByTable["article_header_poster_refs"] +
+				before.TableTotalBytesByTable["poster_materialization_queue"]
+		}
+		return nil
+	}
+
+	var deletedHeaders int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM article_headers ah
+			USING tmp_stale_nonrelease_source_header_ids e
+			WHERE ah.id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedHeaders); err != nil {
+		return fmt.Errorf("delete stale non-release source headers: %w", err)
+	}
+	counts["article_headers"] = deletedHeaders
+	for table, count := range counts {
+		addMaintenanceTaskCount(result.DeletedRowsByTable, table, count)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit stale source purge tx: %w", err)
+	}
+	if after, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.AfterStorage = after
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("post-delete storage snapshot failed: %v", err))
+	}
+	return nil
+}
+
+func stageStaleNonreleaseSourceHeaders(ctx context.Context, tx *sql.Tx, batchSize int) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_stale_nonrelease_source_header_ids (article_header_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create stale source temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_stale_nonrelease_source_header_ids (article_header_id)
+		SELECT ah.id
+		FROM article_headers ah
+		WHERE ah.date_utc < NOW() - ($2::int * INTERVAL '1 day')
+		  AND NOT EXISTS (SELECT 1 FROM article_header_assembly_queue q WHERE q.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM yenc_recovery_work_items wi WHERE wi.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_article_headers lah WHERE lah.article_header_id = ah.id)
+		ORDER BY ah.date_utc, ah.id
+		LIMIT $1`,
+		batchSize,
+		staleNonreleaseSourceRetentionDays,
+	); err != nil {
+		return fmt.Errorf("stage stale non-release source headers: %w", err)
+	}
+	return nil
+}
+
+func countStagedStaleSourceRows(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
+	queries := map[string]string{
+		"article_headers": `SELECT COUNT(*) FROM tmp_stale_nonrelease_source_header_ids`,
+		"article_header_ingest_payloads": `
+			SELECT COUNT(*)
+			FROM article_header_ingest_payloads p
+			JOIN tmp_stale_nonrelease_source_header_ids e ON e.article_header_id = p.article_header_id`,
+		"article_header_crosspost_groups": `
+			SELECT COUNT(*)
+			FROM article_header_crosspost_groups g
+			JOIN tmp_stale_nonrelease_source_header_ids e ON e.article_header_id = g.article_header_id`,
+		"article_header_poster_refs": `
+			SELECT COUNT(*)
+			FROM article_header_poster_refs r
+			JOIN tmp_stale_nonrelease_source_header_ids e ON e.article_header_id = r.article_header_id`,
+		"poster_materialization_queue": `
+			SELECT COUNT(*)
+			FROM poster_materialization_queue q
+			JOIN tmp_stale_nonrelease_source_header_ids e ON e.article_header_id = q.article_header_id`,
+	}
+	counts := make(map[string]int64, len(queries))
+	for table, query := range queries {
+		var count int64
+		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count staged stale source %s: %w", table, err)
+		}
+		counts[table] = count
+	}
+	return counts, nil
+}
+
+func (s *Store) runEmergencySourceWindowReset(ctx context.Context, result *MaintenanceTaskResult, dryRun bool, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 10000
+	}
+	tables := []string{
+		"binary_core",
+		"binary_parts",
+		"binary_identity_current",
+		"binary_observation_stats",
+		"binary_recovery_current",
+		"binary_grouping_evidence",
+		"binary_inspection_ready_queue",
+		"binary_inspections",
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_sets",
+		"binary_par2_targets",
+		"binary_completion_keys",
+		"binary_lifecycle",
+		"binary_projection_events",
+		"binary_superseded_sources",
+		"yenc_recovery_work_items",
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"poster_materialization_queue",
+	}
+	before, err := s.maintenanceStorageSnapshot(ctx, tables...)
+	if err != nil {
+		return err
+	}
+	result.BeforeStorage = before
+	result.Warnings = append(result.Warnings,
+		fmt.Sprintf("high-risk emergency reset intentionally discards unreleased binary/source work outside the fixed %d-day retention window", staleNonreleaseSourceRetentionDays),
+		"eligible binaries are skipped when release_files, release archive lineage, running inspect work, or running yEnc work references them",
+		"deleting binary_core cascades binary parts, yEnc work items, identity/current projections, inspection rows, and other binary-derived rows",
+		"after binary deletion, only fully orphaned old article headers are deleted; release catalog files, release detail, archive metadata, and archived NZBs are not deleted",
+		"dry-run estimates staged binary cascades without deleting; source-header cleanup is estimated separately by stale_nonrelease_source_purge",
+		"future releases cannot be formed from source/binary rows removed by this task",
+		"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+	)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin emergency source window reset tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if err := stageEmergencySourceWindowBinaries(ctx, tx, batchSize); err != nil {
+		return err
+	}
+	binaryCounts, err := countStagedEmergencyBinaryRows(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for table, count := range binaryCounts {
+		addMaintenanceTaskCount(resultCountMap(result, dryRun), table, count)
+	}
+	if dryRun {
+		if before != nil {
+			for _, table := range tables {
+				result.EstimatedBytes += before.TableTotalBytesByTable[table]
+			}
+		}
+		result.Warnings = append(result.Warnings, "dry-run estimates binary cascades only; run stale_nonrelease_source_purge dry-run for source-header-only estimates, and expect a real emergency run to delete newly orphaned old headers after binary cascades")
+		return nil
+	}
+
+	var deletedBinaries int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM binary_core bc
+			USING tmp_emergency_source_window_binary_ids e
+			WHERE bc.binary_id = e.binary_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedBinaries); err != nil {
+		return fmt.Errorf("delete emergency source window binaries: %w", err)
+	}
+	if deletedBinaries != binaryCounts["binary_core"] {
+		addMaintenanceTaskCount(resultCountMap(result, dryRun), "binary_core_delete_delta", deletedBinaries-binaryCounts["binary_core"])
+	}
+
+	if err := stageStaleNonreleaseSourceHeaders(ctx, tx, batchSize); err != nil {
+		return err
+	}
+	sourceCounts, err := countStagedStaleSourceRows(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for table, count := range sourceCounts {
+		addMaintenanceTaskCount(resultCountMap(result, dryRun), table, count)
+	}
+
+	var deletedHeaders int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM article_headers ah
+			USING tmp_stale_nonrelease_source_header_ids e
+			WHERE ah.id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedHeaders); err != nil {
+		return fmt.Errorf("delete emergency stale source headers: %w", err)
+	}
+	if deletedHeaders != sourceCounts["article_headers"] {
+		addMaintenanceTaskCount(resultCountMap(result, dryRun), "article_headers_delete_delta", deletedHeaders-sourceCounts["article_headers"])
+	}
+
+	if before != nil {
+		for _, table := range tables {
+			result.EstimatedBytes += before.TableTotalBytesByTable[table]
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit emergency source window reset tx: %w", err)
+	}
+	if after, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.AfterStorage = after
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("post-delete storage snapshot failed: %v", err))
+	}
+	return nil
+}
+
+func resultCountMap(result *MaintenanceTaskResult, dryRun bool) map[string]int64 {
+	if dryRun {
+		return result.EstimatedRowsByTable
+	}
+	return result.DeletedRowsByTable
+}
+
+func stageEmergencySourceWindowBinaries(ctx context.Context, tx *sql.Tx, batchSize int) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_emergency_source_window_binary_ids (binary_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create emergency source window binary temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_emergency_source_window_candidate_binary_ids (binary_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create emergency source window candidate temp table: %w", err)
+	}
+	candidateLimit := batchSize * 4
+	if candidateLimit < batchSize {
+		candidateLimit = batchSize
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_emergency_source_window_candidate_binary_ids (binary_id)
+		SELECT bos.binary_id
+		FROM binary_observation_stats bos
+		WHERE bos.posted_at < NOW() - ($2::int * INTERVAL '1 day')
+		ORDER BY bos.binary_id
+		LIMIT $1`,
+		candidateLimit,
+		staleNonreleaseSourceRetentionDays,
+	); err != nil {
+		return fmt.Errorf("stage emergency source window binary candidates: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_emergency_source_window_binary_ids (binary_id)
+		SELECT c.binary_id
+		FROM tmp_emergency_source_window_candidate_binary_ids c
+		WHERE EXISTS (SELECT 1 FROM binary_core bc WHERE bc.binary_id = c.binary_id)
+		  AND NOT EXISTS (SELECT 1 FROM release_files rf WHERE rf.binary_id = c.binary_id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_binaries lb WHERE lb.binary_id = c.binary_id)
+		  AND NOT EXISTS (SELECT 1 FROM binary_inspection_ready_queue rq WHERE rq.binary_id = c.binary_id AND rq.status = 'running')
+		  AND NOT EXISTS (SELECT 1 FROM binary_inspections bi WHERE bi.binary_id = c.binary_id AND bi.status = 'running')
+		  AND NOT EXISTS (SELECT 1 FROM yenc_recovery_work_items wi WHERE wi.binary_id = c.binary_id AND wi.status = 'running')
+		ORDER BY c.binary_id
+		LIMIT $1`,
+		batchSize,
+	); err != nil {
+		return fmt.Errorf("filter emergency source window binaries: %w", err)
+	}
+	return nil
+}
+
+func countStagedEmergencyBinaryRows(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
+	queries := map[string]string{
+		"binary_core":                   `SELECT COUNT(*) FROM tmp_emergency_source_window_binary_ids`,
+		"binary_parts":                  `SELECT COUNT(*) FROM binary_parts t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_identity_current":       `SELECT COUNT(*) FROM binary_identity_current t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_observation_stats":      `SELECT COUNT(*) FROM binary_observation_stats t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_recovery_current":       `SELECT COUNT(*) FROM binary_recovery_current t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_grouping_evidence":      `SELECT COUNT(*) FROM binary_grouping_evidence t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_inspection_ready_queue": `SELECT COUNT(*) FROM binary_inspection_ready_queue t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_inspections":            `SELECT COUNT(*) FROM binary_inspections t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_inspection_artifacts":   `SELECT COUNT(*) FROM binary_inspection_artifacts t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_archive_entries":        `SELECT COUNT(*) FROM binary_archive_entries t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_text_evidence":          `SELECT COUNT(*) FROM binary_text_evidence t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_media_streams":          `SELECT COUNT(*) FROM binary_media_streams t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_par2_sets":              `SELECT COUNT(*) FROM binary_par2_sets t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_par2_targets":           `SELECT COUNT(*) FROM binary_par2_targets t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_completion_keys":        `SELECT COUNT(*) FROM binary_completion_keys t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_lifecycle":              `SELECT COUNT(*) FROM binary_lifecycle t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_projection_events":      `SELECT COUNT(*) FROM binary_projection_events t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+		"binary_superseded_sources": `
+			SELECT COUNT(*)
+			FROM (
+				SELECT t.source_binary_id
+				FROM binary_superseded_sources t
+				JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.source_binary_id
+				UNION
+				SELECT t.source_binary_id
+				FROM binary_superseded_sources t
+				JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.target_binary_id
+			) rows`,
+		"yenc_recovery_work_items": `SELECT COUNT(*) FROM yenc_recovery_work_items t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
+	}
+	counts := make(map[string]int64, len(queries))
+	for table, query := range queries {
+		var count int64
+		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count staged emergency binary %s: %w", table, err)
+		}
+		counts[table] = count
+	}
+	return counts, nil
+}
+
+func addMaintenanceTaskCount(counts map[string]int64, table string, count int64) {
+	if counts == nil {
+		return
+	}
+	counts[table] += count
+}
+
+func (s *Store) vacuumDeletedMaintenanceTables(ctx context.Context, result *MaintenanceTaskResult) {
+	if s == nil || s.db == nil || result == nil || len(result.DeletedRowsByTable) == 0 {
+		return
+	}
+	for _, table := range sortedDeletedMaintenanceTables(result.DeletedRowsByTable) {
+		if _, err := s.db.ExecContext(ctx, `VACUUM (ANALYZE) `+quoteIdentifier(table)); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("post-delete VACUUM (ANALYZE) failed for %s: %v", table, err))
+			continue
+		}
+		result.VacuumedTables = append(result.VacuumedTables, table)
+	}
+	if len(result.VacuumedTables) > 0 {
+		result.Warnings = append(result.Warnings, "post-delete VACUUM (ANALYZE) completed for affected tables; this makes space reusable inside PostgreSQL but does not return OS disk space")
+		if snapshot, err := s.maintenanceStorageSnapshot(ctx, result.VacuumedTables...); err == nil {
+			result.AfterStorage = snapshot
+		} else {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("post-vacuum storage snapshot failed: %v", err))
+		}
+	}
+}
+
+func sortedDeletedMaintenanceTables(deleted map[string]int64) []string {
+	tables := make([]string, 0, len(deleted))
+	for table, count := range deleted {
+		if count <= 0 || !isVacuumableMaintenanceTable(table) {
+			continue
+		}
+		tables = append(tables, table)
+	}
+	sort.Strings(tables)
+	return tables
+}
+
+func isVacuumableMaintenanceTable(table string) bool {
+	switch table {
+	case "article_header_assembly_queue",
+		"article_headers",
+		"article_header_crosspost_groups",
+		"article_header_ingest_payloads",
+		"binary_archive_entries",
+		"binary_completion_keys",
+		"binary_core",
+		"binary_grouping_evidence",
+		"binary_identity_current",
+		"binary_inspection_artifacts",
+		"binary_inspection_ready_queue",
+		"binary_inspections",
+		"binary_lifecycle",
+		"binary_media_streams",
+		"binary_observation_stats",
+		"binary_par2_sets",
+		"binary_par2_targets",
+		"binary_projection_events",
+		"binary_recovery_current",
+		"binary_superseded_sources",
+		"binary_parts",
+		"binary_text_evidence",
+		"indexer_stage_runs",
+		"nzb_cache",
+		"poster_materialization_queue",
+		"release_archive_lineage_article_headers",
+		"release_archive_lineage_binaries",
+		"release_files",
+		"release_newsgroups",
+		"scrape_runs",
+		"yenc_recovery_work_items":
+		return true
+	default:
+		return false
+	}
+}
+
+func quoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func countRowsFrom(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, from string, args ...any) (int64, error) {
+	var count int64
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) `+from, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *Store) maintenanceStorageSnapshot(ctx context.Context, tables ...string) (*MaintenanceTaskStorageSnapshot, error) {
+	status, err := s.DatabaseStorageStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &MaintenanceTaskStorageSnapshot{
+		GeneratedAt:            time.Now().UTC(),
+		DatabaseBytes:          status.DatabaseBytes,
+		DataDirectory:          status.DataDirectory,
+		FilesystemFreeBytes:    status.FilesystemFreeBytes,
+		FilesystemTotalBytes:   status.FilesystemTotalBytes,
+		FilesystemFreePercent:  status.FilesystemFreePercent,
+		FilesystemVisible:      status.FilesystemVisible,
+		TableTotalBytesByTable: map[string]int64{},
+		TableLiveRowsByTable:   map[string]int64{},
+		TableDeadRowsByTable:   map[string]int64{},
+	}
+	for _, table := range tables {
+		if table == "" {
+			continue
+		}
+		var totalBytes, liveRows, deadRows int64
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT
+				pg_total_relation_size(c.oid)::bigint,
+				COALESCE(st.n_live_tup, 0)::bigint,
+				COALESCE(st.n_dead_tup, 0)::bigint
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			LEFT JOIN pg_stat_user_tables st ON st.relid = c.oid
+			WHERE n.nspname = 'public'
+			  AND c.relname = $1`,
+			table,
+		).Scan(&totalBytes, &liveRows, &deadRows); err != nil {
+			return nil, fmt.Errorf("read maintenance storage snapshot for %s: %w", table, err)
+		}
+		snapshot.TableTotalBytesByTable[table] = totalBytes
+		snapshot.TableLiveRowsByTable[table] = liveRows
+		snapshot.TableDeadRowsByTable[table] = deadRows
+	}
+	return snapshot, nil
+}

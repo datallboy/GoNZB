@@ -71,10 +71,71 @@ func TestRunOnceStoresTextEvidenceAndOnlySetsHasNFO(t *testing.T) {
 	}
 }
 
+func TestRunOnceRecordsBadNFOCandidateAndContinues(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeNFORepository{
+		candidates: []pgindex.BinaryInspectionCandidate{
+			{
+				BinaryID:        61,
+				ReleaseID:       "rel-bad-nfo",
+				FileName:        "bad.nfo",
+				SourceUpdatedAt: &now,
+				TotalBytes:      64,
+			},
+			{
+				BinaryID:        62,
+				ReleaseID:       "rel-good-nfo",
+				FileName:        "good.nfo",
+				SourceUpdatedAt: &now,
+				TotalBytes:      64,
+			},
+		},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        701,
+			BinaryID:  61,
+			FileName:  "bad.nfo",
+			SizeBytes: 64,
+		}, {
+			ID:        702,
+			BinaryID:  62,
+			FileName:  "good.nfo",
+			SizeBytes: 64,
+		}},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		&sequenceNFOFetcher{
+			payloads: []string{
+				"not a yenc encoded article",
+				yencNFOPayload([]byte("hello"), "good.nfo"),
+				yencNFOPayload([]byte("hello"), "good.nfo"),
+			},
+		},
+		testNFOLogger{},
+		inspectpkg.Options{MaxBytes: 1024},
+	)
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once should continue after bad nfo candidate: %v", err)
+	}
+	if metrics["processed_count"] != 2 || metrics["failed_count"] != 1 {
+		t.Fatalf("unexpected metrics: %+v failed=%+v", metrics, repo.failed)
+	}
+	if len(repo.failed) != 1 || repo.failed[0].BinaryID != 61 {
+		t.Fatalf("expected one failed inspection for bad candidate, got %+v", repo.failed)
+	}
+	if len(repo.completed) != 1 || repo.completed[0].BinaryID != 62 {
+		t.Fatalf("expected good candidate to complete, got %+v", repo.completed)
+	}
+}
+
 type fakeNFORepository struct {
 	candidates         []pgindex.BinaryInspectionCandidate
 	files              []pgindex.CatalogReleaseFile
 	completed          []pgindex.BinaryInspectionRecord
+	failed             []pgindex.BinaryInspectionRecord
 	artifacts          []pgindex.BinaryInspectionArtifactRecord
 	textEvidence       []pgindex.BinaryTextEvidenceRecord
 	passwordCandidates []pgindex.ReleasePasswordCandidateRecord
@@ -94,7 +155,8 @@ func (f *fakeNFORepository) CompleteBinaryInspection(_ context.Context, in pgind
 	return nil
 }
 
-func (f *fakeNFORepository) FailBinaryInspection(context.Context, pgindex.BinaryInspectionRecord) error {
+func (f *fakeNFORepository) FailBinaryInspection(_ context.Context, in pgindex.BinaryInspectionRecord) error {
+	f.failed = append(f.failed, in)
 	return nil
 }
 
@@ -136,8 +198,25 @@ type nfoFetcher struct {
 }
 
 func (f nfoFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
-	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(f.body), f.fileName, len(f.body), encodeYEncNFO(f.body), len(f.body))
+	return bytes.NewBufferString(yencNFOPayload(f.body, f.fileName)), nil
+}
+
+type sequenceNFOFetcher struct {
+	payloads []string
+	next     int
+}
+
+func (f *sequenceNFOFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
+	if f.next >= len(f.payloads) {
+		return bytes.NewBufferString(""), nil
+	}
+	payload := f.payloads[f.next]
+	f.next++
 	return bytes.NewBufferString(payload), nil
+}
+
+func yencNFOPayload(body []byte, fileName string) string {
+	return fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(body), fileName, len(body), encodeYEncNFO(body), len(body))
 }
 
 type testNFOLogger struct{}

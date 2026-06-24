@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -824,6 +825,82 @@ func TestRunOnceSkipsWeakContextualObfuscatedClusterWithoutExpectedFileCountByDe
 	}
 }
 
+func TestRunOnceAllowsRecoveredFileSetContextualObfuscatedClusterWithoutExpectedFileCount(t *testing.T) {
+	baseTime := time.Date(2026, 4, 21, 1, 30, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:       1,
+			NewsgroupID:      2,
+			KeyKind:          pgindex.ReleaseCandidateKeyKindRecoveredFileSet,
+			ReleaseFamilyKey: "recovered-file-set-family",
+			ReleaseKey:       "recovered-file-set-family",
+			ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"recovered-file-set-family": {
+				{
+					BinaryID:         1,
+					ProviderID:       1,
+					NewsgroupID:      2,
+					ReleaseFamilyKey: "recovered-file-set-family",
+					ReleaseKey:       "recovered-file-set-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part1.rar",
+					BinaryName:       "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part1.rar",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       740_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+				{
+					BinaryID:         2,
+					ProviderID:       1,
+					NewsgroupID:      3,
+					ReleaseFamilyKey: "recovered-file-set-family",
+					ReleaseKey:       "recovered-file-set-family",
+					ReleaseName:      "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT",
+					FileName:         "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part2.rar",
+					BinaryName:       "ZzkVM2DIfYfgAJFFuMebW0gimNrMZ4cdjKNgbj9av2yHM2WPTMA0TSHKc6IJzbhT.part2.rar",
+					FamilyKind:       "contextual_obfuscated",
+					Poster:           "poster-a",
+					PostedAt:         ptrTime(baseTime.Add(2 * time.Minute)),
+					TotalParts:       1,
+					ObservedParts:    1,
+					TotalBytes:       741_000,
+					MatchConfidence:  0.60,
+					IsMainPayload:    true,
+				},
+			},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+			2: {{ArticleHeaderID: 102, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:            10,
+		ReleaseMinConfidence: 0.55,
+		RequireExpectedFileCountForContextualObfuscated:    true,
+		RequireExpectedFileCountForContextualObfuscatedSet: true,
+	})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected recovered-file-set contextual cluster to form, got %d releases", len(repo.upsertedReleases))
+	}
+	if got := metrics["skipped_fragments_contextual_weak"]; got != 0 {
+		t.Fatalf("expected no contextual weak skip, got %#v", got)
+	}
+}
+
 func TestRunOnceSkipsNumericSubjectOpaqueExtensionlessCluster(t *testing.T) {
 	baseTime := time.Date(2026, 5, 7, 13, 38, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1070,11 +1147,32 @@ func TestRunOnceUsesReleaseFamilyKeyForCandidateWork(t *testing.T) {
 	if len(repo.upsertedReleases) != 1 {
 		t.Fatalf("expected one release to be formed, got %d", len(repo.upsertedReleases))
 	}
-	if len(repo.deletedStaleCalls) != 1 {
-		t.Fatalf("expected one stale-delete call, got %d", len(repo.deletedStaleCalls))
+	if len(repo.deletedStaleCalls) != 2 {
+		t.Fatalf("expected two stale-delete calls, got %d", len(repo.deletedStaleCalls))
 	}
 	if repo.deletedStaleCalls[0].releaseKey != "family key" {
 		t.Fatalf("expected stale delete to use family key, got %q", repo.deletedStaleCalls[0].releaseKey)
+	}
+	if repo.deletedStaleCalls[1].releaseKey != "matcher trace key" {
+		t.Fatalf("expected stale delete to also use source key, got %q", repo.deletedStaleCalls[1].releaseKey)
+	}
+}
+
+func TestStaleReleaseCleanupKeysDedupesFamilyAndSourceKeys(t *testing.T) {
+	keys := staleReleaseCleanupKeys(pgindex.ReleaseCandidate{
+		KeyKind:          pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		SourceReleaseKey: "directory opus 13 23",
+	}, "directory opus 13.23")
+	if len(keys) != 2 || keys[0] != "directory opus 13.23" || keys[1] != "directory opus 13 23" {
+		t.Fatalf("expected family and source cleanup keys, got %#v", keys)
+	}
+
+	keys = staleReleaseCleanupKeys(pgindex.ReleaseCandidate{
+		KeyKind:          pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		SourceReleaseKey: "same key",
+	}, "same key")
+	if len(keys) != 1 || keys[0] != "same key" {
+		t.Fatalf("expected duplicate keys to collapse, got %#v", keys)
 	}
 }
 
@@ -1395,8 +1493,8 @@ func TestRunSummaryRefreshOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) 
 	if repo.refreshQueuedSummariesCalls != 1 {
 		t.Fatalf("expected one summary refresh call, got %d", repo.refreshQueuedSummariesCalls)
 	}
-	if repo.lastRefreshQueuedSummariesLimit != 10000 {
-		t.Fatalf("expected default summary refresh batch size 10000, got %d", repo.lastRefreshQueuedSummariesLimit)
+	if repo.lastRefreshQueuedSummariesLimit != 1000 {
+		t.Fatalf("expected timed effective summary refresh batch size 1000, got %d", repo.lastRefreshQueuedSummariesLimit)
 	}
 }
 
@@ -1425,6 +1523,9 @@ func TestRunSummaryRefreshOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) 
 	if got := metrics["summary_refresh_count"]; got != 25000 {
 		t.Fatalf("expected summary_refresh_count=25000, got %#v", got)
 	}
+	if got := metrics["summary_refresh_effective_batch_size"]; got != 1000 {
+		t.Fatalf("expected effective summary refresh batch size 1000, got %#v", got)
+	}
 }
 
 func TestRunSummaryRefreshOnceLeavesRemainingBacklogWhenCapIsHit(t *testing.T) {
@@ -1451,6 +1552,33 @@ func TestRunSummaryRefreshOnceLeavesRemainingBacklogWhenCapIsHit(t *testing.T) {
 	}
 }
 
+func TestRunSummaryRefreshOnceStopsAfterSoftTimeBudget(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount:            30000,
+		refreshQueuedSummariesResults: []int{10000, 10000, 10000},
+	}
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                 1000,
+		SummaryRefreshBatchSize:   10000,
+		SummaryRefreshMaxBatches:  5,
+		SummaryRefreshMaxDuration: time.Nanosecond,
+	})
+
+	metrics, err := svc.RunSummaryRefreshOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run summary refresh once with metrics: %v", err)
+	}
+	if repo.refreshQueuedSummariesCalls != 1 {
+		t.Fatalf("expected one refresh batch before time budget stop, got %d", repo.refreshQueuedSummariesCalls)
+	}
+	if got := metrics["summary_refresh_time_limited"]; got != true {
+		t.Fatalf("expected time-limited metrics, got %#v", got)
+	}
+	if got := metrics["summary_refresh_remaining_count"]; got != 20000 {
+		t.Fatalf("expected remaining backlog 20000, got %#v", got)
+	}
+}
+
 func TestRunOnceDoesNotDrainSummaryRefreshQueue(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		queuedSummaryCount: 1000,
@@ -1473,6 +1601,85 @@ func TestRunOnceDoesNotDrainSummaryRefreshQueue(t *testing.T) {
 	}
 	if got := metrics["summary_refresh_remaining_count"]; got != 1000 {
 		t.Fatalf("expected summary_refresh_remaining_count=1000, got %#v", got)
+	}
+}
+
+func TestRunOnceAutoReformsExistingCandidates(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount: 0,
+		existingCandidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			KeyKind:     pgindex.ReleaseCandidateKeyKindReleaseFamily,
+			ReleaseKey:  "existing source key",
+			ReleaseName: "Existing.Release.2026",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"existing source key": {{
+				BinaryID:        1,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "existing source key",
+				ReleaseName:     "Existing.Release.2026",
+				FileName:        "Existing.Release.2026.part1.rar",
+				BaseStem:        "existing release 2026",
+				Poster:          "poster-a",
+				TotalParts:      20,
+				ObservedParts:   20,
+				TotalBytes:      1_500_000_000,
+				MatchConfidence: 0.95,
+				IsMainPayload:   true,
+				FileIndex:       1,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, AutoReformBatchSize: 5, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with auto reform: %v", err)
+	}
+
+	if repo.listReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected normal release candidate selection, got %d", repo.listReleaseCandidatesCalls)
+	}
+	if repo.listExistingReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected one existing-candidate auto reform query, got %d", repo.listExistingReleaseCandidatesCalls)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release to be formed from auto reform, got %d", len(repo.upsertedReleases))
+	}
+	if got := metrics["auto_reform_candidates"]; got != 1 {
+		t.Fatalf("expected auto_reform_candidates=1, got %#v", got)
+	}
+}
+
+func TestRunOnceAutoReformsExistingCandidatesWhenSummaryBacklogExists(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		queuedSummaryCount: 10,
+		existingCandidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			KeyKind:     pgindex.ReleaseCandidateKeyKindReleaseFamily,
+			ReleaseKey:  "existing source key",
+			ReleaseName: "Existing.Release.2026",
+		}},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, AutoReformBatchSize: 5, ReleaseMinConfidence: 0.55})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with backlog: %v", err)
+	}
+
+	if repo.listExistingReleaseCandidatesCalls != 1 {
+		t.Fatalf("expected existing-candidate auto reform query while summary backlog exists, got %d", repo.listExistingReleaseCandidatesCalls)
+	}
+	if got := metrics["auto_reform_candidates"]; got != 1 {
+		t.Fatalf("expected auto_reform_candidates=1, got %#v", got)
 	}
 }
 
@@ -1616,6 +1823,54 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	}
 }
 
+func TestRunOnceDeletesAuxiliaryOnlySiblingReleasesForPrimaryBaseStem(t *testing.T) {
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "main source key",
+			ReleaseName: "Example.Release.2026",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"main source key": {{
+				BinaryID:        1,
+				ProviderID:      1,
+				NewsgroupID:     2,
+				ReleaseKey:      "main source key",
+				ReleaseName:     "Example.Release.2026",
+				FileName:        "Example.Release.2026.part1.rar",
+				BaseStem:        "example release 2026",
+				Poster:          "poster-a",
+				TotalParts:      20,
+				ObservedParts:   20,
+				TotalBytes:      1_500_000_000,
+				MatchConfidence: 0.95,
+				IsMainPayload:   true,
+				FileIndex:       1,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			1: {{ArticleHeaderID: 101, PartNumber: 1}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.deletedAuxiliarySiblingCalls) != 1 {
+		t.Fatalf("expected one auxiliary sibling cleanup call, got %d", len(repo.deletedAuxiliarySiblingCalls))
+	}
+	got := repo.deletedAuxiliarySiblingCalls[0]
+	if got.providerID != 1 || got.newsgroupID != 2 || got.baseStem != "example release 2026" {
+		t.Fatalf("unexpected auxiliary sibling cleanup call: %+v", got)
+	}
+	if len(got.keepReleaseIDs) != 1 || got.keepReleaseIDs[0] != "rel-1" {
+		t.Fatalf("expected kept release id rel-1, got %+v", got.keepReleaseIDs)
+	}
+}
+
 func TestRunOncePrefersInspectArchiveEntryForObfuscatedTitles(t *testing.T) {
 	baseTime := time.Date(2026, 4, 7, 1, 0, 0, 0, time.UTC)
 	repo := &fakeReleaseRepository{
@@ -1684,6 +1939,76 @@ func TestRunOncePrefersInspectArchiveEntryForObfuscatedTitles(t *testing.T) {
 	}
 }
 
+func TestRunOnceKeepsReadableSourceWhenArchiveEntryIsUnrelated(t *testing.T) {
+	baseTime := time.Date(2026, 4, 7, 1, 0, 0, 0, time.UTC)
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:  1,
+			NewsgroupID: 2,
+			ReleaseKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+			ReleaseName: "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.vol150+144",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			"steinberg cubase pro 15 0 21 x64 multilingual": {{
+				BinaryID:          51,
+				ProviderID:        1,
+				NewsgroupID:       2,
+				ReleaseKey:        "steinberg cubase pro 15 0 21 x64 multilingual",
+				ReleaseFamilyKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+				SourceReleaseKey:  "steinberg cubase pro 15 0 21 x64 multilingual",
+				ReleaseName:       "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.vol150+144",
+				FileName:          "Steinberg Cubase Pro 15.0.21 (x64) Multilingual.rar",
+				Poster:            "poster-a",
+				PostedAt:          ptrTime(baseTime),
+				FileIndex:         1,
+				ExpectedFileCount: 1,
+				TotalParts:        274,
+				ObservedParts:     274,
+				TotalBytes:        108_465_617,
+				MatchConfidence:   0.86,
+				MatchStatus:       "matched",
+				IsMainPayload:     true,
+			}},
+		},
+		articlesByBinaryID: map[int64][]pgindex.ReleaseFileArticleRecord{
+			51: {{ArticleHeaderID: 501, PartNumber: 1}},
+		},
+		titleCandidatesByBinaryID: map[int64][]pgindex.ReleaseTitleCandidate{
+			51: {{
+				BinaryID:   51,
+				Source:     "archive_entry",
+				Value:      "Activation.Manager.Unlocker.b14.exe",
+				Confidence: 0.98,
+			}},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{BatchSize: 10, ReleaseMinConfidence: 0.55})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected one release, got %d", len(repo.upsertedReleases))
+	}
+
+	got := repo.upsertedReleases[0]
+	if got.Title != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
+		t.Fatalf("expected readable source title to be retained, got %q", got.Title)
+	}
+	if got.SourceTitle != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
+		t.Fatalf("expected source title to drop par volume suffix, got %q", got.SourceTitle)
+	}
+	if got.TitleSource != "source" {
+		t.Fatalf("expected source title source, got %q", got.TitleSource)
+	}
+	if got.DeobfuscatedTitle != "Steinberg.Cubase.Pro.15.0.21.(x64).Multilingual" {
+		t.Fatalf("expected source deobfuscated title, got %q", got.DeobfuscatedTitle)
+	}
+	if got.CategoryID != newsnab.PC0Day {
+		t.Fatalf("expected PC0Day category, got %d %s", got.CategoryID, got.Category)
+	}
+}
+
 func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	repo := &fakeReleaseRepository{
 		candidates: []pgindex.ReleaseCandidate{
@@ -1742,6 +2067,99 @@ func TestRunOnceCompletionRespectsExpectedFileCount(t *testing.T) {
 	}
 	if repo.upsertedReleases[0].CompletionPct != 50 {
 		t.Fatalf("expected completion_pct 50 due to file-count gate, got %.2f", repo.upsertedReleases[0].CompletionPct)
+	}
+}
+
+func TestRunOnceFormsLowCoverageClusterWhenFileIdentityIsStrong(t *testing.T) {
+	familyKey := "fowylkl3g0x60d5wy1uc2b1athf8eswz9"
+	repo := &fakeReleaseRepository{
+		candidates: []pgindex.ReleaseCandidate{{
+			ProviderID:              1,
+			NewsgroupID:             2,
+			KeyKind:                 pgindex.ReleaseCandidateKeyKindBaseStem,
+			ReleaseFamilyKey:        familyKey,
+			ReleaseKey:              familyKey,
+			ReleaseName:             "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+			ExpectedFileCount:       18,
+			ExpectedFileCoveragePct: 98,
+			ReadinessBucket:         "actionable",
+		}},
+		binariesByKey: map[string][]pgindex.BinarySummary{
+			familyKey: {
+				{
+					BinaryID:          1,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part01.rar",
+					FileIndex:         2,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     10,
+					TotalBytes:        7_403_203,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+				{
+					BinaryID:          2,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part02.rar",
+					FileIndex:         3,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     1,
+					TotalBytes:        740_186,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+				{
+					BinaryID:          3,
+					ProviderID:        1,
+					NewsgroupID:       2,
+					ReleaseFamilyKey:  familyKey,
+					ReleaseKey:        familyKey,
+					ReleaseName:       "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.vol63+11",
+					BaseStem:          familyKey,
+					FileName:          "FOWYLKL3G0X60D5WY1UC2B1ATHF8ESWZ9.part03.rar",
+					FileIndex:         4,
+					ExpectedFileCount: 18,
+					IsMainPayload:     true,
+					TotalParts:        74,
+					ObservedParts:     74,
+					TotalBytes:        54_784_580,
+					MatchConfidence:   0.86,
+					MatchStatus:       "matched",
+				},
+			},
+		},
+	}
+
+	svc := NewService(repo, testReleaseLogger{}, Options{
+		BatchSize:                         10,
+		ReleaseMinConfidence:              0.55,
+		ReleaseMinExpectedFileCoveragePct: 80,
+	})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if len(repo.upsertedReleases) != 1 {
+		t.Fatalf("expected low-coverage split cluster with strong file identity to form an internal release, got %d releases", len(repo.upsertedReleases))
+	}
+	if repo.upsertedReleases[0].CompletionPct >= 80 {
+		t.Fatalf("expected formed release to retain incomplete coverage, got %.2f", repo.upsertedReleases[0].CompletionPct)
+	}
+	if len(repo.ackedCandidates) != 1 {
+		t.Fatalf("expected candidate ack after formation, got %+v", repo.ackedCandidates)
 	}
 }
 
@@ -2032,6 +2450,120 @@ func TestBuildReleaseRecordPopulatesDeobfuscatedTitleForReadableSource(t *testin
 	}
 }
 
+func TestBuildReleaseRecordDedupesCrossGroupFilesForCounters(t *testing.T) {
+	cluster := releaseCluster{
+		MatchConfidence: 0.92,
+		Binaries: []pgindex.BinarySummary{
+			{
+				BinaryID:                 1,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part1.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 2,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part1.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 3,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part2.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 4,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.part2.rar",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            10,
+				TotalParts:               10,
+				IsMainPayload:            true,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 5,
+				ProviderID:               1,
+				NewsgroupID:              10,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.par2",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            1,
+				TotalParts:               1,
+				MatchConfidence:          0.92,
+			},
+			{
+				BinaryID:                 6,
+				ProviderID:               1,
+				NewsgroupID:              20,
+				ReleaseKey:               "show family",
+				ReleaseName:              "Show.S01E01",
+				FileName:                 "show.s01e01.par2",
+				ExpectedFileCount:        4,
+				ExpectedArchiveFileCount: 2,
+				ObservedParts:            1,
+				TotalParts:               1,
+				MatchConfidence:          0.92,
+			},
+		},
+	}
+
+	record := buildReleaseRecord(pgindex.ReleaseCandidate{
+		ProviderID:        1,
+		NewsgroupID:       0,
+		KeyKind:           pgindex.ReleaseCandidateKeyKindReleaseFamily,
+		ReleaseFamilyKey:  "show family",
+		SourceReleaseKey:  "show family",
+		ReleaseKey:        "show family",
+		ReleaseName:       "Show.S01E01",
+		ExpectedFileCount: 4,
+	}, cluster, nil)
+
+	if record.FileCount != 3 {
+		t.Fatalf("expected deduped file count 3, got %d", record.FileCount)
+	}
+	if record.ParFileCount != 1 {
+		t.Fatalf("expected deduped par file count 1, got %d", record.ParFileCount)
+	}
+	if record.CompletionPct != 100 {
+		t.Fatalf("expected completion capped at 100 from deduped payload files, got %.2f", record.CompletionPct)
+	}
+	if record.ArchiveCount != 1 {
+		t.Fatalf("expected one archive family, got %d", record.ArchiveCount)
+	}
+}
+
 func TestBuildReleaseRecordNeverLeavesFamilyIdentityBlank(t *testing.T) {
 	record := buildReleaseRecord(pgindex.ReleaseCandidate{
 		ProviderID:  1,
@@ -2225,6 +2757,7 @@ type fakeReleaseRepository struct {
 	listBinariesCalls                  int
 	listTitleCandidatesCalls           int
 	deletedStaleCalls                  []staleDeleteCall
+	deletedAuxiliarySiblingCalls       []auxiliarySiblingDeleteCall
 	ackedCandidates                    []ackedReleaseCandidate
 	promotedBaseStemCandidates         []promotedBaseStemCandidate
 }
@@ -2254,6 +2787,13 @@ type staleDeleteCall struct {
 	keyKind        string
 	releaseKey     string
 	keepGroupNames []string
+}
+
+type auxiliarySiblingDeleteCall struct {
+	providerID     int64
+	newsgroupID    int64
+	baseStem       string
+	keepReleaseIDs []string
 }
 
 type ackedReleaseCandidate struct {
@@ -2289,6 +2829,14 @@ func (f *fakeReleaseRepository) ListExistingReleaseCandidates(_ context.Context,
 	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates[offset:end]...), nil
 }
 
+func (f *fakeReleaseRepository) ListAutoReformReleaseCandidates(_ context.Context, limit int, _ time.Duration) ([]pgindex.ReleaseCandidate, error) {
+	return f.ListExistingReleaseCandidates(context.Background(), limit, 0)
+}
+
+func (f *fakeReleaseRepository) ListExistingReleaseCandidatesForReleaseIDs(context.Context, []string) ([]pgindex.ReleaseCandidate, error) {
+	return append([]pgindex.ReleaseCandidate(nil), f.existingCandidates...), nil
+}
+
 func (f *fakeReleaseRepository) ListBinariesForReleaseCandidate(_ context.Context, _ int64, _ int64, _ string, releaseKey string) ([]pgindex.BinarySummary, error) {
 	f.listBinariesCalls++
 	return f.binariesByKey[releaseKey], nil
@@ -2320,21 +2868,21 @@ func (f *fakeReleaseRepository) UpsertRelease(_ context.Context, in pgindex.Rele
 	return fmt.Sprintf("rel-%d", len(f.upsertedReleases)), nil
 }
 
-func (f *fakeReleaseRepository) PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (string, error) {
+func (f *fakeReleaseRepository) PersistReleaseSnapshot(ctx context.Context, in pgindex.ReleaseRecord, files []pgindex.ReleaseFileRecord, newsgroupIDs []int64) (pgindex.ReleaseSnapshotResult, error) {
 	releaseID, err := f.UpsertRelease(ctx, in)
 	if err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.ReplaceReleaseFiles(ctx, releaseID, files); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.ReplaceReleaseNewsgroups(ctx, releaseID, newsgroupIDs); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
 	if err := f.UpsertNZBCache(ctx, releaseID, "pending", "", ""); err != nil {
-		return "", err
+		return pgindex.ReleaseSnapshotResult{}, err
 	}
-	return releaseID, nil
+	return pgindex.ReleaseSnapshotResult{ReleaseID: releaseID, Status: pgindex.ReleaseSnapshotStatusInserted}, nil
 }
 
 func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Context, providerID int64, keyKind, releaseKey string, keepGroupNames []string) error {
@@ -2343,6 +2891,16 @@ func (f *fakeReleaseRepository) DeleteStaleReleasesForSourceKey(_ context.Contex
 		keyKind:        keyKind,
 		releaseKey:     releaseKey,
 		keepGroupNames: append([]string(nil), keepGroupNames...),
+	})
+	return nil
+}
+
+func (f *fakeReleaseRepository) DeleteAuxiliaryOnlySiblingReleases(_ context.Context, providerID, newsgroupID int64, baseStem string, keepReleaseIDs []string) error {
+	f.deletedAuxiliarySiblingCalls = append(f.deletedAuxiliarySiblingCalls, auxiliarySiblingDeleteCall{
+		providerID:     providerID,
+		newsgroupID:    newsgroupID,
+		baseStem:       baseStem,
+		keepReleaseIDs: append([]string(nil), keepReleaseIDs...),
 	})
 	return nil
 }
@@ -2360,6 +2918,10 @@ func (f *fakeReleaseRepository) ReplaceReleaseNewsgroups(_ context.Context, _ st
 
 func (f *fakeReleaseRepository) UpsertNZBCache(context.Context, string, string, string, string) error {
 	f.nzbCalls++
+	return nil
+}
+
+func (f *fakeReleaseRepository) ReopenArchivedReleaseForRegeneration(context.Context, string) error {
 	return nil
 }
 
