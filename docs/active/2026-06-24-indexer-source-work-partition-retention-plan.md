@@ -19,6 +19,11 @@ Defaults:
   `2026-06-24-indexer-active-work-window-pipeline-plan.md`; retention should
   not decide what the pipeline processes.
 
+Do not start schema partitioning before the active-window plan is finalized and
+implemented, except for harmless prep such as docs and read-only audits.
+Retention depends on `source_work_campaigns` and `source_work_windows` to know
+whether a dated partition still contains active or incomplete work.
+
 ## Phase 1: Schema Foundation
 
 Add `source_posted_at timestamptz not null` to all partitioned source/work
@@ -67,6 +72,8 @@ Partitioned release-formation derived tables:
 
 Keep these durable/public tables unpartitioned:
 
+- `source_work_campaigns`
+- `source_work_windows`
 - `binary_core`
 - `releases`
 - `release_files`
@@ -84,6 +91,19 @@ Add `binary_core.source_posted_at` and index
 `(source_posted_at, binary_id)` for root cleanup/reporting, but do not
 partition `binary_core` in v1. This avoids partitioned-FK and global uniqueness
 issues at the root while the large child/work tables become droppable by day.
+
+High-volume source/work rows should also carry `source_work_window_id` for
+retention reporting and lifecycle checks:
+
+- required on new writes for `article_headers`,
+  `article_header_assembly_queue`, `binary_parts`,
+  `binary_observation_stats`, `binary_identity_current`,
+  `binary_recovery_current`, and `yenc_recovery_work_items`;
+- optional but recommended on supporting detail rows when it can be copied
+  without extra broad joins;
+- never use `source_work_window_id` as the only query boundary, because release
+  families can span window overlap. Use `source_posted_at` for pruning and
+  overlap matching.
 
 ## Phase 2: Partitioned Table Migration
 
@@ -168,9 +188,24 @@ Task behavior:
 
 - dry-run lists partitions older than configured retention;
 - checks default partitions are empty or reports them;
+- checks `source_work_windows` for the day;
 - checks no running assemble/yEnc/inspect/stage claims exist for that day;
 - checks durable release/archive/catalog preservation before drop;
 - detaches/drops partitions in dependency order.
+
+Eligibility rules:
+
+- A day partition is eligible only when every overlapping source work window is
+  terminal: `complete` or `abandoned`.
+- Refuse drop if any overlapping window is `pending`, `discovering`,
+  `scraping`, `draining`, `paused`, or `failed`.
+- `failed` is not terminal. It must be retried or explicitly abandoned.
+- Refuse drop if any campaign that owns overlapping windows is non-terminal.
+- Refuse drop if any matching window has running claims or nonzero blockers
+  that have not been refreshed since the latest stage run.
+- Refuse drop if durable release/archive/catalog preservation checks fail.
+- Retention does not decide whether old work should be processed. It only
+  reclaims source/work data after the active-window lifecycle says it is safe.
 
 Dependency order for a dated partition drop:
 
@@ -203,6 +238,11 @@ Retention interaction with active work windows:
   partition is retained until the window completes or is explicitly abandoned.
 - Old missed time is not automatically scraped. It becomes a manual backfill
   campaign owned by the active work-window plan.
+- Paused missed-latest-gap campaigns block retention for their date range until
+  an admin resumes/completes them or abandons them.
+- Abandoned windows mean the admin/system accepts losing future releases from
+  that source/work slice, but durable release/archive/catalog data must still be
+  preserved.
 
 ## Phase 5: Documentation And Operations
 
@@ -211,6 +251,11 @@ Retention interaction with active work windows:
 - Add admin maintenance-page report for existing partition range, missing future
   partitions, default partition row counts, eligible retention partitions, and
   estimated tables/files dropped.
+- Include active-window blockers in the partition report:
+  - non-terminal windows by day;
+  - paused campaigns by day;
+  - failed windows requiring retry or abandon;
+  - running claims by day.
 - Add a startup/maintenance guard that creates tomorrow's partitions before
   scrape/assemble/yEnc can write into a new day.
 - Document that daily partitioning is safe for 7-30 day retention windows;
@@ -231,8 +276,10 @@ Retention interaction with active work windows:
 - Release summary/candidate upserts work with partition-key-inclusive
   constraints.
 - Retention dry-run reports eligible partitions and dependency order.
-- Retention drop refuses when running claims or active source work windows
-  exist.
+- Retention drop refuses when running claims or non-terminal source work
+  windows exist.
+- Retention drop allows only days whose overlapping windows are all `complete`
+  or `abandoned`.
 - Retention drop preserves `releases`, `release_files`,
   `release_catalog_files`, archive detail, archive lineage, and archived NZBs.
 - `EXPLAIN` for scrape/assemble/yEnc/inspect/release refresh shows partition
