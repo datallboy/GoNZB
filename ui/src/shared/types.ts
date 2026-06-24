@@ -260,6 +260,7 @@ export type AdminStage = {
   concurrency?: number
   supports_concurrency: boolean
   backoff_seconds: number
+  backlog_count?: number
   lease_owner: string
   lease_expires_at?: string
   last_heartbeat_at?: string
@@ -279,6 +280,11 @@ export type AdminMaintenanceTask = {
   task_key: string
   label: string
   purpose: string
+  risk: string
+  space_effect: string
+  supervisor_effect: string
+  data_effect: string
+  release_safety: string
   destructive: boolean
   enabled: boolean
   schedule_enabled: boolean
@@ -292,12 +298,28 @@ export type AdminMaintenanceTask = {
   blockers?: string[]
 }
 
+export type AdminMaintenanceStorageSnapshot = {
+  generated_at: string
+  database_bytes: number
+  data_directory?: string
+  filesystem_free_bytes?: number
+  filesystem_total_bytes?: number
+  filesystem_free_percent?: number
+  filesystem_visible: boolean
+  table_total_bytes_by_table?: Record<string, number>
+  table_live_rows_by_table?: Record<string, number>
+  table_dead_rows_by_table?: Record<string, number>
+}
+
 export type AdminMaintenanceTaskRun = {
   task_key: string
   dry_run: boolean
   estimated_rows_by_table?: Record<string, number>
   deleted_rows_by_table?: Record<string, number>
+  vacuumed_tables?: string[]
   estimated_bytes?: number
+  before_storage?: AdminMaintenanceStorageSnapshot
+  after_storage?: AdminMaintenanceStorageSnapshot
   warnings?: string[]
   blockers?: string[]
 }
@@ -312,6 +334,96 @@ export type AdminMaintenanceTaskPatch = {
   schedule_enabled?: boolean
   interval_hours?: number
   batch_size?: number
+}
+
+export type AdminStorageAuditTable = {
+  table_name: string
+  row_estimate: number
+  total_bytes: number
+  table_bytes: number
+  index_bytes: number
+  toast_bytes: number
+  dead_tuples: number
+  last_vacuum?: string
+  last_autovacuum?: string
+  last_analyze?: string
+  last_autoanalyze?: string
+}
+
+export type AdminStorageAuditIndex = {
+  table_name: string
+  index_name: string
+  index_bytes: number
+  scans: number
+  tuples_read: number
+  tuples_fetch: number
+  primary: boolean
+  unique: boolean
+}
+
+export type AdminStorageAuditAgeRange = {
+  scope: string
+  bucket: string
+  rows: number
+  risk: string
+  data_use: string
+  purge_note: string
+}
+
+export type AdminStorageGuardCount = {
+  key: string
+  label: string
+  rows: number
+  risk: string
+  notes: string
+}
+
+export type AdminSourceWindowAudit = {
+  bucket: string
+  headers: number
+  payloads: number
+  assembly_queue: number
+  binary_parts: number
+  yenc_work_items: number
+  archive_lineage: number
+  orphan_headers: number
+  risk: string
+  notes: string
+}
+
+export type AdminYEncBacklogAudit = {
+  bucket: string
+  status: string
+  priority_rank: number
+  readiness_bucket: string
+  rows: number
+  blocking_rows: number
+  oldest_date?: string
+  newest_date?: string
+  notes: string
+}
+
+export type AdminStorageCleanupAudit = {
+  task_key: string
+  label: string
+  risk: string
+  implemented: boolean
+  estimated_rows_by_table?: Record<string, number>
+  space_effect: string
+  supervisor_effect: string
+  data_effect: string
+  release_safety: string
+}
+
+export type AdminStorageAuditReport = {
+  generated_at: string
+  tables: AdminStorageAuditTable[]
+  indexes: AdminStorageAuditIndex[]
+  source_ages: AdminStorageAuditAgeRange[]
+  source_windows?: AdminSourceWindowAudit[]
+  yenc_backlog?: AdminYEncBacklogAudit[]
+  guard_counts: AdminStorageGuardCount[]
+  cleanup_matrix: AdminStorageCleanupAudit[]
 }
 
 export type AdminStageConfigPatch = {
@@ -392,7 +504,7 @@ export type AdminReleaseSummary = {
   hidden: boolean
   public_visible: boolean
   password_candidate_count: number
-  payload_completion_state: 'complete' | 'incomplete' | 'unknown'
+  payload_completion_state: "complete" | "incomplete" | "unknown"
 }
 
 export type AdminReleaseListResponse = {
@@ -867,11 +979,27 @@ export type IndexingRuntimeSettings = {
   crosspost_popularity_refresh: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
+  source_window?: {
+    enabled: boolean
+    window_minutes: number
+    backfill_window_days: number
+    max_open_headers: number
+    resume_open_headers: number
+    max_blocking_yenc: number
+    resume_blocking_yenc: number
+  }
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
   release_purge_archived_sources?: AdminStageConfigPatch
-  maintenance_tasks?: Record<string, AdminMaintenanceTaskPatch & { last_dry_run_at?: string }>
+  inspect_discovery_ready_refresh: AdminStageConfigPatch
+  inspect_par2_ready_refresh: AdminStageConfigPatch
+  inspect_archive_ready_refresh: AdminStageConfigPatch
+  inspect_media_ready_refresh: AdminStageConfigPatch
+  maintenance_tasks?: Record<
+    string,
+    AdminMaintenanceTaskPatch & { last_dry_run_at?: string }
+  >
   release: AdminStageConfigPatch & {
     auto_reform_batch_size: number
     min_confidence: number
@@ -918,6 +1046,7 @@ export type IndexingRuntimeSettings = {
   }
   storage_guard: {
     enabled: boolean
+    data_directory: string
     min_free_bytes: number
     min_free_percent: number
   }
@@ -951,6 +1080,21 @@ export type IndexingRuntimeSettings = {
     tvdb_pin: string
     tvdb_base_url: string
   }
+}
+
+export type IndexerStorageStatus = {
+  database_bytes: number
+  data_directory: string
+  filesystem_free_bytes: number
+  filesystem_total_bytes: number
+  filesystem_free_percent: number
+  filesystem_visible: boolean
+  visibility_source: string
+  guard_enabled: boolean
+  min_free_bytes: number
+  min_free_percent: number
+  blocked: boolean
+  reason?: string
 }
 
 export type RuntimeToggle = {

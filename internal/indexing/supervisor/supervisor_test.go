@@ -88,6 +88,10 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		{Name: StageReleaseGenerateNZB},
 		{Name: StageReleaseArchiveNZB},
 		{Name: StageReleasePurgeArchivedSources},
+		{Name: StageInspectDiscoveryReadyRefresh},
+		{Name: StageInspectPAR2ReadyRefresh},
+		{Name: StageInspectArchiveReadyRefresh},
+		{Name: StageInspectMediaReadyRefresh},
 		{Name: StageInspectDiscovery},
 		{Name: StageInspectPAR2},
 		{Name: StageInspectNFO},
@@ -98,6 +102,8 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		{Name: StageEnrichTMDB},
 		{Name: StageName("maintenance.dashboard_stats_refresh")},
 		{Name: StageMaintenanceReleaseSourcePurge},
+		{Name: StageName("maintenance.poster_queue_done_cleanup")},
+		{Name: StageName("maintenance.inspect_ready_queue_cleanup")},
 		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
 		{Name: StageName("maintenance.readiness_cleanup")},
 		{Name: StageName("maintenance.runtime_history_cleanup")},
@@ -133,6 +139,96 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for supervisor shutdown")
+	}
+}
+
+func TestRunPipelineIncludesReadyRefreshAndMaintenanceExcludesPipeline(t *testing.T) {
+	runs := make(chan StageName, 4)
+	record := func(name StageName) RunnerFunc {
+		return func(context.Context) error {
+			runs <- name
+			return nil
+		}
+	}
+
+	stages := []Stage{
+		{Name: StageScrapeLatest},
+		{Name: StageScrapeBackfill},
+		{Name: StagePosterMaterialize},
+		{Name: StageCrosspostPopularityRefresh},
+		{Name: StageAssemble},
+		{Name: StageRecoverYEnc},
+		{Name: StageReleaseSummaryRefresh},
+		{Name: StageRelease},
+		{Name: StageReleaseGenerateNZB},
+		{Name: StageReleaseArchiveNZB},
+		{Name: StageInspectDiscoveryReadyRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageInspectDiscoveryReadyRefresh)},
+		{Name: StageInspectPAR2ReadyRefresh},
+		{Name: StageInspectArchiveReadyRefresh},
+		{Name: StageInspectMediaReadyRefresh},
+		{Name: StageInspectDiscovery},
+		{Name: StageInspectPAR2},
+		{Name: StageInspectNFO},
+		{Name: StageInspectArchive},
+		{Name: StageInspectPassword},
+		{Name: StageInspectMedia},
+		{Name: StageEnrichPreDB},
+		{Name: StageEnrichTMDB},
+		{Name: StageName("maintenance.dashboard_stats_refresh"), Interval: time.Hour, Enabled: true, Runner: record(StageName("maintenance.dashboard_stats_refresh"))},
+		{Name: StageMaintenanceReleaseSourcePurge},
+		{Name: StageName("maintenance.poster_queue_done_cleanup")},
+		{Name: StageName("maintenance.inspect_ready_queue_cleanup")},
+		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
+		{Name: StageName("maintenance.readiness_cleanup")},
+		{Name: StageName("maintenance.runtime_history_cleanup")},
+		{Name: StageName("maintenance.grouping_evidence_cleanup")},
+		{Name: StageName("maintenance.header_payload_purge")},
+		{Name: StageMaintenance},
+	}
+	svc := New(nil, stages)
+
+	pipelineCtx, cancelPipeline := context.WithCancel(context.Background())
+	pipelineDone := make(chan error, 1)
+	go func() {
+		pipelineDone <- svc.RunPipeline(pipelineCtx)
+	}()
+
+	select {
+	case name := <-runs:
+		if name != StageInspectDiscoveryReadyRefresh {
+			t.Fatalf("expected pipeline ready-refresh stage, got %s", name)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for pipeline stage")
+	}
+	cancelPipeline()
+	if err := <-pipelineDone; err != nil {
+		t.Fatalf("run pipeline: %v", err)
+	}
+
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
+	maintenanceDone := make(chan error, 1)
+	go func() {
+		maintenanceDone <- svc.RunMaintenance(maintenanceCtx)
+	}()
+
+	select {
+	case name := <-runs:
+		if name != StageName("maintenance.dashboard_stats_refresh") {
+			t.Fatalf("expected maintenance stage, got %s", name)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for maintenance stage")
+	}
+	cancelMaintenance()
+	if err := <-maintenanceDone; err != nil {
+		t.Fatalf("run maintenance: %v", err)
+	}
+
+	select {
+	case name := <-runs:
+		t.Fatalf("unexpected extra stage run: %s", name)
+	default:
 	}
 }
 

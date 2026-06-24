@@ -47,7 +47,7 @@ func TestIndexerStorageReclaimStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build full statement: %v", err)
 	}
-	if statement != "VACUUM (FULL, ANALYZE) binary_grouping_evidence" {
+	if statement != `VACUUM (FULL, ANALYZE) "binary_grouping_evidence"` {
 		t.Fatalf("unexpected full statement %q", statement)
 	}
 
@@ -55,7 +55,7 @@ func TestIndexerStorageReclaimStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build analyze statement: %v", err)
 	}
-	if statement != "VACUUM (ANALYZE) binary_grouping_evidence" {
+	if statement != `VACUUM (ANALYZE) "binary_grouping_evidence"` {
 		t.Fatalf("unexpected analyze statement %q", statement)
 	}
 }
@@ -64,6 +64,8 @@ func TestNormalizeIndexerStorageReclaimTablesSupportsCheckAliases(t *testing.T) 
 	tables, err := normalizeIndexerStorageReclaimTables([]string{
 		"readiness-summaries",
 		"grouping-evidence",
+		"yenc-work",
+		"headers",
 		"article-header-ingest-payloads",
 	})
 	if err != nil {
@@ -73,6 +75,8 @@ func TestNormalizeIndexerStorageReclaimTablesSupportsCheckAliases(t *testing.T) 
 	expected := []string{
 		"release_family_readiness_summaries",
 		"binary_grouping_evidence",
+		"yenc_recovery_work_items",
+		"article_headers",
 		"article_header_ingest_payloads",
 	}
 	if !reflect.DeepEqual(tables, expected) {

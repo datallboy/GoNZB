@@ -68,6 +68,10 @@ type usenetIndexerConfig struct {
 	ReleaseGenerateNZBStage                         indexerStageConfig
 	ReleaseArchiveNZBStage                          indexerStageConfig
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
+	InspectDiscoveryReadyRefresh                    indexerStageConfig
+	InspectPAR2ReadyRefresh                         indexerStageConfig
+	InspectArchiveReadyRefresh                      indexerStageConfig
+	InspectMediaReadyRefresh                        indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
@@ -310,6 +314,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		ingestmaterialize.Options{BatchSize: runtimeCfg.CrosspostPopularityRefresh.BatchSize},
 	)
+	readyQueueRefresher, _ := appCtx.PGIndexStore.(inspectionReadyQueueRefresher)
 
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
@@ -422,6 +427,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return marshalStageMetrics(releaseArchiveSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
+		inspectReadyRefreshStage(runtimeCfg.InspectDiscoveryReadyRefresh, supervisor.StageInspectDiscoveryReadyRefresh, "inspect_discovery", readyQueueRefresher),
+		inspectReadyRefreshStage(runtimeCfg.InspectPAR2ReadyRefresh, supervisor.StageInspectPAR2ReadyRefresh, "inspect_par2", readyQueueRefresher),
+		inspectReadyRefreshStage(runtimeCfg.InspectArchiveReadyRefresh, supervisor.StageInspectArchiveReadyRefresh, "inspect_archive", readyQueueRefresher),
+		inspectReadyRefreshStage(runtimeCfg.InspectMediaReadyRefresh, supervisor.StageInspectMediaReadyRefresh, "inspect_media", readyQueueRefresher),
 		{
 			Name:        supervisor.StageInspectDiscovery,
 			Interval:    runtimeCfg.InspectDiscovery.Interval,
@@ -518,8 +527,16 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			result, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, cfg.BatchSize, runtimeCfg.ReleaseReadyPolicy)
 			return maintenanceTaskMetrics(result), err
 		}),
+		maintenanceTaskStage(runtimeCfg, "poster_queue_done_cleanup", supervisor.StageName("maintenance.poster_queue_done_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "poster_queue_done_cleanup", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "inspect_ready_queue_cleanup", supervisor.StageName("maintenance.inspect_ready_queue_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "inspect_ready_queue_cleanup", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "assembly_queue_stale_cleanup", supervisor.StageName("maintenance.assembly_queue_stale_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "assembly_queue_stale_cleanup")
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "assembly_queue_stale_cleanup", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "readiness_cleanup", supervisor.StageName("maintenance.readiness_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
@@ -533,15 +550,31 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}, err
 		}),
 		maintenanceTaskStage(runtimeCfg, "runtime_history_cleanup", supervisor.StageName("maintenance.runtime_history_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "runtime_history_cleanup")
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "runtime_history_cleanup", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "grouping_evidence_cleanup", supervisor.StageName("maintenance.grouping_evidence_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "grouping_evidence_cleanup")
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "grouping_evidence_cleanup", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "crosspost_group_raw_purge", supervisor.StageName("maintenance.crosspost_group_raw_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "crosspost_group_raw_purge", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "yenc_done_work_item_cleanup", supervisor.StageName("maintenance.yenc_done_work_item_cleanup"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "yenc_done_work_item_cleanup", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "stale_nonrelease_source_purge", supervisor.StageName("maintenance.stale_nonrelease_source_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "stale_nonrelease_source_purge", cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
+		maintenanceTaskStage(runtimeCfg, "emergency_source_window_reset", supervisor.StageName("maintenance.emergency_source_window_reset"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "emergency_source_window_reset", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "header_payload_purge", supervisor.StageName("maintenance.header_payload_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "header_payload_purge")
+			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "header_payload_purge", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
 		{
@@ -653,6 +686,39 @@ func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, er
 	return payload, err
 }
 
+type inspectionReadyQueueRefresher interface {
+	RefreshInspectionReadyQueue(ctx context.Context, stageName string, limit int) (*pgindex.BinaryInspectionReadyQueueRefreshResult, error)
+}
+
+func inspectReadyRefreshStage(cfg indexerStageConfig, name supervisor.StageName, inspectStageName string, repo inspectionReadyQueueRefresher) supervisor.Stage {
+	return supervisor.Stage{
+		Name:        name,
+		Interval:    cfg.Interval,
+		Enabled:     cfg.Enabled,
+		BatchSize:   cfg.BatchSize,
+		Concurrency: 1,
+		Backoff:     cfg.Backoff,
+		Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+			if repo == nil {
+				return marshalStageMetrics(map[string]any{}, fmt.Errorf("inspection ready queue repository is not configured"))
+			}
+			refreshed, err := repo.RefreshInspectionReadyQueue(ctx, inspectStageName, cfg.BatchSize)
+			metrics := map[string]any{
+				"inspect_stage":  inspectStageName,
+				"ready_upserted": int64(0),
+				"retired":        int64(0),
+				"requeued":       int64(0),
+			}
+			if refreshed != nil {
+				metrics["ready_upserted"] = refreshed.ReadyUpserted
+				metrics["retired"] = refreshed.Retired
+				metrics["requeued"] = refreshed.Requeued
+			}
+			return marshalStageMetrics(metrics, err)
+		}),
+	}
+}
+
 func maintenanceTaskStage(runtimeCfg usenetIndexerConfig, taskKey string, name supervisor.StageName, run func(context.Context, app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error)) supervisor.Stage {
 	cfg := runtimeCfg.MaintenanceTasks[taskKey]
 	if cfg.IntervalHours <= 0 {
@@ -680,6 +746,8 @@ func maintenanceTaskMetrics(result *pgindex.MaintenanceTaskResult) map[string]an
 	return map[string]any{
 		"task_key":              result.TaskKey,
 		"deleted_rows_by_table": result.DeletedRowsByTable,
+		"before_storage":        result.BeforeStorage,
+		"after_storage":         result.AfterStorage,
 		"blockers":              result.Blockers,
 		"warnings":              result.Warnings,
 	}
@@ -726,6 +794,14 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			return usenetIndexerConfig{}, fmt.Errorf("parse indexing.backfill_until_date_by_group[%s]: %w", group, err)
 		}
 		backfillCutoffs[group] = parsed.UTC()
+	}
+	if indexingCfg.SourceWindow.Enabled && indexingCfg.SourceWindow.BackfillWindowDays > 0 {
+		sourceWindowCutoff := time.Now().UTC().AddDate(0, 0, -indexingCfg.SourceWindow.BackfillWindowDays)
+		for _, group := range indexingCfg.Newsgroups {
+			if _, exists := backfillCutoffs[group]; !exists {
+				backfillCutoffs[group] = sourceWindowCutoff
+			}
+		}
 	}
 
 	out := usenetIndexerConfig{
@@ -796,6 +872,10 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ReleaseGenerateNZBStage:          newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
+		InspectDiscoveryReadyRefresh:     newIndexerStageConfig(indexingCfg.InspectDiscoveryReadyRefresh),
+		InspectPAR2ReadyRefresh:          newIndexerStageConfig(indexingCfg.InspectPAR2ReadyRefresh),
+		InspectArchiveReadyRefresh:       newIndexerStageConfig(indexingCfg.InspectArchiveReadyRefresh),
+		InspectMediaReadyRefresh:         newIndexerStageConfig(indexingCfg.InspectMediaReadyRefresh),
 		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
 			MinMatchConfidence:                   indexingCfg.Release.PublicMinMatchConfidence,
 			MinCompletionPct:                     indexingCfg.Release.PublicMinCompletionPct,

@@ -47,6 +47,8 @@ func main() {
 	var (
 		configPath       string
 		serverID         string
+		nntpProviderID   string
+		providerID       string
 		group            string
 		messageID        string
 		articleNum       int64
@@ -66,7 +68,9 @@ func main() {
 	)
 
 	flag.StringVar(&configPath, "config", "config.yaml", "config file path")
-	flag.StringVar(&serverID, "server", "", "server id from config.yaml (defaults to first server)")
+	flag.StringVar(&serverID, "server", "", "NNTP server id from config.yaml/runtime settings (defaults to first server)")
+	flag.StringVar(&nntpProviderID, "nntp-provider-id", "", "NNTP provider/server id to use; alias for --server")
+	flag.StringVar(&providerID, "provider-id", "", "NNTP provider/server id to use; alias for --server")
 	flag.StringVar(&group, "group", "", "newsgroup to select before article-number operations")
 	flag.StringVar(&messageID, "message-id", "", "message-id to inspect")
 	flag.Int64Var(&articleNum, "article-number", 0, "article number to inspect within --group")
@@ -84,6 +88,9 @@ func main() {
 	flag.BoolVar(&probeSetYEnc, "probe-set-yenc", false, "for export modes, fetch BODY prefixes and print yEnc header names for segments")
 	flag.Int64Var(&setBodyBytes, "set-body-bytes", 8192, "BODY prefix bytes to fetch per segment for --probe-set-yenc")
 	flag.Parse()
+
+	serverID, err := resolveArticleProbeServerID(serverID, nntpProviderID, providerID)
+	fatalIf(err)
 
 	cfg, err := config.Load(configPath)
 	fatalIf(err)
@@ -636,6 +643,24 @@ func normalizeArticleRef(messageID string, articleNumber int64) (articleRef, err
 		ref.messageID = "<" + ref.messageID + ">"
 	}
 	return ref, nil
+}
+
+func resolveArticleProbeServerID(values ...string) (string, error) {
+	selected := ""
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if selected == "" {
+			selected = value
+			continue
+		}
+		if selected != value {
+			return "", fmt.Errorf("--server, --nntp-provider-id, and --provider-id must not specify different values")
+		}
+	}
+	return selected, nil
 }
 
 func chooseServer(cfg *config.Config, serverID string) (config.ServerConfig, error) {

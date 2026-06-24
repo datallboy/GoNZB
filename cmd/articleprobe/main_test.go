@@ -60,3 +60,25 @@ func TestBuildNZBModelPreservesFullReleaseGroupSetPerFile(t *testing.T) {
 		t.Fatalf("expected empty subject to fall back to file name, got %q", model.Files[1].Subject)
 	}
 }
+
+func TestResolveArticleProbeServerID(t *testing.T) {
+	got, err := resolveArticleProbeServerID("", " provider-a ", "")
+	if err != nil {
+		t.Fatalf("resolve server id: %v", err)
+	}
+	if got != "provider-a" {
+		t.Fatalf("expected provider-a, got %q", got)
+	}
+
+	got, err = resolveArticleProbeServerID("provider-a", "provider-a", "provider-a")
+	if err != nil {
+		t.Fatalf("resolve duplicate server id: %v", err)
+	}
+	if got != "provider-a" {
+		t.Fatalf("expected provider-a, got %q", got)
+	}
+
+	if _, err := resolveArticleProbeServerID("provider-a", "provider-b"); err == nil {
+		t.Fatalf("expected conflicting provider ids to fail")
+	}
+}

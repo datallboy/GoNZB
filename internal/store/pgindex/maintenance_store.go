@@ -55,43 +55,6 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 		result.ClearedStageLeases = repair.ClearedStaleLeases
 	}
 
-	if upserted, retired, err := s.maybeBackfillYEncRecoveryWorkItems(ctx, yencRecoveryWorkItemSeedLimit); err != nil {
-		return nil, err
-	} else {
-		result.YEncWorkItemsUpserted = upserted
-		result.YEncWorkItemsRetired = retired
-	}
-
-	if refreshed, err := s.RefreshInspectDiscoveryReadyQueue(ctx, inspectDiscoveryReadyQueueSeedLimit); err != nil {
-		return nil, err
-	} else if refreshed != nil {
-		result.InspectDiscoveryReadyRows = refreshed.ReadyUpserted
-		result.InspectDiscoveryRetired = refreshed.Retired
-		result.InspectDiscoveryRequeued = refreshed.Requeued
-	}
-
-	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_par2", inspectReadyQueueSeedLimit); err != nil {
-		return nil, err
-	} else if refreshed != nil {
-		result.InspectPAR2ReadyRows = refreshed.ReadyUpserted
-		result.InspectPAR2Retired = refreshed.Retired
-		result.InspectPAR2Requeued = refreshed.Requeued
-	}
-	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_archive", inspectReadyQueueSeedLimit); err != nil {
-		return nil, err
-	} else if refreshed != nil {
-		result.InspectArchiveReadyRows = refreshed.ReadyUpserted
-		result.InspectArchiveRetired = refreshed.Retired
-		result.InspectArchiveRequeued = refreshed.Requeued
-	}
-	if refreshed, err := s.RefreshInspectionReadyQueue(ctx, "inspect_media", inspectReadyQueueSeedLimit); err != nil {
-		return nil, err
-	} else if refreshed != nil {
-		result.InspectMediaReadyRows = refreshed.ReadyUpserted
-		result.InspectMediaRetired = refreshed.Retired
-		result.InspectMediaRequeued = refreshed.Requeued
-	}
-
 	for {
 		backfilled, err := s.BackfillMissingReleaseCatalogFiles(ctx, releaseCatalogFilesBackfillBatchSize)
 		if err != nil {

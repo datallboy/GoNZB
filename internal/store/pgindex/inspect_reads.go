@@ -762,6 +762,10 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
 	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
 	{StageName: "maintenance.release_source_purge", Label: "Source Purge", ItemLabel: "releases"},
+	{StageName: "inspect_discovery_ready_refresh", Label: "Inspect Discovery Queue", ItemLabel: "rows"},
+	{StageName: "inspect_par2_ready_refresh", Label: "Inspect PAR2 Queue", ItemLabel: "rows"},
+	{StageName: "inspect_archive_ready_refresh", Label: "Inspect Archive Queue", ItemLabel: "rows"},
+	{StageName: "inspect_media_ready_refresh", Label: "Inspect Media Queue", ItemLabel: "rows"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
 	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
@@ -982,6 +986,8 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"archived_count", "archive_claimed", "archive_candidates"}
 	case "release_purge_archived_sources", "maintenance.release_source_purge":
 		return []string{"purged_count", "purge_candidates"}
+	case "inspect_discovery_ready_refresh", "inspect_par2_ready_refresh", "inspect_archive_ready_refresh", "inspect_media_ready_refresh":
+		return []string{"ready_upserted", "retired", "requeued"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
 		return []string{"processed_count", "candidate_count"}
 	case "enrich_predb", "enrich_tmdb":
@@ -1276,16 +1282,35 @@ func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, er
 	return count, nil
 }
 
+func (s *Store) CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE status IN ('ready', 'running')
+		  AND BTRIM(COALESCE(message_id, '')) <> ''
+		  AND (
+		    priority_rank = 0
+		    OR current_readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
+		  )
+		  AND (
+		    status = 'running'
+		    OR ready_at <= NOW()
+		  )`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count blocking yenc recovery backlog: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) CountClaimableAssembleBacklog(ctx context.Context) (int64, error) {
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM article_headers
-		WHERE assembled_at IS NULL
-		  AND (
-			assembly_claimed_until IS NULL
-			OR assembly_claimed_until < NOW()
-		  )`).Scan(&count); err != nil {
+		FROM article_header_assembly_queue
+		WHERE (
+			claim_until IS NULL
+			OR claim_until < NOW()
+		)`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count claimable assemble backlog: %w", err)
 	}
 	return count, nil
