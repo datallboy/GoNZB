@@ -19,17 +19,6 @@ Defaults:
   `2026-06-24-indexer-active-work-window-pipeline-plan.md`; retention should
   not decide what the pipeline processes.
 
-Before starting this sprint, commit the current dirty tree as the completed
-storage-audit/maintenance baseline. During this sprint, commit after each phase
-to avoid another large mixed diff.
-
-## Phase 0: Sprint Setup
-
-- Run `git status --short`, review the current dirty work, then validate with
-  `go test ./...`, `npm run build`, and `git diff --check`.
-- Commit the current dirty tree before partitioning work starts.
-- Commit this active sprint document separately before schema work starts.
-
 ## Phase 1: Schema Foundation
 
 Add `source_posted_at timestamptz not null` to all partitioned source/work
@@ -248,21 +237,13 @@ Retention interaction with active work windows:
   `release_catalog_files`, archive detail, archive lineage, and archived NZBs.
 - `EXPLAIN` for scrape/assemble/yEnc/inspect/release refresh shows partition
   pruning or partition-local index usage.
-- Run `go test ./...`, `npm run build`, and `git diff --check` before each
-  phase-completion commit.
+- Run `go test ./...`, `npm run build`, and `git diff --check` before
+  completing implementation.
 
 ## Execution Instructions For Codex Sessions
 
-- Commit current dirty tree before starting partitioning.
-- Commit sprint doc setup.
-- Commit schema foundation.
-- Commit write-path updates.
-- Commit query/index updates.
-- Commit retention task/UI.
-- Commit docs/tests.
 - Do not partition durable public release/archive/catalog tables.
 - Do not rely on `article_headers.id` alone for partitioned FKs; use composite
   `(source_posted_at, article_header_id)` relationships.
 - Do not ship this migration as safe for the current large live DB. This sprint
   targets a fresh/rebuilt indexer database first.
-
