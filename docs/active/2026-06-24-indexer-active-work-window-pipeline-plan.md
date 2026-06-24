@@ -323,18 +323,50 @@ Downstream stages not blocked by source-window age after release formation:
 - `release_source_purge`
 - enrichment stages
 
+Query-shape rules:
+
+- Every window-aware stage must select candidates from the smallest bounded
+  dataset first: provider/newsgroup, active window `source_posted_at` range,
+  status/readiness predicate, then stable claim/order columns.
+- Do not add a source-window predicate by wrapping an existing candidate query
+  in a broad outer filter. The date/window predicate must be inside the first
+  relation that narrows the high-volume table.
+- Do not replace existing ready/status/claim predicates with only
+  `source_posted_at` bounds. Window filters are additive; they must preserve the
+  prior readiness semantics.
+- Candidate selection must use keyset-style ordering where the existing stage
+  already depends on it. Avoid `OFFSET` over source/work tables.
+- Any query that can touch article headers, assembly queue, binary work,
+  yEnc work, inspect ready queues, or release candidate queues must have a
+  matching index path documented in the implementation commit.
+- Any changed candidate query must include before/after `EXPLAIN (ANALYZE,
+  BUFFERS)` evidence against representative data or a local fixture with enough
+  rows to prove index use. The accepted plan must start from
+  `source_posted_at`/partition pruning plus the stage's status/claim key, not a
+  full heap scan followed by filtering.
+- If the planner chooses a sequential scan for a high-volume stage table, stop
+  and fix the index/query shape before continuing. Do not ship the active-window
+  behavior relying on small development-table scans.
+
 Assemble:
 
 - Claims rows from `article_header_assembly_queue` joined to active windows.
 - Uses `source_posted_at >= overlap_start` and
   `source_posted_at < overlap_end`.
 - Does not claim old rows outside active/historical windows by default.
+- Candidate order must continue to favor rows most likely to complete binaries
+  and must preserve existing claim semantics. The new window predicate should be
+  satisfied by an index such as
+  `(source_posted_at, status, claim_until, article_header_id)` or the closest
+  existing equivalent for the implemented schema.
 
 yEnc recovery:
 
 - Claims `yenc_recovery_work_items` in active windows.
 - Blocking yEnc backlog is counted per active window first; global counts are
   diagnostic only.
+- Candidate order must keep existing priority/status behavior, with
+  `source_posted_at` added for pruning rather than replacing priority ranking.
 
 Release summary and release formation:
 
@@ -343,12 +375,57 @@ Release summary and release formation:
   `source_posted_at` falls inside overlap.
 - A window is not complete until release summary and release formation have
   attempted the window.
+- Query predicates must continue to use the same family identity, provider,
+  newsgroup, completion, and readiness evidence currently required for release
+  formation. The active window only limits which source candidates are searched;
+  it must not weaken family matching.
 
 Inspect:
 
 - Discovery inspect should be window-aware because it feeds release formation.
 - Archive/media/password inspect are release-level enrichment and should
   continue after source windows complete.
+- Inspect ready-refresh candidate selection must keep existing ready/running
+  and retry predicates. Window filters apply only to discovery/PAR2 readiness
+  paths that still feed release formation.
+
+## Index And Performance Regression Guardrails
+
+This sprint changes candidate selection for hot stages, so performance
+validation is part of the implementation, not a follow-up.
+
+Implementation requirements:
+
+- Inventory the current candidate queries and indexes for scrape, assemble,
+  yEnc recovery, inspect discovery/PAR2 ready refresh, release summary refresh,
+  and release formation before changing predicates.
+- For each stage, document:
+  - old predicate/order shape;
+  - new predicate/order shape;
+  - exact index expected to support it;
+  - whether the index already exists or is added by the sprint.
+- Add or adjust indexes in the same commit that changes the query shape.
+- Do not remove runtime-speed indexes for storage reasons as part of this
+  sprint.
+- Preserve existing stage ordering where it affects correctness, fairness, or
+  throughput. Adding `source_posted_at` must not reorder work in a way that
+  starves retries, high-priority yEnc work, or nearly complete release families.
+- Backlog/count queries shown in admin pages must use bounded windows or
+  pre-aggregated summaries. Do not add dashboard queries that count across the
+  entire source/work history on every page load.
+- Large reports may be explicit admin actions with a loading state; ordinary
+  supervisor ticks and maintenance-page refreshes must stay bounded.
+
+Acceptance checks:
+
+- Capture representative `EXPLAIN (ANALYZE, BUFFERS)` plans for each changed
+  hot query.
+- Plans for partitioned or date-windowed tables show index scans, bitmap index
+  scans, or partition pruning before large row filtering.
+- Stage candidate queries have tests asserting the active-window predicate is
+  present and that status/claim/readiness predicates are still present.
+- Add regression tests for at least one old-row outside-window candidate and
+  one valid inside-window candidate per changed stage.
 
 ## Advancement Rules
 
@@ -443,4 +520,3 @@ Compatibility rules:
   `source_posted_at` indexes or partition pruning.
 - Run `go test ./...`, `npm run build`, and `git diff --check` before
   completing the sprint.
-

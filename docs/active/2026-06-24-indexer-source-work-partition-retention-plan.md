@@ -180,6 +180,37 @@ Required index paths:
 - Inspect ready queues: existing ready/running indexes with
   `source_posted_at` included where date-window pruning matters.
 
+Index/query regression requirements:
+
+- Before converting a table to partitions, inventory the current indexes and
+  hot query predicates that use that table. The migration must recreate the
+  equivalent runtime-speed indexes on the partitioned parent or every child,
+  with `source_posted_at` added only where needed for pruning.
+- Do not treat partitioning as a substitute for status/claim/readiness indexes.
+  Partition pruning narrows by date; it does not replace indexes used to find
+  ready work inside the day.
+- Preserve existing sort/order keys used by candidate selection. If a stage
+  currently orders by priority, retry time, claim expiry, completeness, or
+  article number, the partitioned query must keep that behavior unless the
+  active-window plan explicitly changes it.
+- Query predicates must be written so PostgreSQL can prune partitions using
+  `source_posted_at` constants or stable bind parameters. Avoid expressions
+  around `source_posted_at` that prevent pruning, such as
+  `date(source_posted_at) = ...` on hot paths.
+- Cross-partition queries are allowed only when the stage intentionally spans an
+  active-window overlap or an explicit admin/reporting range. Ordinary stage
+  ticks should not scan all partitions.
+- Any new admin/reporting query that counts or groups large source/work history
+  must be a manual report, a bounded date query, or backed by stored summaries.
+  Do not add unbounded `count(*)` dashboard refreshes over partitioned source
+  tables.
+- Implementation commits that alter hot candidate queries must include
+  representative `EXPLAIN (ANALYZE, BUFFERS)` output in the PR/body or sprint
+  notes showing partition pruning or partition-local index scans.
+- If a migrated query regresses to scanning every child partition or doing a
+  broad append followed by filtering, fix the query/index before moving to the
+  next table.
+
 ## Phase 4: Retention Drop Workflow
 
 Add maintenance CLI/API/UI task: `partition_retention_drop`.
