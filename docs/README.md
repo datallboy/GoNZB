@@ -10,6 +10,7 @@ If you are trying to understand or run GoNZB, start with:
 - [Architecture](./ARCHITECTURE.md)
 - [Indexer How It Works](./INDEXER_HOW_IT_WORKS.md)
 - [Indexer Performance Tuning](./INDEXER_PERFORMANCE_TUNING.md)
+- [Indexer Storage Retention And Purge Map](./INDEXER_STORAGE_RETENTION_AND_PURGE.md)
 
 ## Public And Operator-Facing Docs
 
@@ -19,6 +20,8 @@ If you are trying to understand or run GoNZB, start with:
   - detailed indexer pipeline reference for operators and engineering readers
 - [Indexer Performance Tuning](./INDEXER_PERFORMANCE_TUNING.md)
   - indexer performance audit methodology, live baseline notes, and tuning guidance
+- [Indexer Storage Retention And Purge Map](./INDEXER_STORAGE_RETENTION_AND_PURGE.md)
+  - table/job ownership, cleanup risk classes, live storage audit findings, and purge tradeoffs
 
 ## Internal Development Docs
 

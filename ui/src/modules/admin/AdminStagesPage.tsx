@@ -47,6 +47,7 @@ function StageCard({ stage, onRefresh }: { stage: AdminStage; onRefresh: () => P
           <p className="muted-copy">
             Current runtime: every {stage.interval_seconds}s · batch {stage.batch_size}
             {stage.supports_concurrency ? ` · concurrency ${stage.concurrency ?? 1}` : ''}
+            {typeof stage.backlog_count === 'number' ? ` · backlog ${stage.backlog_count.toLocaleString()}` : ''}
             {' · '}backoff {stage.backoff_seconds}s
           </p>
         </div>

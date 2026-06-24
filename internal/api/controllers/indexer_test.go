@@ -46,6 +46,14 @@ func (s *stubIndexerService) RefreshDashboardStats(ctx context.Context) (*pginde
 	return s.dashboard, nil
 }
 
+func (s *stubIndexerService) StorageStatus(ctx context.Context) (*indexerStorageStatusView, error) {
+	return &indexerStorageStatusView{DataDirectory: "/pgdata", FilesystemVisible: true, GuardEnabled: true, MinFreePercent: 15}, nil
+}
+
+func (s *stubIndexerService) StorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error) {
+	return &pgindex.IndexerStorageAuditReport{}, nil
+}
+
 func (s *stubIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
 	return s.backfill, nil
 }

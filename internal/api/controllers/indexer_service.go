@@ -22,6 +22,8 @@ type indexerService interface {
 	Overview(ctx context.Context) (*pgindex.IndexerOverview, error)
 	DashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
 	RefreshDashboardStats(ctx context.Context) (*pgindex.IndexerDashboardStats, error)
+	StorageStatus(ctx context.Context) (*indexerStorageStatusView, error)
+	StorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error)
 	BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
@@ -57,6 +59,7 @@ type indexerStageView struct {
 	Concurrency         int                      `json:"concurrency,omitempty"`
 	SupportsConcurrency bool                     `json:"supports_concurrency"`
 	BackoffSeconds      int                      `json:"backoff_seconds"`
+	BacklogCount        *int64                   `json:"backlog_count,omitempty"`
 	LeaseOwner          string                   `json:"lease_owner"`
 	LeaseExpiresAt      *time.Time               `json:"lease_expires_at,omitempty"`
 	LastHeartbeatAt     *time.Time               `json:"last_heartbeat_at,omitempty"`
@@ -85,6 +88,25 @@ type indexerStageConfigPatch struct {
 	NewestPct               *int     `json:"newest_pct,omitempty"`
 }
 
+type inspectionReadyQueueCounter interface {
+	CountInspectionReadyQueue(ctx context.Context, stageName string) (int64, error)
+}
+
+type indexerStorageStatusView struct {
+	DatabaseBytes         int64   `json:"database_bytes"`
+	DataDirectory         string  `json:"data_directory"`
+	FilesystemFreeBytes   int64   `json:"filesystem_free_bytes"`
+	FilesystemTotalBytes  int64   `json:"filesystem_total_bytes"`
+	FilesystemFreePercent float64 `json:"filesystem_free_percent"`
+	FilesystemVisible     bool    `json:"filesystem_visible"`
+	VisibilitySource      string  `json:"visibility_source"`
+	GuardEnabled          bool    `json:"guard_enabled"`
+	MinFreeBytes          int64   `json:"min_free_bytes"`
+	MinFreePercent        float64 `json:"min_free_percent"`
+	Blocked               bool    `json:"blocked"`
+	Reason                string  `json:"reason,omitempty"`
+}
+
 type indexerReleaseOverridePatch struct {
 	DisplayTitle           *string   `json:"display_title,omitempty"`
 	ClassificationOverride *string   `json:"classification_override,omitempty"`
@@ -100,6 +122,11 @@ type indexerMaintenanceTaskView struct {
 	TaskKey          string                         `json:"task_key"`
 	Label            string                         `json:"label"`
 	Purpose          string                         `json:"purpose"`
+	Risk             string                         `json:"risk"`
+	SpaceEffect      string                         `json:"space_effect"`
+	SupervisorEffect string                         `json:"supervisor_effect"`
+	DataEffect       string                         `json:"data_effect"`
+	ReleaseSafety    string                         `json:"release_safety"`
 	Destructive      bool                           `json:"destructive"`
 	Enabled          bool                           `json:"enabled"`
 	ScheduleEnabled  bool                           `json:"schedule_enabled"`
@@ -115,13 +142,16 @@ type indexerMaintenanceTaskView struct {
 }
 
 type indexerMaintenanceTaskRunView struct {
-	TaskKey              string           `json:"task_key"`
-	DryRun               bool             `json:"dry_run"`
-	EstimatedRowsByTable map[string]int64 `json:"estimated_rows_by_table,omitempty"`
-	DeletedRowsByTable   map[string]int64 `json:"deleted_rows_by_table,omitempty"`
-	EstimatedBytes       int64            `json:"estimated_bytes,omitempty"`
-	Blockers             []string         `json:"blockers,omitempty"`
-	Warnings             []string         `json:"warnings,omitempty"`
+	TaskKey              string                                  `json:"task_key"`
+	DryRun               bool                                    `json:"dry_run"`
+	EstimatedRowsByTable map[string]int64                        `json:"estimated_rows_by_table,omitempty"`
+	DeletedRowsByTable   map[string]int64                        `json:"deleted_rows_by_table,omitempty"`
+	VacuumedTables       []string                                `json:"vacuumed_tables,omitempty"`
+	EstimatedBytes       int64                                   `json:"estimated_bytes,omitempty"`
+	BeforeStorage        *pgindex.MaintenanceTaskStorageSnapshot `json:"before_storage,omitempty"`
+	AfterStorage         *pgindex.MaintenanceTaskStorageSnapshot `json:"after_storage,omitempty"`
+	Blockers             []string                                `json:"blockers,omitempty"`
+	Warnings             []string                                `json:"warnings,omitempty"`
 }
 
 type indexerMaintenanceTaskPatch struct {
@@ -193,6 +223,68 @@ func (s *runtimeIndexerService) RefreshDashboardStats(ctx context.Context) (*pgi
 		return nil, errIndexerUnavailable
 	}
 	return s.store.RefreshIndexerDashboardStats(ctx)
+}
+
+func (s *runtimeIndexerService) StorageStatus(ctx context.Context) (*indexerStorageStatusView, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	status, err := s.store.DatabaseStorageStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg := pgindex.DatabaseStorageGuardConfig{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15}
+	if runtime != nil && runtime.Indexing != nil {
+		storage := runtime.Indexing.StorageGuard
+		cfg = pgindex.DatabaseStorageGuardConfig{
+			Enabled:        storage.Enabled,
+			DataDirectory:  strings.TrimSpace(storage.DataDirectory),
+			MinFreeBytes:   storage.MinFreeBytes,
+			MinFreePercent: storage.MinFreePercent,
+		}
+	}
+
+	visibilitySource := "postgres_data_directory"
+	if strings.TrimSpace(cfg.DataDirectory) != "" {
+		visibilitySource = "configured_host_path"
+		if err := pgindex.PopulateDatabaseStorageFilesystemStatus(status, cfg.DataDirectory); err != nil {
+			return nil, err
+		}
+	}
+	evaluation := pgindex.EvaluateDatabaseStorageGuard(*status, cfg)
+	return &indexerStorageStatusView{
+		DatabaseBytes:         status.DatabaseBytes,
+		DataDirectory:         status.DataDirectory,
+		FilesystemFreeBytes:   status.FilesystemFreeBytes,
+		FilesystemTotalBytes:  status.FilesystemTotalBytes,
+		FilesystemFreePercent: status.FilesystemFreePercent,
+		FilesystemVisible:     status.FilesystemVisible,
+		VisibilitySource:      visibilitySource,
+		GuardEnabled:          cfg.Enabled,
+		MinFreeBytes:          cfg.MinFreeBytes,
+		MinFreePercent:        cfg.MinFreePercent,
+		Blocked:               evaluation.Blocked,
+		Reason:                evaluation.Reason,
+	}, nil
+}
+
+type indexerStorageAuditor interface {
+	GetIndexerStorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error)
+}
+
+func (s *runtimeIndexerService) StorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	store, ok := s.store.(indexerStorageAuditor)
+	if !ok {
+		return nil, errIndexerUnavailable
+	}
+	return store.GetIndexerStorageAudit(ctx)
 }
 
 func (s *runtimeIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
@@ -512,6 +604,11 @@ func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageV
 		state, ok := stateByName[stageName]
 		view := stageViewFromSettings(stageName, runtime)
 		overlayStageState(&view, state, ok)
+		if backlog, ok, err := s.stageBacklogCount(ctx, stageName); err != nil {
+			return nil, err
+		} else if ok {
+			view.BacklogCount = &backlog
+		}
 		if run, ok := latestRunByStage[stageName]; ok {
 			runCopy := run
 			view.LatestRun = &runCopy
@@ -520,6 +617,31 @@ func (s *runtimeIndexerService) ListStages(ctx context.Context) ([]indexerStageV
 	}
 
 	return items, nil
+}
+
+func (s *runtimeIndexerService) stageBacklogCount(ctx context.Context, stageName string) (int64, bool, error) {
+	counter, ok := s.store.(inspectionReadyQueueCounter)
+	if !ok {
+		return 0, false, nil
+	}
+	inspectStageName := ""
+	switch stageName {
+	case string(supervisor.StageInspectDiscoveryReadyRefresh):
+		inspectStageName = string(supervisor.StageInspectDiscovery)
+	case string(supervisor.StageInspectPAR2ReadyRefresh):
+		inspectStageName = string(supervisor.StageInspectPAR2)
+	case string(supervisor.StageInspectArchiveReadyRefresh):
+		inspectStageName = string(supervisor.StageInspectArchive)
+	case string(supervisor.StageInspectMediaReadyRefresh):
+		inspectStageName = string(supervisor.StageInspectMedia)
+	default:
+		return 0, false, nil
+	}
+	count, err := counter.CountInspectionReadyQueue(ctx, inspectStageName)
+	if err != nil {
+		return 0, false, err
+	}
+	return count, true, nil
 }
 
 func (s *runtimeIndexerService) ListRuns(ctx context.Context, params pgindex.IndexerStageRunListParams) ([]pgindex.IndexerStageRun, error) {
@@ -671,6 +793,7 @@ func (s *runtimeIndexerService) DryRunMaintenanceTask(ctx context.Context, taskK
 	if err != nil {
 		return nil, err
 	}
+	s.enrichMaintenanceTaskStorageSnapshots(ctx, result)
 	if s.settingsAdmin != nil {
 		current, err := s.settingsAdmin.Get(ctx)
 		if err == nil {
@@ -708,6 +831,7 @@ func (s *runtimeIndexerService) RunMaintenanceTask(ctx context.Context, taskKey 
 	if err != nil {
 		return nil, err
 	}
+	s.enrichMaintenanceTaskStorageSnapshots(ctx, result)
 	return maintenanceTaskRunView(result), nil
 }
 
@@ -759,8 +883,8 @@ func (s *runtimeIndexerService) UpdateMaintenanceTask(ctx context.Context, taskK
 type maintenanceTaskStore interface {
 	DryRunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
 	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
-	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
-	RunSimpleMaintenanceTask(ctx context.Context, taskKey string) (*pgindex.MaintenanceTaskResult, error)
+	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
@@ -840,9 +964,9 @@ func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, task
 		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: dryRun, EstimatedRowsByTable: map[string]int64{}, Warnings: []string{"inspect workspace cleanup is currently executed by the scheduled indexer_maintenance service"}}, nil
 	default:
 		if dryRun {
-			return store.DryRunSimpleMaintenanceTask(ctx, taskKey)
+			return store.DryRunSimpleMaintenanceTask(ctx, taskKey, cfg.BatchSize)
 		}
-		return store.RunSimpleMaintenanceTask(ctx, taskKey)
+		return store.RunSimpleMaintenanceTask(ctx, taskKey, cfg.BatchSize)
 	}
 }
 
@@ -879,6 +1003,7 @@ func (s *runtimeIndexerService) runMaintenanceTaskWithStageRecord(ctx context.Co
 		return nil, fmt.Errorf("maintenance task %q skipped: %s", taskKey, reason)
 	}
 	result, runErr := s.executeMaintenanceTask(ctx, taskKey, false)
+	s.enrichMaintenanceTaskStorageSnapshots(ctx, result)
 	metrics, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
 		metrics = json.RawMessage(`{"metrics_error":"marshal_failed"}`)
@@ -895,6 +1020,34 @@ func (s *runtimeIndexerService) runMaintenanceTaskWithStageRecord(ctx context.Co
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *runtimeIndexerService) enrichMaintenanceTaskStorageSnapshots(ctx context.Context, result *pgindex.MaintenanceTaskResult) {
+	if s == nil || result == nil || s.settingsAdmin == nil {
+		return
+	}
+	runtime, err := s.loadRuntimeSettings(ctx)
+	if err != nil || runtime == nil || runtime.Indexing == nil {
+		return
+	}
+	dataDirectory := strings.TrimSpace(runtime.Indexing.StorageGuard.DataDirectory)
+	if dataDirectory == "" {
+		return
+	}
+	for _, snapshot := range []*pgindex.MaintenanceTaskStorageSnapshot{result.BeforeStorage, result.AfterStorage} {
+		if snapshot == nil {
+			continue
+		}
+		status := &pgindex.DatabaseStorageStatus{DatabaseBytes: snapshot.DatabaseBytes}
+		if err := pgindex.PopulateDatabaseStorageFilesystemStatus(status, dataDirectory); err != nil {
+			continue
+		}
+		snapshot.DataDirectory = status.DataDirectory
+		snapshot.FilesystemFreeBytes = status.FilesystemFreeBytes
+		snapshot.FilesystemTotalBytes = status.FilesystemTotalBytes
+		snapshot.FilesystemFreePercent = status.FilesystemFreePercent
+		snapshot.FilesystemVisible = status.FilesystemVisible
+	}
 }
 
 func (s *runtimeIndexerService) ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error) {
@@ -1173,6 +1326,14 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ReleaseArchiveNZB, true
 	case string(supervisor.StageReleasePurgeArchivedSources):
 		return runtime.Indexing.ReleasePurgeArchivedSources, true
+	case string(supervisor.StageInspectDiscoveryReadyRefresh):
+		return runtime.Indexing.InspectDiscoveryReadyRefresh, true
+	case string(supervisor.StageInspectPAR2ReadyRefresh):
+		return runtime.Indexing.InspectPAR2ReadyRefresh, true
+	case string(supervisor.StageInspectArchiveReadyRefresh):
+		return runtime.Indexing.InspectArchiveReadyRefresh, true
+	case string(supervisor.StageInspectMediaReadyRefresh):
+		return runtime.Indexing.InspectMediaReadyRefresh, true
 	case string(supervisor.StageInspectDiscovery):
 		return runtime.Indexing.InspectDiscovery, true
 	case string(supervisor.StageInspectPAR2):
@@ -1222,6 +1383,10 @@ var allIndexerStages = []string{
 	string(supervisor.StageRelease),
 	string(supervisor.StageReleaseGenerateNZB),
 	string(supervisor.StageReleaseArchiveNZB),
+	string(supervisor.StageInspectDiscoveryReadyRefresh),
+	string(supervisor.StageInspectPAR2ReadyRefresh),
+	string(supervisor.StageInspectArchiveReadyRefresh),
+	string(supervisor.StageInspectMediaReadyRefresh),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
 	string(supervisor.StageInspectNFO),
@@ -1237,6 +1402,11 @@ type maintenanceTaskDefinition struct {
 	TaskKey          string
 	Label            string
 	Purpose          string
+	Risk             string
+	SpaceEffect      string
+	SupervisorEffect string
+	DataEffect       string
+	ReleaseSafety    string
 	Destructive      bool
 	UsesBatchSize    bool
 	MinIntervalHours int
@@ -1244,14 +1414,21 @@ type maintenanceTaskDefinition struct {
 }
 
 var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
-	{TaskKey: "dashboard_stats_refresh", Label: "Dashboard Stats Refresh", Purpose: "Refreshes exact admin dashboard backlog counts into the cached dashboard stats table.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
-	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Destructive: true, UsesBatchSize: false, MinIntervalHours: 6},
-	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
-	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
-	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
-	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
-	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
-	{TaskKey: "header_payload_purge", Label: "Header Payload Purge", Purpose: "Runs the existing aged article-header payload purge.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"disabled by default"}},
+	{TaskKey: "dashboard_stats_refresh", Label: "Dashboard Stats Refresh", Purpose: "Refreshes exact admin dashboard backlog counts into the cached dashboard stats table.", Risk: "low", SpaceEffect: "No storage reclaim; updates cached dashboard counters.", SupervisorEffect: "No pipeline work is enqueued.", DataEffect: "Rewrites dashboard stat cache rows only.", ReleaseSafety: "No source, binary, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
+	{TaskKey: "vacuum_dead_tuple_tables", Label: "Vacuum Dead Tuple Tables", Purpose: "Runs plain VACUUM (ANALYZE) on tables with meaningful dead-tuple counts.", Risk: "low", SpaceEffect: "Makes dead-tuple space reusable inside PostgreSQL and refreshes planner stats; OS space is not returned without VACUUM FULL, pg_repack, CLUSTER, or a table rewrite.", SupervisorEffect: "No stage behavior changes and no pipeline work is enqueued; it can add I/O while running.", DataEffect: "Deletes no application rows and changes only PostgreSQL maintenance metadata/free-space maps/statistics.", ReleaseSafety: "No source, binary, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"batch size is the maximum number of tables vacuumed per run"}},
+	{TaskKey: "release_source_purge", Label: "Release Source Purge", Purpose: "Purges archived release binary/source lineage after durable NZB archival.", Risk: "high", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Terminal cleanup after release archive; source rows cannot rebuild the purged release.", DataEffect: "Deletes release lineage, safe binary source rows, article source rows, and legacy NZB cache rows.", ReleaseSafety: "Requires durable archived NZB state, release catalog files, and release readiness gates before source deletion.", Destructive: true, UsesBatchSize: false, MinIntervalHours: 6},
+	{TaskKey: "poster_queue_done_cleanup", Label: "Poster Queue Done Cleanup", Purpose: "Deletes poster materialization queue rows that have already completed.", Risk: "low", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Poster materialize keeps only pending queue state.", DataEffect: "Deletes completed poster queue rows only.", ReleaseSafety: "Does not delete headers, binaries, release files, catalog data, or archived NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "inspect_ready_queue_cleanup", Label: "Inspect Ready Queue Cleanup", Purpose: "Deletes completed or blocked inspect ready-queue rows once inspection history exists.", Risk: "low", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Inspect refresh stages may repopulate only if source inspections require work.", DataEffect: "Deletes ready-queue rows after durable inspection history exists.", ReleaseSafety: "Keeps binary_inspections, release details, catalog files, and archive metadata intact.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "assembly_queue_stale_cleanup", Label: "Assembly Queue Stale Cleanup", Purpose: "Deletes assembly queue rows already represented by binary parts.", Risk: "low", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Assemble skips queue entries already represented by binary parts.", DataEffect: "Deletes queue residue only; raw headers and payloads remain.", ReleaseSafety: "Does not delete source headers, payloads, binaries, or release lineage.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "readiness_cleanup", Label: "Readiness Cleanup", Purpose: "Cleans processed stale release readiness residue.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Readiness summaries may be recomputed from retained source/projection rows.", DataEffect: "Deletes stale derived readiness rows and orphan release shells.", ReleaseSafety: "Safe only while raw source, binary projections, public release detail, and archive state are retained.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"v1 run delegates to the existing bounded indexer maintenance cleanup path"}},
+	{TaskKey: "runtime_history_cleanup", Label: "Runtime History Cleanup", Purpose: "Purges old stage, scrape, and inspection run history.", Risk: "low", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "No stage behavior changes; old run/debug history is shortened.", DataEffect: "Deletes old operational history rows only.", ReleaseSafety: "No source, binary, catalog, or NZB data is deleted.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Grouping/release-family debug evidence is reduced; current identity projections remain.", DataEffect: "Deletes older stable side-table evidence rows.", ReleaseSafety: "Does not delete current binary identity, source headers, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
+	{TaskKey: "crosspost_group_raw_purge", Label: "Crosspost Raw Group Purge", Purpose: "Purges raw Xref crosspost observations after the popularity summary watermark has consumed them.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Crosspost popularity refresh keeps summary and queue state; historical raw Xref observations older than 72h are no longer available for recompute/debug.", DataEffect: "Deletes only article_header_crosspost_groups rows older than 72h whose group queue is done and whose article id is at or below the summary watermark.", ReleaseSafety: "Current release formation uses binary identity/release family evidence and persists release_newsgroups from binaries; this task does not delete source headers, binaries, releases, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because raw Xref forensic telemetry is removed after summary consumption"}},
+	{TaskKey: "yenc_done_work_item_cleanup", Label: "yEnc Done Work Item Cleanup", Purpose: "Purges completed recover_yenc work receipts after durable yEnc recovery projection exists.", Risk: "medium", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "recover_yenc keeps ready/running backlog intact; completed receipts older than 72h are no longer available for queue audit.", DataEffect: "Deletes only yenc_recovery_work_items rows with status done, older than 72h, backed by binary_recovery_current recovered_source yenc_header, and not referenced by release/archive/running inspect work.", ReleaseSafety: "Does not delete article headers, payloads, binary roots, recovery projections, release files, archive lineage, catalog data, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because completed yEnc queue audit receipts are removed after durable projection exists"}},
+	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Risk: "low", SpaceEffect: "Filesystem cleanup for stale inspect workspaces when scheduled maintenance runs it.", SupervisorEffect: "No DB queue population; stale workspaces may be recreated by future inspect jobs.", DataEffect: "Deletes stale temporary inspect workspaces, not release/catalog DB rows.", ReleaseSafety: "No source, binary, catalog, or NZB database rows are deleted.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
+	{TaskKey: "stale_nonrelease_source_purge", Label: "Stale Non-Release Source Purge", Purpose: "Purges old source headers outside the default 7-day window only when no downstream relationship still references them.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Deletes source rows that are outside the active scrape window and not queued for assemble or yEnc; future releases cannot be formed from those purged source rows.", DataEffect: "Deletes eligible article_headers and cascades their ingest payload, crosspost, poster-ref, and poster queue rows.", ReleaseSafety: "Skips any header with assembly queue, binary_parts, yEnc work item, or archive lineage. Dry-run estimates only the next batch.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first and keep batch sizes conservative", "does not delete binaries, release files, catalog files, archive metadata, or NZBs directly"}},
+	{TaskKey: "emergency_source_window_reset", Label: "Emergency Source Window Reset", Purpose: "Discards old unreleased binary/source work outside the 7-day active window when a scrape backlog bypassed retention and disk pressure requires an emergency reset.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is returned only by CLI/DBA table rewrite commands such as VACUUM FULL or pg_repack.", SupervisorEffect: "Removes old unformed binary/yEnc/source work so assemble, recover_yenc, inspect, and release formation stop spending time on stale backlog.", DataEffect: "Deletes eligible binary_core roots and cascades binary parts, yEnc receipts, binary identity/current projections, inspection rows, and other binary-derived rows; then deletes fully orphaned old article headers and their payload/crosspost/poster rows.", ReleaseSafety: "Skips binaries referenced by release_files or release archive lineage, skips running inspect/yEnc work, and does not delete release detail, release catalog files, archive metadata, or archived NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: future releases cannot be formed from purged old source/binary rows", "dry-run first; dry-run uses a rollback-only transaction to estimate cascades", "manual or emergency scheduling only"}},
+	{TaskKey: "header_payload_purge", Label: "Header Payload Purge", Purpose: "Runs the existing aged article-header payload purge.", Risk: "high", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Can reduce yEnc recovery and forensic source detail for already assembled rows.", DataEffect: "Deletes retained article_header_ingest_payloads matching the aged assembled-row predicate.", ReleaseSafety: "Keep manual until archive/source lineage gates are verified for the affected window.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"disabled by default"}},
 }
 
 func parseMaintenanceTask(taskKey string) (maintenanceTaskDefinition, error) {
@@ -1288,6 +1465,11 @@ func maintenanceTaskViewFromSettings(def maintenanceTaskDefinition, runtime *app
 		TaskKey:          def.TaskKey,
 		Label:            def.Label,
 		Purpose:          def.Purpose,
+		Risk:             def.Risk,
+		SpaceEffect:      def.SpaceEffect,
+		SupervisorEffect: def.SupervisorEffect,
+		DataEffect:       def.DataEffect,
+		ReleaseSafety:    def.ReleaseSafety,
 		Destructive:      def.Destructive,
 		Enabled:          cfg.Enabled,
 		ScheduleEnabled:  cfg.ScheduleEnabled,
@@ -1316,7 +1498,10 @@ func maintenanceTaskRunView(result *pgindex.MaintenanceTaskResult) *indexerMaint
 		DryRun:               result.DryRun,
 		EstimatedRowsByTable: result.EstimatedRowsByTable,
 		DeletedRowsByTable:   result.DeletedRowsByTable,
+		VacuumedTables:       result.VacuumedTables,
 		EstimatedBytes:       result.EstimatedBytes,
+		BeforeStorage:        result.BeforeStorage,
+		AfterStorage:         result.AfterStorage,
 		Blockers:             result.Blockers,
 		Warnings:             result.Warnings,
 	}
@@ -1366,6 +1551,14 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ReleaseArchiveNZB, patch)
 	case string(supervisor.StageReleasePurgeArchivedSources):
 		applyStagePatch(&indexing.ReleasePurgeArchivedSources, patch)
+	case string(supervisor.StageInspectDiscoveryReadyRefresh):
+		applyStagePatch(&indexing.InspectDiscoveryReadyRefresh, patch)
+	case string(supervisor.StageInspectPAR2ReadyRefresh):
+		applyStagePatch(&indexing.InspectPAR2ReadyRefresh, patch)
+	case string(supervisor.StageInspectArchiveReadyRefresh):
+		applyStagePatch(&indexing.InspectArchiveReadyRefresh, patch)
+	case string(supervisor.StageInspectMediaReadyRefresh):
+		applyStagePatch(&indexing.InspectMediaReadyRefresh, patch)
 	case string(supervisor.StageInspectDiscovery):
 		applyStagePatch(&indexing.InspectDiscovery, patch)
 	case string(supervisor.StageInspectPAR2):

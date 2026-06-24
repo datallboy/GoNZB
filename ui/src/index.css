@@ -1042,6 +1042,36 @@ textarea {
   color: #ffd2cb;
 }
 
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: rgba(244, 247, 251, 0.88);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.risk-pill--low {
+  color: #d8f7e5;
+  background: rgba(55, 178, 118, 0.2);
+}
+
+.risk-pill--medium {
+  color: #ffe7aa;
+  background: rgba(243, 186, 76, 0.22);
+}
+
+.risk-pill--high {
+  color: #ffd2cb;
+  background: rgba(255, 143, 126, 0.2);
+}
+
 .loading-panel {
   display: flex;
   align-items: center;

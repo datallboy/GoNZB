@@ -204,6 +204,56 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 }
 
+func TestDeriveUsenetIndexerConfigAppliesSourceWindowBackfillCutoff(t *testing.T) {
+	cfg := &config.Config{
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.test"},
+		},
+	}
+
+	before := time.Now().UTC().AddDate(0, 0, -7).Add(-1 * time.Minute)
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	after := time.Now().UTC().AddDate(0, 0, -7).Add(1 * time.Minute)
+
+	cutoff, ok := got.BackfillUntilDateByGroup["alt.binaries.test"]
+	if !ok {
+		t.Fatalf("expected source-window cutoff for group, got %+v", got.BackfillUntilDateByGroup)
+	}
+	if cutoff.Before(before) || cutoff.After(after) {
+		t.Fatalf("expected cutoff around 7 days ago, got %s outside %s - %s", cutoff, before, after)
+	}
+}
+
+func TestDeriveUsenetIndexerConfigKeepsExplicitBackfillCutoff(t *testing.T) {
+	cfg := &config.Config{
+		Modules: config.ModulesConfig{
+			UsenetIndexer: config.ModuleToggle{Enabled: true},
+		},
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.test"},
+			BackfillUntilDateByGroup: map[string]string{
+				"alt.binaries.test": "2026-06-01",
+			},
+		},
+	}
+
+	got, err := deriveUsenetIndexerConfig(cfg)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+
+	want := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if got.BackfillUntilDateByGroup["alt.binaries.test"] != want {
+		t.Fatalf("expected explicit cutoff %s, got %+v", want, got.BackfillUntilDateByGroup)
+	}
+}
+
 func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},

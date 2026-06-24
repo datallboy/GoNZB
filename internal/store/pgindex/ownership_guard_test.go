@@ -10,11 +10,12 @@ import (
 
 func TestBinaryStorageV2WritesStayInExplicitOwners(t *testing.T) {
 	allowedWriterFiles := map[string]bool{
-		"archive_store.go":         true,
-		"assembly_store.go":        true,
-		"binary_recovery_store.go": true,
-		"release_store.go":         true,
-		"yenc_recovery_store.go":   true,
+		"archive_store.go":           true,
+		"assembly_store.go":          true,
+		"binary_recovery_store.go":   true,
+		"maintenance_tasks_store.go": true,
+		"release_store.go":           true,
+		"yenc_recovery_store.go":     true,
 	}
 	tables := []string{
 		"binary_core",

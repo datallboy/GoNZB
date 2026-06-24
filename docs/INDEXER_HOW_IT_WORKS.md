@@ -13,6 +13,9 @@ It explains:
 5. how later scraped articles or metadata updates propagate back into the catalog
 6. where important implementation constraints still matter
 
+For retention, purge safety, and current storage audit findings, see
+[Indexer Storage Retention And Purge Map](./INDEXER_STORAGE_RETENTION_AND_PURGE.md).
+
 This document reflects the current implementation after the stabilization and migration squash work.
 
 ## Pipeline Overview
@@ -53,13 +56,15 @@ Important columns:
 - `bytes`
 - `lines`
 - `scraped_at`
-- `assembled_at`
+- `assembled_at` (legacy; not maintained by the current queue-based assemble path)
 
 What it means:
 
 - one row is one scraped NNTP article
 - it is the long-lived lineage record used later for NZB article emission
-- `assembled_at IS NULL` means the header has not been consumed by assembly yet
+- current assembly state is tracked by relationships, not `assembled_at`:
+  `article_header_assembly_queue` means pending assemble work and `binary_parts`
+  means the header has been mapped to a binary
 
 ### `article_header_ingest_payloads`
 
@@ -313,6 +318,9 @@ Key behavior:
 Backfill cutoff behavior:
 
 - optional `indexing.backfill_until_date_by_group`
+- when `indexing.source_window.enabled=true`, groups without an explicit cutoff
+  get a runtime cutoff of `now - source_window.backfill_window_days`
+  (default: 7 days)
 - uses XOVER `DateUTC` values, not local DB date scans
 - when a batch crosses the cutoff, checkpoint state is persisted:
   - `backfill_until_date`
@@ -320,6 +328,18 @@ Backfill cutoff behavior:
   - `backfill_stopped_reason`
 
 This is restart-safe.
+
+Scrape gating:
+
+- scheduled scrape pauses when open assemble work exceeds
+  `source_window.max_open_headers` and resumes below
+  `source_window.resume_open_headers`
+- scheduled scrape also pauses when blocking yEnc recovery backlog exceeds
+  `source_window.max_blocking_yenc` and resumes below
+  `source_window.resume_blocking_yenc`
+- blocking yEnc backlog means ready/running yEnc work with priority `0` or a
+  weak/overgrouped readiness bucket; this does not count the entire low-priority
+  recovery backlog
 
 ### `indexer assemble`
 
@@ -734,18 +754,29 @@ It currently:
 
 - repairs stale stage runtime state
 - abandons stale `scrape_runs`
-- purges old `indexer_stage_runs`
-- purges old `scrape_runs`
-- purges retained `article_header_ingest_payloads` older than policy
-- prunes eligible stale `release_family_readiness_summaries`
-- backfills compact inline grouping summaries and purges eligible stable `binary_grouping_evidence`
+- refreshes dashboard stat caches
+- purges old `indexer_stage_runs` and `scrape_runs`
+- cleans low-risk queue residue such as completed poster materialization rows,
+  completed/blocked inspect ready-queue rows with durable inspection history,
+  and assembly queue rows already represented by `binary_parts`
+- can run medium-risk derived cleanup such as consumed raw crosspost telemetry,
+  completed yEnc work receipts with durable recovery projection, stable grouping
+  evidence, and stale readiness projections
+- exposes high-risk manual source cleanup paths:
+  `release_source_purge`, `stale_nonrelease_source_purge`, and
+  `emergency_source_window_reset`
 
 Important operational note:
 
 - `indexer maintenance` is the application retention pass
 - it reduces row counts and dead-row growth
-- if PostgreSQL files still need to shrink on disk after retention cleanup, that is a separate operator step using `VACUUM (ANALYZE)` or `VACUUM FULL`
-- for the current growth-trim sprint, use the reclaim runbook in `docs/archive/development/indexer/INDEXER_POSTGRES_RUNTIME_TUNING.md` for the exact table order and downtime expectations
+- high-risk source cleanup permanently removes old release-formation inputs and
+  must be dry-run first
+- if PostgreSQL files still need to shrink on disk after retention cleanup, that
+  is a separate operator step using `pg_repack`, `VACUUM FULL`, `CLUSTER`, or a
+  table-specific rewrite
+- for current purge/reclaim decisions, use
+  `docs/INDEXER_STORAGE_RETENTION_AND_PURGE.md`
 
 ## How Metadata Flows Back Into Releases
 

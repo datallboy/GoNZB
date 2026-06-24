@@ -89,31 +89,35 @@ type AggregatorSourcesConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
-	CrosspostPopularityRefresh  IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
-	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
-	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
-	ReleaseGenerateNZB          IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
-	ReleaseArchiveNZB           IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
-	ReleasePurgeArchivedSources IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
-	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
-	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
-	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
-	MemoryGuard                 IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
-	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive              IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword             IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia                IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB                 IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB                  IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                   []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup     map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                 IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill               IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	PosterMaterialize            IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
+	CrosspostPopularityRefresh   IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
+	Assemble                     IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
+	RecoverYEnc                  IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh        IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                      IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB           IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
+	ReleaseArchiveNZB            IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources  IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	InspectDiscoveryReadyRefresh IndexingStageConfig        `mapstructure:"inspect_discovery_ready_refresh" yaml:"inspect_discovery_ready_refresh"`
+	InspectPAR2ReadyRefresh      IndexingStageConfig        `mapstructure:"inspect_par2_ready_refresh" yaml:"inspect_par2_ready_refresh"`
+	InspectArchiveReadyRefresh   IndexingStageConfig        `mapstructure:"inspect_archive_ready_refresh" yaml:"inspect_archive_ready_refresh"`
+	InspectMediaReadyRefresh     IndexingStageConfig        `mapstructure:"inspect_media_ready_refresh" yaml:"inspect_media_ready_refresh"`
+	Match                        IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
+	Inspect                      IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
+	StorageGuard                 IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	MemoryGuard                  IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
+	InspectDiscovery             IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                  IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                   IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive               IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword              IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                 IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                  IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                   IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -347,6 +351,22 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release_purge_archived_sources.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_purge_archived_sources.batch_size", 50)
 	v.SetDefault("indexing.release_purge_archived_sources.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_discovery_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_par2_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_archive_ready_refresh.backoff_seconds", 0)
+	v.SetDefault("indexing.inspect_media_ready_refresh.enabled", false)
+	v.SetDefault("indexing.inspect_media_ready_refresh.interval_minutes", 10.0)
+	v.SetDefault("indexing.inspect_media_ready_refresh.batch_size", 10000)
+	v.SetDefault("indexing.inspect_media_ready_refresh.backoff_seconds", 0)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
@@ -498,6 +518,18 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_discovery_ready_refresh", c.Indexing.InspectDiscoveryReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_par2_ready_refresh", c.Indexing.InspectPAR2ReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_archive_ready_refresh", c.Indexing.InspectArchiveReadyRefresh); err != nil {
+		return err
+	}
+	if err := validateIndexingStageConfig("indexing.inspect_media_ready_refresh", c.Indexing.InspectMediaReadyRefresh); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{

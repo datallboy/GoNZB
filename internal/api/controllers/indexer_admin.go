@@ -66,6 +66,32 @@ func (ctrl *IndexerAdminController) RefreshDashboardStats(c *echo.Context) error
 	return c.JSON(http.StatusOK, stats)
 }
 
+func (ctrl *IndexerAdminController) GetStorageStatus(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	status, err := ctrl.Service.StorageStatus(c.Request().Context())
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *IndexerAdminController) GetStorageAudit(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	report, err := ctrl.Service.StorageAudit(c.Request().Context())
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, report)
+}
+
 func (ctrl *IndexerAdminController) GetBackfillProgress(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

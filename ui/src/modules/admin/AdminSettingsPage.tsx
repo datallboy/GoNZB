@@ -24,6 +24,10 @@ type StageKey =
   | 'release_archive_nzb'
   | 'release'
   | 'inspect_discovery'
+  | 'inspect_discovery_ready_refresh'
+  | 'inspect_par2_ready_refresh'
+  | 'inspect_archive_ready_refresh'
+  | 'inspect_media_ready_refresh'
   | 'inspect_par2'
   | 'inspect_nfo'
   | 'inspect_archive'
@@ -62,6 +66,10 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
   { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
+  { key: 'inspect_discovery_ready_refresh', label: 'Inspect discovery queue', supportsConcurrency: false, description: 'Populates and retires discovery ready-queue rows before discovery workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_par2_ready_refresh', label: 'Inspect PAR2 queue', supportsConcurrency: false, description: 'Populates PAR2 inspection ready-queue rows before PAR2 workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_archive_ready_refresh', label: 'Inspect archive queue', supportsConcurrency: false, description: 'Populates archive inspection ready-queue rows before archive workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_media_ready_refresh', label: 'Inspect media queue', supportsConcurrency: false, description: 'Populates media inspection ready-queue rows before media workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: true, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.', concurrencyHelpText: 'NNTP prefix-sampling workers. Raise cautiously because each worker fetches article prefixes.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
@@ -76,6 +84,7 @@ const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
+  { title: 'Inspection queue refresh', keys: ['inspect_discovery_ready_refresh', 'inspect_par2_ready_refresh', 'inspect_archive_ready_refresh', 'inspect_media_ready_refresh'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -125,6 +134,15 @@ function defaultSettings(): RuntimeSettings {
       crosspost_popularity_refresh: stageDefaults(1000),
       assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
       recover_yenc: stageDefaults(25, 1, { target_window_pct: 60, newest_pct: 40 }),
+      source_window: {
+        enabled: true,
+        window_minutes: 15,
+        backfill_window_days: 7,
+        max_open_headers: 50000,
+        resume_open_headers: 10000,
+        max_blocking_yenc: 50000,
+        resume_blocking_yenc: 10000,
+      },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
@@ -151,6 +169,10 @@ function defaultSettings(): RuntimeSettings {
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
+      inspect_discovery_ready_refresh: stageDefaults(10000),
+      inspect_par2_ready_refresh: stageDefaults(10000),
+      inspect_archive_ready_refresh: stageDefaults(10000),
+      inspect_media_ready_refresh: stageDefaults(10000),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -175,8 +197,9 @@ function defaultSettings(): RuntimeSettings {
       },
       storage_guard: {
         enabled: true,
-        min_free_bytes: 8 * 1024 * 1024 * 1024,
-        min_free_percent: 5,
+        data_directory: '',
+        min_free_bytes: 0,
+        min_free_percent: 15,
       },
       memory_guard: {
         enabled: true,
@@ -264,10 +287,23 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
+      source_window: {
+        enabled: indexing.source_window?.enabled ?? defaults.indexing!.source_window!.enabled,
+        window_minutes: indexing.source_window?.window_minutes ?? defaults.indexing!.source_window!.window_minutes,
+        backfill_window_days: indexing.source_window?.backfill_window_days ?? defaults.indexing!.source_window!.backfill_window_days,
+        max_open_headers: indexing.source_window?.max_open_headers ?? defaults.indexing!.source_window!.max_open_headers,
+        resume_open_headers: indexing.source_window?.resume_open_headers ?? defaults.indexing!.source_window!.resume_open_headers,
+        max_blocking_yenc: indexing.source_window?.max_blocking_yenc ?? defaults.indexing!.source_window!.max_blocking_yenc,
+        resume_blocking_yenc: indexing.source_window?.resume_blocking_yenc ?? defaults.indexing!.source_window!.resume_blocking_yenc,
+      },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
       release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
+      inspect_discovery_ready_refresh: { ...defaults.indexing!.inspect_discovery_ready_refresh, ...indexing.inspect_discovery_ready_refresh },
+      inspect_par2_ready_refresh: { ...defaults.indexing!.inspect_par2_ready_refresh, ...indexing.inspect_par2_ready_refresh },
+      inspect_archive_ready_refresh: { ...defaults.indexing!.inspect_archive_ready_refresh, ...indexing.inspect_archive_ready_refresh },
+      inspect_media_ready_refresh: { ...defaults.indexing!.inspect_media_ready_refresh, ...indexing.inspect_media_ready_refresh },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
@@ -408,6 +444,7 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
     },
     storage_guard: {
       enabled: indexing.storage_guard.enabled,
+      data_directory: indexing.storage_guard.data_directory,
       min_free_bytes: indexing.storage_guard.min_free_bytes,
       min_free_percent: indexing.storage_guard.min_free_percent,
     },
@@ -1079,6 +1116,61 @@ export function AdminSettingsPage() {
           </ReleaseSettingsPanel>
         </SettingsSection>
 
+        <SettingsSection title="Source window guard">
+          <div className="banner">
+            Source windows limit new scrape intake while assemble and yEnc recovery catch up. Backfill keeps only recent article windows active; existing old headers are not deleted by this guard.
+          </div>
+          <div className="toolbar-grid">
+            <CheckboxField
+              label="Enable source window guard"
+              checked={Boolean(indexing.source_window?.enabled)}
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, enabled: value } })}
+            />
+            <NumberField
+              label="Backfill window days"
+              min={1}
+              value={indexing.source_window?.backfill_window_days ?? 7}
+              helpText="Backfill ignores articles older than this rolling window unless a group has an explicit cutoff."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, backfill_window_days: value } })}
+            />
+            <NumberField
+              label="Assembly family window minutes"
+              min={1}
+              value={indexing.source_window?.window_minutes ?? 15}
+              helpText="Conservative release-family formation window for tightly posted upload sets."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, window_minutes: value } })}
+            />
+            <NumberField
+              label="Max open headers"
+              min={1}
+              value={indexing.source_window?.max_open_headers ?? 50000}
+              helpText="Pause scheduled scrape when open assemble work reaches this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, max_open_headers: value } })}
+            />
+            <NumberField
+              label="Resume open headers"
+              min={1}
+              value={indexing.source_window?.resume_open_headers ?? 10000}
+              helpText="Resume scheduled scrape after open assemble work drains below this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, resume_open_headers: value } })}
+            />
+            <NumberField
+              label="Max blocking yEnc"
+              min={1}
+              value={indexing.source_window?.max_blocking_yenc ?? 50000}
+              helpText="Pause scheduled scrape when priority-0 or weak/overgrouped yEnc backlog reaches this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, max_blocking_yenc: value } })}
+            />
+            <NumberField
+              label="Resume blocking yEnc"
+              min={1}
+              value={indexing.source_window?.resume_blocking_yenc ?? 10000}
+              helpText="Resume scheduled scrape after blocking yEnc backlog drains below this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, resume_blocking_yenc: value } })}
+            />
+          </div>
+        </SettingsSection>
+
         <SettingsSection title="Database storage guard">
           <div className="banner">
             When free space on the PostgreSQL data volume drops below the configured threshold, growth-heavy indexer stages pause automatically. Maintenance plus the NZB archive and purge tail remain allowed so the system can try to recover space instead of pushing the database further into failure.
@@ -1089,6 +1181,12 @@ export function AdminSettingsPage() {
               helpText="Checks the PostgreSQL data directory before running growth-heavy indexer stages."
               checked={Boolean(indexing.storage_guard.enabled)}
               onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, enabled: value } })}
+            />
+            <TextField
+              label="Data directory"
+              value={indexing.storage_guard.data_directory ?? ''}
+              helpText="Optional host-visible PostgreSQL data path. Required when the DB-reported data_directory is not visible from the app container."
+              onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, data_directory: value } })}
             />
             <NumberField
               label="Minimum free bytes"

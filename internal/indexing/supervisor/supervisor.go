@@ -32,6 +32,10 @@ const (
 	StageReleaseGenerateNZB            StageName = "release_generate_nzb"
 	StageReleaseArchiveNZB             StageName = "release_archive_nzb"
 	StageReleasePurgeArchivedSources   StageName = "release_purge_archived_sources"
+	StageInspectDiscoveryReadyRefresh  StageName = "inspect_discovery_ready_refresh"
+	StageInspectPAR2ReadyRefresh       StageName = "inspect_par2_ready_refresh"
+	StageInspectArchiveReadyRefresh    StageName = "inspect_archive_ready_refresh"
+	StageInspectMediaReadyRefresh      StageName = "inspect_media_ready_refresh"
 	StageInspectDiscovery              StageName = "inspect_discovery"
 	StageInspectPAR2                   StageName = "inspect_par2"
 	StageInspectNFO                    StageName = "inspect_nfo"
@@ -166,8 +170,19 @@ func New(log logger, stages []Stage, options ...Options) *Supervisor {
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
-	return s.RunSelected(
-		ctx,
+	return s.runStageSets(ctx, pipelineStageNames(), maintenanceStageNames())
+}
+
+func (s *Supervisor) RunPipeline(ctx context.Context) error {
+	return s.RunSelected(ctx, pipelineStageNames()...)
+}
+
+func (s *Supervisor) RunMaintenance(ctx context.Context) error {
+	return s.RunSelected(ctx, maintenanceStageNames()...)
+}
+
+func pipelineStageNames() []StageName {
+	return []StageName{
 		StageScrapeLatest,
 		StageScrapeBackfill,
 		StagePosterMaterialize,
@@ -178,6 +193,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageRelease,
 		StageReleaseGenerateNZB,
 		StageReleaseArchiveNZB,
+		StageInspectDiscoveryReadyRefresh,
+		StageInspectPAR2ReadyRefresh,
+		StageInspectArchiveReadyRefresh,
+		StageInspectMediaReadyRefresh,
 		StageInspectDiscovery,
 		StageInspectPAR2,
 		StageInspectNFO,
@@ -186,23 +205,58 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		StageInspectMedia,
 		StageEnrichPreDB,
 		StageEnrichTMDB,
+	}
+}
+
+func maintenanceStageNames() []StageName {
+	return []StageName{
 		StageName("maintenance.dashboard_stats_refresh"),
 		StageMaintenanceReleaseSourcePurge,
+		StageName("maintenance.poster_queue_done_cleanup"),
+		StageName("maintenance.inspect_ready_queue_cleanup"),
 		StageName("maintenance.assembly_queue_stale_cleanup"),
 		StageName("maintenance.readiness_cleanup"),
 		StageName("maintenance.runtime_history_cleanup"),
 		StageName("maintenance.grouping_evidence_cleanup"),
 		StageName("maintenance.header_payload_purge"),
 		StageMaintenance,
-	)
+	}
+}
+
+func (s *Supervisor) runStageSets(ctx context.Context, stageSets ...[]StageName) error {
+	errCh := make(chan error, len(stageSets))
+	var wg sync.WaitGroup
+	for _, names := range stageSets {
+		names := append([]StageName(nil), names...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- s.runSelected(ctx, true, names...)
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Supervisor) RunSelected(ctx context.Context, names ...StageName) error {
+	return s.runSelected(ctx, false, names...)
+}
+
+func (s *Supervisor) runSelected(ctx context.Context, allowEmpty bool, names ...StageName) error {
 	stages, err := s.selectStages(names...)
 	if err != nil {
 		return err
 	}
 	if len(stages) == 0 {
+		if allowEmpty {
+			return nil
+		}
 		return fmt.Errorf("no enabled supervisor stages selected")
 	}
 

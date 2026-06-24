@@ -30,6 +30,8 @@ var (
 
 	indexerReclaimFull                 bool
 	indexerReclaimCheck                bool
+	indexerMaintenanceTaskDryRun       bool
+	indexerMaintenanceTaskBatchSize    int
 	indexerIntegrityEnsureExtension    bool
 	indexerCrosspostBackfillBatchSize  int
 	indexerCrosspostBackfillMaxBatches int
@@ -244,6 +246,15 @@ var indexerReclaimStorageCmd = &cobra.Command{
 	},
 }
 
+var indexerMaintenanceTaskCmd = &cobra.Command{
+	Use:   "task <task-key>",
+	Short: "Run or dry-run one supported indexer maintenance task",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerMaintenanceTask(args[0], indexerMaintenanceTaskDryRun, indexerMaintenanceTaskBatchSize)
+	},
+}
+
 var indexerInspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Run indexer inspect submodules",
@@ -392,6 +403,8 @@ func init() {
 	indexerEnrichTMDBCmd.Flags().BoolVar(&enrichOnce, "once", false, "Run one TMDB enrichment pass and exit")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimCheck, "check", false, "Report current bytes for the allowlisted reclaim tables without running VACUUM")
 	indexerReclaimStorageCmd.Flags().BoolVar(&indexerReclaimFull, "full", false, "Use VACUUM FULL instead of VACUUM ANALYZE; requires enough free disk and exclusive table locks")
+	indexerMaintenanceTaskCmd.Flags().BoolVar(&indexerMaintenanceTaskDryRun, "dry-run", true, "Estimate the task without committing deletes")
+	indexerMaintenanceTaskCmd.Flags().IntVar(&indexerMaintenanceTaskBatchSize, "batch-size", 1000, "Maximum rows or units processed by the task")
 	indexerMaintenanceCheckIntegrityCmd.Flags().BoolVar(&indexerIntegrityEnsureExtension, "ensure-extension", false, "Install the amcheck extension before running the integrity check")
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillBatchSize, "batch-size", 5000, "Number of article headers to process per batch")
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
@@ -418,6 +431,7 @@ func init() {
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceBackfillCrosspostGroupsCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceMaterializePostersCmd)
 	indexerMaintenanceCmd.AddCommand(indexerMaintenanceRefreshCrosspostPopularityCmd)
+	indexerMaintenanceCmd.AddCommand(indexerMaintenanceTaskCmd)
 	indexerMaintenanceCmd.AddCommand(indexerReclaimStorageCmd)
 	indexerCmd.AddCommand(indexerInspectCmd)
 	indexerInspectCmd.AddCommand(indexerInspectDiscoveryCmd)

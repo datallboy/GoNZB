@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, openAdminOverviewStream, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerOverviewStreamSnapshot, IndexerStageThroughput } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, getAdminStorageStatus, openAdminOverviewStream, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerOverviewStreamSnapshot, IndexerStorageStatus, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -40,6 +40,22 @@ function formatDuration(ms: number) {
   }
   const minutes = seconds / 60
   return `${formatRate(minutes)}m`
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0 B'
+  }
+  if (value >= 1024 ** 3) {
+    return `${(value / 1024 ** 3).toFixed(1)} GB`
+  }
+  if (value >= 1024 ** 2) {
+    return `${(value / 1024 ** 2).toFixed(1)} MB`
+  }
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(1)} KB`
+  }
+  return `${value.toLocaleString()} B`
 }
 
 function isScrapeThroughputWindow(window: IndexerStageThroughput['items'][number]['windows'][number]) {
@@ -143,15 +159,18 @@ export function AdminDashboardPage() {
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
   const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
   const [nntpStats, setNNTPStats] = useState<IndexerNNTPStats | null>(null)
+  const [storageStatus, setStorageStatus] = useState<IndexerStorageStatus | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
   const [backfillLoading, setBackfillLoading] = useState(false)
   const [throughputLoading, setThroughputLoading] = useState(false)
   const [nntpLoading, setNNTPLoading] = useState(false)
+  const [storageLoading, setStorageLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [throughputError, setThroughputError] = useState<string | null>(null)
   const [nntpError, setNNTPError] = useState<string | null>(null)
+  const [storageError, setStorageError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -278,6 +297,25 @@ export function AdminDashboardPage() {
 
       loadNNTPStats(true)
 
+      setStorageLoading(true)
+      void getAdminStorageStatus()
+        .then((value) => {
+          if (!cancelled) {
+            setStorageStatus(value)
+            setStorageError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStorageError(err instanceof Error ? err.message : 'Failed to load storage status')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStorageLoading(false)
+          }
+        })
+
       setBackfillLoading(true)
       void getAdminBackfillProgress()
         .then((value) => {
@@ -369,6 +407,46 @@ export function AdminDashboardPage() {
           ))}
         </div>
       )}
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">PostgreSQL Storage Guard</h2>
+          <p className="muted-copy">
+            Runtime view of the data volume checked before growth-heavy indexer stages run.
+          </p>
+        </div>
+        {storageError ? <div className="banner error">{storageError}</div> : null}
+        {storageLoading && !storageStatus ? (
+          <LoadingBlock label="Loading storage guard..." />
+        ) : (
+          <div className="hero-stat-grid">
+            <div className="stat-card">
+              <span>State</span>
+              <strong>{storageStatus ? (storageStatus.blocked ? 'Blocked' : 'Allowed') : 'Unavailable'}</strong>
+              {storageStatus?.reason ? <small>{storageStatus.reason}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Free Space</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.filesystem_free_bytes) : 'Unavailable'}</strong>
+              {storageStatus ? <small>{storageStatus.filesystem_free_percent.toFixed(1)}%</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Threshold</span>
+              <strong>{storageStatus ? `${storageStatus.min_free_percent.toFixed(1)}%` : 'Unavailable'}</strong>
+              {storageStatus ? <small>{formatBytes(storageStatus.min_free_bytes)}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Path</span>
+              <strong>{storageStatus?.filesystem_visible ? 'Visible' : 'Not Visible'}</strong>
+              {storageStatus ? <small>{storageStatus.visibility_source}: {storageStatus.data_directory || 'unavailable'}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Database Size</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.database_bytes) : 'Unavailable'}</strong>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="page-card stack">
         <div className="toolbar-row">

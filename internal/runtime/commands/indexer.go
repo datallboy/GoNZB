@@ -2,7 +2,9 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -595,6 +597,103 @@ func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkO
 		}
 	}
 	appCtx.Logger.Info("indexer storage reclaim completed")
+}
+
+func (r *Runner) ExecuteIndexerMaintenanceTask(taskKey string, dryRun bool, batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer maintenance task requires store.pg_dsn.")
+	defer cleanup()
+
+	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
+	out, err := runIndexerMaintenanceTaskCLI(ctx, appCtx.PGIndexStore, taskKey, dryRun, batchSize, releaseSourcePurgeReadyPolicy(indexing))
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance task failed: %v", err)
+	}
+	if out == nil {
+		appCtx.Logger.Info("indexer maintenance task completed with no result")
+		return
+	}
+	encoded, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		appCtx.Logger.Fatal("encode indexer maintenance task result failed: %v", err)
+	}
+	fmt.Println(string(encoded))
+}
+
+func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStore, taskKey string, dryRun bool, batchSize int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error) {
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	switch strings.ToLower(strings.TrimSpace(taskKey)) {
+	case "dashboard_stats_refresh":
+		if dryRun {
+			stats, err := store.GetIndexerDashboardStats(ctx)
+			if err != nil {
+				return nil, err
+			}
+			count := int64(0)
+			if stats != nil {
+				count = int64(stats.Count)
+			}
+			return &pgindex.MaintenanceTaskResult{
+				TaskKey:              taskKey,
+				DryRun:               true,
+				EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+				Warnings:             []string{"dry-run reports cached stat rows without recomputing counts"},
+			}, nil
+		}
+		stats, err := store.RefreshIndexerDashboardStats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		count := int64(0)
+		if stats != nil {
+			count = int64(stats.Count)
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey:              taskKey,
+			DryRun:               false,
+			EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+		}, nil
+	case "release_source_purge":
+		if dryRun {
+			return store.DryRunReleaseSourcePurge(ctx, batchSize, policy)
+		}
+		return store.RunReleaseSourcePurge(ctx, batchSize, policy)
+	case "readiness_cleanup":
+		if dryRun {
+			return &pgindex.MaintenanceTaskResult{
+				TaskKey:              taskKey,
+				DryRun:               true,
+				EstimatedRowsByTable: map[string]int64{},
+				Warnings:             []string{"dry-run is not exact for the existing combined readiness cleanup path"},
+			}, nil
+		}
+		out, err := store.RunIndexerMaintenance(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey: taskKey,
+			DryRun:  false,
+			DeletedRowsByTable: map[string]int64{
+				"release_family_readiness_summaries": out.PurgedReadinessSummaries,
+				"releases":                           out.PurgedOrphanReleases,
+			},
+			Warnings: []string{"v1 delegates to the existing combined indexer maintenance cleanup path"},
+		}, nil
+	case "inspect_workspace_cleanup":
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey:              taskKey,
+			DryRun:               dryRun,
+			EstimatedRowsByTable: map[string]int64{},
+			Warnings:             []string{"inspect workspace cleanup is currently executed by the scheduled indexer_maintenance service"},
+		}, nil
+	default:
+		if dryRun {
+			return store.DryRunSimpleMaintenanceTask(ctx, taskKey, batchSize)
+		}
+		return store.RunSimpleMaintenanceTask(ctx, taskKey, batchSize)
+	}
 }
 
 func (r *Runner) ExecuteIndexerRepairRuntime() {

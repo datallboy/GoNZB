@@ -20,6 +20,7 @@ const (
 type unassembledBacklogReader interface {
 	EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
+	CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error)
 }
 
 type cachedScrapeBacklogGuard struct {
@@ -31,7 +32,8 @@ type cachedScrapeBacklogGuard struct {
 	evaluating        bool
 	lastCheck         time.Time
 	lastResults       map[supervisor.StageName]supervisor.StageGateDecision
-	blocked           bool
+	assembleBlocked   bool
+	yencBlocked       bool
 	lastLatestTrickle time.Time
 }
 
@@ -116,46 +118,90 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	if runtime == nil || runtime.Indexing == nil {
 		return allowed, nil
 	}
-	if !assembleEnabled(runtime.Indexing) {
-		g.blocked = false
-		return allowed, nil
-	}
-
-	highWater, lowWater := scrapeBacklogThresholds(runtime.Indexing)
-	estimated, err := g.repo.EstimateUnassembledArticleHeaders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("estimate unassembled article header backlog: %w", err)
-	}
-	backlog := estimated
-	if backlog == 0 {
-		exact, err := g.repo.CountUnassembledArticleHeaders(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("count unassembled article header backlog: %w", err)
-		}
-		backlog = exact
-	}
-
-	g.mu.Lock()
-	blocked := g.blocked
-	g.mu.Unlock()
-
-	if blocked || backlog > lowWater {
-		if backlog > lowWater {
-			label := "resume_threshold"
-			threshold := lowWater
-			if !blocked && backlog >= highWater {
-				label = "high_water"
-				threshold = highWater
-			}
-			g.mu.Lock()
-			g.blocked = true
-			g.mu.Unlock()
-			return g.scrapeBlockedDecisions(backlog, threshold, label), nil
-		}
+	if !assembleEnabled(runtime.Indexing) && !recoverYEncEnabled(runtime.Indexing) {
 		g.mu.Lock()
-		g.blocked = false
+		g.assembleBlocked = false
+		g.yencBlocked = false
 		g.mu.Unlock()
 		return allowed, nil
+	}
+
+	if assembleEnabled(runtime.Indexing) {
+		highWater, lowWater := scrapeBacklogThresholds(runtime.Indexing)
+		estimated, err := g.repo.EstimateUnassembledArticleHeaders(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("estimate unassembled article header backlog: %w", err)
+		}
+		backlog := estimated
+		if backlog == 0 {
+			exact, err := g.repo.CountUnassembledArticleHeaders(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("count unassembled article header backlog: %w", err)
+			}
+			backlog = exact
+		}
+
+		g.mu.Lock()
+		blocked := g.assembleBlocked
+		g.mu.Unlock()
+
+		if blocked || backlog >= highWater {
+			if blocked && backlog <= lowWater {
+				g.mu.Lock()
+				g.assembleBlocked = false
+				g.mu.Unlock()
+			} else {
+				label := "resume_threshold"
+				threshold := lowWater
+				if !blocked && backlog >= highWater {
+					label = "high_water"
+					threshold = highWater
+				}
+				g.mu.Lock()
+				g.assembleBlocked = true
+				g.mu.Unlock()
+				return g.scrapeBlockedDecisions(backlog, threshold, label), nil
+			}
+		}
+	} else {
+		g.mu.Lock()
+		g.assembleBlocked = false
+		g.mu.Unlock()
+	}
+
+	if recoverYEncEnabled(runtime.Indexing) && runtime.Indexing.SourceWindow.Enabled {
+		highWater, lowWater := yencBacklogThresholds(runtime.Indexing)
+		backlog, err := g.repo.CountBlockingYEncRecoveryBacklog(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("count blocking yenc recovery backlog: %w", err)
+		}
+
+		g.mu.Lock()
+		blocked := g.yencBlocked
+		g.mu.Unlock()
+
+		if blocked || backlog >= highWater {
+			if blocked && backlog <= lowWater {
+				g.mu.Lock()
+				g.yencBlocked = false
+				g.mu.Unlock()
+			} else {
+				label := "resume_threshold"
+				threshold := lowWater
+				if !blocked && backlog >= highWater {
+					label = "high_water"
+					threshold = highWater
+				}
+				g.mu.Lock()
+				g.yencBlocked = true
+				g.mu.Unlock()
+				return yencBlockedDecisions(backlog, threshold, label), nil
+			}
+		}
+	} else {
+		g.mu.Lock()
+		g.yencBlocked = false
+		g.mu.Unlock()
 	}
 
 	return allowed, nil
@@ -180,6 +226,14 @@ func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int
 	return decisions
 }
 
+func yencBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {
+	reason := fmt.Sprintf("scrape paused for recover_yenc catch-up: blocking_yenc=%d %s=%d", backlog, thresholdLabel, threshold)
+	return map[supervisor.StageName]supervisor.StageGateDecision{
+		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
+		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
+	}
+}
+
 func assembleEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	if indexing == nil {
 		return false
@@ -187,9 +241,30 @@ func assembleEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	return indexing.Assemble.Enabled
 }
 
+func recoverYEncEnabled(indexing *app.IndexingRuntimeSettings) bool {
+	if indexing == nil {
+		return false
+	}
+	return indexing.RecoverYEnc.Enabled
+}
+
 func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
 	if indexing == nil {
 		return scrapeBacklogGuardMinHighWater, scrapeBacklogGuardMinLowWater
+	}
+	if indexing.SourceWindow.Enabled {
+		highWater = int64(indexing.SourceWindow.MaxOpenHeaders)
+		lowWater = int64(indexing.SourceWindow.ResumeOpenHeaders)
+		if highWater < scrapeBacklogGuardMinHighWater {
+			highWater = scrapeBacklogGuardMinHighWater
+		}
+		if lowWater <= 0 || lowWater >= highWater {
+			lowWater = highWater / 2
+		}
+		if lowWater < scrapeBacklogGuardMinLowWater {
+			lowWater = scrapeBacklogGuardMinLowWater
+		}
+		return highWater, lowWater
 	}
 	capacity := 0
 	for _, stage := range []app.IndexingStageRuntimeSettings{indexing.Assemble} {
@@ -210,6 +285,24 @@ func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater i
 		highWater = scrapeBacklogGuardMinHighWater
 	}
 	lowWater = highWater / 2
+	if lowWater < scrapeBacklogGuardMinLowWater {
+		lowWater = scrapeBacklogGuardMinLowWater
+	}
+	return highWater, lowWater
+}
+
+func yencBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
+	if indexing == nil {
+		return scrapeBacklogGuardMinHighWater, scrapeBacklogGuardMinLowWater
+	}
+	highWater = int64(indexing.SourceWindow.MaxBlockingYEnc)
+	lowWater = int64(indexing.SourceWindow.ResumeBlockingYEnc)
+	if highWater < scrapeBacklogGuardMinHighWater {
+		highWater = scrapeBacklogGuardMinHighWater
+	}
+	if lowWater <= 0 || lowWater >= highWater {
+		lowWater = highWater / 2
+	}
 	if lowWater < scrapeBacklogGuardMinLowWater {
 		lowWater = scrapeBacklogGuardMinLowWater
 	}

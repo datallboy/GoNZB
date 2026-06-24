@@ -2,6 +2,11 @@
 
 This document records the pre-v0.8.0 indexer performance audit process, live baseline observations, and follow-up tuning guidance. The baseline is measurement-only: do not change runtime batch sizes, concurrency, retention, indexes, or PostgreSQL cost settings during the soak unless a crash or deadlock blocks the audit.
 
+For storage cleanup and purge decisions, use
+[Indexer Storage Retention And Purge Map](./INDEXER_STORAGE_RETENTION_AND_PURGE.md).
+That document maps large tables to producers/consumers, explains cleanup risk,
+and records the current read-only storage audit findings.
+
 ## Baseline Capture
 
 Audit target:
