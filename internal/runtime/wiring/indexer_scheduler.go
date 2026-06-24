@@ -25,17 +25,8 @@ func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context)
 	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
 }
 
-// Long-running assemble mode restart loop lives outside cmd/main.
 func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
-}
-
-func RunIndexerAssembleLaneAScheduler(ctx context.Context, appCtx *app.Context) error {
-	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneA)
-}
-
-func RunIndexerAssembleLaneBScheduler(ctx context.Context, appCtx *app.Context) error {
-	return runIndexerStages(ctx, appCtx, supervisor.StageAssembleLaneB)
 }
 
 func RunIndexerRecoverYEncScheduler(ctx context.Context, appCtx *app.Context) error {
@@ -67,6 +58,10 @@ func RunIndexerInspectScheduler(ctx context.Context, appCtx *app.Context) error 
 	return runIndexerStages(
 		ctx,
 		appCtx,
+		supervisor.StageInspectDiscoveryReadyRefresh,
+		supervisor.StageInspectPAR2ReadyRefresh,
+		supervisor.StageInspectArchiveReadyRefresh,
+		supervisor.StageInspectMediaReadyRefresh,
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,
@@ -180,6 +175,11 @@ func startIndexerStageRuntime(parent context.Context, appCtx *app.Context, state
 	childCtx, childCancel := context.WithCancel(parent)
 	state.cancel = childCancel
 	state.closer = rt.scrapeProvider
+	if store, ok := appCtx.PGIndexStore.(nntpSnapshotStore); ok {
+		if telemetry := startIndexerNNTPSnapshotPublisher(childCtx, appCtx.Logger, store, state.owner, rt.nntpStats); telemetry != nil {
+			state.closer = multiCloser(state.closer, telemetry)
+		}
+	}
 
 	go func() {
 		if err := rt.supervisor.RunSelected(childCtx, stages...); err != nil && childCtx.Err() == nil {

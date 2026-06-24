@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, getAdminStorageStatus, openAdminOverviewStream, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerOverviewStreamSnapshot, IndexerStorageStatus, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -42,6 +42,26 @@ function formatDuration(ms: number) {
   return `${formatRate(minutes)}m`
 }
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0 B'
+  }
+  if (value >= 1024 ** 3) {
+    return `${(value / 1024 ** 3).toFixed(1)} GB`
+  }
+  if (value >= 1024 ** 2) {
+    return `${(value / 1024 ** 2).toFixed(1)} MB`
+  }
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(1)} KB`
+  }
+  return `${value.toLocaleString()} B`
+}
+
+function isScrapeThroughputWindow(window: IndexerStageThroughput['items'][number]['windows'][number]) {
+  return (window.max_workers_used ?? 0) > 0 || (window.max_groups_scheduled ?? 0) > 0 || (window.max_ranges_fetched ?? 0) > 0
+}
+
 function statFreshness(stat: IndexerDashboardStat) {
   if (stat.last_error) {
     const attemptedAt = formatTimestamp(stat.refresh_attempted_at)
@@ -78,7 +98,7 @@ function isInspectBacklogStat(stat: IndexerDashboardStat) {
 function backlogCommand(stat: IndexerDashboardStat) {
   switch (stat.key) {
     case 'unassembled_headers':
-      return 'indexer assemble'
+      return 'indexer assemble lane-a / lane-b'
     case 'pending_release_summary_refresh_summaries':
       return 'indexer release refresh-summaries'
     case 'pending_release_candidate_families':
@@ -139,157 +159,202 @@ export function AdminDashboardPage() {
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
   const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
   const [nntpStats, setNNTPStats] = useState<IndexerNNTPStats | null>(null)
+  const [storageStatus, setStorageStatus] = useState<IndexerStorageStatus | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
   const [backfillLoading, setBackfillLoading] = useState(false)
   const [throughputLoading, setThroughputLoading] = useState(false)
   const [nntpLoading, setNNTPLoading] = useState(false)
+  const [storageLoading, setStorageLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [throughputError, setThroughputError] = useState<string | null>(null)
   const [nntpError, setNNTPError] = useState<string | null>(null)
+  const [storageError, setStorageError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-  let cancelled = false
+    let cancelled = false
+    let streamConnected = false
+    let source: EventSource | null = null
 
-  function loadNNTPStats(showLoading = false) {
-    if (showLoading) {
-      setNNTPLoading(true)
+    function applyStreamSnapshot(snapshot: IndexerOverviewStreamSnapshot) {
+      if (cancelled) {
+        return
+      }
+      if (snapshot.nntp) {
+        setNNTPStats(snapshot.nntp)
+        setNNTPError(null)
+        setNNTPLoading(false)
+      }
+      if (snapshot.throughput) {
+        setThroughput(snapshot.throughput)
+        setThroughputError(null)
+        setThroughputLoading(false)
+      }
     }
 
-    void getAdminNNTPStats()
-      .then((value) => {
-        if (!cancelled) {
-          setNNTPStats(value)
-          setNNTPError(null)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setNNTPError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load NNTP stats'
-          )
-        }
-      })
-      .finally(() => {
-        if (showLoading && !cancelled) {
-          setNNTPLoading(false)
-        }
-      })
-  }
+    function loadNNTPStats(showLoading = false) {
+      if (streamConnected) {
+        return
+      }
+      if (showLoading) {
+        setNNTPLoading(true)
+      }
 
-  void getAdminOverview()
-    .then((value) => {
-      if (!cancelled) {
-        setOverview(value)
-      }
-    })
-    .catch((err) => {
-      if (!cancelled) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Failed to load overview'
-        )
-      }
-    })
-    .finally(() => {
-      if (!cancelled) {
-        setOverviewLoading(false)
-      }
-    })
-
-  const timer = window.setTimeout(() => {
-    if (cancelled) {
-      return
+      void getAdminNNTPStats()
+        .then((value) => {
+          if (!cancelled) {
+            setNNTPStats(value)
+            setNNTPError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setNNTPError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load NNTP stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (showLoading && !cancelled) {
+            setNNTPLoading(false)
+          }
+        })
     }
 
-    setStatsLoading(true)
-    void getAdminDashboardStats()
+    void getAdminOverview()
       .then((value) => {
         if (!cancelled) {
-          setStats(value)
+          setOverview(value)
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setStatsError(
+          setError(
             err instanceof Error
               ? err.message
-              : 'Failed to load dashboard stats'
+              : 'Failed to load overview'
           )
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setStatsLoading(false)
+          setOverviewLoading(false)
         }
       })
 
-    setThroughputLoading(true)
-    void getAdminStageThroughput()
-      .then((value) => {
-        if (!cancelled) {
-          setThroughput(value)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setThroughputError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load stage throughput'
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setThroughputLoading(false)
-        }
-      })
+    const timer = window.setTimeout(() => {
+      if (cancelled) {
+        return
+      }
 
-    // Initial NNTP load with spinner
-    loadNNTPStats(true)
+      setStatsLoading(true)
+      void getAdminDashboardStats()
+        .then((value) => {
+          if (!cancelled) {
+            setStats(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStatsError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load dashboard stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStatsLoading(false)
+          }
+        })
 
-    setBackfillLoading(true)
-    void getAdminBackfillProgress()
-      .then((value) => {
-        if (!cancelled) {
-          setBackfill(value)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setBackfillError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load backfill progress'
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBackfillLoading(false)
-        }
-      })
-  }, 0)
+      setThroughputLoading(true)
+      void getAdminStageThroughput()
+        .then((value) => {
+          if (!cancelled && !streamConnected) {
+            setThroughput(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && !streamConnected) {
+            setThroughputError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load stage throughput'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled && !streamConnected) {
+            setThroughputLoading(false)
+          }
+        })
 
-  // Silent NNTP auto-refresh every second
-  const nntpInterval = window.setInterval(() => {
-    if (!cancelled) {
-      loadNNTPStats(false)
+      loadNNTPStats(true)
+
+      setStorageLoading(true)
+      void getAdminStorageStatus()
+        .then((value) => {
+          if (!cancelled) {
+            setStorageStatus(value)
+            setStorageError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStorageError(err instanceof Error ? err.message : 'Failed to load storage status')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStorageLoading(false)
+          }
+        })
+
+      setBackfillLoading(true)
+      void getAdminBackfillProgress()
+        .then((value) => {
+          if (!cancelled) {
+            setBackfill(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setBackfillError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load backfill progress'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setBackfillLoading(false)
+          }
+        })
+
+      source = openAdminOverviewStream((snapshot) => {
+        streamConnected = true
+        applyStreamSnapshot(snapshot)
+      })
+      source.onerror = () => {
+        if (!cancelled && !streamConnected) {
+          setNNTPError('Live dashboard stream disconnected; falling back to snapshots.')
+        }
+      }
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      source?.close()
     }
-  }, 1000)
-
-  return () => {
-    cancelled = true
-    window.clearTimeout(timer)
-    window.clearInterval(nntpInterval)
-  }
-}, [])
+  }, [])
 
   function refreshStats() {
     setStatsLoading(true)
@@ -344,15 +409,55 @@ export function AdminDashboardPage() {
       )}
 
       <div className="page-card stack">
+        <div>
+          <h2 className="section-title">PostgreSQL Storage Guard</h2>
+          <p className="muted-copy">
+            Runtime view of the data volume checked before growth-heavy indexer stages run.
+          </p>
+        </div>
+        {storageError ? <div className="banner error">{storageError}</div> : null}
+        {storageLoading && !storageStatus ? (
+          <LoadingBlock label="Loading storage guard..." />
+        ) : (
+          <div className="hero-stat-grid">
+            <div className="stat-card">
+              <span>State</span>
+              <strong>{storageStatus ? (storageStatus.blocked ? 'Blocked' : 'Allowed') : 'Unavailable'}</strong>
+              {storageStatus?.reason ? <small>{storageStatus.reason}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Free Space</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.filesystem_free_bytes) : 'Unavailable'}</strong>
+              {storageStatus ? <small>{storageStatus.filesystem_free_percent.toFixed(1)}%</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Threshold</span>
+              <strong>{storageStatus ? `${storageStatus.min_free_percent.toFixed(1)}%` : 'Unavailable'}</strong>
+              {storageStatus ? <small>{formatBytes(storageStatus.min_free_bytes)}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Path</span>
+              <strong>{storageStatus?.filesystem_visible ? 'Visible' : 'Not Visible'}</strong>
+              {storageStatus ? <small>{storageStatus.visibility_source}: {storageStatus.data_directory || 'unavailable'}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Database Size</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.database_bytes) : 'Unavailable'}</strong>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="page-card stack">
         <div className="toolbar-row">
           <div>
             <h2 className="section-title">Operational Backlog</h2>
             <p className="muted-copy">
-              Queue-focused snapshots for the stages operators tune most often. Refresh recomputes backlog counts without storage diagnostics.
+              Queue-focused snapshots for the stages operators tune most often. The dashboard reads cached values; manual refresh recomputes the cache immediately.
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
-            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Backlog'}
+            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Cache Now'}
           </button>
         </div>
         {statsError ? <div className="banner error">{statsError}</div> : null}
@@ -541,6 +646,21 @@ export function AdminDashboardPage() {
                         <strong>{window.items_processed.toLocaleString()}</strong> {item.item_label}
                       </div>
                       <div className="muted-copy">{formatRate(window.items_per_second)}/sec</div>
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Workers avg {formatRate(window.avg_workers_used ?? 0)} · max {(window.max_workers_used ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Groups avg {formatRate(window.avg_groups_scheduled ?? 0)} · max {(window.max_groups_scheduled ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Ranges avg {formatRate(window.avg_ranges_fetched ?? 0)} · max {(window.max_ranges_fetched ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
                       <div className="muted-copy">{window.completed_runs} completed · {window.failed_runs} failed</div>
                       <div className="muted-copy">Avg run {formatDuration(window.avg_run_duration_ms)}</div>
                     </td>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
 import type {
   AdminStageConfigPatch,
@@ -14,16 +15,19 @@ import type {
 type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
+  | 'poster_materialize'
+  | 'crosspost_popularity_refresh'
   | 'assemble'
-  | 'assemble_lane_a'
-  | 'assemble_lane_b'
   | 'recover_yenc'
   | 'release_summary_refresh'
   | 'release_generate_nzb'
   | 'release_archive_nzb'
-  | 'release_purge_archived_sources'
   | 'release'
   | 'inspect_discovery'
+  | 'inspect_discovery_ready_refresh'
+  | 'inspect_par2_ready_refresh'
+  | 'inspect_archive_ready_refresh'
+  | 'inspect_media_ready_refresh'
   | 'inspect_par2'
   | 'inspect_nfo'
   | 'inspect_archive'
@@ -32,7 +36,6 @@ type StageKey =
   | 'enrich_predb'
   | 'enrich_tmdb'
 
-type BackfillRow = { group: string; until: string }
 type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'indexer'
 
 type StageDefinition = {
@@ -41,35 +44,47 @@ type StageDefinition = {
   description: string
   supportsConcurrency: boolean
   showBinaryUpsertChunk?: boolean
+  showLaneBalance?: boolean
+  showMaxEffectiveConcurrency?: boolean
+  showYEncTargetWindow?: boolean
   showMaxBatches?: boolean
+  defaultMaxBatches?: number
+  batchHelpText?: string
+  maxBatchesHelpText?: string
+  backoffHelpText?: string
+  concurrencyHelpText?: string
 }
 
 const stageDefinitions: StageDefinition[] = [
-  { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: false, description: 'Fast forward scan for new article headers.' },
-  { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: false, description: 'Older article scan toward each group cutoff date.' },
-  { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Legacy combined lane. Leave disabled if you switch to split lane scheduling.' },
-  { key: 'assemble_lane_a', label: 'Assemble lane A', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Priority path that feeds existing incomplete binaries first and should keep release backlogged.' },
-  { key: 'assemble_lane_b', label: 'Assemble lane B', supportsConcurrency: true, showBinaryUpsertChunk: true, description: 'Backlog-drain path for recent unmatched headers. Usually slower and more write-heavy than lane A.' },
-  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.' },
-  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, description: 'Deferred readiness-summary drain. Keeps release-family summary backlog under control before release formation runs.' },
-  { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters binaries into releasable families and persists releases.' },
-  { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.' },
-  { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.' },
-  { key: 'release_purge_archived_sources', label: 'Purge archived sources', supportsConcurrency: false, description: 'Deletes source article rows only after the archived NZB is present and recorded.' },
-  { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: false, description: 'Opaque-binary inspection discovery pass.' },
-  { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.' },
-  { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.' },
-  { key: 'inspect_archive', label: 'Inspect archive', supportsConcurrency: true, description: 'Archive listing and encrypted/password detection.' },
-  { key: 'inspect_password', label: 'Inspect password', supportsConcurrency: false, description: 'Password verification workflow.' },
-  { key: 'inspect_media', label: 'Inspect media', supportsConcurrency: true, description: 'Media probe and stream metadata extraction.' },
+  { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group claim at a time so large group sets stay responsive.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps each pass narrow; raise to scan more groups per pass.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
+  { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps backfill from monopolizing provider and DB capacity.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
+  { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
+  { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
+  { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
+  { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showYEncTargetWindow: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Higher values consume more provider connections and create more short-lived BODY sessions.' },
+  { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
+  { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
+  { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
+  { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
+  { key: 'inspect_discovery_ready_refresh', label: 'Inspect discovery queue', supportsConcurrency: false, description: 'Populates and retires discovery ready-queue rows before discovery workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_par2_ready_refresh', label: 'Inspect PAR2 queue', supportsConcurrency: false, description: 'Populates PAR2 inspection ready-queue rows before PAR2 workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_archive_ready_refresh', label: 'Inspect archive queue', supportsConcurrency: false, description: 'Populates archive inspection ready-queue rows before archive workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_media_ready_refresh', label: 'Inspect media queue', supportsConcurrency: false, description: 'Populates media inspection ready-queue rows before media workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
+  { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: true, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.', concurrencyHelpText: 'NNTP prefix-sampling workers. Raise cautiously because each worker fetches article prefixes.' },
+  { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
+  { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
+  { key: 'inspect_archive', label: 'Inspect archive', supportsConcurrency: true, description: 'Archive listing and encrypted/password detection.', batchHelpText: 'Archive binaries/releases claimed per run.', concurrencyHelpText: 'Archive tooling workers. Higher values can increase disk and memory pressure.' },
+  { key: 'inspect_password', label: 'Inspect password', supportsConcurrency: false, description: 'Password verification workflow.', batchHelpText: 'Password candidates/releases checked per run.' },
+  { key: 'inspect_media', label: 'Inspect media', supportsConcurrency: true, description: 'Media probe and stream metadata extraction.', batchHelpText: 'Media candidates probed per run.', concurrencyHelpText: 'ffprobe workers. Higher values can increase CPU and memory pressure.' },
   { key: 'enrich_predb', label: 'Enrich PreDB', supportsConcurrency: false, description: 'Scene-name and metadata enrichment from PreDB.' },
   { key: 'enrich_tmdb', label: 'Enrich TMDB', supportsConcurrency: false, description: 'TMDB and TVDB metadata enrichment.' },
 ]
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
-  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill'] },
-  { title: 'Assemble and recovery commands', keys: ['assemble', 'assemble_lane_a', 'assemble_lane_b', 'recover_yenc'] },
-  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb', 'release_purge_archived_sources'] },
+  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
+  { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
+  { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
+  { title: 'Inspection queue refresh', keys: ['inspect_discovery_ready_refresh', 'inspect_par2_ready_refresh', 'inspect_archive_ready_refresh', 'inspect_media_ready_refresh'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -79,6 +94,13 @@ const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'downloader', label: 'Downloader' },
   { key: 'aggregator', label: 'Aggregator' },
   { key: 'indexer', label: 'Indexer' },
+]
+
+const nntpProviderRoles = [
+  { key: 'scrape', label: 'Scrape' },
+  { key: 'yenc_recovery', label: 'yEnc recovery' },
+  { key: 'inspection', label: 'Inspection' },
+  { key: 'download', label: 'Download' },
 ]
 
 function defaultSettings(): RuntimeSettings {
@@ -102,28 +124,55 @@ function defaultSettings(): RuntimeSettings {
     indexing: {
       newsgroups: [],
       backfill_until_date_by_group: {},
-      scrape_latest: stageDefaults(5000),
-      scrape_backfill: stageDefaults(5000),
-      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
-      assemble_lane_a: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250 }),
-      assemble_lane_b: stageDefaults(2500, 1, { binary_upsert_db_chunk_size: 250 }),
-      recover_yenc: stageDefaults(25, 1),
+      explicit_groups: [],
+      wildcard_rules: [],
+      provider_group_inventory: [],
+      materialized_groups: [],
+      scrape_latest: stageDefaults(5000, 1, { max_batches: 1 }),
+      scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
+      poster_materialize: stageDefaults(10000),
+      crosspost_popularity_refresh: stageDefaults(1000),
+      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
+      recover_yenc: stageDefaults(25, 1, { target_window_pct: 60, newest_pct: 40 }),
+      source_window: {
+        enabled: true,
+        window_minutes: 15,
+        backfill_window_days: 7,
+        max_open_headers: 50000,
+        resume_open_headers: 10000,
+        max_blocking_yenc: 50000,
+        resume_blocking_yenc: 10000,
+      },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
         min_confidence: 0.55,
         min_completion_pct: 0,
         min_expected_file_coverage_pct: 90,
+        auto_reform_batch_size: 25,
         require_expected_file_count_for_contextual_obfuscated: true,
         public_min_match_confidence: 0.55,
         public_min_completion_pct: 100,
         public_min_identity_status: 'probable',
-        public_require_inspection: false,
+        public_require_inspection: true,
         public_require_enrichment: false,
+        public_require_payload_complete: true,
+        public_require_expected_file_count_complete: false,
+        public_require_par2: false,
+        public_require_nfo: false,
+        public_require_sfv: false,
+        retain_until_expected_file_count_complete: false,
+        retain_require_par2: false,
+        retain_require_nfo: false,
+        retain_require_sfv: false,
+        reopen_archived_nzb_on_release_change: false,
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
-      release_purge_archived_sources: stageDefaults(50),
+      inspect_discovery_ready_refresh: stageDefaults(10000),
+      inspect_par2_ready_refresh: stageDefaults(10000),
+      inspect_archive_ready_refresh: stageDefaults(10000),
+      inspect_media_ready_refresh: stageDefaults(10000),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -136,6 +185,7 @@ function defaultSettings(): RuntimeSettings {
         max_bytes: 2147483648,
         min_binary_bytes: 0,
         max_binary_bytes: 0,
+        require_expected_file_count: false,
         blocked_magic_hex: ['52434C4F4E45'],
         max_archive_depth: 3,
         tool_timeout_seconds: 30,
@@ -147,8 +197,9 @@ function defaultSettings(): RuntimeSettings {
       },
       storage_guard: {
         enabled: true,
-        min_free_bytes: 8 * 1024 * 1024 * 1024,
-        min_free_percent: 5,
+        data_directory: '',
+        min_free_bytes: 0,
+        min_free_percent: 15,
       },
       memory_guard: {
         enabled: true,
@@ -156,7 +207,7 @@ function defaultSettings(): RuntimeSettings {
         min_available_percent: 10,
         min_swap_free_bytes: 512 * 1024 * 1024,
       },
-      inspect_discovery: stageDefaults(100),
+      inspect_discovery: stageDefaults(100, 1),
       inspect_par2: stageDefaults(100),
       inspect_nfo: stageDefaults(100),
       inspect_archive: stageDefaults(100, 1),
@@ -226,17 +277,33 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       ...indexing,
       newsgroups: indexing.newsgroups ?? [],
       backfill_until_date_by_group: indexing.backfill_until_date_by_group ?? {},
+      explicit_groups: indexing.explicit_groups ?? [],
+      wildcard_rules: indexing.wildcard_rules ?? [],
+      provider_group_inventory: indexing.provider_group_inventory ?? [],
+      materialized_groups: indexing.materialized_groups ?? [],
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
+      poster_materialize: { ...defaults.indexing!.poster_materialize, ...indexing.poster_materialize },
+      crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
-      assemble_lane_a: { ...defaults.indexing!.assemble_lane_a, ...indexing.assemble_lane_a },
-      assemble_lane_b: { ...defaults.indexing!.assemble_lane_b, ...indexing.assemble_lane_b },
       recover_yenc: { ...defaults.indexing!.recover_yenc, ...indexing.recover_yenc },
+      source_window: {
+        enabled: indexing.source_window?.enabled ?? defaults.indexing!.source_window!.enabled,
+        window_minutes: indexing.source_window?.window_minutes ?? defaults.indexing!.source_window!.window_minutes,
+        backfill_window_days: indexing.source_window?.backfill_window_days ?? defaults.indexing!.source_window!.backfill_window_days,
+        max_open_headers: indexing.source_window?.max_open_headers ?? defaults.indexing!.source_window!.max_open_headers,
+        resume_open_headers: indexing.source_window?.resume_open_headers ?? defaults.indexing!.source_window!.resume_open_headers,
+        max_blocking_yenc: indexing.source_window?.max_blocking_yenc ?? defaults.indexing!.source_window!.max_blocking_yenc,
+        resume_blocking_yenc: indexing.source_window?.resume_blocking_yenc ?? defaults.indexing!.source_window!.resume_blocking_yenc,
+      },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
       release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
-      release_purge_archived_sources: { ...defaults.indexing!.release_purge_archived_sources, ...indexing.release_purge_archived_sources },
+      inspect_discovery_ready_refresh: { ...defaults.indexing!.inspect_discovery_ready_refresh, ...indexing.inspect_discovery_ready_refresh },
+      inspect_par2_ready_refresh: { ...defaults.indexing!.inspect_par2_ready_refresh, ...indexing.inspect_par2_ready_refresh },
+      inspect_archive_ready_refresh: { ...defaults.indexing!.inspect_archive_ready_refresh, ...indexing.inspect_archive_ready_refresh },
+      inspect_media_ready_refresh: { ...defaults.indexing!.inspect_media_ready_refresh, ...indexing.inspect_media_ready_refresh },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
@@ -268,6 +335,7 @@ function serverDefaults(index: number): ServerRuntimeSettings {
     pool_idle_timeout_seconds: 45,
     pool_max_age_seconds: 600,
     enable_pool_logging: false,
+    roles: ['scrape', 'yenc_recovery', 'inspection', 'download'],
   }
 }
 
@@ -281,29 +349,6 @@ function arrDefaults(index: number): ArrIntegrationRuntimeSettings {
 
 function fieldNumber(value: string) {
   return Number.isFinite(Number(value)) ? Number(value) : 0
-}
-
-function newsgroupRows(indexing: IndexingRuntimeSettings): BackfillRow[] {
-  const cutoffs = indexing.backfill_until_date_by_group ?? {}
-  const rows = indexing.newsgroups.map((group) => ({ group, until: cutoffs[group] ?? '' }))
-  for (const [group, until] of Object.entries(cutoffs)) {
-    if (!rows.some((row) => row.group === group)) {
-      rows.push({ group, until })
-    }
-  }
-  return rows
-}
-
-function rowsToBackfillMap(rows: BackfillRow[]) {
-  return Object.fromEntries(rows.filter((row) => row.group.trim()).map((row) => [row.group.trim(), row.until.trim()]))
-}
-
-function applyNewsgroupRows(indexing: IndexingRuntimeSettings, rows: BackfillRow[]): IndexingRuntimeSettings {
-  return {
-    ...indexing,
-    newsgroups: rows.map((row) => row.group.trim()).filter(Boolean),
-    backfill_until_date_by_group: rowsToBackfillMap(rows),
-  }
 }
 
 function cleanupExtensionsText(items: string[]) {
@@ -322,7 +367,16 @@ function serversForSave(servers: ServerRuntimeSettings[], prefix: string) {
   return servers.map((server, index) => ({
     ...server,
     id: deriveServerID(server, index, prefix),
+    roles: normalizedServerRoles(server),
   }))
+}
+
+function normalizedServerRoles(server: ServerRuntimeSettings) {
+  const roles = server.roles?.filter((role) => nntpProviderRoles.some((item) => item.key === role)) ?? []
+  if (roles.length === 0) {
+    return nntpProviderRoles.map((role) => role.key)
+  }
+  return roles
 }
 
 function deriveServerID(server: ServerRuntimeSettings, index: number, prefix: string) {
@@ -341,13 +395,32 @@ function serverTitle(server: ServerRuntimeSettings, index: number) {
   return `Server ${index + 1}`
 }
 
+function serverRoleEnabled(server: ServerRuntimeSettings, role: string) {
+  return normalizedServerRoles(server).includes(role)
+}
+
+function patchServerRole(server: ServerRuntimeSettings, role: string, enabled: boolean) {
+  const roles = new Set(normalizedServerRoles(server))
+  if (enabled) {
+    roles.add(role)
+  } else if (roles.size > 1) {
+    roles.delete(role)
+  }
+  return Array.from(roles)
+}
+
 function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRuntimeSettings {
   return {
     ...indexing,
+    explicit_groups: indexing.explicit_groups ?? [],
+    wildcard_rules: indexing.wildcard_rules ?? [],
+    provider_group_inventory: indexing.provider_group_inventory ?? [],
+    materialized_groups: indexing.materialized_groups ?? [],
     release: {
       enabled: indexing.release.enabled,
       interval_minutes: indexing.release.interval_minutes,
       batch_size: indexing.release.batch_size,
+      auto_reform_batch_size: indexing.release.auto_reform_batch_size,
       backoff_seconds: indexing.release.backoff_seconds,
       min_confidence: indexing.release.min_confidence,
       min_completion_pct: indexing.release.min_completion_pct,
@@ -358,9 +431,20 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
       public_min_identity_status: indexing.release.public_min_identity_status,
       public_require_inspection: indexing.release.public_require_inspection,
       public_require_enrichment: indexing.release.public_require_enrichment,
+      public_require_payload_complete: indexing.release.public_require_payload_complete,
+      public_require_expected_file_count_complete: indexing.release.public_require_expected_file_count_complete,
+      public_require_par2: indexing.release.public_require_par2,
+      public_require_nfo: indexing.release.public_require_nfo,
+      public_require_sfv: indexing.release.public_require_sfv,
+      retain_until_expected_file_count_complete: indexing.release.retain_until_expected_file_count_complete,
+      retain_require_par2: indexing.release.retain_require_par2,
+      retain_require_nfo: indexing.release.retain_require_nfo,
+      retain_require_sfv: indexing.release.retain_require_sfv,
+      reopen_archived_nzb_on_release_change: indexing.release.reopen_archived_nzb_on_release_change,
     },
     storage_guard: {
       enabled: indexing.storage_guard.enabled,
+      data_directory: indexing.storage_guard.data_directory,
       min_free_bytes: indexing.storage_guard.min_free_bytes,
       min_free_percent: indexing.storage_guard.min_free_percent,
     },
@@ -404,6 +488,8 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
     case 'nntp':
       return {
         servers: serversForSave(settings.servers ?? [], 'nntp'),
+        downloader_servers: [],
+        indexer_servers: [],
         nntp_pool: settings.nntp_pool,
       }
     case 'downloader':
@@ -428,7 +514,6 @@ export function AdminSettingsPage() {
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
   const [activeTab, setActiveTab] = useState<SettingsTab>('nntp')
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [newsgroupDrafts, setNewsgroupDrafts] = useState<BackfillRow[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -437,7 +522,6 @@ export function AdminSettingsPage() {
       const [nextSettings, nextCapabilities] = await Promise.all([getSettings(), getCapabilities()])
       const normalized = normalizeSettings(nextSettings as RuntimeSettings)
       setSettings(normalized)
-      setNewsgroupDrafts(newsgroupRows(normalized.indexing!))
       setCapabilities(nextCapabilities as ControlPlaneCapabilities)
       setError(null)
     } catch (err) {
@@ -462,7 +546,6 @@ export function AdminSettingsPage() {
       const updated = (await updateSettings(buildTabPatch(tab, normalized) as Record<string, unknown>)) as RuntimeSettings
       const next = normalizeSettings(updated)
       setSettings(next)
-      setNewsgroupDrafts(newsgroupRows(next.indexing!))
       setMessage(`${tabLabel(tab)} settings updated.`)
       void getCapabilities().then((next) => setCapabilities(next as ControlPlaneCapabilities))
     } catch (err) {
@@ -480,7 +563,6 @@ export function AdminSettingsPage() {
   const arrIntegrations = normalized.arr_integrations ?? []
   const lockNNTPServers = Boolean(capabilities?.modules.downloader?.ready || capabilities?.modules.usenet_indexer?.ready)
   const lockIndexers = Boolean(capabilities?.modules.aggregator?.ready)
-  const lockIndexerLists = Boolean(capabilities?.modules.usenet_indexer?.ready)
   const lockArr = Boolean(capabilities?.modules.downloader?.ready)
   const requirements = capabilityRequirements(capabilities)
 
@@ -673,45 +755,16 @@ export function AdminSettingsPage() {
 
         {activeTab === 'indexer' ? (
         <ModuleGroup title="Indexer settings">
-          <SettingsSection title="Newsgroups">
-            <div className="button-row">
-              <strong>Groups</strong>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setNewsgroupDrafts((current) => [...current, { group: '', until: '' }])}
-              >
-                Add Newsgroup
-              </button>
+          <SettingsSection title="Scrape workflow">
+            <div className="banner">
+              Newsgroup lists, wildcard rules, provider scans, and per-group cutoffs now live on the dedicated scrape admin page.
             </div>
-            {newsgroupDrafts.map((row, index) => (
-              <div className="newsgroup-row" key={index}>
-                <TextField
-                  label="Newsgroup"
-                  value={row.group}
-                  required
-                  onChange={(value) => updateNewsgroup(index, { group: value })}
-                />
-                <DateField
-                  label="Backfill until date"
-                  value={row.until}
-                  onChange={(value) => updateNewsgroup(index, { until: value })}
-                  helpText="Uses YYYY-MM-DD. Example: 2026-04-01 means April 1, 2026. Backfill stops once the group reaches articles on or before that date."
-                />
-                <button
-                  className="secondary-button newsgroup-row__remove"
-                  type="button"
-                  disabled={lockIndexerLists}
-                  onClick={() => {
-                    const rows = newsgroupDrafts.filter((_, i) => i !== index)
-                    setNewsgroupDrafts(rows)
-                    setIndexing(applyNewsgroupRows(indexing, rows))
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
+            <div className="button-row">
+              <div className="muted-copy">Effective scrape groups: {indexing.newsgroups.length}</div>
+              <Link className="primary-button" to="/admin/indexer/scrape">
+                Open scrape manager
+              </Link>
+            </div>
           </SettingsSection>
 
         <SettingsSection title="Runtime stage controls">
@@ -752,24 +805,122 @@ export function AdminSettingsPage() {
                             helpText="Supports sub-minute scheduling. Example: 0.1 = 6 seconds."
                             onChange={(next) => updateStage(key, { interval_minutes: next })}
                           />
-                          <NumberField label="Batch size" min={1} value={value.batch_size ?? 0} onChange={(next) => updateStage(key, { batch_size: next })} />
+                          <NumberField
+                            label="Batch size"
+                            min={1}
+                            value={value.batch_size ?? 0}
+                            helpText={definition.batchHelpText}
+                            onChange={(next) => updateStage(key, { batch_size: next })}
+                          />
                           {definition.showMaxBatches ? (
-                            <NumberField label="Max batches" min={1} value={value.max_batches ?? 10} onChange={(next) => updateStage(key, { max_batches: next })} />
+                            <NumberField
+                              label="Max batches"
+                              min={1}
+                              value={value.max_batches ?? definition.defaultMaxBatches ?? 10}
+                              helpText={definition.maxBatchesHelpText}
+                              onChange={(next) => updateStage(key, { max_batches: next })}
+                            />
                           ) : null}
-                          <NumberField label="Backoff seconds" min={0} value={value.backoff_seconds ?? 0} onChange={(next) => updateStage(key, { backoff_seconds: next })} />
+                          <NumberField
+                            label="Backoff seconds"
+                            min={0}
+                            value={value.backoff_seconds ?? 0}
+                            helpText={definition.backoffHelpText ?? 'Delay after a failed or blocked run before this stage tries again.'}
+                            onChange={(next) => updateStage(key, { backoff_seconds: next })}
+                          />
                           {definition.supportsConcurrency ? (
-                            <NumberField label="Concurrency" min={1} value={value.concurrency ?? 1} onChange={(next) => updateStage(key, { concurrency: next })} />
+                            <NumberField
+                              label="Concurrency"
+                              min={1}
+                              value={value.concurrency ?? 1}
+                              helpText={definition.concurrencyHelpText}
+                              onChange={(next) => updateStage(key, { concurrency: next })}
+                            />
                           ) : null}
                         </div>
-                        {showAdvanced && definition.showBinaryUpsertChunk ? (
+                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency || definition.showLaneBalance || definition.showYEncTargetWindow) ? (
                           <div className="toolbar-grid toolbar-grid--compact">
-                            <NumberField
-                              label="Binary upsert DB chunk size"
-                              min={1}
-                              value={value.binary_upsert_db_chunk_size ?? 250}
-                              helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
-                              onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
-                            />
+                            {definition.showBinaryUpsertChunk ? (
+                              <NumberField
+                                label="Binary upsert DB chunk size"
+                                min={1}
+                                value={value.binary_upsert_db_chunk_size ?? 250}
+                                helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
+                                onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
+                              />
+                            ) : null}
+                            {definition.showMaxEffectiveConcurrency ? (
+                              <NumberField
+                                label="Max effective concurrency"
+                                min={1}
+                                value={value.max_effective_concurrency ?? 4}
+                                helpText="Safety cap applied below requested concurrency. For recover yEnc this limits BODY prefix fetches, which discard NNTP connections after partial reads."
+                                onChange={(next) => updateStage(key, { max_effective_concurrency: next })}
+                              />
+                            ) : null}
+                            {definition.showLaneBalance ? (
+                              <NumberField
+                                label="Lane A target %"
+                                min={0}
+                                max={100}
+                                value={value.lane_a_target_pct ?? 70}
+                                helpText="Target share for completing existing partial binaries."
+                                onChange={(next) => updateStage(key, { lane_a_target_pct: next })}
+                              />
+                            ) : null}
+                            {definition.showLaneBalance ? (
+                              <NumberField
+                                label="Lane B minimum %"
+                                min={0}
+                                max={100}
+                                value={value.lane_b_min_pct ?? 30}
+                                helpText="Minimum share reserved for fresh queued headers when available."
+                                onChange={(next) => updateStage(key, { lane_b_min_pct: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <CheckboxField
+                                label="Target recovery window"
+                                checked={value.target_window_enabled ?? false}
+                                onChange={(next) => updateStage(key, { target_window_enabled: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <TextField
+                                label="Target window start"
+                                value={value.target_window_start ?? ''}
+                                helpText="RFC3339 timestamp, for example 2026-06-18T18:20:00Z."
+                                onChange={(next) => updateStage(key, { target_window_start: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <TextField
+                                label="Target window end"
+                                value={value.target_window_end ?? ''}
+                                helpText="RFC3339 timestamp. Must be after the start timestamp."
+                                onChange={(next) => updateStage(key, { target_window_end: next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <NumberField
+                                label="Target window %"
+                                min={0}
+                                max={100}
+                                value={value.target_window_pct ?? 60}
+                                helpText="Share of each recover_yenc batch reserved for the target window."
+                                onChange={(next) => updateStage(key, { target_window_pct: next, newest_pct: 100 - next })}
+                              />
+                            ) : null}
+                            {definition.showYEncTargetWindow ? (
+                              <NumberField
+                                label="Newest %"
+                                min={0}
+                                max={100}
+                                value={value.newest_pct ?? 40}
+                                helpText="Share of each recover_yenc batch reserved for newest candidates."
+                                onChange={(next) => updateStage(key, { newest_pct: next, target_window_pct: 100 - next })}
+                              />
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -781,101 +932,241 @@ export function AdminSettingsPage() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Release candidate selection and matching">
+        <SettingsSection title="Release settings">
           <div className="banner">
-            Release settings below affect three different parts of the pipeline. Candidate selection decides which release families are worth processing now. Public-ready policy decides when a release is exposed publicly and becomes eligible for background NZB generation. Matching settings affect how article headers are grouped into binaries during assemble.
+            Release settings are grouped by how risky they are to change. Core settings affect release formation, public-ready settings decide what appears in the public index and NZB generation queue, and advanced settings tune edge-case matching, reform, and source retention.
+          </div>
+          <ReleaseSettingsPanel title="Core Formation" description="Controls when a candidate family can become a persisted release. Keep these conservative unless release formation is demonstrably missing valid complete families.">
+            <div className="toolbar-grid">
+              <NumberField
+                label="Minimum confidence"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.release.min_confidence}
+                helpText="Final release persistence gate. Lower values save weaker/internal release identities; public-ready confidence still controls public exposure."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
+              />
+              <NumberField
+                label="Minimum completion %"
+                min={0}
+                max={100}
+                value={indexing.release.min_completion_pct}
+                helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
+              />
+              <NumberField
+                label="Minimum expected file coverage %"
+                min={0}
+                max={100}
+                value={indexing.release.min_expected_file_coverage_pct}
+                helpText="Candidate-selection gate. When a family has an expected file count, this percent of expected files must be complete before release formation prioritizes it."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Public-Ready Policy" description="Controls what can appear publicly and become eligible for background NZB generation. These gates should stay stricter than formation gates.">
+            <div className="toolbar-grid">
+              <NumberField
+                label="Public min match confidence"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.release.public_min_match_confidence}
+                helpText="Minimum release identity confidence required before the release becomes public and eligible for background NZB generation."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_match_confidence: value } })}
+              />
+              <NumberField
+                label="Public min completion %"
+                min={0}
+                max={100}
+                value={indexing.release.public_min_completion_pct}
+                helpText="Minimum completion threshold for public visibility and background NZB generation eligibility."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_completion_pct: value } })}
+              />
+              <TextField
+                label="Public min identity status"
+                value={indexing.release.public_min_identity_status}
+                helpText="Allowed values: probable or identified. Probable matches the existing public-ready behavior."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_identity_status: value } })}
+              />
+              <CheckboxField
+                label="Public require inspection"
+                helpText="Requires at least one inspection-derived media or evidence signal before a release becomes public-ready and NZB generation-eligible."
+                checked={Boolean(indexing.release.public_require_inspection)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_inspection: value } })}
+              />
+              <CheckboxField
+                label="Public require payload complete"
+                helpText="If an archive-style release expects payload volumes, require the payload archive set itself to be complete before the release becomes public or NZB-generation eligible."
+                checked={Boolean(indexing.release.public_require_payload_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_payload_complete: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Advanced Matching And Reform" description="Use when investigating over-grouping, under-grouping, stale releases, or obfuscated families." collapsed>
+            <div className="toolbar-grid">
+              <NumberField
+                label="Auto reform batch size"
+                min={0}
+                max={5000}
+                value={indexing.release.auto_reform_batch_size}
+                helpText="Bounded background reform sweep per normal release run. Use this to automatically revisit stale or suspicious existing releases like stray PAR2-only fragments without manual --reform runs."
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, auto_reform_batch_size: value } })}
+              />
+              <CheckboxField
+                label="Require expected file count for contextual obfuscated releases"
+                helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
+                checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+              />
+              <NumberField
+                label="High confidence threshold"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.match.high_confidence_threshold}
+                helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
+              />
+              <NumberField
+                label="Probable confidence threshold"
+                step="0.01"
+                min={0}
+                max={1}
+                value={indexing.match.probable_confidence_threshold}
+                helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
+              />
+              <NumberField
+                label="Article bucket size"
+                min={1}
+                value={indexing.match.article_bucket_size}
+                helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
+                onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+
+          <ReleaseSettingsPanel title="Advanced Public And Retention Gates" description="Optional strictness gates and source-retention holds. These can intentionally delay public visibility, NZB generation, or purge." collapsed>
+            <div className="toolbar-grid">
+              <CheckboxField
+                label="Public require enrichment"
+                helpText="Requires external match/enrichment evidence before a release becomes public-ready and NZB generation-eligible."
+                checked={Boolean(indexing.release.public_require_enrichment)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_enrichment: value } })}
+              />
+              <CheckboxField
+                label="Public require all expected files complete"
+                helpText="Stricter gate. When enabled, missing sidecars like base PAR2, NFO, or SFV can keep the release non-public until the full expected file count is reached."
+                checked={Boolean(indexing.release.public_require_expected_file_count_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_expected_file_count_complete: value } })}
+              />
+              <CheckboxField
+                label="Public require PAR2 present"
+                helpText="Presence-only gate. Requires at least one PAR2 file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_par2)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_par2: value } })}
+              />
+              <CheckboxField
+                label="Public require NFO present"
+                helpText="Presence-only gate. Requires at least one NFO file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_nfo)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_nfo: value } })}
+              />
+              <CheckboxField
+                label="Public require SFV present"
+                helpText="Presence-only gate. Requires at least one SFV file to exist before public visibility and NZB generation."
+                checked={Boolean(indexing.release.public_require_sfv)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_sfv: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until all expected files complete"
+                helpText="Prevents purge while the release still appears to be missing expected auxiliary files. Useful when late PAR2/NFO/SFV sidecars often arrive after the first public snapshot."
+                checked={Boolean(indexing.release.retain_until_expected_file_count_complete)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_until_expected_file_count_complete: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until PAR2 present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one PAR2 file exists."
+                checked={Boolean(indexing.release.retain_require_par2)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_par2: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until NFO present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one NFO file exists."
+                checked={Boolean(indexing.release.retain_require_nfo)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_nfo: value } })}
+              />
+              <CheckboxField
+                label="Retain archived sources until SFV present"
+                helpText="Presence-only purge hold. Keeps release sources from purging until at least one SFV file exists."
+                checked={Boolean(indexing.release.retain_require_sfv)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, retain_require_sfv: value } })}
+              />
+              <CheckboxField
+                label="Reopen archived NZB when release snapshot changes"
+                helpText="When later file discoveries change a formed release, mark the archived NZB stale so generation/archive can rebuild it from the newer release snapshot."
+                checked={Boolean(indexing.release.reopen_archived_nzb_on_release_change)}
+                onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, reopen_archived_nzb_on_release_change: value } })}
+              />
+            </div>
+          </ReleaseSettingsPanel>
+        </SettingsSection>
+
+        <SettingsSection title="Source window guard">
+          <div className="banner">
+            Source windows limit new scrape intake while assemble and yEnc recovery catch up. Backfill keeps only recent article windows active; existing old headers are not deleted by this guard.
           </div>
           <div className="toolbar-grid">
-            <NumberField
-              label="Minimum expected file coverage %"
-              min={0}
-              max={100}
-              value={indexing.release.min_expected_file_coverage_pct}
-              helpText="Used during release candidate selection. When a family has an expected file count, this percent of expected files must be complete before release prioritizes the family for formation."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_expected_file_coverage_pct: value } })}
-            />
-            <NumberField
-              label="Minimum confidence"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.release.min_confidence}
-              helpText="Final release persistence gate. Lower values allow weaker release identities to be saved after clustering."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_confidence: value } })}
-            />
-            <NumberField
-              label="Minimum completion %"
-              min={0}
-              max={100}
-              value={indexing.release.min_completion_pct}
-              helpText="Final release persistence gate. Applies after a family is selected and clustered, so it does not improve queue quality by itself."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, min_completion_pct: value } })}
-            />
             <CheckboxField
-              label="Require expected file count for contextual obfuscated releases"
-              helpText="Conservative guardrail for heavily obfuscated multi-file releases. Keeps release formation from trusting weak contextual file groups when the total expected file count is unknown."
-              checked={Boolean(indexing.release.require_expected_file_count_for_contextual_obfuscated)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, require_expected_file_count_for_contextual_obfuscated: value } })}
+              label="Enable source window guard"
+              checked={Boolean(indexing.source_window?.enabled)}
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, enabled: value } })}
             />
             <NumberField
-              label="Public min match confidence"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.release.public_min_match_confidence}
-              helpText="Minimum release identity confidence required before the release becomes public and eligible for background NZB generation."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_match_confidence: value } })}
-            />
-            <NumberField
-              label="Public min completion %"
-              min={0}
-              max={100}
-              value={indexing.release.public_min_completion_pct}
-              helpText="Minimum completion threshold for public visibility and background NZB generation eligibility."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_completion_pct: value } })}
-            />
-            <TextField
-              label="Public min identity status"
-              value={indexing.release.public_min_identity_status}
-              helpText="Allowed values: probable or identified. Probable matches the existing public-ready behavior."
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_min_identity_status: value } })}
-            />
-            <CheckboxField
-              label="Public require inspection"
-              helpText="Requires at least one inspection-derived media or evidence signal before a release becomes public-ready and NZB generation-eligible."
-              checked={Boolean(indexing.release.public_require_inspection)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_inspection: value } })}
-            />
-            <CheckboxField
-              label="Public require enrichment"
-              helpText="Requires external match/enrichment evidence before a release becomes public-ready and NZB generation-eligible."
-              checked={Boolean(indexing.release.public_require_enrichment)}
-              onChange={(value) => setIndexing({ ...indexing, release: { ...indexing.release, public_require_enrichment: value } })}
-            />
-            <NumberField
-              label="High confidence threshold"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.match.high_confidence_threshold}
-              helpText="Assemble matcher short-circuit threshold. Higher values make binary identity matching more conservative."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, high_confidence_threshold: value } })}
-            />
-            <NumberField
-              label="Probable confidence threshold"
-              step="0.01"
-              min={0}
-              max={1}
-              value={indexing.match.probable_confidence_threshold}
-              helpText="Assemble matcher fallback threshold for weaker but still plausible identity matches."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, probable_confidence_threshold: value } })}
-            />
-            <NumberField
-              label="Article bucket size"
+              label="Backfill window days"
               min={1}
-              value={indexing.match.article_bucket_size}
-              helpText="Assemble matching proximity window. Larger buckets help correlate more distant multipart posts, but they can increase noisy grouping."
-              onChange={(value) => setIndexing({ ...indexing, match: { ...indexing.match, article_bucket_size: value } })}
+              value={indexing.source_window?.backfill_window_days ?? 7}
+              helpText="Backfill ignores articles older than this rolling window unless a group has an explicit cutoff."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, backfill_window_days: value } })}
+            />
+            <NumberField
+              label="Assembly family window minutes"
+              min={1}
+              value={indexing.source_window?.window_minutes ?? 15}
+              helpText="Conservative release-family formation window for tightly posted upload sets."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, window_minutes: value } })}
+            />
+            <NumberField
+              label="Max open headers"
+              min={1}
+              value={indexing.source_window?.max_open_headers ?? 50000}
+              helpText="Pause scheduled scrape when open assemble work reaches this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, max_open_headers: value } })}
+            />
+            <NumberField
+              label="Resume open headers"
+              min={1}
+              value={indexing.source_window?.resume_open_headers ?? 10000}
+              helpText="Resume scheduled scrape after open assemble work drains below this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, resume_open_headers: value } })}
+            />
+            <NumberField
+              label="Max blocking yEnc"
+              min={1}
+              value={indexing.source_window?.max_blocking_yenc ?? 50000}
+              helpText="Pause scheduled scrape when priority-0 or weak/overgrouped yEnc backlog reaches this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, max_blocking_yenc: value } })}
+            />
+            <NumberField
+              label="Resume blocking yEnc"
+              min={1}
+              value={indexing.source_window?.resume_blocking_yenc ?? 10000}
+              helpText="Resume scheduled scrape after blocking yEnc backlog drains below this count."
+              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, resume_blocking_yenc: value } })}
             />
           </div>
         </SettingsSection>
@@ -890,6 +1181,12 @@ export function AdminSettingsPage() {
               helpText="Checks the PostgreSQL data directory before running growth-heavy indexer stages."
               checked={Boolean(indexing.storage_guard.enabled)}
               onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, enabled: value } })}
+            />
+            <TextField
+              label="Data directory"
+              value={indexing.storage_guard.data_directory ?? ''}
+              helpText="Optional host-visible PostgreSQL data path. Required when the DB-reported data_directory is not visible from the app container."
+              onChange={(value) => setIndexing({ ...indexing, storage_guard: { ...indexing.storage_guard, data_directory: value } })}
             />
             <NumberField
               label="Minimum free bytes"
@@ -972,6 +1269,14 @@ export function AdminSettingsPage() {
               helpText="0 disables. Completed opaque binaries larger than this are marked content-filtered during inspect discovery."
               onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_binary_bytes: value } })}
             />
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={Boolean(indexing.inspect.require_expected_file_count)}
+                onChange={(event) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, require_expected_file_count: event.target.checked } })}
+              />
+              <span>Require expected file count match before archive, password, and media inspection</span>
+            </label>
             <TextField
               label="Blocked magic bytes"
               value={(indexing.inspect.blocked_magic_hex ?? []).join(', ')}
@@ -1059,12 +1364,6 @@ export function AdminSettingsPage() {
   function updateArr(index: number, patch: Partial<ArrIntegrationRuntimeSettings>) {
     setSettings((current) => ({ ...current, arr_integrations: arrIntegrations.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
   }
-
-  function updateNewsgroup(index: number, patch: Partial<BackfillRow>) {
-    const rows = newsgroupDrafts.map((row, i) => (i === index ? { ...row, ...patch } : row))
-    setNewsgroupDrafts(rows)
-    setIndexing(applyNewsgroupRows(indexing, rows))
-  }
 }
 
 function capabilityRequirements(capabilities: ControlPlaneCapabilities | null) {
@@ -1137,6 +1436,28 @@ function SettingsSection({
   )
 }
 
+function ReleaseSettingsPanel({
+  title,
+  description,
+  collapsed,
+  children,
+}: {
+  title: string
+  description: string
+  collapsed?: boolean
+  children: ReactNode
+}) {
+  return (
+    <details className="release-settings-panel stack" open={!collapsed}>
+      <summary>
+        <span>{title}</span>
+        <small>{description}</small>
+      </summary>
+      {children}
+    </details>
+  )
+}
+
 function ServerFields({
   title,
   server,
@@ -1169,6 +1490,14 @@ function ServerFields({
         <NumberField label="Pool max age seconds" value={server.pool_max_age_seconds} onChange={(value) => onChange({ pool_max_age_seconds: value })} />
         <CheckboxField label="TLS" checked={server.tls} onChange={(value) => onChange({ tls: value })} />
         <CheckboxField label="Pool logging" checked={server.enable_pool_logging} onChange={(value) => onChange({ enable_pool_logging: value })} />
+        {nntpProviderRoles.map((role) => (
+          <CheckboxField
+            key={role.key}
+            label={role.label}
+            checked={serverRoleEnabled(server, role.key)}
+            onChange={(value) => onChange({ roles: patchServerRole(server, role.key, value) })}
+          />
+        ))}
       </div>
     </div>
   )
@@ -1193,28 +1522,6 @@ function TextField({
     <label className="field">
       <span>{label}</span>
       <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
-      {helpText ? <small>{helpText}</small> : null}
-    </label>
-  )
-}
-
-function DateField({
-  label,
-  value,
-  required,
-  helpText,
-  onChange,
-}: {
-  label: string
-  value: string
-  required?: boolean
-  helpText?: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      <input type="date" value={value} required={required} onChange={(event) => onChange(event.target.value)} />
       {helpText ? <small>{helpText}</small> : null}
     </label>
   )

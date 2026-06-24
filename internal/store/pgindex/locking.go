@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const binaryIdentityLockBatchSize = 10000
+
 func lockBinaryIdentityKey(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, binaryKey string) error {
 	if tx == nil {
 		return fmt.Errorf("binary identity lock tx is required")
@@ -60,12 +62,28 @@ func lockBinaryIdentityKeys(ctx context.Context, runner sqlExecQueryer, locks []
 		}
 		return deduped[i].BinaryKey < deduped[j].BinaryKey
 	})
+	for start := 0; start < len(deduped); start += binaryIdentityLockBatchSize {
+		end := start + binaryIdentityLockBatchSize
+		if end > len(deduped) {
+			end = len(deduped)
+		}
+		if err := lockBinaryIdentityKeysChunk(ctx, runner, deduped[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lockBinaryIdentityKeysChunk(ctx context.Context, runner sqlExecQueryer, deduped []binaryIdentityLock) error {
 	values := make([]string, 0, len(deduped))
 	args := make([]any, 0, len(deduped)*3)
 	for i, lock := range deduped {
 		base := (i * 3) + 1
 		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text)", base, base+1, base+2))
 		args = append(args, lock.ProviderID, lock.NewsgroupID, lock.BinaryKey)
+	}
+	if len(args) > postgresBindParameterSoftLimit {
+		return fmt.Errorf("binary identity lock chunk has %d bind parameters", len(args))
 	}
 	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
 		WITH requested(provider_id, newsgroup_id, binary_key) AS (

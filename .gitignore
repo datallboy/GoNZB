@@ -15,9 +15,13 @@ testdata
 
 # Ignore logs
 *.log
+*.log.*
 
 # Ignore db
 *.db*
+
+# Local scratch files
+.tmp/
 
 # Web dist
 internal/webui/dist

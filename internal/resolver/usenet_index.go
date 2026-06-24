@@ -178,13 +178,17 @@ func (r *usenetIndexResolver) buildNZB(ctx context.Context, rel *domain.Release,
 			dateUnix = f.PostedAt.UTC().Unix()
 		}
 
-		fileGroups := make([]groupXML, 0, len(groups))
-		for _, group := range groups {
-			group = strings.TrimSpace(group)
-			if group == "" {
-				continue
-			}
+		fileGroups := make([]groupXML, 0, 1)
+		if group := strings.TrimSpace(f.GroupName); group != "" {
 			fileGroups = append(fileGroups, groupXML{Name: group})
+		} else {
+			for _, group := range groups {
+				group = strings.TrimSpace(group)
+				if group == "" {
+					continue
+				}
+				fileGroups = append(fileGroups, groupXML{Name: group})
+			}
 		}
 
 		doc.Files = append(doc.Files, fileXML{

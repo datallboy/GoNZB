@@ -44,6 +44,7 @@ type Service struct {
 }
 
 var parVolumePartsRE = regexp.MustCompile(`(?i)\.vol(\d+)\+(\d+)\.par2$`)
+var par2ArchiveTargetRE = regexp.MustCompile(`(?i)(\.part0*\d+\.rar|\.r\d{2,3}|\.rar|\.zip|\.zip\.0*\d+|\.7z|\.7z\.0*\d+)$`)
 
 func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, log logger, opts inspectpkg.Options) *Service {
 	return &Service{
@@ -465,7 +466,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 		result.persist = persist
 		if s != nil && s.log != nil {
-			s.log.Debug("inspect_par2: skipped binary_id=%d release_id=%s reason=%s", candidate.BinaryID, candidate.ReleaseID, par2ProbeSkipReason(err))
+			s.log.Debug(
+				"inspect_par2: skipped binary_id=%d release_id=%s reason=%s detail=%q",
+				candidate.BinaryID,
+				candidate.ReleaseID,
+				par2ProbeSkipReason(err),
+				trimPAR2ProbeErrorDetail(err),
+			)
 		}
 		return result, nil
 	}
@@ -513,11 +520,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	targetMetadata := make([]map[string]any, 0, len(targets))
 	targetRows := make([]pgindex.BinaryPAR2TargetRecord, 0, len(targets))
+	archiveTargetCount := 0
 	for _, target := range targets {
 		targetMetadata = append(targetMetadata, map[string]any{
 			"name": target.Name,
 			"size": target.Size,
 		})
+		if isPAR2ArchiveTarget(target.Name) {
+			archiveTargetCount++
+		}
 		targetRows = append(targetRows, pgindex.BinaryPAR2TargetRecord{
 			BinaryID:  candidate.BinaryID,
 			ReleaseID: candidate.ReleaseID,
@@ -586,15 +597,24 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if strings.TrimSpace(candidate.ReleaseID) == "" {
 		return result, nil
 	}
+	expectedFileCount := len(targetRows)
 	result.releaseUpdate = &pgindex.ReleaseInspectionUpdate{
-		ReleaseID:         candidate.ReleaseID,
-		HasPAR2:           &hasPAR2,
-		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
+		ReleaseID:                candidate.ReleaseID,
+		HasPAR2:                  &hasPAR2,
+		ExpectedFileCount:        &expectedFileCount,
+		ExpectedArchiveFileCount: ptrIntPAR2(archiveTargetCount),
+		MetadataUpdatedAt:        ptrTime(time.Now().UTC()),
 	}
 	return result, nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func ptrIntPAR2(v int) *int { return &v }
+
+func isPAR2ArchiveTarget(fileName string) bool {
+	return par2ArchiveTargetRE.MatchString(strings.ToLower(strings.TrimSpace(fileName)))
+}
 
 func durationMillis(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000.0
@@ -703,15 +723,39 @@ func par2ProbeSkipReason(err error) string {
 	switch {
 	case strings.Contains(msg, "has no file for binary"):
 		return "release_file_missing"
+	case strings.Contains(msg, "binary ") && strings.Contains(msg, " not found"):
+		return "binary_not_found"
+	case strings.Contains(msg, "not found"):
+		return "article_not_found"
 	case strings.Contains(msg, "has no articles"):
 		return "article_refs_missing"
 	case strings.Contains(msg, "has no newsgroups"):
 		return "newsgroups_missing"
 	case strings.Contains(msg, "checksum mismatch"):
 		return "article_checksum_mismatch"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "header"):
+		return "yenc_header_decode_failed"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "body"):
+		return "yenc_body_decode_failed"
+	case strings.Contains(msg, "decode article") && strings.Contains(msg, "verify"):
+		return "yenc_verify_failed"
+	case strings.Contains(msg, "standalone binary materialization is not supported"):
+		return "standalone_materialization_unsupported"
 	default:
 		return "prefix_sample_failed"
 	}
+}
+
+func trimPAR2ProbeErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	const maxLen = 240
+	if len(detail) <= maxLen {
+		return detail
+	}
+	return detail[:maxLen] + "..."
 }
 
 func isRecoverablePAR2InspectionError(err error) bool {

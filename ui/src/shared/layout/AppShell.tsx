@@ -114,7 +114,9 @@ export function AdminAppShell() {
           {moduleVisible('usenet_indexer') && hasPermission('indexer.runtime.read') ? (
             <>
               <NavLink to="/admin/indexer/dashboard">Dashboard</NavLink>
+              <NavLink to="/admin/indexer/scrape">Scrape</NavLink>
               <NavLink to="/admin/indexer/stages">Stages</NavLink>
+              <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
               <NavLink to="/admin/indexer/runs">Runs</NavLink>
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
             </>

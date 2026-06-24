@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
+
+var rarFirstPartRE = regexp.MustCompile(`(?i)\.part0*1\.rar$`)
 
 type logger interface {
 	Debug(format string, v ...interface{})
@@ -65,6 +68,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		Limit:         s.opts.CandidateBatchSize,
 		Owner:         s.opts.ClaimOwner + ":" + stageName,
 		LeaseDuration: s.opts.ClaimLease,
+		Options: pgindex.BinaryInspectionCandidateOptions{
+			RequireExpectedFileCount: s.opts.RequireExpectedFileCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim inspect_archive candidates: %w", err)
@@ -227,7 +233,7 @@ func (s *Service) dedupeCandidates(ctx context.Context, candidates []pgindex.Bin
 func archiveCandidatePriority(fileName string) int {
 	lower := strings.ToLower(strings.TrimSpace(fileName))
 	switch {
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		return 0
 	case strings.HasSuffix(lower, ".7z.001"), strings.HasSuffix(lower, ".zip.001"):
 		return 0

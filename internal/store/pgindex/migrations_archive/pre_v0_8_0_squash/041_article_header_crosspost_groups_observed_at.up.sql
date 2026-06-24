@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS idx_article_header_crosspost_groups_observed_at
+ON article_header_crosspost_groups (observed_at DESC);

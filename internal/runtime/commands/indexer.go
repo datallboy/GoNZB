@@ -2,14 +2,18 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/scheduler"
+	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -70,40 +74,6 @@ func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerAssembleLaneA(once bool) {
-	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
-	defer cleanup()
-
-	if once {
-		if err := appCtx.UsenetIndexer.AssembleLaneAOnce(ctx); err != nil {
-			appCtx.Logger.Fatal("indexer assemble lane-a --once failed: %v", err)
-		}
-		appCtx.Logger.Info("indexer assemble lane-a --once completed")
-		return
-	}
-
-	if err := wiring.RunIndexerAssembleLaneAScheduler(ctx, appCtx); err != nil {
-		appCtx.Logger.Fatal("indexer assemble lane-a scheduler failed: %v", err)
-	}
-}
-
-func (r *Runner) ExecuteIndexerAssembleLaneB(once bool) {
-	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
-	defer cleanup()
-
-	if once {
-		if err := appCtx.UsenetIndexer.AssembleLaneBOnce(ctx); err != nil {
-			appCtx.Logger.Fatal("indexer assemble lane-b --once failed: %v", err)
-		}
-		appCtx.Logger.Info("indexer assemble lane-b --once completed")
-		return
-	}
-
-	if err := wiring.RunIndexerAssembleLaneBScheduler(ctx, appCtx); err != nil {
-		appCtx.Logger.Fatal("indexer assemble lane-b scheduler failed: %v", err)
-	}
-}
-
 func (r *Runner) ExecuteIndexerRecoverYEnc(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn and an indexer NNTP server.")
 	defer cleanup()
@@ -121,18 +91,25 @@ func (r *Runner) ExecuteIndexerRecoverYEnc(once bool) {
 	}
 }
 
-func (r *Runner) ExecuteIndexerRelease(once bool, reform bool) {
+func (r *Runner) ExecuteIndexerRelease(once bool, reform bool, releaseIDs []string) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
 	if reform && !once {
 		appCtx.Logger.Fatal("indexer release --reform currently requires --once")
 	}
+	if len(releaseIDs) > 0 && !reform {
+		appCtx.Logger.Fatal("indexer release --release-id requires --reform")
+	}
 
 	if once {
 		var err error
 		if reform {
-			err = appCtx.UsenetIndexer.ReformReleasesOnce(ctx)
+			if len(releaseIDs) > 0 {
+				err = appCtx.UsenetIndexer.ReformSelectedReleasesOnce(ctx, releaseIDs)
+			} else {
+				err = appCtx.UsenetIndexer.ReformReleasesOnce(ctx)
+			}
 		} else {
 			err = appCtx.UsenetIndexer.ReleaseOnce(ctx)
 		}
@@ -210,8 +187,15 @@ func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
 
+	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
+	batchSize := indexing.ReleasePurgeArchivedSources.BatchSize
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	policy := releaseSourcePurgeReadyPolicy(indexing)
+
 	if once {
-		if err := appCtx.UsenetIndexer.ReleasePurgeArchivedSourcesOnce(ctx); err != nil {
+		if _, err := appCtx.PGIndexStore.RunReleaseSourcePurge(ctx, batchSize, policy); err != nil {
 			appCtx.Logger.Fatal("indexer release purge-archived-sources --once failed: %v", err)
 		}
 		appCtx.Logger.Info("indexer release purge-archived-sources --once completed")
@@ -221,6 +205,25 @@ func (r *Runner) ExecuteIndexerReleasePurgeArchivedSources(once bool) {
 	if err := wiring.RunIndexerReleasePurgeArchivedSourcesScheduler(ctx, appCtx); err != nil {
 		appCtx.Logger.Fatal("indexer release purge-archived-sources scheduler failed: %v", err)
 	}
+}
+
+func releaseSourcePurgeReadyPolicy(indexing app.IndexingRuntimeSettings) pgindex.ReleaseReadyPolicy {
+	return pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+		MinMatchConfidence:                   indexing.Release.PublicMinMatchConfidence,
+		MinCompletionPct:                     indexing.Release.PublicMinCompletionPct,
+		MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
+		RequireInspection:                    indexing.Release.PublicRequireInspection,
+		RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
+		RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
+		RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
+		RequirePAR2:                          indexing.Release.PublicRequirePAR2,
+		RequireNFO:                           indexing.Release.PublicRequireNFO,
+		RequireSFV:                           indexing.Release.PublicRequireSFV,
+		RetainUntilExpectedFileCountComplete: indexing.Release.RetainUntilExpectedFileCountComplete,
+		RetainRequirePAR2:                    indexing.Release.RetainRequirePAR2,
+		RetainRequireNFO:                     indexing.Release.RetainRequireNFO,
+		RetainRequireSFV:                     indexing.Release.RetainRequireSFV,
+	})
 }
 
 func (r *Runner) ExecuteIndexerInspect(once bool) {
@@ -468,11 +471,25 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d inspect_discovery_ready_upserted=%d inspect_discovery_ready_retired=%d inspect_discovery_ready_requeued=%d inspect_par2_ready_upserted=%d inspect_par2_ready_retired=%d inspect_par2_ready_requeued=%d inspect_archive_ready_upserted=%d inspect_archive_ready_retired=%d inspect_archive_ready_requeued=%d inspect_media_ready_upserted=%d inspect_media_ready_retired=%d inspect_media_ready_requeued=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d skipped_readiness_cleanup=%t refresh_queue_backlog=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
 			out.AbandonedBinaryInspections,
+			out.YEncWorkItemsUpserted,
+			out.YEncWorkItemsRetired,
+			out.InspectDiscoveryReadyRows,
+			out.InspectDiscoveryRetired,
+			out.InspectDiscoveryRequeued,
+			out.InspectPAR2ReadyRows,
+			out.InspectPAR2Retired,
+			out.InspectPAR2Requeued,
+			out.InspectArchiveReadyRows,
+			out.InspectArchiveRetired,
+			out.InspectArchiveRequeued,
+			out.InspectMediaReadyRows,
+			out.InspectMediaRetired,
+			out.InspectMediaRequeued,
 			out.BackfilledCatalogFiles,
 			out.PurgedStageRuns,
 			out.PurgedScrapeRuns,
@@ -481,9 +498,78 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 			out.PurgedGroupingEvidence,
 			out.PurgedReadinessSummaries,
 			out.PurgedOrphanReleases,
+			out.SkippedReadinessCleanup,
+			out.RefreshQueueBacklog,
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance completed")
+}
+
+func (r *Runner) ExecuteIndexerPurgeHeaderPayloads() {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer payload purge requires store.pg_dsn.")
+	defer cleanup()
+
+	purged, err := appCtx.PGIndexStore.PurgeArticleHeaderPayloads(ctx)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance purge-header-payloads failed: %v", err)
+	}
+	appCtx.Logger.Info("indexer maintenance purge-header-payloads: purged_header_payloads=%d", purged)
+}
+
+func (r *Runner) ExecuteIndexerBackfillCrosspostGroups(batchSize, maxBatches int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer cross-post backfill requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.BackfillIndexerCrosspostGroups(ctx, batchSize, maxBatches)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance backfill-crosspost-groups failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance backfill-crosspost-groups: batches=%d source_headers=%d rows_upserted=%d last_article_id=%d",
+			out.BatchesProcessed,
+			out.SourceHeaders,
+			out.RowsUpserted,
+			out.LastArticleID,
+		)
+	}
+}
+
+func (r *Runner) ExecuteIndexerMaterializePosters(batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer poster materialization requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.MaterializeArticleHeaderPosters(ctx, batchSize)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance materialize-posters failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance materialize-posters: claimed=%d posters=%d refs_upserted=%d",
+			out.Claimed,
+			out.Posters,
+			out.RefsUpserted,
+		)
+	}
+}
+
+func (r *Runner) ExecuteIndexerRefreshCrosspostPopularity(batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer cross-post popularity refresh requires store.pg_dsn.")
+	defer cleanup()
+
+	out, err := appCtx.PGIndexStore.RefreshCrosspostPopularity(ctx, batchSize)
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance refresh-crosspost-popularity failed: %v", err)
+	}
+	if out != nil {
+		appCtx.Logger.Info(
+			"indexer maintenance refresh-crosspost-popularity: claimed=%d groups_refreshed=%d distinct_messages_observed=%d distinct_sources_observed=%d",
+			out.Claimed,
+			out.GroupsRefreshed,
+			out.DistinctMessagesObserved,
+			out.DistinctSourcesObserved,
+		)
+	}
 }
 
 func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkOnly bool) {
@@ -513,6 +599,103 @@ func (r *Runner) ExecuteIndexerStorageReclaim(tables []string, full bool, checkO
 	appCtx.Logger.Info("indexer storage reclaim completed")
 }
 
+func (r *Runner) ExecuteIndexerMaintenanceTask(taskKey string, dryRun bool, batchSize int) {
+	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer maintenance task requires store.pg_dsn.")
+	defer cleanup()
+
+	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
+	out, err := runIndexerMaintenanceTaskCLI(ctx, appCtx.PGIndexStore, taskKey, dryRun, batchSize, releaseSourcePurgeReadyPolicy(indexing))
+	if err != nil {
+		appCtx.Logger.Fatal("indexer maintenance task failed: %v", err)
+	}
+	if out == nil {
+		appCtx.Logger.Info("indexer maintenance task completed with no result")
+		return
+	}
+	encoded, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		appCtx.Logger.Fatal("encode indexer maintenance task result failed: %v", err)
+	}
+	fmt.Println(string(encoded))
+}
+
+func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStore, taskKey string, dryRun bool, batchSize int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error) {
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	switch strings.ToLower(strings.TrimSpace(taskKey)) {
+	case "dashboard_stats_refresh":
+		if dryRun {
+			stats, err := store.GetIndexerDashboardStats(ctx)
+			if err != nil {
+				return nil, err
+			}
+			count := int64(0)
+			if stats != nil {
+				count = int64(stats.Count)
+			}
+			return &pgindex.MaintenanceTaskResult{
+				TaskKey:              taskKey,
+				DryRun:               true,
+				EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+				Warnings:             []string{"dry-run reports cached stat rows without recomputing counts"},
+			}, nil
+		}
+		stats, err := store.RefreshIndexerDashboardStats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		count := int64(0)
+		if stats != nil {
+			count = int64(stats.Count)
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey:              taskKey,
+			DryRun:               false,
+			EstimatedRowsByTable: map[string]int64{"indexer_dashboard_stats": count},
+		}, nil
+	case "release_source_purge":
+		if dryRun {
+			return store.DryRunReleaseSourcePurge(ctx, batchSize, policy)
+		}
+		return store.RunReleaseSourcePurge(ctx, batchSize, policy)
+	case "readiness_cleanup":
+		if dryRun {
+			return &pgindex.MaintenanceTaskResult{
+				TaskKey:              taskKey,
+				DryRun:               true,
+				EstimatedRowsByTable: map[string]int64{},
+				Warnings:             []string{"dry-run is not exact for the existing combined readiness cleanup path"},
+			}, nil
+		}
+		out, err := store.RunIndexerMaintenance(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey: taskKey,
+			DryRun:  false,
+			DeletedRowsByTable: map[string]int64{
+				"release_family_readiness_summaries": out.PurgedReadinessSummaries,
+				"releases":                           out.PurgedOrphanReleases,
+			},
+			Warnings: []string{"v1 delegates to the existing combined indexer maintenance cleanup path"},
+		}, nil
+	case "inspect_workspace_cleanup":
+		return &pgindex.MaintenanceTaskResult{
+			TaskKey:              taskKey,
+			DryRun:               dryRun,
+			EstimatedRowsByTable: map[string]int64{},
+			Warnings:             []string{"inspect workspace cleanup is currently executed by the scheduled indexer_maintenance service"},
+		}, nil
+	default:
+		if dryRun {
+			return store.DryRunSimpleMaintenanceTask(ctx, taskKey, batchSize)
+		}
+		return store.RunSimpleMaintenanceTask(ctx, taskKey, batchSize)
+	}
+}
+
 func (r *Runner) ExecuteIndexerRepairRuntime() {
 	appCtx, ctx, cleanup := r.setupIndexerStoreCommand("Usenet/NZB Indexer maintenance requires store.pg_dsn.")
 	defer cleanup()
@@ -529,6 +712,50 @@ func (r *Runner) ExecuteIndexerRepairRuntime() {
 		)
 	}
 	appCtx.Logger.Info("indexer maintenance repair-runtime completed")
+}
+
+func (r *Runner) ExecuteIndexerCheckIntegrity(ensureExtension bool) {
+	store, log, ctx, cleanup := r.setupIndexerMaintenanceStoreCommand("Usenet/NZB Indexer integrity check requires store.pg_maintenance_dsn. Stop serve/supervisor first, then run this command with privileged maintenance credentials.")
+	defer cleanup()
+
+	report, err := store.CheckCriticalIndexerIntegrity(ctx, ensureExtension)
+	if err != nil {
+		log.Fatal("indexer maintenance check-integrity failed: %v", err)
+	}
+	if report == nil {
+		log.Fatal("indexer maintenance check-integrity failed: no report returned")
+	}
+	for _, check := range report.Checks {
+		log.Info(
+			"indexer integrity: relation=%s access_method=%s metadata_ok=%t amcheck_ran=%t ok=%t detail=%s",
+			check.Relation,
+			check.AccessMethod,
+			check.MetadataOK,
+			check.AmcheckRan,
+			check.OK,
+			check.Detail,
+		)
+	}
+	if report.HasFailures() {
+		log.Fatal("indexer integrity failed: %s", report.FailureSummary())
+	}
+	log.Info("indexer integrity check completed")
+}
+
+func (r *Runner) ExecuteIndexerReindexCritical() {
+	store, log, ctx, cleanup := r.setupIndexerMaintenanceStoreCommand("Usenet/NZB Indexer critical reindex requires store.pg_maintenance_dsn. Stop serve/supervisor first, then run this command with privileged maintenance credentials.")
+	defer cleanup()
+
+	out, err := store.ReindexCriticalIndexerIndexes(ctx)
+	if err != nil {
+		log.Fatal("indexer maintenance reindex-critical failed: %v", err)
+	}
+	if out != nil {
+		for _, relation := range out.Reindexed {
+			log.Info("indexer integrity repair: reindexed=%s", relation)
+		}
+	}
+	log.Info("indexer critical reindex completed")
 }
 
 func (r *Runner) setupIndexerCommand(notConfiguredMessage string) (*app.Context, context.Context, func()) {
@@ -573,6 +800,31 @@ func (r *Runner) setupIndexerStoreCommand(notConfiguredMessage string) (*app.Con
 	return appCtx, ctx, func() {
 		stop()
 		appCtx.Close()
+	}
+}
+
+func (r *Runner) setupIndexerMaintenanceStoreCommand(notConfiguredMessage string) (*pgindex.Store, *logger.Logger, context.Context, func()) {
+	cfg, log := r.loadRuntimeConfig()
+	dsn := strings.TrimSpace(cfg.Store.PGMaintenanceDSN)
+	if dsn == "" {
+		log.Fatal("%s", notConfiguredMessage)
+	}
+
+	store, err := pgindex.NewMaintenanceStore(dsn)
+	if err != nil {
+		log.Fatal("failed to initialize pg maintenance store: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	return store, log, ctx, func() {
+		stop()
+		if err := store.Close(); err != nil {
+			log.Warn("error closing pg maintenance store: %v", err)
+		}
+		if err := log.Close(); err != nil {
+			// The logger may already be closed by fatal paths; ignore close errors.
+			_ = err
+		}
 	}
 }
 

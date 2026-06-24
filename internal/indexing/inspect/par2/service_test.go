@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +63,9 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if repo.par2Targets[0].FileName != "target.part01.rar" || repo.par2Targets[0].FileSize != 123456 {
 		t.Fatalf("unexpected par2 target %+v", repo.par2Targets[0])
 	}
+	if repo.par2Targets[0].ReleaseID != "rel-par2" {
+		t.Fatalf("expected par2 target release id rel-par2, got %+v", repo.par2Targets[0])
+	}
 	if len(repo.coverageRows) != 1 || repo.coverageRows[0].FileName != "target.part01.rar" {
 		t.Fatalf("expected par2 target coverage rows, got %+v", repo.coverageRows)
 	}
@@ -91,6 +96,12 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
+	}
+	if update.ExpectedFileCount == nil || *update.ExpectedFileCount != 1 {
+		t.Fatalf("expected total PAR2 target count update 1, got %+v", update)
+	}
+	if update.ExpectedArchiveFileCount == nil || *update.ExpectedArchiveFileCount != 1 {
+		t.Fatalf("expected archive PAR2 target count update 1, got %+v", update)
 	}
 }
 
@@ -248,6 +259,68 @@ func TestPAR2WorkerCountAllowsTwentyWorkers(t *testing.T) {
 	}
 	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 40}, 1000); got != 32 {
 		t.Fatalf("expected safety cap of 32 workers, got %d", got)
+	}
+}
+
+func TestPAR2ProbeSkipReasonClassifiesOperationalCauses(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "article missing on provider",
+			err:  errors.New("fetch article <abc@example>: article not found (430)"),
+			want: "article_not_found",
+		},
+		{
+			name: "binary missing",
+			err:  errors.New("binary 123 not found"),
+			want: "binary_not_found",
+		},
+		{
+			name: "yenc header decode",
+			err:  errors.New("decode article <abc@example> header: invalid yenc header"),
+			want: "yenc_header_decode_failed",
+		},
+		{
+			name: "yenc body decode",
+			err:  errors.New("decode article <abc@example> body: invalid escape"),
+			want: "yenc_body_decode_failed",
+		},
+		{
+			name: "yenc verify checksum",
+			err:  errors.New("decode article <abc@example> verify: checksum mismatch"),
+			want: "article_checksum_mismatch",
+		},
+		{
+			name: "unsupported standalone",
+			err:  errors.New("standalone binary materialization is not supported"),
+			want: "standalone_materialization_unsupported",
+		},
+		{
+			name: "unknown prefix failure",
+			err:  errors.New("fetch article <abc@example>: malformed response"),
+			want: "prefix_sample_failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := par2ProbeSkipReason(tc.err); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestTrimPAR2ProbeErrorDetailBoundsLogPayload(t *testing.T) {
+	detail := trimPAR2ProbeErrorDetail(errors.New(strings.Repeat("x", 300)))
+	if len(detail) > 243 {
+		t.Fatalf("expected bounded detail, got length %d", len(detail))
+	}
+	if !strings.HasSuffix(detail, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", detail)
 	}
 }
 

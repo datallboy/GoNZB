@@ -66,11 +66,10 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	// route registration is now module-aware per Milestone 8.
 	modules := appCtx.Config.Modules
-	apiKeyMW := apiKeyMiddleware(appCtx.Config.API.Key)
-
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
+	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
 	var authSvc *auth.Service
 	if store, ok := any(appCtx.SettingsStore).(auth.Store); ok {
 		authSvc = auth.NewService(store)
@@ -87,38 +86,38 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
-		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Admin := e.Group("/api/v1/admin", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1Admin.Use(csrfProtectionMiddleware())
 		v1Admin.Use(auditLogMiddleware(appCtx, "admin.settings"))
-		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsRead))
-		v1Admin.GET("/capabilities", settingsCtrl.GetCapabilities, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsRead))
-		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAdminSettingsWrite))
+		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, false, auth.PermissionAdminSettingsRead))
+		v1Admin.GET("/capabilities", settingsCtrl.GetCapabilities, authMiddleware(authSvc, false, auth.PermissionAdminSettingsRead))
+		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, false, auth.PermissionAdminSettingsWrite))
 	}
 
 	if modules.API.Enabled && authSvc != nil {
 		v1Auth := e.Group("/api/v1/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		v1Auth.GET("/session", authCtrl.GetSession, authMiddleware(authSvc, appCtx.Config.API.Key, true))
+		v1Auth.GET("/session", authCtrl.GetSession, authMiddleware(authSvc, true))
 		v1Auth.GET("/setup", authCtrl.GetSetupStatus)
 		v1Auth.POST("/setup", authCtrl.CreateInitialUser, authRateLimit)
 		v1Auth.POST("/session", authCtrl.CreateSession, authRateLimit)
-		v1Auth.DELETE("/session", authCtrl.DeleteSession, authMiddleware(authSvc, appCtx.Config.API.Key, true), csrfProtectionMiddleware())
-		v1Auth.GET("/tokens", authCtrl.ListCurrentUserTokens, authMiddleware(authSvc, appCtx.Config.API.Key, false))
-		v1Auth.POST("/tokens", authCtrl.CreateCurrentUserToken, authMiddleware(authSvc, appCtx.Config.API.Key, false), csrfProtectionMiddleware())
-		v1Auth.DELETE("/tokens/:id", authCtrl.RevokeCurrentUserToken, authMiddleware(authSvc, appCtx.Config.API.Key, false), csrfProtectionMiddleware())
+		v1Auth.DELETE("/session", authCtrl.DeleteSession, authMiddleware(authSvc, true), csrfProtectionMiddleware())
+		v1Auth.GET("/tokens", authCtrl.ListCurrentUserTokens, authMiddleware(authSvc, false))
+		v1Auth.POST("/tokens", authCtrl.CreateCurrentUserToken, authMiddleware(authSvc, false), csrfProtectionMiddleware())
+		v1Auth.DELETE("/tokens/:id", authCtrl.RevokeCurrentUserToken, authMiddleware(authSvc, false), csrfProtectionMiddleware())
 
-		v1AdminAuth := e.Group("/api/v1/admin/auth", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminAuth := e.Group("/api/v1/admin/auth", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminAuth.Use(csrfProtectionMiddleware())
 		v1AdminAuth.Use(auditLogMiddleware(appCtx, "admin.auth"))
-		v1AdminAuth.GET("/users", authCtrl.ListUsers, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersRead))
-		v1AdminAuth.GET("/users/:id", authCtrl.GetUser, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersRead))
-		v1AdminAuth.POST("/users", authCtrl.UpsertUser, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersWrite))
-		v1AdminAuth.DELETE("/users/:id", authCtrl.DeleteUser, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthUsersWrite))
-		v1AdminAuth.GET("/roles", authCtrl.ListRoles, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthRolesRead))
-		v1AdminAuth.POST("/roles", authCtrl.UpsertRole, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthRolesWrite))
-		v1AdminAuth.DELETE("/roles/:id", authCtrl.DeleteRole, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthRolesWrite))
-		v1AdminAuth.GET("/tokens", authCtrl.ListTokens, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthTokensRead))
-		v1AdminAuth.POST("/tokens", authCtrl.CreateToken, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthTokensWrite))
-		v1AdminAuth.DELETE("/tokens/:id", authCtrl.RevokeToken, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionAuthTokensWrite))
+		v1AdminAuth.GET("/users", authCtrl.ListUsers, authMiddleware(authSvc, false, auth.PermissionAuthUsersRead))
+		v1AdminAuth.GET("/users/:id", authCtrl.GetUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersRead))
+		v1AdminAuth.POST("/users", authCtrl.UpsertUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
+		v1AdminAuth.DELETE("/users/:id", authCtrl.DeleteUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
+		v1AdminAuth.GET("/roles", authCtrl.ListRoles, authMiddleware(authSvc, false, auth.PermissionAuthRolesRead))
+		v1AdminAuth.POST("/roles", authCtrl.UpsertRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
+		v1AdminAuth.DELETE("/roles/:id", authCtrl.DeleteRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
+		v1AdminAuth.GET("/tokens", authCtrl.ListTokens, authMiddleware(authSvc, false, auth.PermissionAuthTokensRead))
+		v1AdminAuth.POST("/tokens", authCtrl.CreateToken, authMiddleware(authSvc, false, auth.PermissionAuthTokensWrite))
+		v1AdminAuth.DELETE("/tokens/:id", authCtrl.RevokeToken, authMiddleware(authSvc, false, auth.PermissionAuthTokensWrite))
 	}
 
 	// Liveness/readiness endpoints stay unauthenticated for infrastructure probes.
@@ -143,16 +142,16 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		nzbCtrl = controllers.NewNewznabController(appCtx.AggregatorModule)
 		aggCtrl := controllers.NewAggregatorController(appCtx.AggregatorModule)
 
-		v1Agg := e.Group("/api/v1", apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		v1Agg := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead))
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
 
 		// Keep direct NZB download endpoint under aggregator ownership.
-		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiKeyMW)
+		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead))
 	}
 
 	// Indexer-owned API surface.
 	if modules.API.Enabled && modules.UsenetIndexer.Enabled {
-		v1Indexer := e.Group("/api/v1/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesRead))
+		v1Indexer := e.Group("/api/v1/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, false, auth.PermissionIndexerReleasesRead))
 		v1Indexer.GET("/overview", indexerCtrl.GetOverview)
 		v1Indexer.GET("/stages", indexerCtrl.ListStages)
 		v1Indexer.GET("/runs", indexerCtrl.ListRuns)
@@ -164,33 +163,47 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 
-		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		v1AdminIndexer.Use(authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRead))
+		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminIndexer.Use(authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRead))
 		v1AdminIndexer.Use(csrfProtectionMiddleware())
 		v1AdminIndexer.Use(auditLogMiddleware(appCtx, "admin.indexer"))
 		v1AdminIndexer.GET("/overview", indexerAdminCtrl.GetOverview)
+		v1AdminIndexer.GET("/overview/stream", indexerAdminCtrl.StreamOverview)
 		v1AdminIndexer.GET("/overview/stats", indexerAdminCtrl.GetDashboardStats)
-		v1AdminIndexer.POST("/overview/stats/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/overview/stats/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.GET("/storage", indexerAdminCtrl.GetStorageStatus)
 		v1AdminIndexer.GET("/overview/backfill-progress", indexerAdminCtrl.GetBackfillProgress)
 		v1AdminIndexer.GET("/overview/throughput", indexerAdminCtrl.GetStageThroughput)
 		v1AdminIndexer.GET("/overview/nntp", indexerAdminCtrl.GetNNTPStats)
 		v1AdminIndexer.GET("/overview/backlog", indexerAdminCtrl.GetDashboardStats)
-		v1AdminIndexer.POST("/overview/backlog/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/overview/backlog/actions/refresh", indexerAdminCtrl.RefreshDashboardStats, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.GET("/scrape", indexerScrapeAdminCtrl.GetConfig)
 		v1AdminIndexer.GET("/stages", indexerAdminCtrl.ListStages)
 		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
+		v1AdminIndexer.GET("/maintenance/storage-audit", indexerAdminCtrl.GetStorageAudit)
+		v1AdminIndexer.GET("/maintenance/tasks", indexerAdminCtrl.ListMaintenanceTasks)
 		v1AdminIndexer.GET("/releases", indexerAdminCtrl.ListReleases)
 		v1AdminIndexer.GET("/releases/:id", indexerAdminCtrl.GetRelease)
 		v1AdminIndexer.GET("/runs", indexerAdminCtrl.ListRuns)
 		v1AdminIndexer.GET("/runs/:id", indexerAdminCtrl.GetRun)
-		v1AdminIndexer.PATCH("/stages/:stage", indexerAdminCtrl.PatchStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeConfigure))
-		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
-		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
-		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimePause))
-		v1AdminIndexer.PATCH("/releases/:id", indexerAdminCtrl.PatchRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesOverride))
-		v1AdminIndexer.POST("/releases/:id/actions/reinspect", indexerAdminCtrl.ReinspectRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
-		v1AdminIndexer.POST("/releases/:id/actions/reenrich", indexerAdminCtrl.ReenrichRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerRuntimeRun))
-		v1AdminIndexer.POST("/releases/:id/actions/hide", indexerAdminCtrl.HideRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesHide))
-		v1AdminIndexer.POST("/releases/:id/actions/unhide", indexerAdminCtrl.UnhideRelease, authMiddleware(authSvc, appCtx.Config.API.Key, false, auth.PermissionIndexerReleasesHide))
+		v1AdminIndexer.PATCH("/stages/:stage", indexerAdminCtrl.PatchStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.PATCH("/maintenance/tasks/:task", indexerAdminCtrl.PatchMaintenanceTask, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.POST("/maintenance/tasks/:task/dry-run", indexerAdminCtrl.DryRunMaintenanceTask, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/maintenance/tasks/:task/run", indexerAdminCtrl.RunMaintenanceTask, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.PUT("/scrape", indexerScrapeAdminCtrl.UpdateConfig, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.POST("/scrape/actions/scan", indexerScrapeAdminCtrl.ScanProviders, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.GET("/scrape/provider-inventory", indexerScrapeAdminCtrl.ProviderInventory)
+		v1AdminIndexer.GET("/scrape/preview", indexerScrapeAdminCtrl.PreviewWildcardGroups)
+		v1AdminIndexer.GET("/scrape/crosspost-popularity", indexerScrapeAdminCtrl.CrosspostPopularity)
+		v1AdminIndexer.POST("/scrape/actions/apply", indexerScrapeAdminCtrl.ApplyWildcardGroups, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeConfigure))
+		v1AdminIndexer.POST("/stages/:stage/actions/run", indexerAdminCtrl.RunStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimePause))
+		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimePause))
+		v1AdminIndexer.PATCH("/releases/:id", indexerAdminCtrl.PatchRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesOverride))
+		v1AdminIndexer.POST("/releases/:id/actions/reinspect", indexerAdminCtrl.ReinspectRelease, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/releases/:id/actions/reenrich", indexerAdminCtrl.ReenrichRelease, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
+		v1AdminIndexer.POST("/releases/:id/actions/hide", indexerAdminCtrl.HideRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesHide))
+		v1AdminIndexer.POST("/releases/:id/actions/unhide", indexerAdminCtrl.UnhideRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesHide))
 	}
 
 	// Downloader-owned API surface.
@@ -203,7 +216,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		eventCtrl := controllers.NewDownloadEvent(downloaderQueries)
 		sabCtrl = controllers.NewSABController(appCtx.DownloaderModule, appCtx.CurrentConfig)
 
-		v1Queue := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, appCtx.Config.API.Key, false))
+		v1Queue := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, false))
 		v1Queue.Use(csrfProtectionMiddleware())
 		v1Queue.GET("/queue", queueCtrl.ListActive)
 		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
@@ -219,8 +232,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 		// Explicit SAB-compatible downloader surface.
 		// Supported alongside the shared `/api` multiplexer.
-		e.GET("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		e.POST("/api/sab", sabCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.GET("/api/sab", sabCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionDownloaderRuntimeRead))
+		e.POST("/api/sab", sabCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionDownloaderRuntimeRead))
 	}
 
 	// Shared compatibility multiplexer.
@@ -234,8 +247,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			SAB:            sabCtrl,
 			Newznab:        nzbCtrl,
 		}
-		e.GET("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		e.POST("/api", compatCtrl.Handle, apiKeyMW, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		e.GET("/api", compatCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), compatAPITokenMiddleware(authSvc))
+		e.POST("/api", compatCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), compatAPITokenMiddleware(authSvc))
 	}
 
 	// Web UI is served only when explicitly enabled.
@@ -244,25 +257,45 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	}
 }
 
-func apiKeyMiddleware(requiredKey string) echo.MiddlewareFunc {
+func apiTokenMiddleware(authSvc *auth.Service, permissions ...string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
-			if requiredKey == "" {
-				return next(c)
-			}
-
-			provided := c.QueryParam("apikey")
-			if provided == "" {
-				provided = c.Request().Header.Get("X-API-Key")
-			}
-
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(requiredKey)) != 1 {
+			principal, err := authenticateAPIKeyPrincipal(c, authSvc)
+			if err != nil {
 				return c.String(http.StatusUnauthorized, "Unauthorized")
 			}
-
+			for _, permission := range permissions {
+				if !principal.Has(permission) {
+					return c.String(http.StatusForbidden, "Forbidden")
+				}
+			}
+			controllers.SetPrincipal(c, principal)
 			return next(c)
 		}
 	}
+}
+
+func compatAPITokenMiddleware(authSvc *auth.Service) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			permission := auth.PermissionAggregatorReleasesRead
+			if strings.TrimSpace(c.QueryParam("mode")) != "" || strings.TrimSpace(c.FormValue("mode")) != "" {
+				permission = auth.PermissionDownloaderRuntimeRead
+			}
+			return apiTokenMiddleware(authSvc, permission)(next)(c)
+		}
+	}
+}
+
+func authenticateAPIKeyPrincipal(c *echo.Context, authSvc *auth.Service) (*auth.Principal, error) {
+	if authSvc == nil {
+		return nil, auth.ErrUnauthorized
+	}
+	provided := strings.TrimSpace(c.QueryParam("apikey"))
+	if provided == "" {
+		provided = strings.TrimSpace(c.Request().Header.Get("X-API-Key"))
+	}
+	return authSvc.AuthenticateToken(c.Request().Context(), provided)
 }
 
 func redactSensitiveURI(rawURI string) string {
@@ -343,11 +376,7 @@ func auditLogMiddleware(appCtx *app.Context, scope string) echo.MiddlewareFunc {
 				if principal.Username != "" {
 					username = principal.Username
 				}
-				if principal.ByAPIKey {
-					authMode = "api-key"
-				} else {
-					authMode = "principal"
-				}
+				authMode = "principal"
 			}
 			status := http.StatusOK
 			if res, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && res != nil && res.Status != 0 {
@@ -368,10 +397,10 @@ func auditLogMiddleware(appCtx *app.Context, scope string) echo.MiddlewareFunc {
 	}
 }
 
-func authMiddleware(authSvc *auth.Service, apiKey string, optional bool, permissions ...string) echo.MiddlewareFunc {
+func authMiddleware(authSvc *auth.Service, optional bool, permissions ...string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
-			principal, err := authenticatePrincipal(c, authSvc, apiKey)
+			principal, err := authenticatePrincipal(c, authSvc)
 			if err != nil && !optional {
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			}
@@ -391,16 +420,7 @@ func authMiddleware(authSvc *auth.Service, apiKey string, optional bool, permiss
 	}
 }
 
-func authenticatePrincipal(c *echo.Context, authSvc *auth.Service, apiKey string) (*auth.Principal, error) {
-	if apiKey != "" {
-		provided := c.QueryParam("apikey")
-		if provided == "" {
-			provided = c.Request().Header.Get("X-API-Key")
-		}
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(apiKey)) == 1 {
-			return &auth.Principal{Username: "api-key", ByAPIKey: true}, nil
-		}
-	}
+func authenticatePrincipal(c *echo.Context, authSvc *auth.Service) (*auth.Principal, error) {
 	if authSvc == nil {
 		return nil, auth.ErrUnauthorized
 	}
@@ -427,9 +447,6 @@ func usesNonSessionAuth(c *echo.Context) bool {
 		return false
 	}
 	if strings.HasPrefix(c.Request().Header.Get("Authorization"), "Bearer ") {
-		return true
-	}
-	if strings.TrimSpace(c.Request().Header.Get("X-API-Key")) != "" || strings.TrimSpace(c.QueryParam("apikey")) != "" {
 		return true
 	}
 	return false

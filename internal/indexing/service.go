@@ -11,10 +11,10 @@ import (
 
 type Service struct {
 	supervisor              *supervisor.Supervisor
-	assembleLaneA           func(ctx context.Context) error
-	assembleLaneB           func(ctx context.Context) error
+	assemble                func(ctx context.Context) error
 	recoverYEnc             func(ctx context.Context) error
 	releaseReform           func(ctx context.Context) error
+	releaseReformReleases   func(ctx context.Context, releaseIDs []string) error
 	enrichPredbSceneName    func(ctx context.Context) error
 	enrichPredbMetadataOnly func(ctx context.Context) error
 	enrichPredbSyncFeed     func(ctx context.Context) error
@@ -24,8 +24,8 @@ type Service struct {
 
 type Options struct {
 	ReleaseReform           func(ctx context.Context) error
-	AssembleLaneA           func(ctx context.Context) error
-	AssembleLaneB           func(ctx context.Context) error
+	ReleaseReformReleases   func(ctx context.Context, releaseIDs []string) error
+	Assemble                func(ctx context.Context) error
 	RecoverYEnc             func(ctx context.Context) error
 	EnrichPredbSceneName    func(ctx context.Context) error
 	EnrichPredbMetadataOnly func(ctx context.Context) error
@@ -41,10 +41,10 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 	}
 	return &Service{
 		supervisor:              supervisorSvc,
-		assembleLaneA:           cfg.AssembleLaneA,
-		assembleLaneB:           cfg.AssembleLaneB,
+		assemble:                cfg.Assemble,
 		recoverYEnc:             cfg.RecoverYEnc,
 		releaseReform:           cfg.ReleaseReform,
+		releaseReformReleases:   cfg.ReleaseReformReleases,
 		enrichPredbSceneName:    cfg.EnrichPredbSceneName,
 		enrichPredbMetadataOnly: cfg.EnrichPredbMetadataOnly,
 		enrichPredbSyncFeed:     cfg.EnrichPredbSyncFeed,
@@ -96,7 +96,10 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 		supervisor.StageRelease,
 		supervisor.StageReleaseGenerateNZB,
 		supervisor.StageReleaseArchiveNZB,
-		supervisor.StageReleasePurgeArchivedSources,
+		supervisor.StageInspectDiscoveryReadyRefresh,
+		supervisor.StageInspectPAR2ReadyRefresh,
+		supervisor.StageInspectArchiveReadyRefresh,
+		supervisor.StageInspectMediaReadyRefresh,
 	)
 }
 
@@ -127,22 +130,18 @@ func (s *Service) ReformReleasesOnce(ctx context.Context) error {
 	return s.releaseReform(ctx)
 }
 
+func (s *Service) ReformSelectedReleasesOnce(ctx context.Context, releaseIDs []string) error {
+	if s.releaseReformReleases == nil {
+		return fmt.Errorf("targeted release reform service is not configured")
+	}
+	return s.releaseReformReleases(ctx, releaseIDs)
+}
+
 func (s *Service) AssembleOnce(ctx context.Context) error {
-	return s.runStageOnce(ctx, supervisor.StageAssemble)
-}
-
-func (s *Service) AssembleLaneAOnce(ctx context.Context) error {
-	if s.assembleLaneA == nil {
-		return fmt.Errorf("assemble lane A service is not configured")
+	if s.assemble == nil {
+		return fmt.Errorf("assemble service is not configured")
 	}
-	return s.assembleLaneA(ctx)
-}
-
-func (s *Service) AssembleLaneBOnce(ctx context.Context) error {
-	if s.assembleLaneB == nil {
-		return fmt.Errorf("assemble lane B service is not configured")
-	}
-	return s.assembleLaneB(ctx)
+	return s.assemble(ctx)
 }
 
 func (s *Service) RecoverYEncOnce(ctx context.Context) error {
@@ -152,6 +151,10 @@ func (s *Service) RecoverYEncOnce(ctx context.Context) error {
 func (s *Service) InspectOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
+		supervisor.StageInspectDiscoveryReadyRefresh,
+		supervisor.StageInspectPAR2ReadyRefresh,
+		supervisor.StageInspectArchiveReadyRefresh,
+		supervisor.StageInspectMediaReadyRefresh,
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,

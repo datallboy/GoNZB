@@ -152,10 +152,12 @@ func aggregatorHasSource(cfg *config.Config) bool {
 type usenetIndexerRuntimeModule struct {
 	appCtx     *app.Context
 	current    io.Closer
+	telemetry  io.Closer
 	runParent  context.Context
 	runCancel  context.CancelFunc
 	running    bool
 	stageOwner string
+	nntpStats  func() app.NNTPRuntimeStats
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -191,6 +193,10 @@ func (m *usenetIndexerRuntimeModule) Reload(ctx context.Context) error {
 
 func (m *usenetIndexerRuntimeModule) Close() error {
 	m.stopRuntime()
+	if m.telemetry != nil {
+		_ = m.telemetry.Close()
+		m.telemetry = nil
+	}
 	if m.current == nil {
 		return nil
 	}
@@ -247,6 +253,7 @@ func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 	}
 	m.appCtx.UsenetIndexer = rt.service
 	m.current = rt.scrapeProvider
+	m.nntpStats = rt.nntpStats
 	if wasRunning {
 		m.stopRuntime()
 		m.running = true
@@ -273,6 +280,13 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 
 	childCtx, childCancel := context.WithCancel(parent)
 	m.runCancel = childCancel
+	if m.telemetry != nil {
+		_ = m.telemetry.Close()
+		m.telemetry = nil
+	}
+	if store, ok := m.appCtx.PGIndexStore.(nntpSnapshotStore); ok {
+		m.telemetry = startIndexerNNTPSnapshotPublisher(childCtx, m.appCtx.Logger, store, m.stageOwner, m.nntpStats)
+	}
 
 	service := m.appCtx.UsenetIndexer
 	m.appCtx.Logger.Info("starting usenet indexer supervisor")
@@ -287,6 +301,10 @@ func (m *usenetIndexerRuntimeModule) stopRuntime() {
 	if m.runCancel != nil {
 		m.runCancel()
 		m.runCancel = nil
+	}
+	if m.telemetry != nil {
+		_ = m.telemetry.Close()
+		m.telemetry = nil
 	}
 	m.running = false
 }

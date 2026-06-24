@@ -42,7 +42,7 @@ type purgeRepoStub struct {
 	result     *pgindex.ReleasePurgeResult
 }
 
-func (s *purgeRepoStub) ClaimReleasePurgeCandidates(context.Context, int) ([]pgindex.ReleasePurgeCandidate, error) {
+func (s *purgeRepoStub) ClaimReleasePurgeCandidates(context.Context, int, pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error) {
 	return s.candidates, nil
 }
 

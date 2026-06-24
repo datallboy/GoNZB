@@ -19,7 +19,9 @@ var FETCH_RETRY_COUNT = 3
 
 type managedProvider struct {
 	Provider
-	semaphore chan struct{}
+	semaphore    chan struct{}
+	debugLogging bool
+	roles        map[string]bool
 }
 
 type CapacityPolicy string
@@ -27,6 +29,8 @@ type CapacityPolicy string
 const (
 	CapacityReturnBusy CapacityPolicy = "return_busy"
 	CapacityWaitQueue  CapacityPolicy = "wait_queue"
+
+	providerHeadroomPercent = 5
 )
 
 type ManagerOptions struct {
@@ -89,6 +93,7 @@ type ManagerScopeStats struct {
 type ManagerProviderStats struct {
 	ID                string
 	Label             string
+	Roles             []string
 	Priority          int
 	Capacity          int
 	Active            int
@@ -164,8 +169,10 @@ func NewManagerWithOptions(ctx *app.Context, opts ManagerOptions) (*Manager, err
 		}
 
 		managed = append(managed, &managedProvider{
-			Provider:  p,
-			semaphore: make(chan struct{}, p.MaxConnection()),
+			Provider:     p,
+			semaphore:    make(chan struct{}, p.MaxConnection()),
+			debugLogging: cfg.EnablePoolLogging,
+			roles:        normalizeProviderRoles(cfg.Roles),
 		})
 	}
 
@@ -206,7 +213,45 @@ func newManagedProvider(p Provider) *managedProvider {
 	return &managedProvider{
 		Provider:  p,
 		semaphore: make(chan struct{}, capacity),
+		roles:     normalizeProviderRoles(nil),
 	}
+}
+
+func normalizeProviderRoles(roles []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, role := range roles {
+		switch strings.TrimSpace(strings.ToLower(role)) {
+		case "scrape":
+			out["scrape"] = true
+		case "yenc_recovery", "recover_yenc":
+			out["yenc_recovery"] = true
+		case "inspection", "inspect":
+			out["inspection"] = true
+		case "download", "downloader":
+			out["download"] = true
+		}
+	}
+	if len(out) == 0 {
+		out["scrape"] = true
+		out["yenc_recovery"] = true
+		out["inspection"] = true
+		out["download"] = true
+	}
+	return out
+}
+
+func providerRoleList(roles map[string]bool) []string {
+	if len(roles) == 0 {
+		return []string{"download", "inspection", "scrape", "yenc_recovery"}
+	}
+	out := make([]string, 0, len(roles))
+	for role, enabled := range roles {
+		if enabled {
+			out = append(out, role)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Manager) Client() *ManagerClient {
@@ -258,11 +303,32 @@ func (c *ManagerClient) GroupStats(ctx context.Context, group string) (GroupStat
 	return c.manager.groupStatsForScope(ctx, c.scope, c.policy, group)
 }
 
+func (c *ManagerClient) GroupStatsWithProvider(ctx context.Context, group string) (GroupStats, string, error) {
+	if c == nil || c.manager == nil {
+		return GroupStats{}, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.groupStatsForScopeWithProvider(ctx, c.scope, c.policy, group)
+}
+
+func (c *ManagerClient) ListGroups(ctx context.Context, pattern string) ([]GroupListing, error) {
+	if c == nil || c.manager == nil {
+		return nil, fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.listGroupsForScope(ctx, c.scope, c.policy, pattern)
+}
+
 func (c *ManagerClient) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
 	if c == nil || c.manager == nil {
 		return nil, fmt.Errorf("nntp manager client is nil")
 	}
 	return c.manager.xoverForScope(ctx, c.scope, c.policy, group, from, to)
+}
+
+func (c *ManagerClient) XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error) {
+	if c == nil || c.manager == nil {
+		return nil, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.xoverForScopeWithProvider(ctx, c.scope, c.policy, group, from, to)
 }
 
 func (m *Manager) ID() string {
@@ -280,6 +346,52 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 	scopeStats := m.scopeStats("downloader")
 	scopeStats.fetches.Add(1)
 	return m.fetch(ctx, "downloader", CapacityReturnBusy, seg, groups)
+}
+
+func (m *Manager) listGroupsForScope(ctx context.Context, scope string, policy CapacityPolicy, pattern string) ([]GroupListing, error) {
+	scopeStats := m.scopeStats(scope)
+	scopeStats.groupStats.Add(1)
+	m.stats.groupStats.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, mp := range m.providerAcquireOrder(scope, m.providers) {
+		acquired, err := m.acquire(ctx, scope, mp)
+		if err != nil {
+			return nil, err
+		}
+		if !acquired {
+			continue
+		}
+
+		groups, err := mp.Provider.ListGroups(ctx, pattern)
+		m.releaseForScope(scope, mp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return groups, nil
+	}
+	if lastErr != nil {
+		m.recordOperationError(scope, lastErr)
+		return nil, lastErr
+	}
+	if policy == CapacityWaitQueue {
+		mp, err := m.waitForProvider(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		result, err := mp.Provider.ListGroups(ctx, pattern)
+		m.releaseForScope(scope, mp)
+		if err != nil {
+			m.recordOperationError(scope, err)
+		}
+		return result, err
+	}
+	m.stats.busyReturns.Add(1)
+	return nil, ErrProviderBusy
 }
 
 func (m *Manager) FetchMessage(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
@@ -317,7 +429,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 
 		// If we already have some 430s for this segment, log that we are trying a failover
 		if len(seg.MissingFrom) > 0 {
-			m.ctx.Logger.Debug("[Failover] Segment %s missing on %d providers, trying %s (Priority %d)",
+			m.debugProviderFetch(mp, "[Failover] Segment %s missing on %d providers, trying %s (Priority %d)",
 				seg.MessageID, len(seg.MissingFrom), mp.Label(), mp.Priority())
 		}
 
@@ -326,9 +438,7 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 			return nil, err
 		}
 		if acquired {
-			if m.ctx != nil && m.ctx.Logger != nil {
-				m.ctx.Logger.Debug("Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
-			}
+			m.debugProviderFetch(mp, "Segment %s: Attempting fetch from %s", seg.MessageID, mp.Label())
 			reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
 			if err == nil {
 				return reader, nil
@@ -341,9 +451,10 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 		}
 	}
 
-	// If all providers are confirmed missing
-	if len(seg.MissingFrom) == len(m.providers) {
-		return nil, ErrArticleNotFound
+	eligible := m.eligibleProviders(scope)
+	// If all eligible providers are confirmed missing
+	if len(eligible) > 0 && m.missingEligibleProviderCount(scope, seg) >= len(eligible) {
+		return nil, m.articleNotFoundError(seg)
 	}
 
 	// If we have a real error (not 430), return it to trigger a retry with backoff
@@ -353,11 +464,8 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 	}
 
 	if policy == CapacityWaitQueue {
-		mp := m.firstFetchProvider(seg)
-		if mp == nil {
-			return nil, ErrArticleNotFound
-		}
-		if err := m.waitAcquire(ctx, scope, mp); err != nil {
+		mp, err := m.waitForFetchProvider(ctx, scope, seg)
+		if err != nil {
 			return nil, err
 		}
 		reader, err := m.fetchFromAcquiredProvider(ctx, scope, mp, seg, groups)
@@ -376,6 +484,22 @@ func (m *Manager) fetch(ctx context.Context, scope string, policy CapacityPolicy
 	return nil, ErrProviderBusy
 }
 
+func (m *Manager) articleNotFoundError(seg *domain.Segment) error {
+	if seg == nil {
+		return ErrArticleNotFound
+	}
+	attempts := make([]string, 0, len(m.providers))
+	for _, mp := range m.providers {
+		if mp == nil {
+			continue
+		}
+		if seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
+			attempts = append(attempts, mp.ID())
+		}
+	}
+	return &ArticleNotFoundError{MessageID: seg.MessageID, Attempts: attempts}
+}
+
 func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, mp *managedProvider, seg *domain.Segment, groups []string) (io.Reader, error) {
 	reader, err := m.tryFetch(ctx, mp, seg.MessageID, groups)
 	if err != nil {
@@ -383,17 +507,13 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, m
 
 		if errors.Is(err, ErrArticleNotFound) {
 			m.recordArticleNotFound(scope)
-			if m.ctx != nil && m.ctx.Logger != nil {
-				m.ctx.Logger.Debug("Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
-			}
+			m.debugProviderFetch(mp, "Provider %s: 430 Missing, marking as missing for segment %s...", mp.Label(), seg.MessageID)
 			seg.MissingFrom[mp.ID()] = true
 			time.Sleep(100 * time.Millisecond)
 			return nil, ErrArticleNotFound
 		}
 
-		if m.ctx != nil && m.ctx.Logger != nil {
-			m.ctx.Logger.Debug("Failover: %s error: %v", mp.Label(), err)
-		}
+		m.debugProviderFetch(mp, "Failover: %s error: %v", mp.Label(), err)
 		return nil, err
 	}
 
@@ -403,6 +523,13 @@ func (m *Manager) fetchFromAcquiredProvider(ctx context.Context, scope string, m
 			m.releaseForScope(scope, mp)
 		},
 	}, nil
+}
+
+func (m *Manager) debugProviderFetch(mp *managedProvider, format string, v ...interface{}) {
+	if m == nil || m.ctx == nil || m.ctx.Logger == nil || mp == nil || !mp.debugLogging {
+		return
+	}
+	m.ctx.Logger.Debug(format, v...)
 }
 
 func (m *Manager) FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error) {
@@ -422,7 +549,7 @@ func (m *Manager) fetchBodyPrefixForScope(ctx context.Context, scope string, pol
 	}
 
 	var lastErr error
-	for _, mp := range m.providers {
+	for _, mp := range m.providerAcquireOrder(scope, m.providers) {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
 			return nil, err
@@ -468,18 +595,23 @@ func (m *Manager) GroupStatsForScope(ctx context.Context, scope, group string) (
 }
 
 func (m *Manager) groupStatsForScope(ctx context.Context, scope string, policy CapacityPolicy, group string) (GroupStats, error) {
+	result, _, err := m.groupStatsForScopeWithProvider(ctx, scope, policy, group)
+	return result, err
+}
+
+func (m *Manager) groupStatsForScopeWithProvider(ctx context.Context, scope string, policy CapacityPolicy, group string) (GroupStats, string, error) {
 	m.stats.groupStats.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.groupStats.Add(1)
 	if err := ctx.Err(); err != nil {
-		return GroupStats{}, err
+		return GroupStats{}, "", err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
-			return GroupStats{}, err
+			return GroupStats{}, "", err
 		}
 		if !acquired {
 			continue
@@ -488,29 +620,29 @@ func (m *Manager) groupStatsForScope(ctx context.Context, scope string, policy C
 		result, err := mp.Provider.GroupStats(ctx, group)
 		m.releaseForScope(scope, mp)
 		if err == nil {
-			return result, nil
+			return result, mp.ID(), nil
 		}
 		lastErr = err
 	}
 
 	if lastErr != nil {
 		m.recordOperationError(scope, lastErr)
-		return GroupStats{}, lastErr
+		return GroupStats{}, "", lastErr
 	}
 	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
-			return GroupStats{}, err
+			return GroupStats{}, "", err
 		}
 		result, err := mp.Provider.GroupStats(ctx, group)
 		m.releaseForScope(scope, mp)
 		if err != nil {
 			m.recordOperationError(scope, err)
 		}
-		return result, err
+		return result, mp.ID(), err
 	}
 	m.stats.busyReturns.Add(1)
-	return GroupStats{}, ErrProviderBusy
+	return GroupStats{}, "", ErrProviderBusy
 }
 
 func (m *Manager) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
@@ -522,18 +654,23 @@ func (m *Manager) XOverForScope(ctx context.Context, scope, group string, from, 
 }
 
 func (m *Manager) xoverForScope(ctx context.Context, scope string, policy CapacityPolicy, group string, from, to int64) ([]OverviewHeader, error) {
+	result, _, err := m.xoverForScopeWithProvider(ctx, scope, policy, group, from, to)
+	return result, err
+}
+
+func (m *Manager) xoverForScopeWithProvider(ctx context.Context, scope string, policy CapacityPolicy, group string, from, to int64) ([]OverviewHeader, string, error) {
 	m.stats.xover.Add(1)
 	scopeStats := m.scopeStats(scope)
 	scopeStats.xover.Add(1)
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var lastErr error
 	for _, mp := range m.providers {
 		acquired, err := m.acquire(ctx, scope, mp)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !acquired {
 			continue
@@ -542,33 +679,36 @@ func (m *Manager) xoverForScope(ctx context.Context, scope string, policy Capaci
 		result, err := mp.Provider.XOver(ctx, group, from, to)
 		m.releaseForScope(scope, mp)
 		if err == nil {
-			return result, nil
+			return result, mp.ID(), nil
 		}
 		lastErr = err
 	}
 
 	if lastErr != nil {
 		m.recordOperationError(scope, lastErr)
-		return nil, lastErr
+		return nil, "", lastErr
 	}
 	if policy == CapacityWaitQueue {
 		mp, err := m.waitForProvider(ctx, scope)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		result, err := mp.Provider.XOver(ctx, group, from, to)
 		m.releaseForScope(scope, mp)
 		if err != nil {
 			m.recordOperationError(scope, err)
 		}
-		return result, err
+		return result, mp.ID(), err
 	}
 	m.stats.busyReturns.Add(1)
-	return nil, ErrProviderBusy
+	return nil, "", ErrProviderBusy
 }
 
 func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider) (bool, error) {
 	if mp == nil {
+		return false, nil
+	}
+	if !mp.allowsScope(scope) {
 		return false, nil
 	}
 	module := moduleForScope(scope)
@@ -627,24 +767,178 @@ func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProv
 }
 
 func (m *Manager) waitForProvider(ctx context.Context, scope string) (*managedProvider, error) {
-	if len(m.providers) == 0 {
-		return nil, ErrProviderBusy
-	}
-	mp := m.providers[0]
-	if err := m.waitAcquire(ctx, scope, mp); err != nil {
-		return nil, err
-	}
-	return mp, nil
+	return m.waitForProviderFromList(ctx, scope, m.eligibleProviders(scope))
 }
 
-func (m *Manager) firstFetchProvider(seg *domain.Segment) *managedProvider {
+func (m *Manager) waitForFetchProvider(ctx context.Context, scope string, seg *domain.Segment) (*managedProvider, error) {
+	eligible := 0
+	providers := make([]*managedProvider, 0, len(m.providers))
 	for _, mp := range m.providers {
+		if !mp.allowsScope(scope) {
+			continue
+		}
+		eligible++
+		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
+			continue
+		}
+		providers = append(providers, mp)
+	}
+	if eligible == 0 {
+		return nil, ErrProviderBusy
+	}
+	if len(providers) == 0 {
+		return nil, m.articleNotFoundError(seg)
+	}
+	return m.waitForProviderFromList(ctx, scope, providers)
+}
+
+func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, providers []*managedProvider) (*managedProvider, error) {
+	if len(providers) == 0 {
+		return nil, ErrProviderBusy
+	}
+	start := time.Now()
+	scopeStats := m.scopeStats(scope)
+	module := moduleForScope(scope)
+	m.stats.waiting.Add(1)
+	scopeStats.waiting.Add(1)
+	defer m.stats.waiting.Add(-1)
+	defer scopeStats.waiting.Add(-1)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if module == "downloader" {
+			m.recordDownloaderDemand()
+		}
+		if m.moduleCanAcquire(module) {
+			for _, mp := range m.providerAcquireOrder(scope, providers) {
+				select {
+				case mp.semaphore <- struct{}{}:
+					m.recordActive(scope, module, 1)
+					m.recordWait(scopeStats, time.Since(start))
+					return mp, nil
+				default:
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			m.recordWait(scopeStats, time.Since(start))
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) firstFetchProvider(scope string, seg *domain.Segment) *managedProvider {
+	for _, mp := range m.providers {
+		if !mp.allowsScope(scope) {
+			continue
+		}
 		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
 			continue
 		}
 		return mp
 	}
 	return nil
+}
+
+func (m *Manager) eligibleProviders(scope string) []*managedProvider {
+	out := make([]*managedProvider, 0, len(m.providers))
+	for _, mp := range m.providers {
+		if mp.allowsScope(scope) {
+			out = append(out, mp)
+		}
+	}
+	return out
+}
+
+func (m *Manager) providerAcquireOrder(scope string, providers []*managedProvider) []*managedProvider {
+	if len(providers) < 2 {
+		return providers
+	}
+	eligible := make([]*managedProvider, 0, len(providers))
+	for _, mp := range providers {
+		if mp == nil || !mp.allowsScope(scope) {
+			continue
+		}
+		eligible = append(eligible, mp)
+	}
+	if len(eligible) < 2 {
+		return providers
+	}
+	if normalizeScope(scope) == "recover_yenc" {
+		out := append([]*managedProvider(nil), providers...)
+		sort.SliceStable(out, func(i, j int) bool {
+			left := providerUtilizationBasisPoints(out[i])
+			right := providerUtilizationBasisPoints(out[j])
+			if left != right {
+				return left < right
+			}
+			return out[i].Priority() < out[j].Priority()
+		})
+		return out
+	}
+	head := make([]*managedProvider, 0, len(providers))
+	tail := make([]*managedProvider, 0)
+	for _, mp := range providers {
+		if mp == nil || !mp.allowsScope(scope) || !providerAtHeadroom(mp) || !providerHasIdlePeer(mp, eligible) {
+			head = append(head, mp)
+			continue
+		}
+		tail = append(tail, mp)
+	}
+	if len(tail) == 0 {
+		return providers
+	}
+	return append(head, tail...)
+}
+
+func providerUtilizationBasisPoints(mp *managedProvider) int {
+	if mp == nil {
+		return 10000
+	}
+	capacity := cap(mp.semaphore)
+	if capacity <= 0 {
+		return 10000
+	}
+	return len(mp.semaphore) * 10000 / capacity
+}
+
+func providerAtHeadroom(mp *managedProvider) bool {
+	if mp == nil {
+		return false
+	}
+	capacity := cap(mp.semaphore)
+	if capacity <= 0 {
+		return false
+	}
+	active := len(mp.semaphore)
+	return active*100 >= capacity*(100-providerHeadroomPercent)
+}
+
+func providerHasIdlePeer(current *managedProvider, providers []*managedProvider) bool {
+	for _, candidate := range providers {
+		if candidate == nil || candidate == current {
+			continue
+		}
+		if len(candidate.semaphore) < cap(candidate.semaphore) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) missingEligibleProviderCount(scope string, seg *domain.Segment) int {
+	if seg == nil || len(seg.MissingFrom) == 0 {
+		return 0
+	}
+	count := 0
+	for _, mp := range m.providers {
+		if mp.allowsScope(scope) && seg.MissingFrom[mp.ID()] {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) release(mp *managedProvider) {
@@ -722,6 +1016,35 @@ func normalizeScope(scope string) string {
 		return "unscoped"
 	}
 	return scope
+}
+
+func roleForScope(scope string) string {
+	switch normalizeScope(scope) {
+	case "downloader":
+		return "download"
+	case "recover_yenc":
+		return "yenc_recovery"
+	case "scrape":
+		return "scrape"
+	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
+		return "inspection"
+	default:
+		return ""
+	}
+}
+
+func (mp *managedProvider) allowsScope(scope string) bool {
+	if mp == nil {
+		return false
+	}
+	role := roleForScope(scope)
+	if role == "" {
+		return true
+	}
+	if len(mp.roles) == 0 {
+		return true
+	}
+	return mp.roles[role]
 }
 
 func moduleForScope(scope string) string {
@@ -888,6 +1211,7 @@ func (m *Manager) Stats() ManagerStats {
 		providers = append(providers, ManagerProviderStats{
 			ID:                mp.ID(),
 			Label:             mp.Label(),
+			Roles:             providerRoleList(mp.roles),
 			Priority:          mp.Priority(),
 			Capacity:          cap(mp.semaphore),
 			Active:            providerActive,
@@ -1009,6 +1333,7 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		out.Providers = append(out.Providers, app.NNTPProviderRuntimeStats{
 			ID:                provider.ID,
 			Label:             provider.Label,
+			Roles:             append([]string(nil), provider.Roles...),
 			Priority:          provider.Priority,
 			Capacity:          provider.Capacity,
 			Active:            provider.Active,

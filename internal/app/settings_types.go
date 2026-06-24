@@ -26,19 +26,20 @@ type RuntimeSettingsPatch struct {
 }
 
 type ServerRuntimeSettings struct {
-	ID                     string `json:"id"`
-	Host                   string `json:"host"`
-	Port                   int    `json:"port"`
-	Username               string `json:"username"`
-	Password               string `json:"password"`
-	TLS                    bool   `json:"tls"`
-	MaxConnection          int    `json:"max_connections"`
-	Priority               int    `json:"priority"`
-	DialTimeoutSeconds     int    `json:"dial_timeout_seconds"`
-	TCPKeepAliveSeconds    int    `json:"tcp_keepalive_seconds"`
-	PoolIdleTimeoutSeconds int    `json:"pool_idle_timeout_seconds"`
-	PoolMaxAgeSeconds      int    `json:"pool_max_age_seconds"`
-	EnablePoolLogging      bool   `json:"enable_pool_logging"`
+	ID                     string   `json:"id"`
+	Host                   string   `json:"host"`
+	Port                   int      `json:"port"`
+	Username               string   `json:"username"`
+	Password               string   `json:"password"`
+	TLS                    bool     `json:"tls"`
+	MaxConnection          int      `json:"max_connections"`
+	Priority               int      `json:"priority"`
+	DialTimeoutSeconds     int      `json:"dial_timeout_seconds"`
+	TCPKeepAliveSeconds    int      `json:"tcp_keepalive_seconds"`
+	PoolIdleTimeoutSeconds int      `json:"pool_idle_timeout_seconds"`
+	PoolMaxAgeSeconds      int      `json:"pool_max_age_seconds"`
+	EnablePoolLogging      bool     `json:"enable_pool_logging"`
+	Roles                  []string `json:"roles,omitempty"`
 }
 
 type IndexerRuntimeSettings struct {
@@ -69,10 +70,11 @@ type DownloadRuntimeSettings struct {
 }
 
 type NNTPPoolRuntimeSettings struct {
-	IdleBorrowEnabled        bool `json:"idle_borrow_enabled"`
-	IndexerMaxPercent        int  `json:"indexer_max_percent"`
-	DownloaderReservePercent int  `json:"downloader_reserve_percent"`
-	DemandWindowSeconds      int  `json:"demand_window_seconds"`
+	IdleBorrowEnabled         bool `json:"idle_borrow_enabled"`
+	IndexerMaxPercent         int  `json:"indexer_max_percent"`
+	IndexerStageTargetPercent int  `json:"indexer_stage_target_percent"`
+	DownloaderReservePercent  int  `json:"downloader_reserve_percent"`
+	DemandWindowSeconds       int  `json:"demand_window_seconds"`
 }
 
 type IndexingStageRuntimeSettings struct {
@@ -81,14 +83,34 @@ type IndexingStageRuntimeSettings struct {
 	BatchSize               int     `json:"batch_size,omitempty"`
 	MaxBatches              int     `json:"max_batches,omitempty"`
 	Concurrency             int     `json:"concurrency,omitempty"`
+	MaxEffectiveConcurrency int     `json:"max_effective_concurrency,omitempty"`
 	BackoffSeconds          int     `json:"backoff_seconds,omitempty"`
 	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
+	LaneATargetPct          int     `json:"lane_a_target_pct,omitempty"`
+	LaneBMinPct             int     `json:"lane_b_min_pct,omitempty"`
+	LaneATimeWindowMinutes  int     `json:"lane_a_time_window_minutes,omitempty"`
+	TargetWindowEnabled     bool    `json:"target_window_enabled,omitempty"`
+	TargetWindowStart       string  `json:"target_window_start,omitempty"`
+	TargetWindowEnd         string  `json:"target_window_end,omitempty"`
+	TargetWindowPct         int     `json:"target_window_pct,omitempty"`
+	NewestPct               int     `json:"newest_pct"`
+}
+
+type IndexingSourceWindowRuntimeSettings struct {
+	Enabled            bool `json:"enabled,omitempty"`
+	WindowMinutes      int  `json:"window_minutes,omitempty"`
+	BackfillWindowDays int  `json:"backfill_window_days,omitempty"`
+	MaxOpenHeaders     int  `json:"max_open_headers,omitempty"`
+	ResumeOpenHeaders  int  `json:"resume_open_headers,omitempty"`
+	MaxBlockingYEnc    int  `json:"max_blocking_yenc,omitempty"`
+	ResumeBlockingYEnc int  `json:"resume_blocking_yenc,omitempty"`
 }
 
 type IndexingReleaseRuntimeSettings struct {
 	Enabled                                         bool    `json:"enabled,omitempty"`
 	IntervalMinutes                                 float64 `json:"interval_minutes,omitempty"`
 	BatchSize                                       int     `json:"batch_size,omitempty"`
+	AutoReformBatchSize                             int     `json:"auto_reform_batch_size,omitempty"`
 	BackoffSeconds                                  int     `json:"backoff_seconds,omitempty"`
 	MinConfidence                                   float64 `json:"min_confidence,omitempty"`
 	MinCompletionPct                                float64 `json:"min_completion_pct,omitempty"`
@@ -99,6 +121,16 @@ type IndexingReleaseRuntimeSettings struct {
 	PublicMinIdentityStatus                         string  `json:"public_min_identity_status,omitempty"`
 	PublicRequireInspection                         bool    `json:"public_require_inspection,omitempty"`
 	PublicRequireEnrichment                         bool    `json:"public_require_enrichment,omitempty"`
+	PublicRequirePayloadComplete                    bool    `json:"public_require_payload_complete,omitempty"`
+	PublicRequireExpectedFileCountComplete          bool    `json:"public_require_expected_file_count_complete,omitempty"`
+	PublicRequirePAR2                               bool    `json:"public_require_par2,omitempty"`
+	PublicRequireNFO                                bool    `json:"public_require_nfo,omitempty"`
+	PublicRequireSFV                                bool    `json:"public_require_sfv,omitempty"`
+	RetainUntilExpectedFileCountComplete            bool    `json:"retain_until_expected_file_count_complete,omitempty"`
+	RetainRequirePAR2                               bool    `json:"retain_require_par2,omitempty"`
+	RetainRequireNFO                                bool    `json:"retain_require_nfo,omitempty"`
+	RetainRequireSFV                                bool    `json:"retain_require_sfv,omitempty"`
+	ReopenArchivedNZBOnReleaseChange                bool    `json:"reopen_archived_nzb_on_release_change,omitempty"`
 }
 
 type IndexingMatchRuntimeSettings struct {
@@ -108,24 +140,26 @@ type IndexingMatchRuntimeSettings struct {
 }
 
 type IndexingInspectRuntimeSettings struct {
-	WorkDir          string   `json:"work_dir,omitempty"`
-	WorkspaceBackend string   `json:"workspace_backend,omitempty"`
-	MemoryWorkDir    string   `json:"memory_work_dir,omitempty"`
-	MaxBytes         int64    `json:"max_bytes,omitempty"`
-	MinBinaryBytes   int64    `json:"min_binary_bytes,omitempty"`
-	MaxBinaryBytes   int64    `json:"max_binary_bytes,omitempty"`
-	BlockedMagicHex  []string `json:"blocked_magic_hex,omitempty"`
-	MaxArchiveDepth  int      `json:"max_archive_depth,omitempty"`
-	ToolTimeoutSecs  int      `json:"tool_timeout_seconds,omitempty"`
-	FFmpegPath       string   `json:"ffmpeg_path,omitempty"`
-	FFProbePath      string   `json:"ffprobe_path,omitempty"`
-	SevenZipPath     string   `json:"seven_zip_path,omitempty"`
-	UnrarPath        string   `json:"unrar_path,omitempty"`
-	PAR2Path         string   `json:"par2_path,omitempty"`
+	WorkDir                  string   `json:"work_dir,omitempty"`
+	WorkspaceBackend         string   `json:"workspace_backend,omitempty"`
+	MemoryWorkDir            string   `json:"memory_work_dir,omitempty"`
+	MaxBytes                 int64    `json:"max_bytes,omitempty"`
+	MinBinaryBytes           int64    `json:"min_binary_bytes,omitempty"`
+	MaxBinaryBytes           int64    `json:"max_binary_bytes,omitempty"`
+	RequireExpectedFileCount bool     `json:"require_expected_file_count,omitempty"`
+	BlockedMagicHex          []string `json:"blocked_magic_hex,omitempty"`
+	MaxArchiveDepth          int      `json:"max_archive_depth,omitempty"`
+	ToolTimeoutSecs          int      `json:"tool_timeout_seconds,omitempty"`
+	FFmpegPath               string   `json:"ffmpeg_path,omitempty"`
+	FFProbePath              string   `json:"ffprobe_path,omitempty"`
+	SevenZipPath             string   `json:"seven_zip_path,omitempty"`
+	UnrarPath                string   `json:"unrar_path,omitempty"`
+	PAR2Path                 string   `json:"par2_path,omitempty"`
 }
 
 type IndexingStorageGuardRuntimeSettings struct {
 	Enabled        bool    `json:"enabled,omitempty"`
+	DataDirectory  string  `json:"data_directory,omitempty"`
 	MinFreeBytes   int64   `json:"min_free_bytes,omitempty"`
 	MinFreePercent float64 `json:"min_free_percent,omitempty"`
 }
@@ -165,32 +199,81 @@ type IndexingTMDBRuntimeSettings struct {
 	TVDBBaseURL        string  `json:"tvdb_base_url,omitempty"`
 }
 
+type IndexingScrapeGroupRuntimeSettings struct {
+	GroupName         string `json:"group_name,omitempty"`
+	Enabled           bool   `json:"enabled,omitempty"`
+	BackfillUntilDate string `json:"backfill_until_date,omitempty"`
+	Source            string `json:"source,omitempty"`
+}
+
+type IndexingWildcardRuleRuntimeSettings struct {
+	ID      string `json:"id,omitempty"`
+	Pattern string `json:"pattern,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"`
+}
+
+type IndexingProviderGroupInventoryRuntimeSettings struct {
+	ProviderID   string `json:"provider_id,omitempty"`
+	ProviderName string `json:"provider_name,omitempty"`
+	GroupName    string `json:"group_name,omitempty"`
+	High         int64  `json:"high,omitempty"`
+	Low          int64  `json:"low,omitempty"`
+	Status       string `json:"status,omitempty"`
+	ScannedAt    string `json:"scanned_at,omitempty"`
+}
+
+type IndexingMaterializedGroupRuntimeSettings struct {
+	GroupName         string   `json:"group_name,omitempty"`
+	Enabled           bool     `json:"enabled,omitempty"`
+	BackfillUntilDate string   `json:"backfill_until_date,omitempty"`
+	ProviderIDs       []string `json:"provider_ids,omitempty"`
+	RuleIDs           []string `json:"rule_ids,omitempty"`
+}
+
 type IndexingRuntimeSettings struct {
-	Newsgroups                  []string                            `json:"newsgroups,omitempty"`
-	BackfillUntilDateByGroup    map[string]string                   `json:"backfill_until_date_by_group,omitempty"`
-	ScrapeLatest                IndexingStageRuntimeSettings        `json:"scrape_latest,omitempty"`
-	ScrapeBackfill              IndexingStageRuntimeSettings        `json:"scrape_backfill,omitempty"`
-	Assemble                    IndexingStageRuntimeSettings        `json:"assemble,omitempty"`
-	AssembleLaneA               IndexingStageRuntimeSettings        `json:"assemble_lane_a,omitempty"`
-	AssembleLaneB               IndexingStageRuntimeSettings        `json:"assemble_lane_b,omitempty"`
-	RecoverYEnc                 IndexingStageRuntimeSettings        `json:"recover_yenc,omitempty"`
-	ReleaseSummaryRefresh       IndexingStageRuntimeSettings        `json:"release_summary_refresh,omitempty"`
-	Release                     IndexingReleaseRuntimeSettings      `json:"release,omitempty"`
-	ReleaseGenerateNZB          IndexingStageRuntimeSettings        `json:"release_generate_nzb,omitempty"`
-	ReleaseArchiveNZB           IndexingStageRuntimeSettings        `json:"release_archive_nzb,omitempty"`
-	ReleasePurgeArchivedSources IndexingStageRuntimeSettings        `json:"release_purge_archived_sources,omitempty"`
-	Match                       IndexingMatchRuntimeSettings        `json:"match,omitempty"`
-	Inspect                     IndexingInspectRuntimeSettings      `json:"inspect,omitempty"`
-	StorageGuard                IndexingStorageGuardRuntimeSettings `json:"storage_guard,omitempty"`
-	MemoryGuard                 IndexingMemoryGuardRuntimeSettings  `json:"memory_guard,omitempty"`
-	InspectDiscovery            IndexingStageRuntimeSettings        `json:"inspect_discovery,omitempty"`
-	InspectPAR2                 IndexingStageRuntimeSettings        `json:"inspect_par2,omitempty"`
-	InspectNFO                  IndexingStageRuntimeSettings        `json:"inspect_nfo,omitempty"`
-	InspectArchive              IndexingStageRuntimeSettings        `json:"inspect_archive,omitempty"`
-	InspectPassword             IndexingStageRuntimeSettings        `json:"inspect_password,omitempty"`
-	InspectMedia                IndexingStageRuntimeSettings        `json:"inspect_media,omitempty"`
-	EnrichPreDB                 IndexingPreDBRuntimeSettings        `json:"enrich_predb,omitempty"`
-	EnrichTMDB                  IndexingTMDBRuntimeSettings         `json:"enrich_tmdb,omitempty"`
+	Newsgroups                   []string                                          `json:"newsgroups,omitempty"`
+	BackfillUntilDateByGroup     map[string]string                                 `json:"backfill_until_date_by_group,omitempty"`
+	ExplicitGroups               []IndexingScrapeGroupRuntimeSettings              `json:"explicit_groups"`
+	WildcardRules                []IndexingWildcardRuleRuntimeSettings             `json:"wildcard_rules"`
+	ProviderGroupInventory       []IndexingProviderGroupInventoryRuntimeSettings   `json:"provider_group_inventory"`
+	MaterializedGroups           []IndexingMaterializedGroupRuntimeSettings        `json:"materialized_groups"`
+	ScrapeLatest                 IndexingStageRuntimeSettings                      `json:"scrape_latest,omitempty"`
+	ScrapeBackfill               IndexingStageRuntimeSettings                      `json:"scrape_backfill,omitempty"`
+	PosterMaterialize            IndexingStageRuntimeSettings                      `json:"poster_materialize,omitempty"`
+	CrosspostPopularityRefresh   IndexingStageRuntimeSettings                      `json:"crosspost_popularity_refresh,omitempty"`
+	Assemble                     IndexingStageRuntimeSettings                      `json:"assemble,omitempty"`
+	RecoverYEnc                  IndexingStageRuntimeSettings                      `json:"recover_yenc,omitempty"`
+	SourceWindow                 IndexingSourceWindowRuntimeSettings               `json:"source_window,omitempty"`
+	ReleaseSummaryRefresh        IndexingStageRuntimeSettings                      `json:"release_summary_refresh,omitempty"`
+	Release                      IndexingReleaseRuntimeSettings                    `json:"release,omitempty"`
+	ReleaseGenerateNZB           IndexingStageRuntimeSettings                      `json:"release_generate_nzb,omitempty"`
+	ReleaseArchiveNZB            IndexingStageRuntimeSettings                      `json:"release_archive_nzb,omitempty"`
+	ReleasePurgeArchivedSources  IndexingStageRuntimeSettings                      `json:"release_purge_archived_sources,omitempty"`
+	InspectDiscoveryReadyRefresh IndexingStageRuntimeSettings                      `json:"inspect_discovery_ready_refresh,omitempty"`
+	InspectPAR2ReadyRefresh      IndexingStageRuntimeSettings                      `json:"inspect_par2_ready_refresh,omitempty"`
+	InspectArchiveReadyRefresh   IndexingStageRuntimeSettings                      `json:"inspect_archive_ready_refresh,omitempty"`
+	InspectMediaReadyRefresh     IndexingStageRuntimeSettings                      `json:"inspect_media_ready_refresh,omitempty"`
+	MaintenanceTasks             map[string]IndexingMaintenanceTaskRuntimeSettings `json:"maintenance_tasks,omitempty"`
+	Match                        IndexingMatchRuntimeSettings                      `json:"match,omitempty"`
+	Inspect                      IndexingInspectRuntimeSettings                    `json:"inspect,omitempty"`
+	StorageGuard                 IndexingStorageGuardRuntimeSettings               `json:"storage_guard,omitempty"`
+	MemoryGuard                  IndexingMemoryGuardRuntimeSettings                `json:"memory_guard,omitempty"`
+	InspectDiscovery             IndexingStageRuntimeSettings                      `json:"inspect_discovery,omitempty"`
+	InspectPAR2                  IndexingStageRuntimeSettings                      `json:"inspect_par2,omitempty"`
+	InspectNFO                   IndexingStageRuntimeSettings                      `json:"inspect_nfo,omitempty"`
+	InspectArchive               IndexingStageRuntimeSettings                      `json:"inspect_archive,omitempty"`
+	InspectPassword              IndexingStageRuntimeSettings                      `json:"inspect_password,omitempty"`
+	InspectMedia                 IndexingStageRuntimeSettings                      `json:"inspect_media,omitempty"`
+	EnrichPreDB                  IndexingPreDBRuntimeSettings                      `json:"enrich_predb,omitempty"`
+	EnrichTMDB                   IndexingTMDBRuntimeSettings                       `json:"enrich_tmdb,omitempty"`
+}
+
+type IndexingMaintenanceTaskRuntimeSettings struct {
+	Enabled         bool   `json:"enabled,omitempty"`
+	ScheduleEnabled bool   `json:"schedule_enabled,omitempty"`
+	IntervalHours   int    `json:"interval_hours,omitempty"`
+	BatchSize       int    `json:"batch_size,omitempty"`
+	LastDryRunAt    string `json:"last_dry_run_at,omitempty"`
 }
 
 type ArrIntegrationRuntimeSettings struct {

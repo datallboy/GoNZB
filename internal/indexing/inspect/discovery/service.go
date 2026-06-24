@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
@@ -61,6 +62,13 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		}
 		return metrics, nil
 	}
+	metrics["worker_count"] = s.opts.Concurrency
+
+	if s.opts.Concurrency > 1 && len(candidates) > 1 {
+		processed, err := s.inspectCandidatesConcurrently(ctx, candidates)
+		metrics["processed_count"] = processed
+		return metrics, err
+	}
 
 	processed := 0
 	for _, candidate := range candidates {
@@ -76,6 +84,72 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	metrics["processed_count"] = processed
 	return metrics, nil
+}
+
+func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	workerCount := s.opts.Concurrency
+	if workerCount > len(candidates) {
+		workerCount = len(candidates)
+	}
+	jobs := make(chan pgindex.BinaryInspectionCandidate)
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	processed := 0
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if err := ctx.Err(); err != nil {
+					return
+				}
+				if err := s.inspectCandidate(ctx, candidate); err != nil {
+					select {
+					case errs <- err:
+						cancel()
+					default:
+					}
+					return
+				}
+				mu.Lock()
+				processed++
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, candidate := range candidates {
+		select {
+		case <-ctx.Done():
+			break
+		case jobs <- candidate:
+			continue
+		}
+		break
+	}
+	close(jobs)
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		mu.Lock()
+		defer mu.Unlock()
+		return processed, err
+	default:
+	}
+	if err := ctx.Err(); err != nil && err != context.Canceled {
+		mu.Lock()
+		defer mu.Unlock()
+		return processed, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return processed, nil
 }
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
@@ -108,7 +182,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sample, sampleErr := inspectpkg.SampleBinaryPrefix(ctx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
+		sampleCtx, cancel := context.WithTimeout(ctx, discoverySampleTimeout(s.opts))
+		sample, sampleErr := inspectpkg.SampleBinaryPrefix(sampleCtx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
+		cancel()
 		if sampleErr != nil {
 			continue
 		}
@@ -135,7 +211,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       "no materializable opaque binaries found for discovery",
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return fmt.Errorf("no materializable opaque binaries found for release %s", candidate.ReleaseID)
+		return nil
 	}
 
 	summary := map[string]any{
@@ -180,8 +256,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if s != nil && s.log != nil {
 			s.log.Info("inspect_discovery: recovered binary_id=%d release_id=%s kind=%s ext=%s confidence=%.2f sampled_files=%d", bestTarget.BinaryID, candidate.ReleaseID, kind, ext, confidence, sampledBinaries)
 		}
-	} else if s != nil && s.log != nil {
-		s.log.Debug("inspect_discovery: no recovery release_id=%s sampled_files=%d last_binary_id=%d signature=%q", candidate.ReleaseID, sampledBinaries, bestTarget.BinaryID, bestSample.Signature)
 	}
 
 	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
@@ -197,6 +271,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 }
 
 func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		return []pgindex.BinaryInspectionCandidate{candidate}, nil
+	}
+
 	files, err := s.repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)
@@ -227,7 +305,7 @@ func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.Binary
 	})
 
 	selected := opaque
-	const maxOpaqueSamples = 1024
+	const maxOpaqueSamples = 64
 	if len(selected) > maxOpaqueSamples {
 		selected = evenlySampleReleaseFiles(selected, maxOpaqueSamples)
 	}
@@ -241,6 +319,18 @@ func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.Binary
 		targets = append(targets, target)
 	}
 	return targets, nil
+}
+
+func discoverySampleTimeout(opts inspectpkg.Options) time.Duration {
+	timeout := opts.ToolTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	const maxDiscoverySampleTimeout = 10 * time.Second
+	if timeout > maxDiscoverySampleTimeout {
+		return maxDiscoverySampleTimeout
+	}
+	return timeout
 }
 
 func evenlySampleReleaseFiles(files []pgindex.CatalogReleaseFile, limit int) []pgindex.CatalogReleaseFile {

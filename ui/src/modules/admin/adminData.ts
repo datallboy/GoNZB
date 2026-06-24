@@ -2,15 +2,18 @@ export const stageOptions = [
   { value: '', label: 'All stages' },
   { value: 'scrape_latest', label: 'Scrape Latest' },
   { value: 'scrape_backfill', label: 'Scrape Backfill' },
+  { value: 'poster_materialize', label: 'Poster Materialize' },
+  { value: 'crosspost_popularity_refresh', label: 'Crosspost Popularity' },
   { value: 'assemble', label: 'Assemble' },
-  { value: 'assemble_lane_a', label: 'Assemble Lane A' },
-  { value: 'assemble_lane_b', label: 'Assemble Lane B' },
   { value: 'recover_yenc', label: 'Recover yEnc' },
   { value: 'release_summary_refresh', label: 'Release Summary Refresh' },
   { value: 'release', label: 'Release' },
   { value: 'release_generate_nzb', label: 'Generate NZB' },
   { value: 'release_archive_nzb', label: 'Archive NZB' },
-  { value: 'release_purge_archived_sources', label: 'Purge Archived Sources' },
+  { value: 'inspect_discovery_ready_refresh', label: 'Inspect Discovery Queue' },
+  { value: 'inspect_par2_ready_refresh', label: 'Inspect PAR2 Queue' },
+  { value: 'inspect_archive_ready_refresh', label: 'Inspect Archive Queue' },
+  { value: 'inspect_media_ready_refresh', label: 'Inspect Media Queue' },
   { value: 'inspect_discovery', label: 'Inspect Discovery' },
   { value: 'inspect_par2', label: 'Inspect PAR2' },
   { value: 'inspect_nfo', label: 'Inspect NFO' },
@@ -38,9 +41,10 @@ export const runTriggerOptions = [
 
 export const permissionGroups = [
   {
-    label: 'Indexer catalog',
+    label: 'Catalog access',
     permissions: [
       'indexer.releases.read',
+      'aggregator.releases.read',
       'indexer.releases.override',
       'indexer.releases.hide',
       'indexer.releases.purge',

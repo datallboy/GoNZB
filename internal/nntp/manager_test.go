@@ -2,6 +2,7 @@ package nntp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -190,6 +191,23 @@ func TestManagerWaitQueuePolicyTriesOtherProviderBeforeWaiting(t *testing.T) {
 	}
 }
 
+func TestManagerArticleNotFoundIncludesProviderAttempts(t *testing.T) {
+	first := &missingProvider{id: "easynews"}
+	second := &missingProvider{id: "newshosting"}
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		newManagedProvider(first),
+		newManagedProvider(second),
+	}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+
+	_, err := manager.FetchMessage(context.Background(), "missing@example", []string{"alt.binaries.test"})
+	if !errors.Is(err, ErrArticleNotFound) {
+		t.Fatalf("expected article not found, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "providers=easynews,newshosting") {
+		t.Fatalf("expected provider attempts in error, got %q", err.Error())
+	}
+}
+
 func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	provider := newBlockingProvider(1)
 	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
@@ -275,11 +293,169 @@ func TestManagerReservationsCapIndexerWhenDownloaderHasDemand(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesRequestsByProviderRole(t *testing.T) {
+	scrapeProvider := &roleTestProvider{id: "scrape-provider", prefix: []byte("wrong")}
+	yencProvider := &roleTestProvider{id: "yenc-provider", prefix: []byte("yenc")}
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		{Provider: scrapeProvider, semaphore: make(chan struct{}, 1), roles: normalizeProviderRoles([]string{"scrape"})},
+		{Provider: yencProvider, semaphore: make(chan struct{}, 1), roles: normalizeProviderRoles([]string{"yenc_recovery"})},
+	}, ManagerOptions{CapacityPolicy: CapacityReturnBusy})
+
+	stats, providerID, err := manager.groupStatsForScopeWithProvider(context.Background(), "scrape", CapacityReturnBusy, "alt.binaries.test")
+	if err != nil {
+		t.Fatalf("scrape group stats failed: %v", err)
+	}
+	if providerID != "scrape-provider" || stats.Group != "alt.binaries.test" {
+		t.Fatalf("expected scrape provider, got id=%q stats=%+v", providerID, stats)
+	}
+
+	prefix, err := manager.FetchBodyPrefixForScope(context.Background(), "recover_yenc", "msg@example", nil, 128)
+	if err != nil {
+		t.Fatalf("recover_yenc prefix failed: %v", err)
+	}
+	if string(prefix) != "yenc" || scrapeProvider.prefixCalls != 0 || yencProvider.prefixCalls != 1 {
+		t.Fatalf("expected yenc provider only, prefix=%q scrape_calls=%d yenc_calls=%d", string(prefix), scrapeProvider.prefixCalls, yencProvider.prefixCalls)
+	}
+
+	if _, err := manager.FetchBodyPrefixForScope(context.Background(), "inspect_par2", "msg@example", nil, 128); err != ErrProviderBusy {
+		t.Fatalf("expected no inspection provider to be busy/config failure, got %v", err)
+	}
+}
+
+func TestManagerKeepsProviderHeadroomBeforeUsingLowerPriorityProvider(t *testing.T) {
+	primary := &roleTestProvider{id: "primary", priority: 1, prefix: []byte("primary")}
+	secondary := &roleTestProvider{id: "secondary", priority: 2, prefix: []byte("secondary")}
+	primaryManaged := &managedProvider{
+		Provider:  primary,
+		semaphore: make(chan struct{}, 100),
+		roles:     normalizeProviderRoles([]string{"yenc_recovery"}),
+	}
+	for i := 0; i < 95; i++ {
+		primaryManaged.semaphore <- struct{}{}
+	}
+	secondaryManaged := &managedProvider{
+		Provider:  secondary,
+		semaphore: make(chan struct{}, 30),
+		roles:     normalizeProviderRoles([]string{"yenc_recovery"}),
+	}
+	manager := newManagerWithProviders(nil, []*managedProvider{primaryManaged, secondaryManaged}, ManagerOptions{CapacityPolicy: CapacityReturnBusy})
+
+	prefix, err := manager.FetchBodyPrefixForScope(context.Background(), "recover_yenc", "msg@example", nil, 128)
+	if err != nil {
+		t.Fatalf("fetch prefix: %v", err)
+	}
+	if string(prefix) != "secondary" {
+		t.Fatalf("expected lower-priority provider at primary headroom, got %q", string(prefix))
+	}
+	if primary.prefixCalls != 0 || secondary.prefixCalls != 1 {
+		t.Fatalf("expected secondary only, primary_calls=%d secondary_calls=%d", primary.prefixCalls, secondary.prefixCalls)
+	}
+}
+
+func TestManagerBalancesRecoverYEncByProviderUtilization(t *testing.T) {
+	primary := &roleTestProvider{id: "primary", priority: 1, prefix: []byte("primary")}
+	secondary := &roleTestProvider{id: "secondary", priority: 2, prefix: []byte("secondary")}
+	primaryManaged := &managedProvider{
+		Provider:  primary,
+		semaphore: make(chan struct{}, 100),
+		roles:     normalizeProviderRoles([]string{"yenc_recovery"}),
+	}
+	for i := 0; i < 50; i++ {
+		primaryManaged.semaphore <- struct{}{}
+	}
+	secondaryManaged := &managedProvider{
+		Provider:  secondary,
+		semaphore: make(chan struct{}, 30),
+		roles:     normalizeProviderRoles([]string{"yenc_recovery"}),
+	}
+	manager := newManagerWithProviders(nil, []*managedProvider{primaryManaged, secondaryManaged}, ManagerOptions{CapacityPolicy: CapacityReturnBusy})
+
+	prefix, err := manager.FetchBodyPrefixForScope(context.Background(), "recover_yenc", "msg@example", nil, 128)
+	if err != nil {
+		t.Fatalf("fetch prefix: %v", err)
+	}
+	if string(prefix) != "secondary" {
+		t.Fatalf("expected less-utilized provider, got %q", string(prefix))
+	}
+	if primary.prefixCalls != 0 || secondary.prefixCalls != 1 {
+		t.Fatalf("expected secondary only, primary_calls=%d secondary_calls=%d", primary.prefixCalls, secondary.prefixCalls)
+	}
+}
+
 type blockingProvider struct {
 	capacity int
 	mu       sync.Mutex
 	active   int
 	max      int
+}
+
+type missingProvider struct {
+	id string
+}
+
+type roleTestProvider struct {
+	id          string
+	priority    int
+	prefix      []byte
+	prefixCalls int
+}
+
+func (p *roleTestProvider) ID() string               { return p.id }
+func (p *roleTestProvider) Label() string            { return p.id }
+func (p *roleTestProvider) Priority() int            { return p.priority }
+func (p *roleTestProvider) MaxConnection() int       { return 1 }
+func (p *roleTestProvider) IdleConnectionCount() int { return 0 }
+func (p *roleTestProvider) TestConnection() error    { return nil }
+func (p *roleTestProvider) Close() error             { return nil }
+func (p *roleTestProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return ProviderStatsSnapshot{}
+}
+func (p *roleTestProvider) Fetch(context.Context, string, []string) (io.Reader, error) {
+	return strings.NewReader("body"), nil
+}
+func (p *roleTestProvider) FetchBodyPrefix(context.Context, string, []string, int64) ([]byte, error) {
+	p.prefixCalls++
+	return append([]byte(nil), p.prefix...), nil
+}
+func (p *roleTestProvider) GroupStats(_ context.Context, group string) (GroupStats, error) {
+	return GroupStats{Group: group, Low: 1, High: 10, Count: 10}, nil
+}
+func (p *roleTestProvider) ListGroups(context.Context, string) ([]GroupListing, error) {
+	return nil, nil
+}
+func (p *roleTestProvider) XOver(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+	return nil, nil
+}
+
+func (p *missingProvider) ID() string               { return p.id }
+func (p *missingProvider) Label() string            { return p.id }
+func (p *missingProvider) Priority() int            { return 0 }
+func (p *missingProvider) MaxConnection() int       { return 1 }
+func (p *missingProvider) IdleConnectionCount() int { return 0 }
+func (p *missingProvider) TestConnection() error    { return nil }
+func (p *missingProvider) Close() error             { return nil }
+func (p *missingProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return ProviderStatsSnapshot{}
+}
+
+func (p *missingProvider) Fetch(context.Context, string, []string) (io.Reader, error) {
+	return nil, ErrArticleNotFound
+}
+
+func (p *missingProvider) FetchBodyPrefix(context.Context, string, []string, int64) ([]byte, error) {
+	return nil, ErrArticleNotFound
+}
+
+func (p *missingProvider) GroupStats(context.Context, string) (GroupStats, error) {
+	return GroupStats{Low: 1, High: 1}, nil
+}
+
+func (p *missingProvider) ListGroups(context.Context, string) ([]GroupListing, error) {
+	return nil, nil
+}
+
+func (p *missingProvider) XOver(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+	return nil, nil
 }
 
 func newBlockingProvider(capacity int) *blockingProvider {
@@ -315,6 +491,12 @@ func (p *blockingProvider) GroupStats(context.Context, string) (GroupStats, erro
 	p.enter()
 	defer p.leave()
 	return GroupStats{Low: 1, High: 1}, nil
+}
+
+func (p *blockingProvider) ListGroups(context.Context, string) ([]GroupListing, error) {
+	p.enter()
+	defer p.leave()
+	return []GroupListing{{Group: "alt.binaries.test", High: 1, Low: 1, Status: "y"}}, nil
 }
 
 func (p *blockingProvider) XOver(context.Context, string, int64, int64) ([]OverviewHeader, error) {

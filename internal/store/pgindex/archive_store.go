@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const archivePurgeBinaryIDStageChunk = 10000
+
 type ReleaseArchiveState struct {
 	ReleaseID          string     `json:"release_id"`
 	ArchiveStatus      string     `json:"archive_status"`
@@ -174,8 +176,10 @@ func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([
 				r.title
 			FROM releases r
 			JOIN nzb_cache n ON n.release_id = r.release_id
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			WHERE r.source_kind = 'usenet_index'
 			  AND n.generation_status = 'ready'
+			  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)
 			  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 			  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
 			  AND EXISTS (
@@ -334,6 +338,9 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 	if err := syncReleaseCatalogFiles(ctx, tx, in.ReleaseID); err != nil {
 		return err
 	}
+	if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, in.ReleaseID); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit archive store tx %s: %w", in.ReleaseID, err)
@@ -367,9 +374,52 @@ func (s *Store) MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText
 	return nil
 }
 
-func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]ReleasePurgeCandidate, error) {
+func (s *Store) ReopenArchivedReleaseForRegeneration(ctx context.Context, releaseID string) error {
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE release_archive_state
+		SET archive_status = 'active',
+		    object_key = '',
+		    content_hash_sha256 = '',
+		    object_size_bytes = 0,
+		    purge_eligible_at = NULL,
+		    purge_completed_at = NULL,
+		    last_archive_error = '',
+		    updated_at = NOW()
+		WHERE release_id = $1
+		  AND archive_status IN ('archived', 'purge_pending', 'purged', 'archive_failed', 'archive_pending')`,
+		releaseID,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen archived release %s for regeneration: %w", releaseID, err)
+	}
+	return nil
+}
+
+func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy ReleaseReadyPolicy) ([]ReleasePurgeCandidate, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	policy = NormalizeReleaseReadyPolicy(policy)
+	retainClauses := []string{}
+	if policy.RetainUntilExpectedFileCountComplete {
+		retainClauses = append(retainClauses, expectedFileCountCompleteClause("r"))
+	}
+	if policy.RetainRequirePAR2 {
+		retainClauses = append(retainClauses, "COALESCE(r.has_par2, FALSE) = TRUE")
+	}
+	if policy.RetainRequireNFO {
+		retainClauses = append(retainClauses, "COALESCE(r.has_nfo, FALSE) = TRUE")
+	}
+	if policy.RetainRequireSFV {
+		retainClauses = append(retainClauses, hasSFVClause("r"))
+	}
+	retainPredicate := "TRUE"
+	if len(retainClauses) > 0 {
+		retainPredicate = strings.Join(retainClauses, "\n\t\t  AND ")
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT release_id, object_key
@@ -379,7 +429,10 @@ func (s *Store) ClaimReleasePurgeCandidates(ctx context.Context, limit int) ([]R
 		  AND EXISTS (
 			SELECT 1
 			FROM releases r
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			WHERE r.release_id = release_archive_state.release_id
+			  AND `+retainPredicate+`
+			  AND (`+releaseReadyVisibilityClause("r", policy)+`)
 		  )
 		  AND EXISTS (
 			SELECT 1
@@ -429,74 +482,137 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 	if releaseID == "" {
 		return nil, fmt.Errorf("release id is required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin purge tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	var result *ReleasePurgeResult
+	err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin purge tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	result := &ReleasePurgeResult{
-		ReleaseID:          releaseID,
-		DeletedRowsByTable: map[string]int64{},
-	}
-
-	preflight, err := loadReleasePurgePreflight(ctx, tx, releaseID, true)
+		attemptResult := &ReleasePurgeResult{
+			ReleaseID:          releaseID,
+			DeletedRowsByTable: map[string]int64{},
+		}
+		if err := purgeArchivedReleaseSourcesTx(ctx, tx, releaseID, attemptResult); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit purge tx %s: %w", releaseID, err)
+		}
+		result = attemptResult
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
+	return result, nil
+}
+
+func purgeArchivedReleaseSourcesTx(ctx context.Context, tx *sql.Tx, releaseID string, result *ReleasePurgeResult) error {
+	preflight, err := loadReleasePurgePreflight(ctx, tx, releaseID, true)
+	if err != nil {
+		return err
+	}
 	if preflight.ArchiveStatus != "purge_pending" {
-		return nil, fmt.Errorf("release %s is not purge_pending", releaseID)
+		return fmt.Errorf("release %s is not purge_pending", releaseID)
 	}
 	if strings.TrimSpace(preflight.ObjectKey) == "" {
-		return nil, fmt.Errorf("release %s does not have a durable archive object key", releaseID)
+		return fmt.Errorf("release %s does not have a durable archive object key", releaseID)
 	}
 	if !preflight.ReleaseExists {
-		return nil, fmt.Errorf("release %s does not exist in durable catalog", releaseID)
+		return fmt.Errorf("release %s does not exist in durable catalog", releaseID)
 	}
 	if !preflight.HasCatalogFiles {
-		return nil, fmt.Errorf("release %s does not have durable catalog files", releaseID)
+		return fmt.Errorf("release %s does not have durable catalog files", releaseID)
 	}
 	if !preflight.HasCompletedMediaInspect {
-		return nil, fmt.Errorf("release %s has not completed inspect_media", releaseID)
+		return fmt.Errorf("release %s has not completed inspect_media", releaseID)
 	}
 
 	var totalLineageBinaries int64
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM release_archive_lineage_binaries WHERE release_id = $1`, releaseID).Scan(&totalLineageBinaries); err != nil {
-		return nil, fmt.Errorf("count release lineage binaries %s: %w", releaseID, err)
+		return fmt.Errorf("count release lineage binaries %s: %w", releaseID, err)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT lb.binary_id
-		FROM release_archive_lineage_binaries lb
-		WHERE lb.release_id = $1
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM release_files other_rf
-			LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
-			WHERE other_rf.binary_id = lb.binary_id
-			  AND other_rf.release_id <> $1
-			  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
-		  )`, releaseID)
+		WITH release_lineage AS (
+			SELECT lb.binary_id
+			FROM release_archive_lineage_binaries lb
+			WHERE lb.release_id = $1
+		),
+		purge_roots AS (
+			SELECT lb.binary_id
+			FROM release_lineage lb
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_files other_rf
+				LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
+				WHERE other_rf.binary_id = lb.binary_id
+				  AND other_rf.release_id <> $1
+				  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
+			)
+		),
+		purge_superseded AS (
+			SELECT bss.source_binary_id AS binary_id
+			FROM binary_superseded_sources bss
+			JOIN purge_roots pr ON pr.binary_id = bss.target_binary_id
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM release_files other_rf
+				LEFT JOIN release_archive_state other_ras ON other_ras.release_id = other_rf.release_id
+				WHERE other_rf.binary_id = bss.source_binary_id
+				  AND other_rf.release_id <> $1
+				  AND COALESCE(other_ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')
+			)
+		)
+		SELECT DISTINCT binary_id, TRUE AS is_lineage
+		FROM purge_roots
+		UNION
+		SELECT DISTINCT binary_id, FALSE AS is_lineage
+		FROM purge_superseded`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("list purgeable binaries %s: %w", releaseID, err)
+		return fmt.Errorf("list purgeable binaries %s: %w", releaseID, err)
 	}
 	defer rows.Close()
 
 	binaryIDs := make([]int64, 0, 64)
+	var purgeableLineageBinaries int64
 	for rows.Next() {
 		var binaryID int64
-		if err := rows.Scan(&binaryID); err != nil {
-			return nil, fmt.Errorf("scan purgeable binary id: %w", err)
+		var isLineage bool
+		if err := rows.Scan(&binaryID, &isLineage); err != nil {
+			return fmt.Errorf("scan purgeable binary id: %w", err)
 		}
 		binaryIDs = append(binaryIDs, binaryID)
+		if isLineage {
+			purgeableLineageBinaries++
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate purgeable binary ids: %w", err)
+		return fmt.Errorf("iterate purgeable binary ids: %w", err)
 	}
-	result.SkippedSharedBinaryRows = totalLineageBinaries - int64(len(binaryIDs))
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close purgeable binary ids: %w", err)
+	}
+	result.SkippedSharedBinaryRows = totalLineageBinaries - purgeableLineageBinaries
 
 	if len(binaryIDs) > 0 {
-		filter, args := bigintFilter(binaryIDs, 1)
+		if err := stageReleasePurgeBinaryIDs(ctx, tx, binaryIDs); err != nil {
+			return fmt.Errorf("stage purgeable binary ids for %s: %w", releaseID, err)
+		}
+		var supersededSourceRows int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM binary_superseded_sources bss
+			WHERE EXISTS (
+				SELECT 1
+				FROM tmp_release_purge_binary_ids staged
+				WHERE staged.binary_id IN (bss.source_binary_id, bss.target_binary_id)
+			)`).Scan(&supersededSourceRows); err != nil {
+			return fmt.Errorf("count superseded source rows for %s: %w", releaseID, err)
+		}
+		result.DeletedRowsByTable["binary_superseded_sources"] = supersededSourceRows
 		for _, table := range []string{
 			"binary_parts",
 			"binary_grouping_evidence",
@@ -509,25 +625,28 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 			"binary_par2_targets",
 			"yenc_recovery_work_items",
 		} {
-			count, err := countRowsByBinaryIDs(ctx, tx, table, filter, args...)
+			count, err := countRowsByStagedBinaryIDs(ctx, tx, table)
 			if err != nil {
-				return nil, fmt.Errorf("count %s rows for %s: %w", table, releaseID, err)
+				return fmt.Errorf("count %s rows for %s: %w", table, releaseID, err)
 			}
 			result.DeletedRowsByTable[table] = count
 		}
-		deleted, err := execDeleteCount(ctx, tx, `DELETE FROM binaries WHERE id IN (`+filter+`)`, args...)
+		deleted, err := execDeleteCount(ctx, tx, `
+			DELETE FROM binary_core bc
+			USING tmp_release_purge_binary_ids staged
+			WHERE staged.binary_id = bc.binary_id`)
 		if err != nil {
-			return nil, fmt.Errorf("delete binaries for %s: %w", releaseID, err)
+			return fmt.Errorf("delete binary core rows for %s: %w", releaseID, err)
 		}
 		result.DeletedBinaryRows = deleted
-		result.DeletedRowsByTable["binaries"] = deleted
+		result.DeletedRowsByTable["binary_core"] = deleted
 	}
 
 	deletedReleaseFiles, err := execDeleteCount(ctx, tx, `
 		DELETE FROM release_files
 		WHERE release_id = $1`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete release files for %s: %w", releaseID, err)
+		return fmt.Errorf("delete release files for %s: %w", releaseID, err)
 	}
 	result.DeletedRowsByTable["release_files"] = deletedReleaseFiles
 
@@ -535,7 +654,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		DELETE FROM release_newsgroups
 		WHERE release_id = $1`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete release newsgroups for %s: %w", releaseID, err)
+		return fmt.Errorf("delete release newsgroups for %s: %w", releaseID, err)
 	}
 	result.DeletedRowsByTable["release_newsgroups"] = deletedReleaseNewsgroups
 
@@ -543,7 +662,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		DELETE FROM nzb_cache
 		WHERE release_id = $1`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete nzb cache for %s: %w", releaseID, err)
+		return fmt.Errorf("delete nzb cache for %s: %w", releaseID, err)
 	}
 	result.DeletedRowsByTable["nzb_cache"] = deletedNZBCache
 
@@ -558,7 +677,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 			SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = p.article_header_id
 		  )`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete article payloads for %s: %w", releaseID, err)
+		return fmt.Errorf("delete article payloads for %s: %w", releaseID, err)
 	}
 	result.DeletedArticlePayloadRows = deletedPayloads
 	result.DeletedRowsByTable["article_header_ingest_payloads"] = deletedPayloads
@@ -574,7 +693,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 			SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id
 		  )`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete article headers for %s: %w", releaseID, err)
+		return fmt.Errorf("delete article headers for %s: %w", releaseID, err)
 	}
 	result.DeletedArticleHeaderRows = deletedHeaders
 	result.DeletedRowsByTable["article_headers"] = deletedHeaders
@@ -583,7 +702,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		DELETE FROM release_archive_lineage_binaries
 		WHERE release_id = $1`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete release archive lineage binaries for %s: %w", releaseID, err)
+		return fmt.Errorf("delete release archive lineage binaries for %s: %w", releaseID, err)
 	}
 	result.DeletedRowsByTable["release_archive_lineage_binaries"] = deletedLineageBinaries
 
@@ -591,7 +710,7 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		DELETE FROM release_archive_lineage_article_headers
 		WHERE release_id = $1`, releaseID)
 	if err != nil {
-		return nil, fmt.Errorf("delete release archive lineage article headers for %s: %w", releaseID, err)
+		return fmt.Errorf("delete release archive lineage article headers for %s: %w", releaseID, err)
 	}
 	result.DeletedRowsByTable["release_archive_lineage_article_headers"] = deletedLineageHeaders
 
@@ -601,13 +720,9 @@ func (s *Store) PurgeArchivedReleaseSources(ctx context.Context, releaseID strin
 		    purge_completed_at = NOW(),
 		    updated_at = NOW()
 		WHERE release_id = $1`, releaseID); err != nil {
-		return nil, fmt.Errorf("mark release purged %s: %w", releaseID, err)
+		return fmt.Errorf("mark release purged %s: %w", releaseID, err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit purge tx %s: %w", releaseID, err)
-	}
-	return result, nil
+	return nil
 }
 
 func loadReleasePurgePreflight(ctx context.Context, q interface {
@@ -674,22 +789,57 @@ func execDeleteCount(ctx context.Context, runner interface {
 	return rows, nil
 }
 
-func bigintFilter(ids []int64, start int) (string, []any) {
-	placeholders := make([]string, 0, len(ids))
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		placeholders = append(placeholders, fmt.Sprintf("$%d", start+i))
-		args = append(args, id)
+func stageReleasePurgeBinaryIDs(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS tmp_release_purge_binary_ids (
+			binary_id BIGINT PRIMARY KEY
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create purge binary id temp table: %w", err)
 	}
-	return strings.Join(placeholders, ","), args
+	if _, err := tx.ExecContext(ctx, `TRUNCATE tmp_release_purge_binary_ids`); err != nil {
+		return fmt.Errorf("clear purge binary id temp table: %w", err)
+	}
+
+	for start := 0; start < len(binaryIDs); start += archivePurgeBinaryIDStageChunk {
+		end := start + archivePurgeBinaryIDStageChunk
+		if end > len(binaryIDs) {
+			end = len(binaryIDs)
+		}
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, binaryID := range binaryIDs[start:end] {
+			if binaryID <= 0 {
+				continue
+			}
+			args = append(args, binaryID)
+			placeholders = append(placeholders, fmt.Sprintf("($%d)", len(args)))
+		}
+		if len(args) == 0 {
+			continue
+		}
+		if len(args) > postgresBindParameterSoftLimit {
+			return fmt.Errorf("purge binary id stage chunk has %d bind parameters", len(args))
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tmp_release_purge_binary_ids (binary_id)
+			VALUES `+strings.Join(placeholders, ",")+`
+			ON CONFLICT (binary_id) DO NOTHING`, args...); err != nil {
+			return fmt.Errorf("insert purge binary id stage chunk: %w", err)
+		}
+	}
+	return nil
 }
 
-func countRowsByBinaryIDs(ctx context.Context, runner interface {
+func countRowsByStagedBinaryIDs(ctx context.Context, runner interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, table, filter string, args ...any) (int64, error) {
+}, table string) (int64, error) {
 	var count int64
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE binary_id IN (%s)`, table, filter)
-	if err := runner.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM %s target
+		JOIN tmp_release_purge_binary_ids staged
+		  ON staged.binary_id = target.binary_id`, table)
+	if err := runner.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -1051,5 +1201,52 @@ func (s *Store) getReleaseArchiveDetailSnapshot(ctx context.Context, releaseID s
 }
 
 func (s *Store) BackfillMissingReleaseArchiveDetailSnapshots(ctx context.Context, limit int) (int64, error) {
-	return 0, nil
+	if limit <= 0 {
+		limit = 500
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin missing release archive detail snapshot backfill tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT ras.release_id
+		FROM release_archive_state ras
+		LEFT JOIN release_archive_detail_snapshots ads ON ads.release_id = ras.release_id
+		WHERE ras.archive_status IN ('archived', 'purge_pending', 'purged')
+		  AND COALESCE(ras.object_key, '') <> ''
+		  AND ads.release_id IS NULL
+		  AND EXISTS (SELECT 1 FROM release_catalog_files cf WHERE cf.release_id = ras.release_id)
+		ORDER BY ras.archived_at NULLS LAST, ras.release_id
+		LIMIT $1
+		FOR UPDATE OF ras`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("list missing release archive detail snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	releaseIDs := make([]string, 0, limit)
+	for rows.Next() {
+		var releaseID string
+		if err := rows.Scan(&releaseID); err != nil {
+			return 0, fmt.Errorf("scan missing release archive detail snapshot release id: %w", err)
+		}
+		releaseIDs = append(releaseIDs, releaseID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate missing release archive detail snapshots: %w", err)
+	}
+
+	for _, releaseID := range releaseIDs {
+		if err := upsertReleaseArchiveDetailSnapshot(ctx, tx, releaseID); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit missing release archive detail snapshot backfill tx: %w", err)
+	}
+	return int64(len(releaseIDs)), nil
 }

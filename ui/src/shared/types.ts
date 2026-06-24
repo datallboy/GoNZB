@@ -156,6 +156,12 @@ export type IndexerStageThroughputWindow = {
   items_per_minute: number
   items_per_hour: number
   avg_run_duration_ms: number
+  avg_workers_used?: number
+  max_workers_used?: number
+  avg_groups_scheduled?: number
+  max_groups_scheduled?: number
+  avg_ranges_fetched?: number
+  max_ranges_fetched?: number
 }
 
 export type IndexerStageThroughputItem = {
@@ -227,6 +233,11 @@ export type IndexerNNTPStats = {
   scopes: IndexerNNTPScopeStats[]
 }
 
+export type IndexerOverviewStreamSnapshot = {
+  nntp?: IndexerNNTPStats | null
+  throughput?: IndexerStageThroughput | null
+}
+
 export type NNTPModuleRuntimeStats = {
   reservations_enabled: boolean
   idle_borrow_enabled: boolean
@@ -249,6 +260,7 @@ export type AdminStage = {
   concurrency?: number
   supports_concurrency: boolean
   backoff_seconds: number
+  backlog_count?: number
   lease_owner: string
   lease_expires_at?: string
   last_heartbeat_at?: string
@@ -264,14 +276,172 @@ export type AdminStagesResponse = {
   count: number
 }
 
+export type AdminMaintenanceTask = {
+  task_key: string
+  label: string
+  purpose: string
+  risk: string
+  space_effect: string
+  supervisor_effect: string
+  data_effect: string
+  release_safety: string
+  destructive: boolean
+  enabled: boolean
+  schedule_enabled: boolean
+  interval_hours: number
+  min_interval_hours: number
+  uses_batch_size: boolean
+  batch_size: number
+  last_dry_run_at?: string
+  last_run?: AdminRun
+  warnings?: string[]
+  blockers?: string[]
+}
+
+export type AdminMaintenanceStorageSnapshot = {
+  generated_at: string
+  database_bytes: number
+  data_directory?: string
+  filesystem_free_bytes?: number
+  filesystem_total_bytes?: number
+  filesystem_free_percent?: number
+  filesystem_visible: boolean
+  table_total_bytes_by_table?: Record<string, number>
+  table_live_rows_by_table?: Record<string, number>
+  table_dead_rows_by_table?: Record<string, number>
+}
+
+export type AdminMaintenanceTaskRun = {
+  task_key: string
+  dry_run: boolean
+  estimated_rows_by_table?: Record<string, number>
+  deleted_rows_by_table?: Record<string, number>
+  vacuumed_tables?: string[]
+  estimated_bytes?: number
+  before_storage?: AdminMaintenanceStorageSnapshot
+  after_storage?: AdminMaintenanceStorageSnapshot
+  warnings?: string[]
+  blockers?: string[]
+}
+
+export type AdminMaintenanceTasksResponse = {
+  items: AdminMaintenanceTask[]
+  count: number
+}
+
+export type AdminMaintenanceTaskPatch = {
+  enabled?: boolean
+  schedule_enabled?: boolean
+  interval_hours?: number
+  batch_size?: number
+}
+
+export type AdminStorageAuditTable = {
+  table_name: string
+  row_estimate: number
+  total_bytes: number
+  table_bytes: number
+  index_bytes: number
+  toast_bytes: number
+  dead_tuples: number
+  last_vacuum?: string
+  last_autovacuum?: string
+  last_analyze?: string
+  last_autoanalyze?: string
+}
+
+export type AdminStorageAuditIndex = {
+  table_name: string
+  index_name: string
+  index_bytes: number
+  scans: number
+  tuples_read: number
+  tuples_fetch: number
+  primary: boolean
+  unique: boolean
+}
+
+export type AdminStorageAuditAgeRange = {
+  scope: string
+  bucket: string
+  rows: number
+  risk: string
+  data_use: string
+  purge_note: string
+}
+
+export type AdminStorageGuardCount = {
+  key: string
+  label: string
+  rows: number
+  risk: string
+  notes: string
+}
+
+export type AdminSourceWindowAudit = {
+  bucket: string
+  headers: number
+  payloads: number
+  assembly_queue: number
+  binary_parts: number
+  yenc_work_items: number
+  archive_lineage: number
+  orphan_headers: number
+  risk: string
+  notes: string
+}
+
+export type AdminYEncBacklogAudit = {
+  bucket: string
+  status: string
+  priority_rank: number
+  readiness_bucket: string
+  rows: number
+  blocking_rows: number
+  oldest_date?: string
+  newest_date?: string
+  notes: string
+}
+
+export type AdminStorageCleanupAudit = {
+  task_key: string
+  label: string
+  risk: string
+  implemented: boolean
+  estimated_rows_by_table?: Record<string, number>
+  space_effect: string
+  supervisor_effect: string
+  data_effect: string
+  release_safety: string
+}
+
+export type AdminStorageAuditReport = {
+  generated_at: string
+  tables: AdminStorageAuditTable[]
+  indexes: AdminStorageAuditIndex[]
+  source_ages: AdminStorageAuditAgeRange[]
+  source_windows?: AdminSourceWindowAudit[]
+  yenc_backlog?: AdminYEncBacklogAudit[]
+  guard_counts: AdminStorageGuardCount[]
+  cleanup_matrix: AdminStorageCleanupAudit[]
+}
+
 export type AdminStageConfigPatch = {
   enabled?: boolean
   interval_minutes?: number
   batch_size?: number
   max_batches?: number
   concurrency?: number
+  max_effective_concurrency?: number
   backoff_seconds?: number
   binary_upsert_db_chunk_size?: number
+  lane_a_target_pct?: number
+  lane_b_min_pct?: number
+  target_window_enabled?: boolean
+  target_window_start?: string
+  target_window_end?: string
+  target_window_pct?: number
+  newest_pct?: number
 }
 
 export type AdminRun = {
@@ -321,15 +491,20 @@ export type AdminReleaseSummary = {
   posted_at?: string
   size_bytes: number
   file_count: number
+  expected_file_count: number
+  expected_archive_file_count: number
+  par_file_count: number
   completion_pct: number
   has_nfo: boolean
   has_par2: boolean
+  archive_count: number
   password_state: string
   media_quality_tier: string
   nzb_generation_status: string
   hidden: boolean
   public_visible: boolean
   password_candidate_count: number
+  payload_completion_state: "complete" | "incomplete" | "unknown"
 }
 
 export type AdminReleaseListResponse = {
@@ -360,6 +535,8 @@ export type AdminReleaseListParams = {
   metadata_mismatch?: string
   low_confidence?: string
   completion_state?: string
+  payload_completion_include?: string
+  payload_completion_exclude?: string
   has_nfo?: string
   has_par2?: string
   limit?: number
@@ -473,6 +650,7 @@ export type AdminReleaseRecord = {
   posted_at?: string
   file_count: number
   expected_file_count: number
+  expected_archive_file_count: number
   par_file_count: number
   completion_pct: number
   match_confidence: number
@@ -659,6 +837,20 @@ export type AdminReleaseDetailResponse = {
     release: AdminReleaseRecord
     newsgroups: string[]
     files: AdminReleaseFileSummary[]
+    diagnostics: {
+      payload_complete: boolean
+      payload_completeness_known: boolean
+      payload_completion_pct: number
+      known_binary_completion_pct: number
+      expected_file_count_complete: boolean
+      expected_file_count_known: boolean
+      expected_archive_file_count_known: boolean
+      missing_expected_file_count: number
+      missing_expected_archive_file_count: number
+      has_par2_manifest: boolean
+      has_sfv: boolean
+      readiness_note: string
+    }
     password_candidates: AdminPasswordCandidate[]
     inspections: AdminInspectionSummary[]
     predb_matches: AdminPredbMatch[]
@@ -728,20 +920,88 @@ export type TokenCreateResponse = {
   secret: string
 }
 
+export type ScrapeExplicitGroup = {
+  group_name: string
+  enabled: boolean
+  backfill_until_date?: string
+  source?: string
+}
+
+export type ScrapeWildcardRule = {
+  id: string
+  pattern: string
+  enabled: boolean
+}
+
+export type ScrapeProviderInventoryItem = {
+  provider_id: string
+  provider_name: string
+  group_name: string
+  high: number
+  low: number
+  status: string
+  scanned_at?: string
+}
+
+export type ScrapeMaterializedGroup = {
+  group_name: string
+  enabled: boolean
+  backfill_until_date?: string
+  provider_ids: string[]
+  rule_ids: string[]
+}
+
+export type ScrapePreviewGroup = {
+  group_name: string
+  provider_ids: string[]
+  rule_ids: string[]
+}
+
+export type ScrapeCrosspostPopularityItem = {
+  group_name: string
+  observed_article_count: number
+  distinct_message_count: number
+  distinct_source_group_count: number
+  effective_group: boolean
+  last_seen_at?: string
+}
+
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
   backfill_until_date_by_group: Record<string, string>
+  explicit_groups?: ScrapeExplicitGroup[]
+  wildcard_rules?: ScrapeWildcardRule[]
+  provider_group_inventory?: ScrapeProviderInventoryItem[]
+  materialized_groups?: ScrapeMaterializedGroup[]
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
+  poster_materialize: AdminStageConfigPatch
+  crosspost_popularity_refresh: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
-  assemble_lane_a: AdminStageConfigPatch
-  assemble_lane_b: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
+  source_window?: {
+    enabled: boolean
+    window_minutes: number
+    backfill_window_days: number
+    max_open_headers: number
+    resume_open_headers: number
+    max_blocking_yenc: number
+    resume_blocking_yenc: number
+  }
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
-  release_purge_archived_sources: AdminStageConfigPatch
+  release_purge_archived_sources?: AdminStageConfigPatch
+  inspect_discovery_ready_refresh: AdminStageConfigPatch
+  inspect_par2_ready_refresh: AdminStageConfigPatch
+  inspect_archive_ready_refresh: AdminStageConfigPatch
+  inspect_media_ready_refresh: AdminStageConfigPatch
+  maintenance_tasks?: Record<
+    string,
+    AdminMaintenanceTaskPatch & { last_dry_run_at?: string }
+  >
   release: AdminStageConfigPatch & {
+    auto_reform_batch_size: number
     min_confidence: number
     min_completion_pct: number
     min_expected_file_coverage_pct: number
@@ -751,6 +1011,16 @@ export type IndexingRuntimeSettings = {
     public_min_identity_status: string
     public_require_inspection: boolean
     public_require_enrichment: boolean
+    public_require_payload_complete: boolean
+    public_require_expected_file_count_complete: boolean
+    public_require_par2: boolean
+    public_require_nfo: boolean
+    public_require_sfv: boolean
+    retain_until_expected_file_count_complete: boolean
+    retain_require_par2: boolean
+    retain_require_nfo: boolean
+    retain_require_sfv: boolean
+    reopen_archived_nzb_on_release_change: boolean
   }
   match: {
     high_confidence_threshold: number
@@ -764,6 +1034,7 @@ export type IndexingRuntimeSettings = {
     max_bytes: number
     min_binary_bytes: number
     max_binary_bytes: number
+    require_expected_file_count: boolean
     blocked_magic_hex: string[]
     max_archive_depth: number
     tool_timeout_seconds: number
@@ -775,6 +1046,7 @@ export type IndexingRuntimeSettings = {
   }
   storage_guard: {
     enabled: boolean
+    data_directory: string
     min_free_bytes: number
     min_free_percent: number
   }
@@ -810,6 +1082,21 @@ export type IndexingRuntimeSettings = {
   }
 }
 
+export type IndexerStorageStatus = {
+  database_bytes: number
+  data_directory: string
+  filesystem_free_bytes: number
+  filesystem_total_bytes: number
+  filesystem_free_percent: number
+  filesystem_visible: boolean
+  visibility_source: string
+  guard_enabled: boolean
+  min_free_bytes: number
+  min_free_percent: number
+  blocked: boolean
+  reason?: string
+}
+
 export type RuntimeToggle = {
   enabled: boolean
 }
@@ -835,6 +1122,7 @@ export type ServerRuntimeSettings = {
   pool_idle_timeout_seconds: number
   pool_max_age_seconds: number
   enable_pool_logging: boolean
+  roles?: string[]
 }
 
 export type IndexerRuntimeSettings = {
@@ -879,6 +1167,19 @@ export type RuntimeSettings = {
   indexing?: IndexingRuntimeSettings
   arr_integrations?: ArrIntegrationRuntimeSettings[]
   revision?: number
+}
+
+export type AdminScrapeConfigResponse = {
+  explicit_groups: ScrapeExplicitGroup[]
+  wildcard_rules: ScrapeWildcardRule[]
+  provider_group_inventory: ScrapeProviderInventoryItem[]
+  provider_inventory_count?: number
+  provider_inventory_latest_scan?: string
+  materialized_groups: ScrapeMaterializedGroup[]
+  effective_groups: ScrapeExplicitGroup[]
+  preview_groups: ScrapePreviewGroup[]
+  preview_total?: number
+  crosspost_popularity: ScrapeCrosspostPopularityItem[]
 }
 
 export type ModuleCapability = {
