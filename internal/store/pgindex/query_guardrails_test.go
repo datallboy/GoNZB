@@ -124,6 +124,32 @@ func TestPartitionedWritersUseSourcePostedConflictTargets(t *testing.T) {
 	}
 }
 
+func TestPartitionedInspectionEvidenceInsertsCarrySourcePostedAt(t *testing.T) {
+	src := readGuardrailSource(t, "inspection_store.go")
+	tables := []string{
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_sets",
+		"binary_par2_targets",
+	}
+	for _, table := range tables {
+		insertAt := strings.Index(src, "INSERT INTO "+table)
+		if insertAt < 0 {
+			t.Fatalf("inspection_store.go missing insert into %s", table)
+		}
+		valuesAt := strings.Index(src[insertAt:], "VALUES")
+		if valuesAt < 0 {
+			t.Fatalf("inspection_store.go insert into %s missing VALUES", table)
+		}
+		columnList := src[insertAt : insertAt+valuesAt]
+		if !strings.Contains(columnList, "source_posted_at") {
+			t.Fatalf("inspection_store.go insert into %s must carry source_posted_at", table)
+		}
+	}
+}
+
 func readGuardrailSource(t *testing.T, fileName string) string {
 	t.Helper()
 	data, err := os.ReadFile(fileName)
