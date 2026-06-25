@@ -102,6 +102,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		messageID          string
 		observedGroupName  string
 		observedArticleNum int64
+		sourcePostedAt     *time.Time
 	}
 	rows := make([]row, 0, len(batch)*2)
 	seen := make(map[string]struct{}, len(batch)*2)
@@ -128,6 +129,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 				messageID:          item.MessageID,
 				observedGroupName:  groupName,
 				observedArticleNum: ref.ArticleNumber,
+				sourcePostedAt:     item.DateUTC,
 			})
 		}
 	}
@@ -144,10 +146,11 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			message_id,
 			observed_group_name,
 			observed_article_number,
+			source_posted_at,
 			observed_at
 		) AS (
 			VALUES `)
-	args := make([]any, 0, len(rows)*6)
+	args := make([]any, 0, len(rows)*7)
 	for idx, row := range rows {
 		if idx > 0 {
 			query.WriteString(",")
@@ -165,6 +168,8 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		args = append(args, row.observedGroupName)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.observedArticleNum)
+		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		args = append(args, row.sourcePostedAt)
 		query.WriteString("NOW())")
 	}
 	query.WriteString(`
@@ -176,6 +181,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			message_id,
 			observed_group_name,
 			observed_article_number,
+			source_posted_at,
 			observed_at
 		)
 			SELECT
@@ -185,6 +191,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 				COALESCE(BTRIM(message_id), ''),
 				observed_group_name,
 				observed_article_number,
+				source_posted_at,
 				observed_at
 			FROM input_rows
 			WHERE BTRIM(COALESCE(observed_group_name, '')) <> ''

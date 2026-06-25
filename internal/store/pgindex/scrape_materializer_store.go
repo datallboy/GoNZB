@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type posterMaterializationQueueRow struct {
 	ArticleHeaderID int64
 	PosterName      string
+	SourcePostedAt  *time.Time
 }
 
 type IndexerPosterMaterializationResult struct {
@@ -43,6 +45,7 @@ func upsertPosterMaterializationQueueBatch(ctx context.Context, tx *sql.Tx, rows
 		articleHeaderID int64
 		posterName      string
 		posterKey       string
+		sourcePostedAt  *time.Time
 	}
 	prepared := make([]preparedRow, 0, len(rows))
 	seen := make(map[int64]struct{}, len(rows))
@@ -63,6 +66,7 @@ func upsertPosterMaterializationQueueBatch(ctx context.Context, tx *sql.Tx, rows
 			articleHeaderID: row.ArticleHeaderID,
 			posterName:      posterName,
 			posterKey:       posterKey,
+			sourcePostedAt:  row.SourcePostedAt,
 		})
 	}
 	if len(prepared) == 0 {
@@ -75,28 +79,31 @@ func upsertPosterMaterializationQueueBatch(ctx context.Context, tx *sql.Tx, rows
 			article_header_id,
 			poster_name,
 			poster_key,
+			source_posted_at,
 			status,
 			ready_at,
 			created_at,
 			updated_at
 		)
 		VALUES `)
-	args := make([]any, 0, len(prepared)*3)
+	args := make([]any, 0, len(prepared)*4)
 	for idx, row := range prepared {
 		if idx > 0 {
 			query.WriteString(",")
 		}
-		fmt.Fprintf(&query, "($%d::bigint,$%d::text,$%d::text,'pending',NOW(),NOW(),NOW())",
+		fmt.Fprintf(&query, "($%d::bigint,$%d::text,$%d::text,$%d::timestamptz,'pending',NOW(),NOW(),NOW())",
 			len(args)+1,
 			len(args)+2,
 			len(args)+3,
+			len(args)+4,
 		)
-		args = append(args, row.articleHeaderID, row.posterName, row.posterKey)
+		args = append(args, row.articleHeaderID, row.posterName, row.posterKey, row.sourcePostedAt)
 	}
 	query.WriteString(`
 		ON CONFLICT (article_header_id) DO UPDATE
 		SET poster_name = EXCLUDED.poster_name,
 		    poster_key = EXCLUDED.poster_key,
+		    source_posted_at = COALESCE(EXCLUDED.source_posted_at, poster_materialization_queue.source_posted_at),
 		    status = CASE
 			    WHEN poster_materialization_queue.poster_key IS DISTINCT FROM EXCLUDED.poster_key THEN 'pending'
 			    WHEN poster_materialization_queue.status = 'done' THEN poster_materialization_queue.status
@@ -126,6 +133,7 @@ type claimedPosterMaterializationRow struct {
 	ArticleHeaderID int64
 	PosterName      string
 	PosterKey       string
+	SourcePostedAt  *time.Time
 }
 
 func (s *Store) MaterializeArticleHeaderPosters(ctx context.Context, limit int) (*IndexerPosterMaterializationResult, error) {
@@ -196,9 +204,9 @@ func claimPosterMaterializationRows(ctx context.Context, tx *sql.Tx, limit int) 
 			    updated_at = NOW()
 			FROM next_rows n
 			WHERE q.article_header_id = n.article_header_id
-			RETURNING q.article_header_id, q.poster_name, q.poster_key
+			RETURNING q.article_header_id, q.poster_name, q.poster_key, q.source_posted_at
 		)
-		SELECT article_header_id, poster_name, poster_key
+		SELECT article_header_id, poster_name, poster_key, source_posted_at
 		FROM claimed
 		ORDER BY article_header_id`, limit)
 	if err != nil {
@@ -209,8 +217,13 @@ func claimPosterMaterializationRows(ctx context.Context, tx *sql.Tx, limit int) 
 	out := make([]claimedPosterMaterializationRow, 0, limit)
 	for rows.Next() {
 		var row claimedPosterMaterializationRow
-		if err := rows.Scan(&row.ArticleHeaderID, &row.PosterName, &row.PosterKey); err != nil {
+		var sourcePostedAt sql.NullTime
+		if err := rows.Scan(&row.ArticleHeaderID, &row.PosterName, &row.PosterKey, &sourcePostedAt); err != nil {
 			return nil, fmt.Errorf("scan claimed poster materialization row: %w", err)
+		}
+		if sourcePostedAt.Valid {
+			t := sourcePostedAt.Time.UTC()
+			row.SourcePostedAt = &t
 		}
 		out = append(out, row)
 	}
@@ -307,13 +320,14 @@ func upsertArticleHeaderPosterRefs(ctx context.Context, tx *sql.Tx, rows []claim
 
 func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []claimedPosterMaterializationRow, posterIDs map[string]int64) (int64, error) {
 	var query strings.Builder
-	args := make([]any, 0, len(rows)*4)
+	args := make([]any, 0, len(rows)*5)
 	query.WriteString(`
 		INSERT INTO article_header_poster_refs (
 			article_header_id,
 			poster_id,
 			poster_name,
 			poster_key,
+			source_posted_at,
 			created_at,
 			updated_at
 		)
@@ -327,13 +341,14 @@ func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []
 		if written > 0 {
 			query.WriteString(",")
 		}
-		fmt.Fprintf(&query, "($%d::bigint,$%d::bigint,$%d::text,$%d::text,NOW(),NOW())",
+		fmt.Fprintf(&query, "($%d::bigint,$%d::bigint,$%d::text,$%d::text,$%d::timestamptz,NOW(),NOW())",
 			len(args)+1,
 			len(args)+2,
 			len(args)+3,
 			len(args)+4,
+			len(args)+5,
 		)
-		args = append(args, row.ArticleHeaderID, posterID, row.PosterName, row.PosterKey)
+		args = append(args, row.ArticleHeaderID, posterID, row.PosterName, row.PosterKey, row.SourcePostedAt)
 		written++
 	}
 	if written == 0 {
@@ -344,6 +359,7 @@ func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []
 		SET poster_id = EXCLUDED.poster_id,
 		    poster_name = EXCLUDED.poster_name,
 		    poster_key = EXCLUDED.poster_key,
+		    source_posted_at = COALESCE(EXCLUDED.source_posted_at, article_header_poster_refs.source_posted_at),
 		    updated_at = NOW()`)
 	res, err := tx.ExecContext(ctx, query.String(), args...)
 	if err != nil {

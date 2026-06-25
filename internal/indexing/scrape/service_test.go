@@ -428,6 +428,15 @@ type fakeScrapeRepo struct {
 	backfillCheckpointByGroup map[string]int64
 	admissionSnapshot         *pgindex.YEncRecoveryAdmissionSnapshot
 	deferredRanges            []pgindex.DeferredArticleRangeRecord
+	observedRanges            []observedScrapeRange
+}
+
+type observedScrapeRange struct {
+	providerID   int64
+	newsgroupID  int64
+	from         int64
+	to           int64
+	observations []pgindex.ScrapeRangeObservation
 }
 
 func (f *fakeScrapeRepo) EnsureProvider(_ context.Context, providerKey, _ string) (int64, error) {
@@ -523,6 +532,17 @@ func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, providerID int6
 	f.insertProviderIDs = append(f.insertProviderIDs, providerID)
 	f.insertedHeaders = append(f.insertedHeaders, headers...)
 	return int64(len(headers)), nil
+}
+
+func (f *fakeScrapeRepo) ObserveScrapeRange(_ context.Context, providerID, newsgroupID int64, from, to int64, observations []pgindex.ScrapeRangeObservation) error {
+	f.observedRanges = append(f.observedRanges, observedScrapeRange{
+		providerID:   providerID,
+		newsgroupID:  newsgroupID,
+		from:         from,
+		to:           to,
+		observations: append([]pgindex.ScrapeRangeObservation(nil), observations...),
+	})
+	return nil
 }
 
 func (f *fakeScrapeRepo) RefreshYEncRecoveryAdmissionSnapshot(context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {

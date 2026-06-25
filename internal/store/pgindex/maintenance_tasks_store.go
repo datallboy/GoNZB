@@ -250,6 +250,130 @@ func (s *Store) RunRawStageRetentionTask(ctx context.Context, batchSize int, pol
 	return s.runRawStageRetentionTask(ctx, false, batchSize, normalizeRawStageRetentionPolicy(policy))
 }
 
+func (s *Store) DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionRetentionReport(ctx, true, batchSize)
+}
+
+func (s *Store) RunPartitionRetentionTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionRetentionReport(ctx, false, batchSize)
+}
+
+func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 7
+	}
+	targetTables := []string{
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"yenc_recovery_work_items",
+		"binary_parts",
+		"binary_observation_stats",
+		"binary_identity_current",
+		"binary_recovery_current",
+		"binary_inspection_ready_queue",
+		"release_family_readiness_summaries",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+	}
+	result := &MaintenanceTaskResult{
+		TaskKey:              "partition_retention_drop",
+		DryRun:               dryRun,
+		EstimatedRowsByTable: map[string]int64{},
+		Warnings: []string{
+			"native partition drop is report-only until source/work tables are rebuilt as daily partitions",
+			"batch size is interpreted as retention-days horizon for this readiness report",
+		},
+	}
+	targetValues := strings.Builder{}
+	args := make([]any, 0, len(targetTables))
+	for i, table := range targetTables {
+		if i > 0 {
+			targetValues.WriteString(",")
+		}
+		fmt.Fprintf(&targetValues, "($%d::text)", len(args)+1)
+		args = append(args, table)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		),
+		column_state AS (
+			SELECT
+				t.table_name,
+				EXISTS (
+					SELECT 1
+					FROM information_schema.columns c
+					WHERE c.table_schema = 'public'
+					  AND c.table_name = t.table_name
+					  AND c.column_name = 'source_posted_at'
+				) AS has_source_posted_at,
+				EXISTS (
+					SELECT 1
+					FROM pg_class cls
+					JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+					JOIN pg_partitioned_table pt ON pt.partrelid = cls.oid
+					WHERE ns.nspname = 'public'
+					  AND cls.relname = t.table_name
+				) AS is_partitioned
+			FROM target t
+		)
+		SELECT table_name, has_source_posted_at, is_partitioned
+		FROM column_state
+		ORDER BY table_name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("partition retention readiness report: %w", err)
+	}
+	defer rows.Close()
+
+	var withSourcePostedAt int64
+	var partitioned int64
+	var nonPartitioned int64
+	var missingSourcePostedAt []string
+	for rows.Next() {
+		var table string
+		var hasSourcePostedAt bool
+		var isPartitioned bool
+		if err := rows.Scan(&table, &hasSourcePostedAt, &isPartitioned); err != nil {
+			return nil, fmt.Errorf("scan partition retention readiness row: %w", err)
+		}
+		if hasSourcePostedAt {
+			withSourcePostedAt++
+		} else {
+			missingSourcePostedAt = append(missingSourcePostedAt, table)
+		}
+		if isPartitioned {
+			partitioned++
+		} else {
+			nonPartitioned++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention readiness rows: %w", err)
+	}
+	result.EstimatedRowsByTable["target_tables"] = int64(len(targetTables))
+	result.EstimatedRowsByTable["tables_with_source_posted_at"] = withSourcePostedAt
+	result.EstimatedRowsByTable["native_partitioned_tables"] = partitioned
+	result.EstimatedRowsByTable["non_partitioned_target_tables"] = nonPartitioned
+	result.EstimatedRowsByTable["retention_days_horizon"] = int64(batchSize)
+	if len(missingSourcePostedAt) > 0 {
+		result.Blockers = append(result.Blockers, "missing source_posted_at: "+strings.Join(missingSourcePostedAt, ", "))
+	}
+	if nonPartitioned > 0 {
+		result.Blockers = append(result.Blockers, "native partition drop is blocked until target source/work tables are rebuilt as daily partitions")
+	}
+	if !dryRun {
+		result.Warnings = append(result.Warnings, "run mode intentionally performs no drops on non-partitioned source/work tables")
+	}
+	return result, nil
+}
+
 func normalizeRawStageRetentionPolicy(policy RawStageRetentionPolicy) RawStageRetentionPolicy {
 	if policy.HotHours <= 0 {
 		policy.HotHours = 48
