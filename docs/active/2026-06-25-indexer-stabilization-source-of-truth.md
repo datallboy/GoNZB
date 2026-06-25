@@ -299,8 +299,8 @@ Required work:
 Signoff requires a clean 30-minute serve soak with zero `40P01` deadlocks, zero
 `53200 out of shared memory` errors, no stage writing non-owned rows, and short
 `EXPLAIN (ANALYZE, BUFFERS)` notes for assemble claim hydration, binary stats
-refresh, yEnc apply/refresh, scrape insert batches, and runtime partition
-ensure.
+refresh, yEnc apply/refresh, and scrape insert batches. Runtime scrape must not
+perform partition DDL while hot readers/writers are active.
 
 ### Partition Horizon
 
@@ -318,15 +318,17 @@ Required work:
 
 - keep the narrow horizon until hot queries are partition-pruned by
   `source_posted_at`;
-- decide whether older source partitions should be created by controlled
-  maintenance instead of scrape hot paths;
+- keep older source partition creation out of scrape hot paths; unexpected
+  older source dates should land in default partitions and be surfaced by
+  default-partition metrics until controlled maintenance handles them;
 - decide whether PostgreSQL lock memory tuning is needed before any broader
   horizon is restored;
 - record partition counts, default-partition row counts, and retention dry-run
   output after a fresh schema bootstrap.
 
-Signoff requires fresh migrations, runtime partition creation for an older gap
-without deadlock, retention dry-run, and no shared-memory failures during soak.
+Signoff requires fresh migrations, older-gap scrape without runtime partition
+DDL/deadlock, retention dry-run, default-partition row counts, and no
+shared-memory failures during soak.
 
 ### Hot/Warm/Cold And Latest/Backfill Policy
 
@@ -401,8 +403,8 @@ Before signoff:
 - validate the latest/backfill restart-gap behavior and record whether stale
   gaps are handled by prioritized gap/backfill work instead of occupying the
   live latest lane indefinitely;
-- record partition horizon counts, default-partition row counts, and whether
-  any runtime partition creation happened during the soak;
+- record partition horizon counts, default-partition row counts, and confirm
+  scrape did not perform runtime partition creation during the soak;
 - collect deadlock evidence when any lock failure occurs; if a deadlock occurs,
   the sprint is not signed off until the exact relation/query lock cycle is
   documented and fixed;
