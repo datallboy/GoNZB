@@ -50,19 +50,33 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 			COALESCE(MAX(bic.match_status), ''),
 			NOW()
 		FROM release_files rf
-		LEFT JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = rf.binary_id
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		LEFT JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = rf.binary_id
+		LEFT JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = rf.binary_id
+		LEFT JOIN binary_parts bp
+		  ON bp.source_posted_at = bc.source_posted_at
+		 AND bp.binary_id = rf.binary_id
 		LEFT JOIN LATERAL (
 			SELECT
 				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
 				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts rbp
-			JOIN article_headers ah ON ah.id = rbp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = rbp.source_posted_at
+			 AND ah.id = rbp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
 			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE rbp.binary_id = rf.binary_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE rbp.source_posted_at = bc.source_posted_at
+			  AND rbp.binary_id = rf.binary_id
 			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			LIMIT 1
