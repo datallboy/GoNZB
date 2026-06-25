@@ -106,6 +106,43 @@ type IndexingSourceWindowRuntimeSettings struct {
 	ResumeBlockingYEnc int  `json:"resume_blocking_yenc,omitempty"`
 }
 
+type IndexingRetentionRuntimeSettings struct {
+	RawStageHotHours                int  `json:"raw_stage_hot_hours,omitempty"`
+	RawStageWarmHours               int  `json:"raw_stage_warm_hours,omitempty"`
+	RawStageColdHours               int  `json:"raw_stage_cold_hours,omitempty"`
+	FailedProbeHours                int  `json:"failed_probe_hours,omitempty"`
+	ArchivedReleaseDetailGraceHours int  `json:"archived_release_detail_grace_hours,omitempty"`
+	MetadataIncompleteReleaseHours  int  `json:"metadata_incomplete_release_hours,omitempty"`
+	CreatePartitionsDaysBefore      int  `json:"create_partitions_days_before,omitempty"`
+	CreatePartitionsDaysAhead       int  `json:"create_partitions_days_ahead,omitempty"`
+	PurgeDryRunDefault              bool `json:"purge_dry_run_default,omitempty"`
+}
+
+type IndexingRecoveryAdmissionRuntimeSettings struct {
+	TargetHotLagHours      int `json:"target_hot_lag_hours,omitempty"`
+	TargetWarmLagHours     int `json:"target_warm_lag_hours,omitempty"`
+	SoftQueueHours         int `json:"soft_queue_hours,omitempty"`
+	HardQueueMultiplier    int `json:"hard_queue_multiplier,omitempty"`
+	AbsoluteHardQueueCap   int `json:"absolute_hard_queue_cap,omitempty"`
+	EWMAWindowMinutes      int `json:"ewma_window_minutes,omitempty"`
+	BootstrapProbesPerHour int `json:"bootstrap_probes_per_hour,omitempty"`
+}
+
+type IndexingScrapeTierRuntimeSettings struct {
+	HotWindowMinutes          int  `json:"hot_window_minutes,omitempty"`
+	WarmWindowMinutes         int  `json:"warm_window_minutes,omitempty"`
+	ColdSampleHeaders         int  `json:"cold_sample_headers,omitempty"`
+	MaxArticlesPerGroupWindow int  `json:"max_articles_per_group_window,omitempty"`
+	AllowGlobalDailyGate      bool `json:"allow_global_daily_gate,omitempty"`
+}
+
+type IndexingDeferredBackfillRuntimeSettings struct {
+	Enabled                  bool    `json:"enabled,omitempty"`
+	MaxRangesPerRun          int     `json:"max_ranges_per_run,omitempty"`
+	MaxArticlesPerRangeChunk int     `json:"max_articles_per_range_chunk,omitempty"`
+	RunOnlyBelowQueueRatio   float64 `json:"run_only_below_queue_ratio,omitempty"`
+}
+
 type IndexingReleaseRuntimeSettings struct {
 	Enabled                                         bool    `json:"enabled,omitempty"`
 	IntervalMinutes                                 float64 `json:"interval_minutes,omitempty"`
@@ -244,6 +281,10 @@ type IndexingRuntimeSettings struct {
 	Assemble                     IndexingStageRuntimeSettings                      `json:"assemble,omitempty"`
 	RecoverYEnc                  IndexingStageRuntimeSettings                      `json:"recover_yenc,omitempty"`
 	SourceWindow                 IndexingSourceWindowRuntimeSettings               `json:"source_window,omitempty"`
+	Retention                    IndexingRetentionRuntimeSettings                  `json:"retention,omitempty"`
+	RecoveryAdmission            IndexingRecoveryAdmissionRuntimeSettings          `json:"recovery_admission,omitempty"`
+	ScrapeTiers                  IndexingScrapeTierRuntimeSettings                 `json:"scrape_tiers,omitempty"`
+	DeferredBackfill             IndexingDeferredBackfillRuntimeSettings           `json:"deferred_backfill,omitempty"`
 	ReleaseSummaryRefresh        IndexingStageRuntimeSettings                      `json:"release_summary_refresh,omitempty"`
 	Release                      IndexingReleaseRuntimeSettings                    `json:"release,omitempty"`
 	ReleaseGenerateNZB           IndexingStageRuntimeSettings                      `json:"release_generate_nzb,omitempty"`
