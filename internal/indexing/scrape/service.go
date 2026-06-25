@@ -363,7 +363,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	if err != nil {
 		return groupRunResult{}, err
 	}
-	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "hot", "configured_latest_scrape"); err != nil {
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "configured_latest_scrape"); err != nil {
 		return groupRunResult{}, err
 	}
 	if stats.High <= 0 {
@@ -436,7 +436,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	if err != nil {
 		return groupRunResult{}, err
 	}
-	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "hot", "configured_backfill_scrape"); err != nil {
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "configured_backfill_scrape"); err != nil {
 		return groupRunResult{}, err
 	}
 	if stats.High <= 0 {

@@ -877,11 +877,29 @@ export type AdminPAR2Set = {
 
 export type AdminBinaryPart = {
   article_header_id: number
+  provider_id: number
+  newsgroup_id: number
+  group_name: string
+  article_number: number
   message_id: string
+  subject: string
+  poster: string
+  date_utc?: string
   part_number: number
   total_parts: number
   segment_bytes: number
   file_name: string
+  article_bytes: number
+  article_lines: number
+  yenc_part_number: number
+  yenc_total_parts: number
+  yenc_file_size: number
+  yenc_recovery_status: string
+  yenc_recovery_ready_at?: string
+  yenc_recovery_error: string
+  recovered_kind: string
+  recovered_source: string
+  recovered_file_name: string
 }
 
 export type AdminBinaryDetail = {

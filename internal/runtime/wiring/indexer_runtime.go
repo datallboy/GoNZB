@@ -73,6 +73,7 @@ type usenetIndexerConfig struct {
 	InspectArchiveReadyRefresh                      indexerStageConfig
 	InspectMediaReadyRefresh                        indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
+	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
 	InspectDiscovery                                indexerStageConfig
@@ -565,6 +566,14 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "yenc_done_work_item_cleanup", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
+		maintenanceTaskStage(runtimeCfg, "group_profile_refresh", supervisor.StageName("maintenance.group_profile_refresh"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			updated, err := appCtx.PGIndexStore.RefreshIndexerGroupProfiles(ctx)
+			return map[string]any{"groups_scored": updated}, err
+		}),
+		maintenanceTaskStage(runtimeCfg, "raw_stage_retention", supervisor.StageName("maintenance.raw_stage_retention"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunRawStageRetentionTask(ctx, cfg.BatchSize, runtimeCfg.RetentionPolicy)
+			return maintenanceTaskMetrics(result), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "stale_nonrelease_source_purge", supervisor.StageName("maintenance.stale_nonrelease_source_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "stale_nonrelease_source_purge", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
@@ -892,6 +901,13 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			RetainRequireNFO:                     indexingCfg.Release.RetainRequireNFO,
 			RetainRequireSFV:                     indexingCfg.Release.RetainRequireSFV,
 		}),
+		RetentionPolicy: pgindex.RawStageRetentionPolicy{
+			HotHours:         indexingCfg.Retention.RawStageHotHours,
+			WarmHours:        indexingCfg.Retention.RawStageWarmHours,
+			ColdHours:        indexingCfg.Retention.RawStageColdHours,
+			FailedProbeHours: indexingCfg.Retention.FailedProbeHours,
+			DoneYEncHours:    indexingCfg.Retention.RawStageWarmHours,
+		},
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
 			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,

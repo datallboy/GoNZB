@@ -22,6 +22,7 @@ type unassembledBacklogReader interface {
 	EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error)
+	ConfigureYEncRecoveryAdmission(ctx context.Context, cfg pgindex.YEncRecoveryAdmissionConfig) error
 	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 }
 
@@ -172,6 +173,9 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	}
 
 	if recoverYEncEnabled(runtime.Indexing) {
+		if err := g.repo.ConfigureYEncRecoveryAdmission(ctx, yencAdmissionConfigFromRuntime(runtime.Indexing.RecoveryAdmission)); err != nil {
+			return nil, fmt.Errorf("configure yenc recovery admission: %w", err)
+		}
 		snapshot, err := g.repo.RefreshYEncRecoveryAdmissionSnapshot(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("refresh yenc recovery admission snapshot: %w", err)
@@ -198,6 +202,17 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	}
 
 	return allowed, nil
+}
+
+func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSettings) pgindex.YEncRecoveryAdmissionConfig {
+	return pgindex.YEncRecoveryAdmissionConfig{
+		SoftQueueHours:         in.SoftQueueHours,
+		HardQueueMultiplier:    in.HardQueueMultiplier,
+		AbsoluteHardQueueCap:   int64(in.AbsoluteHardQueueCap),
+		BootstrapProbesPerHour: float64(in.BootstrapProbesPerHour),
+		EWMAWindowMinutes:      in.EWMAWindowMinutes,
+		Priority0OverflowCap:   int64(in.Priority0OverflowCap),
+	}
 }
 
 func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {

@@ -750,15 +750,38 @@ func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]Inde
 func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]IndexerBinaryPartSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			article_header_id,
-			message_id,
-			part_number,
-			total_parts,
-			segment_bytes,
-			file_name
-		FROM binary_parts
-		WHERE binary_id = $1
-		ORDER BY part_number, id`, binaryID)
+			bp.article_header_id,
+			COALESCE(ah.provider_id, 0),
+			COALESCE(ah.newsgroup_id, 0),
+			COALESCE(ng.name, ''),
+			COALESCE(ah.article_number, 0),
+			bp.message_id,
+			COALESCE(ah.subject, ''),
+			COALESCE(ah.poster, ''),
+			ah.date_utc,
+			bp.part_number,
+			bp.total_parts,
+			bp.segment_bytes,
+			bp.file_name,
+			COALESCE(ah.bytes, 0),
+			COALESCE(ah.lines, 0),
+			COALESCE(p.yenc_part_number, 0),
+			COALESCE(p.yenc_total_parts, 0),
+			COALESCE(p.yenc_file_size, 0),
+			COALESCE(wi.status, ''),
+			wi.ready_at,
+			COALESCE(wi.last_error, ''),
+			COALESCE(brc.recovered_kind, ''),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, '')
+		FROM binary_parts bp
+		LEFT JOIN article_headers ah ON ah.id = bp.article_header_id
+		LEFT JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = bp.article_header_id
+		LEFT JOIN yenc_recovery_work_items wi ON wi.article_header_id = bp.article_header_id
+		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bp.binary_id
+		WHERE bp.binary_id = $1
+		ORDER BY bp.part_number, bp.id`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
 	}
@@ -767,15 +790,42 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 	out := make([]IndexerBinaryPartSummary, 0, 128)
 	for rows.Next() {
 		var item IndexerBinaryPartSummary
+		var dateUTC, readyAt sql.NullTime
 		if err := rows.Scan(
 			&item.ArticleHeaderID,
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.GroupName,
+			&item.ArticleNumber,
 			&item.MessageID,
+			&item.Subject,
+			&item.Poster,
+			&dateUTC,
 			&item.PartNumber,
 			&item.TotalParts,
 			&item.SegmentBytes,
 			&item.FileName,
+			&item.ArticleBytes,
+			&item.ArticleLines,
+			&item.YEncPartNumber,
+			&item.YEncTotalParts,
+			&item.YEncFileSize,
+			&item.YEncRecoveryStatus,
+			&readyAt,
+			&item.YEncRecoveryError,
+			&item.RecoveredKind,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
 		); err != nil {
 			return nil, fmt.Errorf("scan binary part summary: %w", err)
+		}
+		if dateUTC.Valid {
+			t := dateUTC.Time.UTC()
+			item.DateUTC = &t
+		}
+		if readyAt.Valid {
+			t := readyAt.Time.UTC()
+			item.YEncRecoveryReadyAt = &t
 		}
 		out = append(out, item)
 	}

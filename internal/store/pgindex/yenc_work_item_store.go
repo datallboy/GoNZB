@@ -254,35 +254,52 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		return 0, 0, err
 	}
 	remainingToHard := admission.RemainingToHard
+	overSoftCap := admission.OpenTotal >= admission.SoftCap
 	overHardCap := admission.OpenTotal >= admission.HardCap
+	if overHardCap {
+		overflowCap, err := s.yEncPriority0OverflowCap(ctx, tx)
+		if err != nil {
+			return 0, 0, err
+		}
+		var priority0Open int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM yenc_recovery_work_items
+			WHERE status IN ('ready', 'running')
+			  AND priority_rank = 0`).Scan(&priority0Open); err != nil {
+			return 0, 0, fmt.Errorf("count open priority0 yenc recovery work items: %w", err)
+		}
+		remainingToHard = overflowCap - priority0Open
+		if remainingToHard < 0 {
+			remainingToHard = 0
+		}
+	}
 
 	var totalUpserted int64
 	var totalRetired int64
 	for start := 0; start < len(unique); start += yencRecoveryWorkItemSyncChunk {
-		if remainingToHard <= 0 && !overHardCap {
+		if remainingToHard <= 0 {
 			break
 		}
 		end := start + yencRecoveryWorkItemSyncChunk
 		if end > len(unique) {
 			end = len(unique)
 		}
-		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end], remainingToHard, overHardCap)
+		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end], remainingToHard, overSoftCap, overHardCap)
 		if err != nil {
 			return 0, 0, err
 		}
 		totalUpserted += upserted
 		totalRetired += retired
-		if !overHardCap {
-			remainingToHard -= upserted
-			if remainingToHard < 0 {
-				remainingToHard = 0
-			}
+		remainingToHard -= upserted
+		if remainingToHard < 0 {
+			remainingToHard = 0
 		}
 	}
 	return totalUpserted, totalRetired, nil
 }
 
-func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64, remainingToHard int64, overHardCap bool) (int64, int64, error) {
+func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64, remainingToHard int64, overSoftCap bool, overHardCap bool) (int64, int64, error) {
 	var upserted int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
@@ -358,6 +375,11 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  	$3::boolean = FALSE
 			  	OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
 			  )
+			  AND (
+			  	$4::boolean = FALSE
+			  	OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
+			  	OR COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'hot'
+			  )
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items existing_article
@@ -366,7 +388,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  )
 			ORDER BY `+yencRecoveryWorkItemPriorityRankSQL+`, COALESCE(ah.date_utc, NOW()) DESC, bc.binary_id
 			LIMIT CASE
-				WHEN $3::boolean THEN 10000
+				WHEN $3::boolean THEN LEAST($2::bigint, 10000)
 				WHEN $2::bigint <= 0 THEN 0
 				ELSE LEAST($2::bigint, 10000)
 			END
@@ -500,6 +522,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 		unique,
 		remainingToHard,
 		overHardCap,
+		overSoftCap,
 	).Scan(&upserted); err != nil {
 		return 0, 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
 	}

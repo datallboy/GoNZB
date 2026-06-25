@@ -169,6 +169,7 @@ func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings
 		AbsoluteHardQueueCap:   250000,
 		EWMAWindowMinutes:      30,
 		BootstrapProbesPerHour: 25000,
+		Priority0OverflowCap:   25000,
 	}
 }
 
@@ -1263,6 +1264,9 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	if override.BootstrapProbesPerHour > 0 {
 		base.BootstrapProbesPerHour = override.BootstrapProbesPerHour
 	}
+	if override.Priority0OverflowCap > 0 {
+		base.Priority0OverflowCap = override.Priority0OverflowCap
+	}
 	return base
 }
 
@@ -1372,6 +1376,8 @@ func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings
 		"grouping_evidence_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"crosspost_group_raw_purge":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"yenc_done_work_item_cleanup":   {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
+		"group_profile_refresh":         {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
+		"raw_stage_retention":           {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"inspect_workspace_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"stale_nonrelease_source_purge": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 10000},
 		"emergency_source_window_reset": {Enabled: true, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 10000},

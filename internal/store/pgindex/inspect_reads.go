@@ -290,12 +290,30 @@ type IndexerPAR2SetSummary struct {
 }
 
 type IndexerBinaryPartSummary struct {
-	ArticleHeaderID int64  `json:"article_header_id"`
-	MessageID       string `json:"message_id"`
-	PartNumber      int    `json:"part_number"`
-	TotalParts      int    `json:"total_parts"`
-	SegmentBytes    int64  `json:"segment_bytes"`
-	FileName        string `json:"file_name"`
+	ArticleHeaderID     int64      `json:"article_header_id"`
+	ProviderID          int64      `json:"provider_id"`
+	NewsgroupID         int64      `json:"newsgroup_id"`
+	GroupName           string     `json:"group_name"`
+	ArticleNumber       int64      `json:"article_number"`
+	MessageID           string     `json:"message_id"`
+	Subject             string     `json:"subject"`
+	Poster              string     `json:"poster"`
+	DateUTC             *time.Time `json:"date_utc,omitempty"`
+	PartNumber          int        `json:"part_number"`
+	TotalParts          int        `json:"total_parts"`
+	SegmentBytes        int64      `json:"segment_bytes"`
+	FileName            string     `json:"file_name"`
+	ArticleBytes        int64      `json:"article_bytes"`
+	ArticleLines        int64      `json:"article_lines"`
+	YEncPartNumber      int        `json:"yenc_part_number"`
+	YEncTotalParts      int        `json:"yenc_total_parts"`
+	YEncFileSize        int64      `json:"yenc_file_size"`
+	YEncRecoveryStatus  string     `json:"yenc_recovery_status"`
+	YEncRecoveryReadyAt *time.Time `json:"yenc_recovery_ready_at,omitempty"`
+	YEncRecoveryError   string     `json:"yenc_recovery_error,omitempty"`
+	RecoveredKind       string     `json:"recovered_kind"`
+	RecoveredSource     string     `json:"recovered_source"`
+	RecoveredFileName   string     `json:"recovered_file_name"`
 }
 
 type IndexerFileArticleSummary struct {

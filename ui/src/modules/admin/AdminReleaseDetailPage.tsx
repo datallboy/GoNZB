@@ -574,7 +574,11 @@ export function AdminReleaseDetailPage() {
                         <thead>
                           <tr>
                             <th>Part</th>
+                            <th>Article</th>
                             <th>Message ID</th>
+                            <th>Subject</th>
+                            <th>yEnc</th>
+                            <th>Recovered</th>
                             <th>Bytes</th>
                           </tr>
                         </thead>
@@ -784,9 +788,33 @@ export function AdminReleaseDetailPage() {
                         <tbody>
                           {binary.parts.map((part) => (
                             <tr key={`${binary.binary_id}-${part.article_header_id}`}>
-                              <td>{part.part_number}</td>
+                              <td>
+                                {part.part_number}
+                                {part.total_parts > 0 ? ` / ${part.total_parts}` : ''}
+                              </td>
+                              <td>
+                                <div className="mono-cell">{part.article_number || part.article_header_id}</div>
+                                <div className="muted-copy">{part.group_name}</div>
+                              </td>
                               <td className="mono-cell">{part.message_id}</td>
-                              <td>{formatBytes(part.segment_bytes)}</td>
+                              <td>
+                                <div>{part.file_name || part.subject || '-'}</div>
+                                {part.subject ? <div className="muted-copy mono-cell">{part.subject}</div> : null}
+                              </td>
+                              <td>
+                                {part.yenc_recovery_status || '-'}
+                                {part.yenc_total_parts > 0 ? (
+                                  <div className="muted-copy">
+                                    {part.yenc_part_number || part.part_number} / {part.yenc_total_parts}
+                                  </div>
+                                ) : null}
+                                {part.yenc_recovery_error ? <div className="muted-copy">{part.yenc_recovery_error}</div> : null}
+                              </td>
+                              <td>
+                                {part.recovered_source || '-'}
+                                {part.recovered_file_name ? <div className="muted-copy">{part.recovered_file_name}</div> : null}
+                              </td>
+                              <td>{formatBytes(part.segment_bytes || part.article_bytes)}</td>
                             </tr>
                           ))}
                         </tbody>

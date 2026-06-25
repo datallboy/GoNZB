@@ -59,6 +59,10 @@ func (f fakeUnassembledBacklogReader) CountBlockingYEncRecoveryBacklog(context.C
 	return f.blockingYEnc, nil
 }
 
+func (f fakeUnassembledBacklogReader) ConfigureYEncRecoveryAdmission(context.Context, pgindex.YEncRecoveryAdmissionConfig) error {
+	return nil
+}
+
 func (f fakeUnassembledBacklogReader) RefreshYEncRecoveryAdmissionSnapshot(context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
 	if f.admission != nil {
 		return f.admission, nil

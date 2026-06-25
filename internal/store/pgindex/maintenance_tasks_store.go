@@ -11,6 +11,14 @@ import (
 
 const staleNonreleaseSourceRetentionDays = 7
 
+type RawStageRetentionPolicy struct {
+	HotHours         int
+	WarmHours        int
+	ColdHours        int
+	FailedProbeHours int
+	DoneYEncHours    int
+}
+
 type MaintenanceTaskResult struct {
 	TaskKey              string                          `json:"task_key"`
 	DryRun               bool                            `json:"dry_run"`
@@ -232,6 +240,33 @@ func (s *Store) DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string,
 
 func (s *Store) RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*MaintenanceTaskResult, error) {
 	return s.runSimpleMaintenanceTask(ctx, taskKey, false, batchSize)
+}
+
+func (s *Store) DryRunRawStageRetentionTask(ctx context.Context, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	return s.runRawStageRetentionTask(ctx, true, batchSize, normalizeRawStageRetentionPolicy(policy))
+}
+
+func (s *Store) RunRawStageRetentionTask(ctx context.Context, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	return s.runRawStageRetentionTask(ctx, false, batchSize, normalizeRawStageRetentionPolicy(policy))
+}
+
+func normalizeRawStageRetentionPolicy(policy RawStageRetentionPolicy) RawStageRetentionPolicy {
+	if policy.HotHours <= 0 {
+		policy.HotHours = 48
+	}
+	if policy.WarmHours <= 0 {
+		policy.WarmHours = 24
+	}
+	if policy.ColdHours <= 0 {
+		policy.ColdHours = 12
+	}
+	if policy.FailedProbeHours <= 0 {
+		policy.FailedProbeHours = 48
+	}
+	if policy.DoneYEncHours <= 0 {
+		policy.DoneYEncHours = 48
+	}
+	return policy
 }
 
 func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
@@ -750,6 +785,200 @@ func (s *Store) maintenanceVacuumCandidates(ctx context.Context, limit int) ([]m
 		return nil, err
 	}
 	return candidates, nil
+}
+
+func (s *Store) runRawStageRetentionTask(ctx context.Context, dryRun bool, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 10000
+	}
+	result := &MaintenanceTaskResult{TaskKey: "raw_stage_retention", DryRun: dryRun}
+	if dryRun {
+		result.EstimatedRowsByTable = map[string]int64{}
+	} else {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	tables := []string{
+		"yenc_recovery_work_items",
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"poster_materialization_queue",
+	}
+	if before, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.BeforeStorage = before
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("pre-retention storage snapshot failed: %v", err))
+	}
+	result.Warnings = append(result.Warnings,
+		fmt.Sprintf("tier-aware raw retention uses hot=%dh warm=%dh cold=%dh terminal_yenc=%dh stale_probe=%dh", policy.HotHours, policy.WarmHours, policy.ColdHours, policy.DoneYEncHours, policy.FailedProbeHours),
+		"ready/running yEnc work, assembled binary parts, release files, archive lineage, and running inspections are retained",
+		"source headers are deleted only when no assembly queue, binary_parts, yEnc work item, or archive lineage still references them",
+		"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+	)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin raw stage retention tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if err := stageRawStageRetentionYEnc(ctx, tx, batchSize, policy); err != nil {
+		return nil, err
+	}
+	if err := stageRawStageRetentionHeaders(ctx, tx, batchSize, policy); err != nil {
+		return nil, err
+	}
+	counts, err := countRawStageRetentionRows(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if dryRun {
+		for table, count := range counts {
+			result.EstimatedRowsByTable[table] = count
+		}
+		return result, nil
+	}
+
+	var deletedYEnc int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM yenc_recovery_work_items wi
+			USING tmp_raw_stage_retention_yenc_ids e
+			WHERE wi.article_header_id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedYEnc); err != nil {
+		return nil, fmt.Errorf("delete raw retention yenc work items: %w", err)
+	}
+	counts["yenc_recovery_work_items"] = deletedYEnc
+
+	var deletedHeaders int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM article_headers ah
+			USING tmp_raw_stage_retention_header_ids e
+			WHERE ah.id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedHeaders); err != nil {
+		return nil, fmt.Errorf("delete raw retention article headers: %w", err)
+	}
+	counts["article_headers"] = deletedHeaders
+
+	for table, count := range counts {
+		result.DeletedRowsByTable[table] = count
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit raw stage retention tx: %w", err)
+	}
+	if after, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.AfterStorage = after
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("post-retention storage snapshot failed: %v", err))
+	}
+	s.vacuumDeletedMaintenanceTables(ctx, result)
+	return result, nil
+}
+
+func stageRawStageRetentionYEnc(ctx context.Context, tx *sql.Tx, batchSize int, policy RawStageRetentionPolicy) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_raw_stage_retention_yenc_ids (article_header_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create raw retention yenc temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_raw_stage_retention_yenc_ids (article_header_id)
+		SELECT wi.article_header_id
+		FROM yenc_recovery_work_items wi
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.binary_id = wi.binary_id
+		WHERE wi.status IN ('done', 'stale')
+		  AND wi.updated_at < NOW() - (
+		  	CASE WHEN wi.status = 'done' THEN $2::int ELSE $3::int END * INTERVAL '1 hour'
+		  )
+		  AND (wi.status <> 'done' OR COALESCE(brc.recovered_source, '') = 'yenc_header')
+		  AND NOT EXISTS (SELECT 1 FROM release_files rf WHERE rf.binary_id = wi.binary_id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_binaries lb WHERE lb.binary_id = wi.binary_id)
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binary_inspection_ready_queue rq
+		  	WHERE rq.binary_id = wi.binary_id
+		  	  AND rq.status = 'running'
+		  )
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binary_inspections bi
+		  	WHERE bi.binary_id = wi.binary_id
+		  	  AND bi.status = 'running'
+		  )
+		ORDER BY wi.updated_at, wi.article_header_id
+		LIMIT $1`, batchSize, policy.DoneYEncHours, policy.FailedProbeHours); err != nil {
+		return fmt.Errorf("stage raw retention yenc work items: %w", err)
+	}
+	return nil
+}
+
+func stageRawStageRetentionHeaders(ctx context.Context, tx *sql.Tx, batchSize int, policy RawStageRetentionPolicy) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_raw_stage_retention_header_ids (article_header_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create raw retention header temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_raw_stage_retention_header_ids (article_header_id)
+		SELECT ah.id
+		FROM article_headers ah
+		LEFT JOIN indexer_group_profiles igp
+		  ON igp.provider_id = ah.provider_id
+		 AND igp.newsgroup_id = ah.newsgroup_id
+		WHERE ah.date_utc < NOW() - (
+			CASE COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm')
+				WHEN 'hot' THEN $2::int
+				WHEN 'cold' THEN $4::int
+				ELSE $3::int
+			END * INTERVAL '1 hour'
+		)
+		  AND NOT EXISTS (SELECT 1 FROM article_header_assembly_queue q WHERE q.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM yenc_recovery_work_items wi WHERE wi.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_article_headers lah WHERE lah.article_header_id = ah.id)
+		ORDER BY ah.date_utc, ah.id
+		LIMIT $1`, batchSize, policy.HotHours, policy.WarmHours, policy.ColdHours); err != nil {
+		return fmt.Errorf("stage raw retention article headers: %w", err)
+	}
+	return nil
+}
+
+func countRawStageRetentionRows(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
+	queries := map[string]string{
+		"yenc_recovery_work_items": `SELECT COUNT(*) FROM tmp_raw_stage_retention_yenc_ids`,
+		"article_headers":          `SELECT COUNT(*) FROM tmp_raw_stage_retention_header_ids`,
+		"article_header_ingest_payloads": `
+			SELECT COUNT(*)
+			FROM article_header_ingest_payloads p
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = p.article_header_id`,
+		"article_header_crosspost_groups": `
+			SELECT COUNT(*)
+			FROM article_header_crosspost_groups g
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = g.article_header_id`,
+		"article_header_poster_refs": `
+			SELECT COUNT(*)
+			FROM article_header_poster_refs r
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = r.article_header_id`,
+		"poster_materialization_queue": `
+			SELECT COUNT(*)
+			FROM poster_materialization_queue q
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = q.article_header_id`,
+	}
+	counts := make(map[string]int64, len(queries))
+	for table, query := range queries {
+		var count int64
+		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count raw retention %s: %w", table, err)
+		}
+		counts[table] = count
+	}
+	return counts, nil
 }
 
 func (s *Store) runStaleNonreleaseSourcePurge(ctx context.Context, result *MaintenanceTaskResult, dryRun bool, batchSize int) error {
