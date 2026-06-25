@@ -437,6 +437,10 @@ Completed in this sprint branch:
   reads now join partitioned tables with `source_posted_at`;
 - default admin binary listing has a bounded recent fast path so opening the
   binary workbench does not sort/count the full partitioned projection set.
+- default combined assemble claims now use queue-kind lane prioritization:
+  structured queue rows first, then general rows. Explicit Lane A still uses
+  completion-key probes, but the default mixed lane no longer probes
+  `binary_completion_keys` for every general row.
 
 Live evidence already collected:
 
@@ -460,9 +464,14 @@ Live evidence already collected:
   yEnc remains authoritative;
 - final patched API checks at `2026-06-25 15:07-04`: default binaries endpoint
   returned HTTP 200 in 252ms, daily buckets returned HTTP 200 in 5ms;
-- final patched serve boundary is `2026-06-25 15:07:06-04`; backfill was
-  gated by yEnc soft capacity while latest immediately detected provider-head
-  gaps and inserted live head batches.
+- after default combined assemble claim fixes, current serve boundary is
+  `2026-06-25 15:20:31-04`; backfill was gated by yEnc soft capacity while
+  latest immediately detected provider-head gaps and inserted live head
+  batches;
+- current serve evidence at `2026-06-25 15:23-04`: two assemble batches
+  completed without timeout/deadlock, candidate selection dropped from timeout
+  failure to about 7s then 4.2s, yEnc recovery was running at concurrency 100,
+  and default binaries/daily-buckets APIs remained bounded.
 
 Known open signoff items:
 
