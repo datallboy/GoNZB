@@ -191,11 +191,11 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 				COALESCE(BTRIM(message_id), ''),
 				observed_group_name,
 				observed_article_number,
-				source_posted_at,
+				COALESCE(source_posted_at, NOW()),
 				observed_at
 			FROM input_rows
 			WHERE BTRIM(COALESCE(observed_group_name, '')) <> ''
-			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING`)
+			ON CONFLICT (source_posted_at, article_header_id, observed_group_name) DO NOTHING`)
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("upsert article header crosspost groups batch: %w", err)
 	}
@@ -293,6 +293,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				ah.provider_id,
 				ah.newsgroup_id AS source_newsgroup_id,
 				ah.message_id,
+				ah.source_posted_at,
 				aip.xref
 			FROM article_headers ah
 			JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
@@ -307,6 +308,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				b.provider_id,
 				b.source_newsgroup_id,
 				b.message_id,
+				b.source_posted_at,
 				LOWER(BTRIM(SPLIT_PART(tok.token, ':', 1))) AS observed_group_name,
 				COALESCE(NULLIF(SPLIT_PART(tok.token, ':', 2), ''), '0')::bigint AS observed_article_number
 			FROM batch b
@@ -325,6 +327,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				message_id,
 				observed_group_name,
 				observed_article_number,
+				source_posted_at,
 				observed_at
 			)
 			SELECT
@@ -334,9 +337,10 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				e.message_id,
 				e.observed_group_name,
 				e.observed_article_number,
+				COALESCE(e.source_posted_at, NOW()),
 				NOW()
 			FROM exploded e
-			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING
+			ON CONFLICT (source_posted_at, article_header_id, observed_group_name) DO NOTHING
 			RETURNING observed_group_name
 		),
 		queue_upsert AS (

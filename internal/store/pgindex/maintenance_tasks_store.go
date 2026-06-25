@@ -274,20 +274,13 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 		"poster_materialization_queue",
 		"yenc_recovery_work_items",
 		"binary_parts",
-		"binary_observation_stats",
-		"binary_identity_current",
-		"binary_recovery_current",
-		"binary_inspection_ready_queue",
-		"release_family_readiness_summaries",
-		"release_ready_candidates",
-		"release_recovered_file_set_candidates",
 	}
 	result := &MaintenanceTaskResult{
 		TaskKey:              "partition_retention_drop",
 		DryRun:               dryRun,
 		EstimatedRowsByTable: map[string]int64{},
 		Warnings: []string{
-			"native partition drop is report-only until source/work tables are rebuilt as daily partitions",
+			"reports the v1 native source/header/yenc/binary-parts partition set; binary_core and durable release/archive/catalog tables remain unpartitioned by design",
 			"batch size is interpreted as retention-days horizon for this readiness report",
 		},
 	}
@@ -362,6 +355,43 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	result.EstimatedRowsByTable["native_partitioned_tables"] = partitioned
 	result.EstimatedRowsByTable["non_partitioned_target_tables"] = nonPartitioned
 	result.EstimatedRowsByTable["retention_days_horizon"] = int64(batchSize)
+	partitionRows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		)
+		SELECT
+			t.table_name,
+			COUNT(i.inhrelid)::bigint AS partition_count,
+			COUNT(*) FILTER (WHERE pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT')::bigint AS default_partition_count
+		FROM target t
+		LEFT JOIN pg_class p
+		  ON p.relname = t.table_name
+		LEFT JOIN pg_namespace pn
+		  ON pn.oid = p.relnamespace
+		 AND pn.nspname = 'public'
+		LEFT JOIN pg_inherits i
+		  ON i.inhparent = p.oid
+		LEFT JOIN pg_class c
+		  ON c.oid = i.inhrelid
+		GROUP BY t.table_name
+		ORDER BY t.table_name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("partition retention partition counts: %w", err)
+	}
+	defer partitionRows.Close()
+	for partitionRows.Next() {
+		var table string
+		var partitionCount int64
+		var defaultPartitionCount int64
+		if err := partitionRows.Scan(&table, &partitionCount, &defaultPartitionCount); err != nil {
+			return nil, fmt.Errorf("scan partition retention partition counts: %w", err)
+		}
+		result.EstimatedRowsByTable[table+"_partitions"] = partitionCount
+		result.EstimatedRowsByTable[table+"_default_partitions"] = defaultPartitionCount
+	}
+	if err := partitionRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention partition counts: %w", err)
+	}
 	if len(missingSourcePostedAt) > 0 {
 		result.Blockers = append(result.Blockers, "missing source_posted_at: "+strings.Join(missingSourcePostedAt, ", "))
 	}
@@ -369,7 +399,7 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 		result.Blockers = append(result.Blockers, "native partition drop is blocked until target source/work tables are rebuilt as daily partitions")
 	}
 	if !dryRun {
-		result.Warnings = append(result.Warnings, "run mode intentionally performs no drops on non-partitioned source/work tables")
+		result.Warnings = append(result.Warnings, "run mode intentionally performs no partition drops until dated partition eligibility checks are wired to the retention horizon")
 	}
 	return result, nil
 }

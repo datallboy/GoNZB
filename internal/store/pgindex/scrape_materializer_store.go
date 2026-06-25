@@ -91,7 +91,7 @@ func upsertPosterMaterializationQueueBatch(ctx context.Context, tx *sql.Tx, rows
 		if idx > 0 {
 			query.WriteString(",")
 		}
-		fmt.Fprintf(&query, "($%d::bigint,$%d::text,$%d::text,$%d::timestamptz,'pending',NOW(),NOW(),NOW())",
+		fmt.Fprintf(&query, "($%d::bigint,$%d::text,$%d::text,COALESCE($%d::timestamptz, NOW()),'pending',NOW(),NOW(),NOW())",
 			len(args)+1,
 			len(args)+2,
 			len(args)+3,
@@ -100,7 +100,7 @@ func upsertPosterMaterializationQueueBatch(ctx context.Context, tx *sql.Tx, rows
 		args = append(args, row.articleHeaderID, row.posterName, row.posterKey, row.sourcePostedAt)
 	}
 	query.WriteString(`
-		ON CONFLICT (article_header_id) DO UPDATE
+		ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
 		SET poster_name = EXCLUDED.poster_name,
 		    poster_key = EXCLUDED.poster_key,
 		    source_posted_at = COALESCE(EXCLUDED.source_posted_at, poster_materialization_queue.source_posted_at),
@@ -341,7 +341,7 @@ func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []
 		if written > 0 {
 			query.WriteString(",")
 		}
-		fmt.Fprintf(&query, "($%d::bigint,$%d::bigint,$%d::text,$%d::text,$%d::timestamptz,NOW(),NOW())",
+		fmt.Fprintf(&query, "($%d::bigint,$%d::bigint,$%d::text,$%d::text,COALESCE($%d::timestamptz, NOW()),NOW(),NOW())",
 			len(args)+1,
 			len(args)+2,
 			len(args)+3,
@@ -355,7 +355,7 @@ func upsertArticleHeaderPosterRefsChunk(ctx context.Context, tx *sql.Tx, rows []
 		return 0, nil
 	}
 	query.WriteString(`
-		ON CONFLICT (article_header_id) DO UPDATE
+		ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
 		SET poster_id = EXCLUDED.poster_id,
 		    poster_name = EXCLUDED.poster_name,
 		    poster_key = EXCLUDED.poster_key,
