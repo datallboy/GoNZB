@@ -381,6 +381,37 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	start := last + 1
 	if last == 0 {
 		start = stats.High - s.opts.BatchSize + 1
+	} else if stats.High-last > s.opts.BatchSize {
+		gapLow := last + 1
+		start = stats.High - s.opts.BatchSize + 1
+		if start < stats.Low {
+			start = stats.Low
+		}
+		gapHigh := start - 1
+		if gapHigh >= gapLow {
+			if err := s.repo.UpsertDeferredArticleRange(ctx, pgindex.DeferredArticleRangeRecord{
+				ProviderID:               providerID,
+				NewsgroupID:              newsgroupID,
+				ArticleLow:               gapLow,
+				ArticleHigh:              gapHigh,
+				EstimatedArticleCount:    gapHigh - gapLow + 1,
+				EstimatedObfuscatedCount: gapHigh - gapLow + 1,
+				Reason:                   "latest_gap",
+				PriorityScore:            90,
+			}); err != nil {
+				return groupRunResult{}, fmt.Errorf("record latest gap %s %d-%d: %w", group, gapLow, gapHigh, err)
+			}
+			backfillCursor, err := s.repo.GetBackfillCheckpoint(ctx, providerID, newsgroupID)
+			if err != nil {
+				return groupRunResult{}, fmt.Errorf("get backfill checkpoint for latest gap %s: %w", group, err)
+			}
+			if backfillCursor < gapHigh {
+				if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, gapHigh); err != nil {
+					return groupRunResult{}, fmt.Errorf("seed backfill checkpoint for latest gap %s=%d: %w", group, gapHigh, err)
+				}
+			}
+			s.log.Info("scrape latest: group=%s detected gap=%d-%d high=%d; latest will fetch head batch and backfill will drain gap", group, gapLow, gapHigh, stats.High)
+		}
 	}
 	if start < stats.Low {
 		start = stats.Low
