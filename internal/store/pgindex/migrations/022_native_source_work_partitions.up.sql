@@ -326,6 +326,8 @@ DECLARE
     day_offset integer;
     created_count integer := 0;
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('pgindex-ensure-source-work-partitions'));
+
     FOREACH parent_table IN ARRAY ARRAY[
         'article_headers',
         'article_header_ingest_payloads',
