@@ -115,6 +115,7 @@ export function AdminAppShell() {
             <>
               <NavLink to="/admin/indexer/dashboard">Dashboard</NavLink>
               <NavLink to="/admin/indexer/scrape">Scrape</NavLink>
+              <NavLink to="/admin/indexer/work">Work</NavLink>
               <NavLink to="/admin/indexer/stages">Stages</NavLink>
               <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
               <NavLink to="/admin/indexer/runs">Runs</NavLink>

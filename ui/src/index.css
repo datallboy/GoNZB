@@ -368,6 +368,20 @@ textarea {
   align-items: end;
 }
 
+.stat-grid,
+.two-column-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.stat-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.two-column-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
 .release-list-summary {
   display: inline-flex;
   align-items: baseline;
@@ -1160,6 +1174,39 @@ textarea {
 
 .stat-card strong {
   font-size: 1.8rem;
+}
+
+.stat-card small {
+  display: block;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
+.bucket-progress-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 120px;
+}
+
+.bucket-progress {
+  width: 100%;
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(7, 18, 26, 0.82);
+}
+
+.bucket-progress span {
+  display: block;
+  height: 100%;
+  background: var(--secondary);
+}
+
+.bucket-progress-meta {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .backlog-stat-card {
