@@ -209,22 +209,173 @@ headers cannot be treated as final grouping proof without yEnc BODY evidence.
 However, header-level patterns may be strong enough to prioritize and reduce
 recovery probes after evidence is measured.
 
-Investigate, but do not use as a correctness shortcut yet:
+### Speculative Weak Binary Grouping TODO
 
-- articles posted within the same second or adjacent seconds;
-- similar `Message-ID` suffix or poster identity/signature;
-- monotonic provider article numbers within a same-second upload burst;
-- subject family hints such as repeated random base, numeric suffixes, or
-  consistent total part counts;
-- sampled yEnc `name=`, `part=`, `total=`, `size=`, `begin=`, and `end=`
-  evidence from a few representative articles in the candidate cohort.
+Investigate candidate binaries from weak header evidence when articles share:
 
-During soak, sample formed and weak binaries and record whether those signals
-line up with recovered yEnc file/part evidence. If the signal is strong, future
-work may add a recovery cohort table with confidence scoring and probe a small
-sample per cohort first. Until then, recovery admission may prioritize likely
-cohorts, but release/bin grouping must still be backed by recovered yEnc or
+- same provider/newsgroup, because article numbers are provider-local even when
+  Message-ID is federated;
+- `Date` normalized to UTC within 1-2 seconds;
+- similar `Message-ID` suffix or `From`/poster suffix when present;
+- similar byte and line counts;
+- nearby provider article numbers;
+- subject and Message-ID shape consistent with ngPost-style UUID
+  obfuscation.
+
+Article-number order is only a hypothesis. Posting tools can use multiple
+connections, and server article numbers reflect acceptance order. yEnc evidence
+remains the authority.
+
+Sample yEnc evidence from representative positions:
+
+- first article;
+- roughly 10%;
+- middle;
+- roughly 90%;
+- last article;
+- a few random articles for large cohorts.
+
+Use this probe budget until measured evidence says otherwise:
+
+- candidate size under 20 articles: probe all or most articles;
+- 20-200 articles: probe 5-8 samples;
+- 200-1000 articles: probe 8-16 samples;
+- 1000+ articles: probe 16-32 samples.
+
+Promote a candidate to `grouping_method = weak_header_sampled_yenc` only when:
+
+- all sampled yEnc `name=` values match;
+- all sampled yEnc `total=` values match;
+- sampled `part=` values are mostly monotonic with article-number order;
+- sampled `=ypart begin=` and `end=` values roughly align with expected part
+  offsets and article sizes;
+- bytes/lines are consistent;
+- no major article-number gaps are unexplained.
+
+Fall back to full recovery when:
+
+- different yEnc names appear inside the same candidate;
+- sampled totals differ;
+- sampled part numbers jump backward unexpectedly;
+- the same time/suffix bucket contains multiple interleaved binaries;
+- the candidate contains mixed extensions or mixed totals;
+- confidence is below threshold.
+
+Signoff requires a probe report from live data before release grouping can trust
+weak sampled cohorts. The report must compare same-second upload timing,
+provider article order, Message-ID/poster suffixes, byte/line consistency, and
+sampled yEnc file/part evidence for both formed binaries and weak/stale
+binaries. Until that report passes, recovery admission may prioritize likely
+cohorts, but release/binary grouping must still be backed by recovered yEnc or
 existing strong header evidence.
+
+## Stability TODOs And Signoff Gates
+
+### Deadlock Root Cause
+
+Recent soak runs still showed lock failures. Retrying deadlocks is not signoff.
+Before this sprint closes, identify the lock root cause and prove the hot path
+is stable.
+
+Observed failures to investigate:
+
+- `assemble` deadlock while hydrating claimed assembly candidates;
+- `scrape_latest` deadlock while creating an older source partition for a stale
+  group gap;
+- earlier `recover_yenc` deadlock while refreshing binary stats;
+- PostgreSQL `out of shared memory` during broad partition precreation.
+
+Required work:
+
+- capture PostgreSQL deadlock details with relation names and SQL statements
+  from server logs, `log_lock_waits`, `deadlock_timeout`, or live `pg_locks`
+  during soak;
+- document which store query owns each relation it writes;
+- make every hot transaction acquire locks in a stable order;
+- keep stages from mutating upstream/source-owned rows as progress state;
+- verify partition creation cannot race hot writers in a way that deadlocks
+  normal stage work.
+
+Signoff requires a clean 30-minute serve soak with zero `40P01` deadlocks, zero
+`53200 out of shared memory` errors, no stage writing non-owned rows, and short
+`EXPLAIN (ANALYZE, BUFFERS)` notes for assemble claim hydration, binary stats
+refresh, yEnc apply/refresh, scrape insert batches, and runtime partition
+ensure.
+
+### Partition Horizon
+
+The failed 60-day precreation attempt meant roughly one daily child partition
+per partitioned parent table per day. With 28 partitioned target tables, a
+70-day rolling range (`CURRENT_DATE - 60` through `CURRENT_DATE + 9`) implies
+about 1,960 daily child partitions before indexes and metadata. Under current
+query shapes and runtime DDL, that exceeded PostgreSQL shared lock memory.
+
+Current code intentionally precreates only `CURRENT_DATE - 21` through
+`CURRENT_DATE + 9`. That is about 31 daily children per partitioned table, or
+about 868 daily child partitions for the current 28 target parents.
+
+Required work:
+
+- keep the narrow horizon until hot queries are partition-pruned by
+  `source_posted_at`;
+- decide whether older source partitions should be created by controlled
+  maintenance instead of scrape hot paths;
+- decide whether PostgreSQL lock memory tuning is needed before any broader
+  horizon is restored;
+- record partition counts, default-partition row counts, and retention dry-run
+  output after a fresh schema bootstrap.
+
+Signoff requires fresh migrations, runtime partition creation for an older gap
+without deadlock, retention dry-run, and no shared-memory failures during soak.
+
+### Hot/Warm/Cold And Latest/Backfill Policy
+
+The intended policy is:
+
+- latest scrape keeps configured hot/fresh groups moving toward the provider
+  high-water mark;
+- backfill walks older ranges backward while downstream hard caps allow room;
+- soft yEnc pressure blocks backfill first;
+- yEnc hard cap blocks both latest and backfill;
+- assemble high-water blocks both latest and backfill until queue depth falls
+  below the resume threshold;
+- hot groups get freshness priority and larger recovery budget;
+- warm groups run while queue depth and recovery lag are healthy;
+- cold groups are sampled/deferred and must not starve hot work;
+- if the service is down, the gap between the last fresh checkpoint and the
+  current provider head should become prioritized gap/backfill work, while
+  latest should not indefinitely spend the live lane on stale historical ranges.
+
+Current code evidence:
+
+- `scrape_latest` advances from `scrape_checkpoints.last_article_number + 1`
+  toward the provider high-water article number, or starts one batch behind
+  head on cold start;
+- `scrape_backfill` walks downward from the backfill cursor, or just behind the
+  latest cursor when no backfill cursor exists;
+- the backlog guard blocks backfill at yEnc soft cap, blocks both scrape lanes
+  at yEnc hard cap, and blocks both scrape lanes above the assemble high-water;
+- the NNTP traffic guard gives backfill lower priority than latest freshness
+  and yEnc recovery;
+- group profiles currently default configured scrape work to `warm`; hot/cold
+  behavior must be proven by runtime configuration/profile data, not assumed.
+
+Required validation:
+
+- prove latest does not turn multi-day downtime gaps into unbounded stale
+  latest work;
+- prove old/stale provider-head groups are routed to gap/backfill/deferred work
+  or tiered cold instead of occupying the live lane;
+- expose or record provider, newsgroup, tier, latest cursor article/date,
+  backfill cursor article/date, observed daily boundaries, deferred ranges, and
+  selected scrape lane;
+- test that cold work cannot starve hot latest/recovery work;
+- test that backfill resumes only when yEnc and assemble queues are below their
+  configured resume thresholds.
+
+Signoff requires live evidence for at least one hot group, one warm group, and
+one cold/deferred group, plus a restart-gap scenario showing the gap lane and
+latest lane behave as intended.
 
 ## Soak And Signoff Tasks
 
@@ -247,6 +398,17 @@ Before signoff:
   newly assembled/recovered work;
 - run partition retention in dry-run mode and verify blocker reporting and
   drop order use partition metadata instead of broad unbounded source scans;
+- validate the latest/backfill restart-gap behavior and record whether stale
+  gaps are handled by prioritized gap/backfill work instead of occupying the
+  live latest lane indefinitely;
+- record partition horizon counts, default-partition row counts, and whether
+  any runtime partition creation happened during the soak;
+- collect deadlock evidence when any lock failure occurs; if a deadlock occurs,
+  the sprint is not signed off until the exact relation/query lock cycle is
+  documented and fixed;
+- sample grouped yEnc evidence from live weak and formed binaries and record
+  whether same-second timing, Message-ID/poster suffix, article order, and
+  sampled yEnc parts support speculative grouping;
 - collect 30 minutes of stage-run, backlog, gate, release, and yEnc throughput
   metrics.
 
@@ -263,4 +425,14 @@ Before signoff:
 - Release summary refresh and release formation process newly assembled work.
 - Partition retention dry-run reports eligible partitions, blockers, and drop
   order without broad unbounded source/work scans.
+- Hot/warm/cold group behavior is proven with live tier/cursor/gap evidence,
+  not inferred from configuration alone.
+- Latest/backfill behavior is proven after a simulated restart gap.
+- A 30-minute serve soak completes with zero PostgreSQL deadlocks and zero
+  shared-memory partition failures.
+- The 21-day-back/9-day-forward partition horizon remains intentionally
+  documented until partition-pruned query shapes or PostgreSQL lock tuning
+  justify a wider horizon.
+- Speculative weak binary grouping remains investigation-only until sampled
+  yEnc evidence is recorded and reviewed.
 - Focused Go tests and `git diff --check` pass before signoff.
