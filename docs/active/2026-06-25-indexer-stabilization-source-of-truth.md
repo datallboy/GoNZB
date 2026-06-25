@@ -414,6 +414,67 @@ Before signoff:
 - collect 30 minutes of stage-run, backlog, gate, release, and yEnc throughput
   metrics.
 
+## Current Execution Notes
+
+Branch: `sprint/yenc-retention-throughput-v1`.
+
+Completed in this sprint branch:
+
+- latest scrape now detects stale provider-head gaps, records
+  `deferred_article_ranges` with reason `latest_gap`, advances the live lane to
+  a head batch, and lets backfill drain the gap when capacity allows;
+- `articleprobe --probe-set-yenc-sampled` records sampled yEnc identity,
+  total-part, monotonicity, and ypart-offset evidence for speculative grouping
+  investigation;
+- assemble queue claims now commit before candidate hydration, reducing claim
+  lock duration;
+- scrape no longer performs runtime source/work partition DDL in hot insert
+  paths; unexpected older posted dates land in default partitions for
+  maintenance visibility;
+- release catalog sync joins partitioned binary/source tables with
+  `source_posted_at`;
+- admin catalog, binary detail, inspection detail, and default binary listing
+  reads now join partitioned tables with `source_posted_at`;
+- default admin binary listing has a bounded recent fast path so opening the
+  binary workbench does not sort/count the full partitioned projection set.
+
+Live evidence already collected:
+
+- fresh schema migration created the expected 28 native partition parents with
+  a narrow rolling partition horizon;
+- retention dry-run reported 28 native target tables, 392 eligible old
+  partitions across 14 days, no blockers, and warned about the native
+  source/work/projection set and current horizon;
+- raw-stage retention dry-run reported tier-aware raw retention:
+  hot 48h, warm 24h, cold 12h, terminal yEnc 24h, stale probes 48h;
+- runtime partition DDL deadlock was reproduced from scrape partition creation
+  under load and fixed by removing runtime partition DDL from scrape;
+- an older-date scrape for `2026-05-14` completed after the fix by routing rows
+  to default partitions instead of creating child partitions in the hot path;
+- release formation succeeded after release catalog partition-key joins:
+  six complete PAR2-backed releases were created from the fresh database before
+  the current soak restart;
+- sampled yEnc probe on binary `41032` found one sampled yEnc name and one
+  sampled total, valid ypart offsets, and non-monotonic article-number order,
+  supporting the policy that article number order is only a hypothesis and
+  yEnc remains authoritative;
+- final patched API checks at `2026-06-25 15:07-04`: default binaries endpoint
+  returned HTTP 200 in 252ms, daily buckets returned HTTP 200 in 5ms;
+- final patched serve boundary is `2026-06-25 15:07:06-04`; backfill was
+  gated by yEnc soft capacity while latest immediately detected provider-head
+  gaps and inserted live head batches.
+
+Known open signoff items:
+
+- complete a clean 30-minute soak from the final patched serve boundary with
+  zero `40P01`, zero `53200`, and no PostgreSQL backend crash;
+- record final stage-run counts, yEnc throughput, release counts, deferred gap
+  counts, daily bucket stats, and default partition row counts after that soak;
+- prove hot/warm/cold tier behavior with at least one configured or observed
+  group per tier; current configured scrape work is mostly `warm`;
+- collect short `EXPLAIN (ANALYZE, BUFFERS)` notes for the final hot query
+  shapes before sprint signoff.
+
 ## Acceptance Criteria
 
 - This file is the only active sprint plan.
