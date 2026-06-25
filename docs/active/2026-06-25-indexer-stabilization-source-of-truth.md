@@ -145,6 +145,10 @@ Complete partitioning for high-volume source/work/projection tables:
 
 Native partition conversion completed in this branch:
 
+- fresh schema migration pre-creates a rolling partition horizon from
+  `CURRENT_DATE - 60` through `CURRENT_DATE + 9`; scrape can still retry
+  runtime creation for older gaps, but common latest/backfill dates should not
+  perform first-time partition DDL while assemble/recovery/release are hot;
 - binary projection writers use partition-key conflict targets for
   `binary_observation_stats`, `binary_identity_current`,
   `binary_recovery_current`, `binary_lifecycle`, `binary_completion_keys`,
@@ -250,8 +254,8 @@ Before signoff:
 - This file is the only active sprint plan.
 - Root indexer docs no longer contradict the canonical ownership reference.
 - Guardrail tests fail on forbidden write-backs.
-- Fresh database migrations create all required daily partition parents and
-  today/future partitions.
+- Fresh database migrations create all required daily partition parents and a
+  rolling 60-day-back/9-day-forward partition horizon.
 - Assemble drains queue batches without writing to `article_headers`.
 - `recover_yenc` consumes ready work and records recovery evidence without
   creating unbounded backlog.
