@@ -201,13 +201,68 @@ rows that would make the drop incomplete.
   regression test documenting the remaining debt.
 - Maintain recovered identity merge semantics so recovered filenames merge
   fragments into file-level binaries instead of leaving one binary per article.
+- Do not admit yEnc recovery just because a post is obfuscated. If the NNTP
+  Subject already contains a stable filename/token, `[file_index/file_total]`,
+  `(part/total)`, and file size, assemble should have enough HEAD evidence to
+  create the file-level binary. yEnc recovery may validate later, but BODY
+  `name=` must not override a stronger complete Subject identity when the BODY
+  name is random.
+
+## Binary Grouping Evidence Tasks
+
+Canonical reference:
+`docs/wiki/indexer/binary-grouping-evidence.md`.
+
+Implement evidence priority in assemble/match before this sprint is signed off:
+
+1. Subject multipart identity first:
+   - parse Subject shapes like
+     `[1/8] - "name.ext" yEnc (7152/28465) 20403308372`;
+   - group by provider, newsgroup, normalized Subject filename/token, file
+     index, file total, article total, and file size;
+   - use `(part/total)` as the article index and total for binary parts;
+   - do not let randomized `From`, poster suffix, Message-ID suffix, or
+     contextual fallback keys split this class into singleton binaries.
+2. Canonical obfuscated Subject:
+   - treat a stable random Subject filename/token as strong evidence when it
+     carries complete multipart coordinates;
+   - classify as `subject_multipart_obfuscated` rather than weak contextual
+     fallback;
+   - skip yEnc recovery admission unless validation or missing metadata is
+     needed.
+3. yEnc recovery:
+   - use recovered BODY identity as authority only when HEAD evidence is
+     incomplete, ambiguous, or randomized without stable Subject coordinates;
+   - if BODY `name=` is random but `part`, `total`, and `size` match a complete
+     Subject identity, persist BODY name as lower-priority evidence and keep
+     the Subject grouping.
+4. Weak and random cohorts:
+   - use provider/newsgroup, timestamp, byte/line, article-number, and
+     message/poster suffix hints only to prioritize probes;
+   - keep unresolved fully random cohorts weak/provisional and prune by
+     retention policy after the investigation window.
+
+Regression fixture to add:
+
+- `rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv` in
+  `alt.binaries.newznzb.bravo`:
+  - Subject supplies `[1/8]`, the stable obfuscated filename,
+    `(7152/28465)`, and size `20403308372`;
+  - sample BODY supplies matching `part=7152 total=28465 size=20403308372`
+    but random `name=976e18143f3a00cdd333a41017886215c57ca1653d5bfcf6`;
+  - current live data showed 4,882 distinct part numbers split across 4,882
+    singleton weak binaries because contextual fallback included randomized
+    poster/message-id context;
+  - expected result is one file-level binary keyed by the Subject identity,
+    with observed parts merged by Subject `(part/total)`.
 
 ## Grouped yEnc Evidence Investigation
 
 The archived ChatGPT Pro handoff is still correct that adversarially obfuscated
 headers cannot be treated as final grouping proof without yEnc BODY evidence.
-However, header-level patterns may be strong enough to prioritize and reduce
-recovery probes after evidence is measured.
+However, complete Subject multipart evidence is stronger than randomized BODY
+`name=` evidence. Header-level weak patterns may be used to prioritize and
+reduce recovery probes only after complete Subject evidence is absent.
 
 ### Speculative Weak Binary Grouping TODO
 

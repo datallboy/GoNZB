@@ -14,6 +14,8 @@ Prefer these focused pages over the older root-level indexer documents.
 - [Retention](./retention.md): partition drop rules, blockers, and purge order.
 - [Release Formation](./release-formation.md): summary refresh and release
   candidate contracts.
+- [Binary Grouping Evidence](./binary-grouping-evidence.md): evidence
+  priority for subject-derived, yEnc-derived, and weak binary grouping.
 - [Operations Playbook](./operations-playbook.md): practical checks and common
   commands.
 

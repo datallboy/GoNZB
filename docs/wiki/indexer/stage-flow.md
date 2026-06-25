@@ -34,11 +34,21 @@ deletes completed queue rows.
 Lane A extends incomplete binaries using `binary_completion_keys`. Lane B
 creates or updates general binary records from recent queue rows.
 
+Binary grouping evidence priority is documented in
+[Binary Grouping Evidence](./binary-grouping-evidence.md). In short, complete
+NNTP Subject multipart coordinates are stronger grouping evidence than random
+poster/message-id context and can be stronger than a randomized recovered yEnc
+`name=`.
+
 ## yEnc Recovery
 
 yEnc recovery claims `yenc_recovery_work_items`, fetches missing article
 payload details, and writes recovered identity data to recovery-owned binary
 projection rows. Retry and backoff state stays in the recovery work table.
+
+Subject-complete posts do not need yEnc recovery for initial binary assembly.
+Recovery should be admitted when HEAD evidence is incomplete, ambiguous, or
+needs validation, not merely because the Subject token is obfuscated.
 
 Recovery priority should favor near-complete binaries/releases, fresh hot-group
 work, high-yield groups, warm fresh work, cold samples, and finally backfill.
