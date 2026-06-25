@@ -77,6 +77,13 @@ type AssemblyCandidate struct {
 	RawOverview                     map[string]any
 }
 
+type AssemblyClaimStats struct {
+	ClaimDuration     time.Duration
+	HydrationDuration time.Duration
+	Claimed           int
+	Hydrated          int
+}
+
 // binary upsert input for assembly service.
 type BinaryRecord struct {
 	ProviderID        int64
@@ -344,12 +351,18 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 }
 
 func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRequest) ([]AssemblyCandidate, error) {
+	out, _, err := s.ClaimAssemblyQueueBatchWithStats(ctx, req)
+	return out, err
+}
+
+func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req AssemblyClaimRequest) ([]AssemblyCandidate, AssemblyClaimStats, error) {
+	var stats AssemblyClaimStats
 	if req.Limit <= 0 {
 		req.Limit = 1000
 	}
 	req.Owner = strings.TrimSpace(req.Owner)
 	if req.Owner == "" {
-		return nil, fmt.Errorf("assembly claim owner is required")
+		return nil, stats, fmt.Errorf("assembly claim owner is required")
 	}
 	if req.LeaseDuration <= 0 {
 		req.LeaseDuration = 5 * time.Minute
@@ -370,29 +383,31 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		req.LaneBMinPct = 100
 	}
 
+	claimStarted := time.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin assembly claim tx: %w", err)
+		return nil, stats, fmt.Errorf("begin assembly claim tx: %w", err)
 	}
 	defer rollbackTx(tx)
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, assembleClaimStatementTimeout.Milliseconds())); err != nil {
-		return nil, fmt.Errorf("set assembly claim statement timeout: %w", err)
+		return nil, stats, fmt.Errorf("set assembly claim statement timeout: %w", err)
 	}
 
 	var lockAcquired bool
 	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('gonzb-assemble-claim'))`).Scan(&lockAcquired); err != nil {
-		return nil, fmt.Errorf("lock assembly claim selector: %w", err)
+		return nil, stats, fmt.Errorf("lock assembly claim selector: %w", err)
 	}
 	if !lockAcquired {
-		return nil, nil
+		stats.ClaimDuration = time.Since(claimStarted)
+		return nil, stats, nil
 	}
 
 	limit := req.Limit
 	switch strings.TrimSpace(strings.ToLower(req.Lane)) {
 	case AssemblyClaimLaneA, AssemblyClaimLaneB, AssemblyClaimLaneCombined:
 	default:
-		return nil, fmt.Errorf("unknown assembly claim lane %q", req.Lane)
+		return nil, stats, fmt.Errorf("unknown assembly claim lane %q", req.Lane)
 	}
 	claimToken := uuid.NewString()
 	lane := strings.TrimSpace(strings.ToLower(req.Lane))
@@ -522,7 +537,7 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		queryArgs...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("claim assembly queue batch: %w", err)
+		return nil, stats, fmt.Errorf("claim assembly queue batch: %w", err)
 	}
 	defer rows.Close()
 
@@ -530,23 +545,28 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 	for rows.Next() {
 		var item assemblyCandidateSelection
 		if err := rows.Scan(&item.SourcePostedAt, &item.ID, &item.StructuredIdentityBinaryMatched); err != nil {
-			return nil, fmt.Errorf("scan claimed assembly queue key: %w", err)
+			return nil, stats, fmt.Errorf("scan claimed assembly queue key: %w", err)
 		}
 		selected = append(selected, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate claimed assembly queue batch: %w", err)
+		return nil, stats, fmt.Errorf("iterate claimed assembly queue batch: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit assembly claim tx: %w", err)
+		return nil, stats, fmt.Errorf("commit assembly claim tx: %w", err)
 	}
+	stats.ClaimDuration = time.Since(claimStarted)
+	stats.Claimed = len(selected)
 
+	hydrationStarted := time.Now()
 	out, err := s.hydrateAssemblyCandidates(ctx, s.db, selected)
+	stats.HydrationDuration = time.Since(hydrationStarted)
+	stats.Hydrated = len(out)
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
-	return out, nil
+	return out, stats, nil
 }
 
 func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
