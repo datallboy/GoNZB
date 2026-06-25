@@ -313,7 +313,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				updated_at
 			)
 			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,FALSE,0,0,TIMESTAMPTZ 'epoch',NOW())
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
 			    release_name = EXCLUDED.release_name,
@@ -483,7 +483,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			updated_at
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,FALSE,$22,$23,TIMESTAMPTZ 'epoch',NOW())
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1473,7 +1473,7 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 			updated_at
 		)
 		VALUES %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1667,7 +1667,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 		 AND s.key_kind = r.key_kind
 		 AND s.family_key = r.family_key
 		WHERE COALESCE(s.readiness_bucket, '') = %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1743,7 +1743,7 @@ func syncReadyReleaseCandidateForSummaryState(ctx context.Context, runner sqlExe
 			updated_at
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -2306,7 +2306,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 				readiness_bucket,
 				COALESCE(max_updated_at, NOW())
 			FROM valid
-			ON CONFLICT (provider_id, file_set_key) DO UPDATE
+			ON CONFLICT (source_posted_at, provider_id, file_set_key) DO UPDATE
 			SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
 			    source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -2372,7 +2372,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 				COALESCE(max_updated_at, NOW())
 			FROM valid
 			WHERE readiness_bucket = $`+fmt.Sprint(actionableParam)+`
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
 			    release_name = EXCLUDED.release_name,
@@ -2555,7 +2555,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			updated_at
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-		ON CONFLICT (provider_id, file_set_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, file_set_key) DO UPDATE
 		SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
 		    source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -2635,7 +2635,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			updated_at
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -2917,7 +2917,7 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 		 AND s.newsgroup_id = r.newsgroup_id
 		 AND s.key_kind = r.key_kind
 		 AND s.family_key = r.family_key
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,

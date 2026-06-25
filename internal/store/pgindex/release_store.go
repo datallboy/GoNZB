@@ -986,7 +986,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			 AND c.newsgroup_id = v.newsgroup_id
 			 AND c.key_kind = v.key_kind
 			 AND c.family_key = v.family_key
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET processed_at = GREATEST(release_ready_candidate_acks.processed_at, EXCLUDED.processed_at),
 			    updated_at = NOW()`,
 			args...,

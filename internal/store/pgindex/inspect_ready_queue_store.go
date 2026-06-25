@@ -303,11 +303,10 @@ func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int)
 			'',
 			NOW()
 		FROM eligible e
-		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = EXCLUDED.release_id,
-		    source_updated_at = EXCLUDED.source_updated_at,
-		    source_posted_at = COALESCE(binary_inspection_ready_queue.source_posted_at, EXCLUDED.source_posted_at),
-		    status = CASE
+			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
+			SET release_id = EXCLUDED.release_id,
+			    source_updated_at = EXCLUDED.source_updated_at,
+			    status = CASE
 		    	WHEN binary_inspection_ready_queue.status = 'running'
 		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
 		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
@@ -407,12 +406,13 @@ func upsertInspectionReadyQueueCandidates(ctx context.Context, tx *sql.Tx, stage
 			s.updated_at
 		FROM staged s
 		LEFT JOIN binary_core bc ON bc.binary_id = s.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = s.binary_id
-		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = EXCLUDED.release_id,
-		    source_updated_at = EXCLUDED.source_updated_at,
-		    source_posted_at = COALESCE(binary_inspection_ready_queue.source_posted_at, EXCLUDED.source_posted_at),
-		    status = CASE
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.binary_id = s.binary_id
+			 AND bos.source_posted_at = COALESCE(bc.source_posted_at, bos.source_posted_at)
+			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
+			SET release_id = EXCLUDED.release_id,
+			    source_updated_at = EXCLUDED.source_updated_at,
+			    status = CASE
 		    	WHEN binary_inspection_ready_queue.status = 'running'
 		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
 		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()

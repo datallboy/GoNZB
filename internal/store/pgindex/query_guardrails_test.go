@@ -99,6 +99,31 @@ func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 	}
 }
 
+func TestPartitionedWritersUseSourcePostedConflictTargets(t *testing.T) {
+	files := []string{
+		"assembly_store.go",
+		"yenc_recovery_store.go",
+		"inspect_ready_queue_store.go",
+		"inspection_store.go",
+		"release_family_summary_store.go",
+	}
+	for _, fileName := range files {
+		src := readGuardrailSource(t, fileName)
+		forbidden := []string{
+			"ON CONFLICT (binary_id)",
+			"ON CONFLICT (source_binary_id)",
+			"ON CONFLICT (stage_name, binary_id)",
+			"ON CONFLICT (provider_id, file_set_key)",
+			"ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key)",
+		}
+		for _, term := range forbidden {
+			if strings.Contains(src, term) {
+				t.Fatalf("%s must not contain partition-incompatible conflict target %q", fileName, term)
+			}
+		}
+	}
+}
+
 func readGuardrailSource(t *testing.T, fileName string) string {
 	t.Helper()
 	data, err := os.ReadFile(fileName)
