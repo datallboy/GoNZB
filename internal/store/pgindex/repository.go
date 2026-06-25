@@ -953,6 +953,9 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			end = len(prepared)
 		}
 		batch := prepared[start:end]
+		if err := ensureSourceWorkPartitionsForPreparedHeaders(ctx, s.db, batch); err != nil {
+			return inserted, err
+		}
 
 		var batchInserted int64
 		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
@@ -1030,6 +1033,33 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 	}
 
 	return inserted, nil
+}
+
+func ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, db *sql.DB, batch []preparedArticleHeaderInsert) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, 4)
+	for _, item := range batch {
+		var postedAt any
+		if item.DateUTC != nil {
+			postedAt = item.DateUTC.UTC()
+		} else {
+			postedAt = time.Now().UTC()
+		}
+		var partitionDay string
+		if err := db.QueryRowContext(ctx, `SELECT ($1::timestamptz)::date::text`, postedAt).Scan(&partitionDay); err != nil {
+			return fmt.Errorf("resolve source work partition day: %w", err)
+		}
+		if _, ok := seen[partitionDay]; ok {
+			continue
+		}
+		seen[partitionDay] = struct{}{}
+		if _, err := db.ExecContext(ctx, `SELECT public.pgindex_ensure_source_work_partitions($1::date, 0)`, partitionDay); err != nil {
+			return fmt.Errorf("ensure source work partitions for day %s: %w", partitionDay, err)
+		}
+	}
+	return nil
 }
 
 func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]articleHeaderResolution, error) {
