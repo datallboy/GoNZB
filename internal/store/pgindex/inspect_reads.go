@@ -775,6 +775,8 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
+	{StageName: "maintenance.group_profile_refresh", Label: "Group Profile Refresh", ItemLabel: "groups"},
+	{StageName: "maintenance.daily_bucket_stats_refresh", Label: "Daily Bucket Stats Refresh", ItemLabel: "buckets"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
@@ -996,6 +998,10 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"recovered", "attempted", "candidates"}
 	case "maintenance.dashboard_stats_refresh":
 		return []string{"available_count", "stat_count"}
+	case "maintenance.group_profile_refresh":
+		return []string{"groups_scored"}
+	case "maintenance.daily_bucket_stats_refresh":
+		return []string{"daily_buckets_refreshed"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
 	case "release_generate_nzb":

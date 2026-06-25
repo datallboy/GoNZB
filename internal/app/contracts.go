@@ -226,6 +226,7 @@ type UsenetIndexStore interface {
 	HasBackfillCutoffReachedForGroup(ctx context.Context, newsgroupID int64, untilDate time.Time) (bool, error)
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
+	GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	ConfigureYEncRecoveryAdmission(ctx context.Context, cfg pgindex.YEncRecoveryAdmissionConfig) error
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
@@ -234,6 +235,7 @@ type UsenetIndexStore interface {
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
 	ListIndexerDailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error)
+	RefreshIndexerDailyBucketStats(ctx context.Context, days int) (int64, error)
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)

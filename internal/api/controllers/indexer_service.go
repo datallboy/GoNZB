@@ -311,7 +311,7 @@ func (s *runtimeIndexerService) RecoveryCapacity(ctx context.Context) (*pgindex.
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
 	}
-	return s.store.RefreshYEncRecoveryAdmissionSnapshot(ctx)
+	return s.store.GetYEncRecoveryAdmissionSnapshot(ctx)
 }
 
 func (s *runtimeIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error) {
@@ -920,6 +920,7 @@ type maintenanceTaskStore interface {
 	DryRunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
 	RunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
+	RefreshIndexerDailyBucketStats(ctx context.Context, days int) (int64, error)
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
@@ -991,6 +992,19 @@ func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, task
 			return nil, err
 		}
 		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: false, EstimatedRowsByTable: map[string]int64{"indexer_group_profiles_scored": updated}}, nil
+	case "daily_bucket_stats_refresh":
+		if dryRun {
+			items, err := s.store.ListIndexerDailyBucketStats(ctx, 500)
+			if err != nil {
+				return nil, err
+			}
+			return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{"indexer_daily_bucket_stats_cached": int64(len(items))}, Warnings: []string{"dry-run reports cached bucket rows without recomputing aggregate stats"}}, nil
+		}
+		refreshed, err := store.RefreshIndexerDailyBucketStats(ctx, cfg.BatchSize)
+		if err != nil {
+			return nil, err
+		}
+		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: false, EstimatedRowsByTable: map[string]int64{"indexer_daily_bucket_stats_refreshed": refreshed}}, nil
 	case "raw_stage_retention":
 		if dryRun {
 			return store.DryRunRawStageRetentionTask(ctx, cfg.BatchSize, rawStageRetentionPolicyFromRuntime(runtime))
@@ -1479,6 +1493,7 @@ var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
 	{TaskKey: "crosspost_group_raw_purge", Label: "Crosspost Raw Group Purge", Purpose: "Purges raw Xref crosspost observations after the popularity summary watermark has consumed them.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Crosspost popularity refresh keeps summary and queue state; historical raw Xref observations older than 72h are no longer available for recompute/debug.", DataEffect: "Deletes only article_header_crosspost_groups rows older than 72h whose group queue is done and whose article id is at or below the summary watermark.", ReleaseSafety: "Current release formation uses binary identity/release family evidence and persists release_newsgroups from binaries; this task does not delete source headers, binaries, releases, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because raw Xref forensic telemetry is removed after summary consumption"}},
 	{TaskKey: "yenc_done_work_item_cleanup", Label: "yEnc Done Work Item Cleanup", Purpose: "Purges completed recover_yenc work receipts after durable yEnc recovery projection exists.", Risk: "medium", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "recover_yenc keeps ready/running backlog intact; completed receipts older than 72h are no longer available for queue audit.", DataEffect: "Deletes only yenc_recovery_work_items rows with status done, older than 72h, backed by binary_recovery_current recovered_source yenc_header, and not referenced by release/archive/running inspect work.", ReleaseSafety: "Does not delete article headers, payloads, binary roots, recovery projections, release files, archive lineage, catalog data, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because completed yEnc queue audit receipts are removed after durable projection exists"}},
 	{TaskKey: "group_profile_refresh", Label: "Group Profile Refresh", Purpose: "Scores provider/newsgroup yield and refreshes automatic hot/warm/cold tiering when no manual tier override is set.", Risk: "low", SpaceEffect: "No storage reclaim; updates group profile metrics and tiers.", SupervisorEffect: "Scrape/yEnc admission uses refreshed tiers for capacity decisions.", DataEffect: "Updates indexer_group_profiles metrics, score, tier, and last_scored_at only.", ReleaseSafety: "No source, binary, release, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
+	{TaskKey: "daily_bucket_stats_refresh", Label: "Daily Bucket Stats Refresh", Purpose: "Refreshes cached provider/newsgroup/day work-bucket stats used by the admin work page.", Risk: "low", SpaceEffect: "No storage reclaim; rewrites compact cached reporting rows.", SupervisorEffect: "No pipeline work is enqueued; avoids expensive live admin-page aggregation.", DataEffect: "Upserts indexer_daily_bucket_stats rows for the recent runtime window.", ReleaseSafety: "No source, binary, release, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: true, MinIntervalHours: 1, Warnings: []string{"batch size is interpreted as number of recent days to refresh, capped at 7"}},
 	{TaskKey: "raw_stage_retention", Label: "Raw Stage Retention", Purpose: "Purges old terminal raw-stage residue using tier-aware hot/warm/cold source windows and conservative relationship guards.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Reduces stale raw source/yEnc audit backlog without touching ready/running work.", DataEffect: "Deletes terminal yEnc receipts and fully orphaned old article headers with associated payload/crosspost/poster rows.", ReleaseSafety: "Skips ready/running yEnc work, assembly queue rows, binary parts, release files, archive lineage, and running inspections.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first", "retention thresholds come from runtime indexer retention settings"}},
 	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Risk: "low", SpaceEffect: "Filesystem cleanup for stale inspect workspaces when scheduled maintenance runs it.", SupervisorEffect: "No DB queue population; stale workspaces may be recreated by future inspect jobs.", DataEffect: "Deletes stale temporary inspect workspaces, not release/catalog DB rows.", ReleaseSafety: "No source, binary, catalog, or NZB database rows are deleted.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
 	{TaskKey: "stale_nonrelease_source_purge", Label: "Stale Non-Release Source Purge", Purpose: "Purges old source headers outside the default 7-day window only when no downstream relationship still references them.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Deletes source rows that are outside the active scrape window and not queued for assemble or yEnc; future releases cannot be formed from those purged source rows.", DataEffect: "Deletes eligible article_headers and cascades their ingest payload, crosspost, poster-ref, and poster queue rows.", ReleaseSafety: "Skips any header with assembly queue, binary_parts, yEnc work item, or archive lineage. Dry-run estimates only the next batch.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first and keep batch sizes conservative", "does not delete binaries, release files, catalog files, archive metadata, or NZBs directly"}},
