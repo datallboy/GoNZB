@@ -81,7 +81,7 @@ func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{estimate: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -120,19 +120,15 @@ func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T
 	}
 }
 
-func TestScrapeBacklogGuardUsesSourceWindowThresholds(t *testing.T) {
+func TestScrapeBacklogGuardUsesScrapeTierThresholds(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:           true,
-					MaxOpenHeaders:    75000,
-					ResumeOpenHeaders: 25000,
-				},
+				Assemble:    app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{MaxArticlesPerGroupWindow: 60000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 76000},
+		repo: fakeUnassembledBacklogReader{estimate: 121000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -140,9 +136,9 @@ func TestScrapeBacklogGuardUsesSourceWindowThresholds(t *testing.T) {
 		t.Fatalf("allow backfill returned error: %v", err)
 	}
 	if backfill.Allowed {
-		t.Fatalf("expected scrape_backfill to be blocked by source window threshold, got %+v", backfill)
+		t.Fatalf("expected scrape_backfill to be blocked by scrape tier threshold, got %+v", backfill)
 	}
-	if want := "high_water=75000"; !strings.Contains(backfill.Reason, want) {
+	if want := "high_water=120000"; !strings.Contains(backfill.Reason, want) {
 		t.Fatalf("expected reason to include %q, got %q", want, backfill.Reason)
 	}
 }
@@ -159,7 +155,7 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 				},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 50000},
+		repo: fakeUnassembledBacklogReader{estimate: 90000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -244,7 +240,7 @@ func TestScrapeBacklogGuardAllowsManualScrapeOverride(t *testing.T) {
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{estimate: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "manual")
@@ -276,7 +272,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 60000}
+	guard.repo = fakeUnassembledBacklogReader{estimate: 75000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {
@@ -287,7 +283,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 5000}
+	guard.repo = fakeUnassembledBacklogReader{estimate: 25000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {

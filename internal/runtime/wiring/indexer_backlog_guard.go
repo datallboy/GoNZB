@@ -249,21 +249,7 @@ func recoverYEncEnabled(indexing *app.IndexingRuntimeSettings) bool {
 
 func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
 	if indexing == nil {
-		return scrapeBacklogGuardMinHighWater, scrapeBacklogGuardMinLowWater
-	}
-	if indexing.SourceWindow.Enabled {
-		highWater = int64(indexing.SourceWindow.MaxOpenHeaders)
-		lowWater = int64(indexing.SourceWindow.ResumeOpenHeaders)
-		if highWater < scrapeBacklogGuardMinHighWater {
-			highWater = scrapeBacklogGuardMinHighWater
-		}
-		if lowWater <= 0 || lowWater >= highWater {
-			lowWater = highWater / 2
-		}
-		if lowWater < scrapeBacklogGuardMinLowWater {
-			lowWater = scrapeBacklogGuardMinLowWater
-		}
-		return highWater, lowWater
+		return 100000, 50000
 	}
 	capacity := 0
 	for _, stage := range []app.IndexingStageRuntimeSettings{indexing.Assemble} {
@@ -279,13 +265,16 @@ func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater i
 	if capacity <= 0 {
 		capacity = 5000
 	}
-	highWater = int64(capacity * 20)
-	if highWater < scrapeBacklogGuardMinHighWater {
-		highWater = scrapeBacklogGuardMinHighWater
+	highWater = int64(capacity * 10)
+	if indexing.ScrapeTiers.MaxArticlesPerGroupWindow > 0 {
+		highWater = int64(indexing.ScrapeTiers.MaxArticlesPerGroupWindow * 2)
+	}
+	if highWater < 100000 {
+		highWater = 100000
 	}
 	lowWater = highWater / 2
-	if lowWater < scrapeBacklogGuardMinLowWater {
-		lowWater = scrapeBacklogGuardMinLowWater
+	if lowWater < 50000 {
+		lowWater = 50000
 	}
 	return highWater, lowWater
 }
