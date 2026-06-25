@@ -25,6 +25,10 @@ type indexerService interface {
 	StorageStatus(ctx context.Context) (*indexerStorageStatusView, error)
 	StorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error)
 	BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
+	RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
+	GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
+	DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	DailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
@@ -301,6 +305,34 @@ func (s *runtimeIndexerService) BackfillProgress(ctx context.Context) (*pgindex.
 	}
 	overlayBackfillProgressFromRuntime(progress, runtime.Indexing)
 	return progress, nil
+}
+
+func (s *runtimeIndexerService) RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.RefreshYEncRecoveryAdmissionSnapshot(ctx)
+}
+
+func (s *runtimeIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.ListIndexerGroupProfiles(ctx, limit)
+}
+
+func (s *runtimeIndexerService) DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.ListDeferredArticleRanges(ctx, state, limit)
+}
+
+func (s *runtimeIndexerService) DailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.ListIndexerDailyBucketStats(ctx, limit)
 }
 
 func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
