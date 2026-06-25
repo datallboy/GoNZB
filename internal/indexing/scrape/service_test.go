@@ -426,6 +426,8 @@ type fakeScrapeRepo struct {
 	groupNamesByID            map[int64]string
 	latestCheckpointByGroup   map[string]int64
 	backfillCheckpointByGroup map[string]int64
+	admissionSnapshot         *pgindex.YEncRecoveryAdmissionSnapshot
+	deferredRanges            []pgindex.DeferredArticleRangeRecord
 }
 
 func (f *fakeScrapeRepo) EnsureProvider(_ context.Context, providerKey, _ string) (int64, error) {
@@ -521,6 +523,27 @@ func (f *fakeScrapeRepo) InsertArticleHeaders(_ context.Context, providerID int6
 	f.insertProviderIDs = append(f.insertProviderIDs, providerID)
 	f.insertedHeaders = append(f.insertedHeaders, headers...)
 	return int64(len(headers)), nil
+}
+
+func (f *fakeScrapeRepo) RefreshYEncRecoveryAdmissionSnapshot(context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
+	if f.admissionSnapshot != nil {
+		return f.admissionSnapshot, nil
+	}
+	return &pgindex.YEncRecoveryAdmissionSnapshot{
+		ProbesPerHourEWMA: 25000,
+		SoftCap:           100000,
+		HardCap:           200000,
+		RemainingToHard:   200000,
+	}, nil
+}
+
+func (f *fakeScrapeRepo) UpsertIndexerGroupProfile(context.Context, int64, int64, string, string) error {
+	return nil
+}
+
+func (f *fakeScrapeRepo) UpsertDeferredArticleRange(_ context.Context, in pgindex.DeferredArticleRangeRecord) error {
+	f.deferredRanges = append(f.deferredRanges, in)
+	return nil
 }
 
 func (f *fakeScrapeRepo) groupName(newsgroupID int64) string {
