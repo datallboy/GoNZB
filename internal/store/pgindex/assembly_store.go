@@ -388,7 +388,9 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 				EXISTS (
 					SELECT 1
 					FROM binary_completion_keys bck
-					WHERE bck.provider_id = q.provider_id
+					WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
+					  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
+					  AND bck.provider_id = q.provider_id
 					  AND bck.newsgroup_id = q.newsgroup_id
 					  AND bck.normalized_file_name = q.normalized_file_name
 				) AS structured_identity_binary_matched,
@@ -403,7 +405,9 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 					AND EXISTS (
 						SELECT 1
 						FROM binary_completion_keys bck
-						WHERE bck.provider_id = q.provider_id
+						WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
+						  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
+						  AND bck.provider_id = q.provider_id
 						  AND bck.newsgroup_id = q.newsgroup_id
 						  AND bck.normalized_file_name = q.normalized_file_name
 					)
@@ -413,7 +417,9 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 					AND NOT EXISTS (
 						SELECT 1
 						FROM binary_completion_keys bck
-						WHERE bck.provider_id = q.provider_id
+						WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
+						  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
+						  AND bck.provider_id = q.provider_id
 						  AND bck.newsgroup_id = q.newsgroup_id
 						  AND bck.normalized_file_name = q.normalized_file_name
 					)
