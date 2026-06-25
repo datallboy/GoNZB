@@ -537,9 +537,12 @@ func (s *Store) listIndexerInspectionArtifacts(ctx context.Context, binaryID int
 			signature,
 			source_kind,
 			metadata_json
-		FROM binary_inspection_artifacts
-		WHERE binary_id = $1
-		ORDER BY updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
+		FROM binary_core bc
+		JOIN binary_inspection_artifacts bia
+		  ON bia.source_posted_at = bc.source_posted_at
+		 AND bia.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		ORDER BY bia.updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list inspection artifacts for binary %d: %w", binaryID, err)
 	}
@@ -584,8 +587,11 @@ func (s *Store) listIndexerArchiveEntries(ctx context.Context, binaryID int64) (
 			media_type,
 			signature,
 			metadata_json
-		FROM binary_archive_entries
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_archive_entries bae
+		  ON bae.source_posted_at = bc.source_posted_at
+		 AND bae.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY entry_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list archive entries for binary %d: %w", binaryID, err)
@@ -636,8 +642,11 @@ func (s *Store) listIndexerMediaStreams(ctx context.Context, binaryID int64) ([]
 			default_disposition,
 			forced_disposition,
 			metadata_json
-		FROM binary_media_streams
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_media_streams bms
+		  ON bms.source_posted_at = bc.source_posted_at
+		 AND bms.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY stream_index, stream_type`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list media streams for binary %d: %w", binaryID, err)
@@ -684,9 +693,12 @@ func (s *Store) listIndexerTextEvidence(ctx context.Context, binaryID int64) ([]
 			text_value,
 			tokens_json,
 			metadata_json
-		FROM binary_text_evidence
-		WHERE binary_id = $1
-		ORDER BY updated_at DESC, stage_name, evidence_kind`, binaryID)
+		FROM binary_core bc
+		JOIN binary_text_evidence bte
+		  ON bte.source_posted_at = bc.source_posted_at
+		 AND bte.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		ORDER BY bte.updated_at DESC, stage_name, evidence_kind`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list text evidence for binary %d: %w", binaryID, err)
 	}
@@ -727,8 +739,11 @@ func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]Inde
 			recovery_blocks,
 			signature_ok,
 			metadata_json
-		FROM binary_par2_sets
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_par2_sets bps
+		  ON bps.source_posted_at = bc.source_posted_at
+		 AND bps.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY set_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list par2 sets for binary %d: %w", binaryID, err)
@@ -787,7 +802,10 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 			COALESCE(brc.recovered_kind, ''),
 			COALESCE(brc.recovered_source, ''),
 			COALESCE(brc.recovered_file_name, '')
-		FROM binary_parts bp
+		FROM binary_core bc
+		JOIN binary_parts bp
+		  ON bp.source_posted_at = bc.source_posted_at
+		 AND bp.binary_id = bc.binary_id
 		LEFT JOIN article_headers ah
 		  ON ah.source_posted_at = bp.source_posted_at
 		 AND ah.id = bp.article_header_id
@@ -798,8 +816,10 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 		LEFT JOIN yenc_recovery_work_items wi
 		  ON wi.source_posted_at = bp.source_posted_at
 		 AND wi.article_header_id = bp.article_header_id
-		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bp.binary_id
-		WHERE bp.binary_id = $1
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bp.source_posted_at
+		 AND brc.binary_id = bp.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY bp.part_number, bp.id`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
@@ -871,6 +891,7 @@ const binaryInspectionCandidateStateCTE = `
 binary_state AS (
 	SELECT
 		bc.binary_id AS id,
+		bc.source_posted_at,
 		bc.provider_id,
 		bc.newsgroup_id,
 		bc.poster_id,
@@ -906,19 +927,31 @@ binary_state AS (
 			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
 		) AS updated_at
 	FROM binary_core bc
-	JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-	JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = bc.source_posted_at
+	 AND bic.binary_id = bc.binary_id
+	JOIN binary_observation_stats bos
+	  ON bos.source_posted_at = bc.source_posted_at
+	 AND bos.binary_id = bc.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = bc.source_posted_at
+	 AND brc.binary_id = bc.binary_id
 )`
 
 const binaryInspectionPAR2CandidateStateCTE = `
 candidate_source AS (
 	SELECT DISTINCT ON (rf.binary_id)
 		rf.binary_id,
+		bc.source_posted_at,
 		rf.release_id
 	FROM release_files rf
-	JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = rf.binary_id
+	JOIN binary_core bc ON bc.binary_id = rf.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = bc.source_posted_at
+	 AND bic.binary_id = rf.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = bc.source_posted_at
+	 AND brc.binary_id = rf.binary_id
 	WHERE rf.binary_id > 0
 	  AND (
 		rf.is_pars = TRUE OR
@@ -931,6 +964,7 @@ candidate_source AS (
 binary_state AS (
 	SELECT
 		bc.binary_id AS id,
+		bc.source_posted_at,
 		cs.release_id,
 		bc.provider_id,
 		bc.newsgroup_id,
@@ -967,10 +1001,18 @@ binary_state AS (
 			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
 		) AS updated_at
 	FROM candidate_source cs
-	JOIN binary_core bc ON bc.binary_id = cs.binary_id
-	JOIN binary_identity_current bic ON bic.binary_id = cs.binary_id
-	JOIN binary_observation_stats bos ON bos.binary_id = cs.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = cs.binary_id
+	JOIN binary_core bc
+	  ON bc.source_posted_at = cs.source_posted_at
+	 AND bc.binary_id = cs.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = cs.source_posted_at
+	 AND bic.binary_id = cs.binary_id
+	JOIN binary_observation_stats bos
+	  ON bos.source_posted_at = cs.source_posted_at
+	 AND bos.binary_id = cs.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = cs.source_posted_at
+	 AND brc.binary_id = cs.binary_id
 )`
 
 func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
@@ -1051,6 +1093,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			SELECT 1
 			FROM binary_inspections cfi
 			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
 			  AND cfi.binary_id = b.id
 			  AND cfi.status = 'completed'
 			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
@@ -1130,7 +1173,8 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 					EXISTS (
 						SELECT 1
 						FROM binary_par2_targets bpt
-						WHERE bpt.binary_id = b.id
+						WHERE bpt.source_posted_at = b.source_posted_at
+						  AND bpt.binary_id = b.id
 					) AS has_targets,
 					(
 						COALESCE(bi.status, '') = 'completed' AND
@@ -1146,8 +1190,9 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
 				LEFT JOIN binary_inspections bi
-					ON bi.stage_name = $1
-					AND bi.binary_id = b.id
+				  ON bi.source_posted_at = b.source_posted_at
+				 AND bi.stage_name = $1
+				 AND bi.binary_id = b.id
 				WHERE (
 					LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
 					COALESCE(b.recovered_kind, '') = 'par2' OR
@@ -1273,13 +1318,20 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
 			FROM binary_identity_current bic
-			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
 			LEFT JOIN posters p ON p.id = bc.poster_id
 			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = $1
-				AND bi.binary_id = bic.binary_id
+			  ON bi.source_posted_at = bic.source_posted_at
+			 AND bi.stage_name = $1
+			 AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
 			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 			  AND (
@@ -1341,11 +1393,13 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = $1
-			AND bi.binary_id = b.id
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = $1
+		 AND bi.binary_id = b.id
 		LEFT JOIN binary_inspections abi
-			ON abi.stage_name = 'inspect_archive'
-			AND abi.binary_id = b.id
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
 			` + rerunPredicate + `
@@ -1410,11 +1464,13 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				JOIN release_files rf ON rf.binary_id = b.id
 				JOIN releases r ON r.release_id = rf.release_id
 				LEFT JOIN binary_inspections bi
-					ON bi.stage_name = $1
-					AND bi.binary_id = b.id
+				  ON bi.source_posted_at = b.source_posted_at
+				 AND bi.stage_name = $1
+				 AND bi.binary_id = b.id
 				LEFT JOIN binary_inspections abi
-					ON abi.stage_name = 'inspect_archive'
-					AND abi.binary_id = b.id
+				  ON abi.source_posted_at = b.source_posted_at
+				 AND abi.stage_name = 'inspect_archive'
+				 AND abi.binary_id = b.id
 				WHERE ` + filter + `
 				  AND (` + representativePredicate + `)
 				  AND (

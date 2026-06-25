@@ -1421,6 +1421,7 @@ func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 			SELECT 1
 			FROM binary_inspections cfi
 			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
 			  AND cfi.binary_id = b.id
 			  AND cfi.status = 'completed'
 			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
@@ -1431,12 +1432,19 @@ func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 		if err := s.db.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM binary_identity_current bic
-			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
 			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = $1
-				AND bi.binary_id = bic.binary_id
+			  ON bi.source_posted_at = bic.source_posted_at
+			 AND bi.stage_name = $1
+			 AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
 			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 			  AND (
@@ -1477,11 +1485,13 @@ func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageNa
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = $1
-			AND bi.binary_id = b.id
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = $1
+		 AND bi.binary_id = b.id
 		LEFT JOIN binary_inspections abi
-			ON abi.stage_name = 'inspect_archive'
-			AND abi.binary_id = b.id
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
 		WHERE `+filter+`
 		  AND (
 			`+rerunPredicate+`
@@ -1531,7 +1541,8 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 					EXISTS (
 						SELECT 1
 						FROM binary_par2_targets bpt
-						WHERE bpt.binary_id = b.id
+						WHERE bpt.source_posted_at = b.source_posted_at
+						  AND bpt.binary_id = b.id
 					) AS has_targets,
 					(
 						COALESCE(bi.status, '') = 'completed' AND
@@ -1559,8 +1570,9 @@ func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, e
 				) AS needs_rerun
 			FROM binary_state b
 			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = 'inspect_par2'
-				AND bi.binary_id = b.id
+			  ON bi.source_posted_at = b.source_posted_at
+			 AND bi.stage_name = 'inspect_par2'
+			 AND bi.binary_id = b.id
 			WHERE b.observed_parts > 0
 			  AND (
 				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
@@ -1697,8 +1709,9 @@ func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, 
 			JOIN release_files rf ON rf.binary_id = b.id
 			JOIN releases r ON r.release_id = rf.release_id
 			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = 'inspect_archive'
-				AND bi.binary_id = b.id
+			  ON bi.source_posted_at = b.source_posted_at
+			 AND bi.stage_name = 'inspect_archive'
+			 AND bi.binary_id = b.id
 			WHERE `+filter+`
 			  AND (`+representativePredicate+`)
 			  AND (
@@ -1722,6 +1735,7 @@ func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, 
 				SELECT 1
 				FROM binary_inspections cfi
 				WHERE cfi.stage_name = 'inspect_discovery'
+				  AND cfi.source_posted_at = b.source_posted_at
 				  AND cfi.binary_id = b.id
 				  AND cfi.status = 'completed'
 				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
@@ -1777,11 +1791,13 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = 'inspect_media'
-			AND bi.binary_id = b.id
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = 'inspect_media'
+		 AND bi.binary_id = b.id
 		LEFT JOIN binary_inspections abi
-			ON abi.stage_name = 'inspect_archive'
-			AND abi.binary_id = b.id
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
 		WHERE `+filter+`
 		  AND (
 			`+rerunPredicate+`
@@ -1794,6 +1810,7 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 			SELECT 1
 			FROM binary_inspections cfi
 			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
 			  AND cfi.binary_id = b.id
 			  AND cfi.status = 'completed'
 			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
@@ -2368,6 +2385,7 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 		WITH binary_detail_state AS (
 			SELECT
 				bc.binary_id AS id,
+				bc.source_posted_at,
 				bc.provider_id,
 				bc.newsgroup_id,
 				bc.poster_id,
@@ -2390,8 +2408,12 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 				bos.first_article_number,
 				bos.last_article_number
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
 		)
 		SELECT
 			b.id,
@@ -2436,7 +2458,9 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			COALESCE(r.encrypted, FALSE),
 			COALESCE(r.password_state, '')
 		FROM binary_detail_state b
-		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
+		LEFT JOIN binary_grouping_evidence bge
+		  ON bge.source_posted_at = b.source_posted_at
+		 AND bge.binary_id = b.id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
@@ -2445,11 +2469,18 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
 				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts bp
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
 			LEFT JOIN posters pp ON pp.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE bp.binary_id = b.id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at = b.source_posted_at
+			  AND bp.binary_id = b.id
 			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
 			LIMIT 1
@@ -2606,8 +2637,12 @@ func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryLis
 	countQuery := `
 		SELECT COUNT(*)
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
 		WHERE ` + whereSQL
@@ -2647,23 +2682,31 @@ func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryLis
 			COALESCE(ins.inspection_count, 0),
 			GREATEST(bic.updated_at, bos.updated_at)
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bc.source_posted_at
+		 AND brc.binary_id = bc.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN LATERAL (
 			SELECT status, priority_rank
 			FROM yenc_recovery_work_items wi
-			WHERE wi.binary_id = bc.binary_id
+			WHERE wi.source_posted_at = bc.source_posted_at
+			  AND wi.binary_id = bc.binary_id
 			ORDER BY wi.updated_at DESC
 			LIMIT 1
 		) wi ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*)::int AS inspection_count
 			FROM binary_inspections bi
-			WHERE bi.binary_id = bc.binary_id
+			WHERE bi.source_posted_at = bc.source_posted_at
+			  AND bi.binary_id = bc.binary_id
 		) ins ON TRUE
 		WHERE `+whereSQL+`
 		ORDER BY `+orderBy+`
@@ -2725,6 +2768,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 		WITH binary_detail_state AS (
 			SELECT
 				bc.binary_id AS id,
+				bc.source_posted_at,
 				bic.match_confidence,
 				bic.match_status,
 				bic.grouping_summary_kind,
@@ -2733,8 +2777,12 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 				bos.total_parts,
 				bos.observed_parts
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
 		)
 		SELECT
 			cf.id,
@@ -2777,17 +2825,26 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 		 AND rf.file_index = cf.file_index
 		 AND rf.file_name = cf.file_name
 		LEFT JOIN binary_detail_state b ON b.id = rf.binary_id
-		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
+		LEFT JOIN binary_grouping_evidence bge
+		  ON bge.source_posted_at = b.source_posted_at
+		 AND bge.binary_id = b.id
 		LEFT JOIN LATERAL (
 			SELECT
 				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
 				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts bp
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
 			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE bp.binary_id = rf.binary_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at = b.source_posted_at
+			  AND bp.binary_id = rf.binary_id
 			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			LIMIT 1
