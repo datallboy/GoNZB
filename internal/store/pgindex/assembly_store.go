@@ -443,7 +443,10 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 				1 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  AND (
+			    q.queue_kind <> 'structured'
+			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
@@ -476,7 +479,10 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 				1 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  AND (
+			    q.queue_kind <> 'structured'
+			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  )
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM lane_a a
