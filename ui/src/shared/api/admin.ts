@@ -2,8 +2,12 @@ import { apiRequest, apiURL } from "./http"
 import type {
   IndexerBackfillProgress,
   IndexerDashboardStats,
+  IndexerDailyBucketResponse,
+  IndexerDeferredArticleRangeResponse,
+  IndexerGroupProfileResponse,
   IndexerNNTPStats,
   IndexerOverviewStreamSnapshot,
+  IndexerRecoveryCapacity,
   IndexerStorageStatus,
   IndexerStageThroughput,
   AdminReleaseDetailResponse,
@@ -46,6 +50,26 @@ export function getAdminBackfillProgress() {
   return apiRequest<IndexerBackfillProgress>(
     "/api/v1/admin/indexer/overview/backfill-progress",
   )
+}
+
+export function getAdminRecoveryCapacity() {
+  return apiRequest<IndexerRecoveryCapacity>("/api/v1/admin/indexer/work/recovery-capacity")
+}
+
+export function getAdminDailyBuckets(limit = 50) {
+  return apiRequest<IndexerDailyBucketResponse>(`/api/v1/admin/indexer/work/daily-buckets?limit=${limit}`)
+}
+
+export function getAdminGroupProfiles(limit = 50) {
+  return apiRequest<IndexerGroupProfileResponse>(`/api/v1/admin/indexer/work/group-profiles?limit=${limit}`)
+}
+
+export function getAdminDeferredRanges(limit = 50, state = "queued") {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (state) {
+    query.set("state", state)
+  }
+  return apiRequest<IndexerDeferredArticleRangeResponse>(`/api/v1/admin/indexer/work/deferred-ranges?${query.toString()}`)
 }
 
 export function getAdminStageThroughput() {

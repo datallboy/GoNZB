@@ -147,6 +147,94 @@ export type IndexerBackfillProgress = {
   count: number
 }
 
+export type IndexerRecoveryCapacity = {
+  probes_per_hour_ewma: number
+  soft_cap: number
+  hard_cap: number
+  open_ready: number
+  open_running: number
+  open_total: number
+  remaining_to_hard: number
+  oldest_ready_at?: string
+  newest_ready_at?: string
+  calculated_at?: string
+}
+
+export type IndexerDailyBucket = {
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  bucket_day: string
+  tier: string
+  scrape_progress_known: boolean
+  scrape_progress_pct?: number
+  lower_boundary_crossed: boolean
+  upper_boundary_crossed: boolean
+  bucket_article_low?: number
+  bucket_article_high?: number
+  scrape_cursor_low?: number
+  scrape_cursor_high?: number
+  headers_staged: number
+  unassembled_headers: number
+  yenc_ready: number
+  yenc_running: number
+  yenc_done: number
+  binaries_total: number
+  binaries_complete: number
+  binaries_weak: number
+  releases_created: number
+  blocker_count: number
+  last_refreshed_at?: string
+}
+
+export type IndexerDailyBucketResponse = {
+  items: IndexerDailyBucket[]
+  count: number
+}
+
+export type IndexerGroupProfile = {
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  tier: string
+  tier_override: string
+  score: number
+  recovery_queued_1d: number
+  releases_created_1d: number
+  updated_at?: string
+}
+
+export type IndexerGroupProfileResponse = {
+  items: IndexerGroupProfile[]
+  count: number
+}
+
+export type IndexerDeferredArticleRange = {
+  id: number
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  range_kind: string
+  state: string
+  reason: string
+  article_low: number
+  article_high: number
+  estimated_count: number
+  priority: number
+  attempt_count: number
+  not_before?: string
+  last_attempt_at?: string
+  created_at?: string
+}
+
+export type IndexerDeferredArticleRangeResponse = {
+  items: IndexerDeferredArticleRange[]
+  count: number
+}
+
 export type IndexerStageThroughputWindow = {
   window_hours: number
   completed_runs: number
