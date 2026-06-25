@@ -38,12 +38,27 @@ func TestYEncRecoveryDoesNotWriteBackToScrapeOwnedSourceTables(t *testing.T) {
 }
 
 func TestPartitionedSourceJoinsUseSourcePostedAt(t *testing.T) {
-	for _, fileName := range []string{"assembly_store.go", "yenc_work_item_store.go", "yenc_recovery_store.go"} {
+	for _, fileName := range []string{
+		"assembly_store.go",
+		"yenc_work_item_store.go",
+		"yenc_recovery_store.go",
+		"catalog_reads.go",
+		"inspect_reads.go",
+		"inspection_store.go",
+		"release_catalog_files.go",
+	} {
 		src := readGuardrailSource(t, fileName)
 		forbidden := []string{
 			"JOIN article_headers ah ON ah.id",
 			"JOIN article_headers ah\n\t\t\t  ON ah.id",
 			"article_header_ingest_payloads p ON p.article_header_id",
+			"article_header_ingest_payloads aip ON aip.article_header_id",
+			"article_header_poster_refs apr ON apr.article_header_id",
+			"JOIN binary_parts bp ON bp.binary_id",
+			"JOIN binary_identity_current bic ON bic.binary_id",
+			"JOIN binary_observation_stats bos ON bos.binary_id",
+			"LEFT JOIN binary_recovery_current brc ON brc.binary_id",
+			"LEFT JOIN binary_grouping_evidence bge ON bge.binary_id",
 		}
 		for _, term := range forbidden {
 			if strings.Contains(src, term) {

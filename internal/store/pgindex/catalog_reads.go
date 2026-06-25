@@ -160,11 +160,18 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
 				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts bp
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
 			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE bp.binary_id = rf.binary_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at = bc.source_posted_at
+			  AND bp.binary_id = rf.binary_id
 			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			LIMIT 1
@@ -233,8 +240,12 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 			LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
 			bic.file_index
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN posters p ON p.id = bc.poster_id
 		LEFT JOIN LATERAL (
@@ -242,11 +253,18 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
 				MIN(ah.date_utc) AS posted_at
 			FROM binary_parts bp
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
 			LEFT JOIN posters pp ON pp.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE bp.binary_id = bc.binary_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at = bc.source_posted_at
+			  AND bp.binary_id = bc.binary_id
 			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
 			LIMIT 1
@@ -295,8 +313,13 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 		  ON rf.release_id = cf.release_id
 		 AND rf.file_index = cf.file_index
 		 AND rf.file_name = cf.file_name
-		JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		JOIN article_headers ah ON ah.id = bp.article_header_id
+		JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		JOIN binary_parts bp
+		  ON bp.source_posted_at = bc.source_posted_at
+		 AND bp.binary_id = rf.binary_id
+		JOIN article_headers ah
+		  ON ah.source_posted_at = bp.source_posted_at
+		 AND ah.id = bp.article_header_id
 		WHERE cf.id = $1
 		ORDER BY bp.part_number`, releaseFileID)
 	if err != nil {
@@ -359,9 +382,14 @@ func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) (
 			ah.message_id,
 			ah.bytes,
 			bp.part_number
-		FROM binary_parts bp
-		JOIN article_headers ah ON ah.id = bp.article_header_id
-		WHERE bp.binary_id = $1
+		FROM binary_core bc
+		JOIN binary_parts bp
+		  ON bp.source_posted_at = bc.source_posted_at
+		 AND bp.binary_id = bc.binary_id
+		JOIN article_headers ah
+		  ON ah.source_posted_at = bp.source_posted_at
+		 AND ah.id = bp.article_header_id
+		WHERE bc.binary_id = $1
 		ORDER BY bp.part_number`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog binary articles %d: %w", binaryID, err)
