@@ -1713,6 +1713,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    	WHEN bc.original_binary_name = '' THEN r.binary_name
 		    	ELSE bc.original_binary_name
 		    END,
+		    source_posted_at = COALESCE(bc.source_posted_at, r.posted_at),
 		    updated_at = NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
@@ -1720,6 +1721,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		  AND (
 		  	bc.poster_id IS DISTINCT FROM COALESCE(r.poster_id, bc.poster_id)
 		  	OR (bc.original_binary_name = '' AND r.binary_name <> '')
+			OR (bc.source_posted_at IS NULL AND r.posted_at IS NOT NULL)
 		  )`); err != nil {
 		return nil, nil, fmt.Errorf("update binary_core batch: %w", err)
 	}
@@ -1734,6 +1736,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			poster_id,
 			binary_key,
 			original_binary_name,
+			source_posted_at,
 			created_at,
 			updated_at
 		)
@@ -1743,6 +1746,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.poster_id,
 			r.binary_key,
 			r.binary_name,
+			r.posted_at,
 			NOW(),
 			NOW()
 		FROM tmp_upsert_binaries r
@@ -1772,6 +1776,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			first_article_number,
 			last_article_number,
 			posted_at,
+			source_posted_at,
 			refreshed_at,
 			updated_at
 		)
@@ -1785,6 +1790,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			0,
 			0,
 			r.posted_at,
+			r.posted_at,
 			NOW(),
 			NOW()
 		FROM tmp_upsert_binaries r
@@ -1792,6 +1798,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		ON CONFLICT (binary_id) DO UPDATE
 		SET total_parts = GREATEST(binary_observation_stats.total_parts, EXCLUDED.total_parts),
 		    posted_at = COALESCE(binary_observation_stats.posted_at, EXCLUDED.posted_at),
+		    source_posted_at = COALESCE(binary_observation_stats.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_observation_stats batch: %w", err)
 	}
@@ -1824,6 +1831,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			grouping_summary_kind,
 			grouping_summary_status,
 			grouping_summary_fallback_used,
+			source_posted_at,
 			updated_at
 		)
 		SELECT
@@ -1854,6 +1862,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.grouping_summary_kind,
 			r.grouping_summary_status,
 			r.grouping_summary_fallback_used,
+			r.posted_at,
 			NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
@@ -1884,6 +1893,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    grouping_summary_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_kind ELSE binary_identity_current.grouping_summary_kind END,
 		    grouping_summary_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_status ELSE binary_identity_current.grouping_summary_status END,
 		    grouping_summary_fallback_used = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_fallback_used ELSE binary_identity_current.grouping_summary_fallback_used END,
+		    source_posted_at = COALESCE(binary_identity_current.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
 	}
@@ -1892,12 +1902,14 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			binary_id,
 			provider_id,
 			newsgroup_id,
+			source_posted_at,
 			updated_at
 		)
 		SELECT
 			e.binary_id,
 			r.provider_id,
 			r.newsgroup_id,
+			r.posted_at,
 			NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
@@ -2823,25 +2835,29 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			total_parts,
 			segment_bytes,
 			file_name,
+			source_posted_at,
 			updated_at
 		)
 		SELECT
-			binary_id,
-			article_header_id,
-			message_id,
-			part_number,
-			total_parts,
-			segment_bytes,
-			file_name,
+			tbp.binary_id,
+			tbp.article_header_id,
+			tbp.message_id,
+			tbp.part_number,
+			tbp.total_parts,
+			tbp.segment_bytes,
+			tbp.file_name,
+			COALESCE(ah.source_posted_at, ah.date_utc),
 			NOW()
-		FROM tmp_binary_parts
-		ORDER BY binary_id, part_number, article_header_id
+		FROM tmp_binary_parts tbp
+		LEFT JOIN article_headers ah ON ah.id = tbp.article_header_id
+		ORDER BY tbp.binary_id, tbp.part_number, tbp.article_header_id
 		ON CONFLICT (binary_id, part_number) DO UPDATE
 		SET article_header_id = EXCLUDED.article_header_id,
 		    message_id = EXCLUDED.message_id,
 		    total_parts = GREATEST(binary_parts.total_parts, EXCLUDED.total_parts),
 		    segment_bytes = EXCLUDED.segment_bytes,
 		    file_name = EXCLUDED.file_name,
+		    source_posted_at = COALESCE(binary_parts.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return fmt.Errorf("upsert %d binary parts: %w", len(dedupedRecords), err)
 	}

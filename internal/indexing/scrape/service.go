@@ -37,6 +37,7 @@ type repository interface {
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
+	ObserveScrapeRange(ctx context.Context, providerID, newsgroupID int64, from, to int64, observations []pgindex.ScrapeRangeObservation) error
 	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
@@ -594,6 +595,7 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		}
 	}
 
+	observations := make([]pgindex.ScrapeRangeObservation, 0, len(rows))
 	headers := make([]pgindex.ArticleHeader, 0, len(rows))
 	var oldestSeen *time.Time
 	cutoffFiltered := 0
@@ -601,6 +603,10 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		if r.ArticleNumber <= 0 || strings.TrimSpace(r.MessageID) == "" {
 			continue
 		}
+		observations = append(observations, pgindex.ScrapeRangeObservation{
+			ArticleNumber: r.ArticleNumber,
+			DateUTC:       r.DateUTC,
+		})
 		if r.DateUTC != nil {
 			t := r.DateUTC.UTC()
 			if oldestSeen == nil || t.Before(*oldestSeen) {
@@ -642,6 +648,9 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 	inserted, err := s.repo.InsertArticleHeaders(ctx, providerID, newsgroupID, headers)
 	if err != nil {
 		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
+	}
+	if err := s.repo.ObserveScrapeRange(ctx, providerID, newsgroupID, from, to, observations); err != nil {
+		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("observe scrape range %s %d-%d: %w", group, from, to, err)
 	}
 
 	return headers, inserted, oldestSeen, cutoffFiltered, providerID, nil

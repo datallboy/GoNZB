@@ -39,6 +39,11 @@ type ArticleHeader struct {
 	RawOverview   map[string]any
 }
 
+type ScrapeRangeObservation struct {
+	ArticleNumber int64
+	DateUTC       *time.Time
+}
+
 const articleHeaderInsertBatchSize = 500
 
 type preparedArticleHeaderInsert struct {
@@ -67,6 +72,7 @@ type payloadUpsertRow struct {
 	YEncPart        int
 	YEncTotalParts  int
 	FileSize        int64
+	SourcePostedAt  *time.Time
 }
 
 type BackfillCheckpointState struct {
@@ -979,11 +985,13 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 					YEncPart:        item.Parsed.YEncPart,
 					YEncTotalParts:  item.Parsed.YEncTotalParts,
 					FileSize:        item.Parsed.FileSize,
+					SourcePostedAt:  item.DateUTC,
 				})
 				if item.Poster != "" {
 					posterQueueRows = append(posterQueueRows, posterMaterializationQueueRow{
 						ArticleHeaderID: articleHeaderID,
 						PosterName:      item.Poster,
+						SourcePostedAt:  item.DateUTC,
 					})
 				}
 			}
@@ -1027,11 +1035,12 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			article_number,
 			message_id,
 			date_utc,
+			source_posted_at,
 			bytes,
 			lines
 		) AS (VALUES `)
 
-	args := make([]any, 0, len(batch)*8)
+	args := make([]any, 0, len(batch)*9)
 	for idx, item := range batch {
 		if idx > 0 {
 			query.WriteString(",")
@@ -1047,6 +1056,8 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		args = append(args, item.ArticleNumber)
 		fmt.Fprintf(&query, "$%d::text,", len(args)+1)
 		args = append(args, item.MessageID)
+		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		args = append(args, item.DateUTC)
 		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
 		args = append(args, item.DateUTC)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
@@ -1086,6 +1097,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				article_number,
 				message_id,
 				date_utc,
+				source_posted_at,
 				bytes,
 				lines,
 				scraped_at
@@ -1096,6 +1108,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				r.article_number,
 				r.message_id,
 				r.date_utc,
+				r.source_posted_at,
 				r.bytes,
 				r.lines,
 				NOW()
@@ -1322,11 +1335,12 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 			yenc_part_number,
 			yenc_total_parts,
 			yenc_file_size,
+			source_posted_at,
 			created_at
 		)
 		VALUES `)
 
-	args := make([]any, 0, len(order)*11)
+	args := make([]any, 0, len(order)*12)
 	for idx, articleHeaderID := range order {
 		row := lastByArticleHeaderID[articleHeaderID]
 		if idx > 0 {
@@ -1355,6 +1369,8 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		args = append(args, row.YEncTotalParts)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
+		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		args = append(args, row.SourcePostedAt)
 		query.WriteString("NOW())")
 	}
 
@@ -1369,7 +1385,8 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		    subject_file_total = EXCLUDED.subject_file_total,
 		    yenc_part_number = EXCLUDED.yenc_part_number,
 		    yenc_total_parts = EXCLUDED.yenc_total_parts,
-		    yenc_file_size = EXCLUDED.yenc_file_size`)
+		    yenc_file_size = EXCLUDED.yenc_file_size,
+		    source_posted_at = COALESCE(EXCLUDED.source_posted_at, article_header_ingest_payloads.source_posted_at)`)
 
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("insert article header payload batch: %w", err)
@@ -1408,12 +1425,13 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 				message_id,
 				normalized_file_name,
 				queue_kind,
+				source_posted_at,
 				queued_at,
 				updated_at
 			)
 			VALUES `)
 
-		args := make([]any, 0, len(upsertRows)*6)
+		args := make([]any, 0, len(upsertRows)*7)
 		for idx, row := range upsertRows {
 			if idx > 0 {
 				query.WriteString(",")
@@ -1437,6 +1455,8 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 			args = append(args, row.FileName)
 			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
 			args = append(args, queueKind)
+			fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+			args = append(args, row.SourcePostedAt)
 			query.WriteString("NOW(),NOW())")
 		}
 		query.WriteString(`
@@ -1447,6 +1467,7 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 			    message_id = EXCLUDED.message_id,
 			    normalized_file_name = EXCLUDED.normalized_file_name,
 			    queue_kind = EXCLUDED.queue_kind,
+			    source_posted_at = COALESCE(EXCLUDED.source_posted_at, article_header_assembly_queue.source_posted_at),
 			    updated_at = NOW()`)
 
 		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {

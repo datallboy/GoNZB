@@ -223,6 +223,7 @@ func maintenanceStageNames() []StageName {
 		StageName("maintenance.group_profile_refresh"),
 		StageName("maintenance.daily_bucket_stats_refresh"),
 		StageName("maintenance.raw_stage_retention"),
+		StageName("maintenance.partition_retention_drop"),
 		StageName("maintenance.stale_nonrelease_source_purge"),
 		StageName("maintenance.emergency_source_window_reset"),
 		StageName("maintenance.header_payload_purge"),

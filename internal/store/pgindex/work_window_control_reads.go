@@ -47,6 +47,7 @@ type IndexerDailyBucketSummary struct {
 	BucketDay            string    `json:"bucket_day"`
 	Tier                 string    `json:"tier"`
 	ScrapeProgressKnown  bool      `json:"scrape_progress_known"`
+	ScrapeProgressPct    float64   `json:"scrape_progress_pct"`
 	LowerBoundaryCrossed bool      `json:"lower_boundary_crossed"`
 	UpperBoundaryCrossed bool      `json:"upper_boundary_crossed"`
 	BucketArticleLow     int64     `json:"bucket_article_low"`
@@ -173,6 +174,7 @@ func (s *Store) ListIndexerDailyBucketStats(ctx context.Context, limit int) ([]I
 			db.bucket_day::text,
 			db.tier,
 			db.scrape_progress_known,
+			db.scrape_progress_pct,
 			db.lower_boundary_crossed,
 			db.upper_boundary_crossed,
 			db.bucket_article_low,
@@ -202,7 +204,7 @@ func (s *Store) ListIndexerDailyBucketStats(ctx context.Context, limit int) ([]I
 	out := make([]IndexerDailyBucketSummary, 0, limit)
 	for rows.Next() {
 		var item IndexerDailyBucketSummary
-		if err := rows.Scan(&item.ProviderID, &item.ProviderKey, &item.NewsgroupID, &item.GroupName, &item.BucketDay, &item.Tier, &item.ScrapeProgressKnown, &item.LowerBoundaryCrossed, &item.UpperBoundaryCrossed, &item.BucketArticleLow, &item.BucketArticleHigh, &item.ScrapeCursorLow, &item.ScrapeCursorHigh, &item.HeadersStaged, &item.UnassembledHeaders, &item.YEncReady, &item.YEncRunning, &item.YEncDone, &item.BinariesTotal, &item.BinariesComplete, &item.BinariesWeak, &item.ReleasesCreated, &item.BlockerCount, &item.LastRefreshedAt); err != nil {
+		if err := rows.Scan(&item.ProviderID, &item.ProviderKey, &item.NewsgroupID, &item.GroupName, &item.BucketDay, &item.Tier, &item.ScrapeProgressKnown, &item.ScrapeProgressPct, &item.LowerBoundaryCrossed, &item.UpperBoundaryCrossed, &item.BucketArticleLow, &item.BucketArticleHigh, &item.ScrapeCursorLow, &item.ScrapeCursorHigh, &item.HeadersStaged, &item.UnassembledHeaders, &item.YEncReady, &item.YEncRunning, &item.YEncDone, &item.BinariesTotal, &item.BinariesComplete, &item.BinariesWeak, &item.ReleasesCreated, &item.BlockerCount, &item.LastRefreshedAt); err != nil {
 			return nil, fmt.Errorf("scan indexer daily bucket stat: %w", err)
 		}
 		out = append(out, item)
@@ -285,6 +287,30 @@ func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (i
 			SELECT provider_id, newsgroup_id, bucket_day FROM binary_days
 			UNION
 			SELECT provider_id, newsgroup_id, bucket_day FROM release_days
+			UNION
+			SELECT provider_id, newsgroup_id, bucket_day
+			FROM indexer_scrape_day_boundaries sb, bounds b
+			WHERE sb.bucket_day >= b.cutoff_day
+		),
+		boundary_days AS (
+			SELECT
+				sb.provider_id,
+				sb.newsgroup_id,
+				sb.bucket_day,
+				sb.lower_boundary_crossed,
+				sb.upper_boundary_crossed,
+				sb.bucket_article_low,
+				sb.bucket_article_high,
+				CASE
+					WHEN sb.lower_boundary_crossed
+					 AND sb.upper_boundary_crossed
+					 AND sb.bucket_article_low > 0
+					 AND sb.bucket_article_high >= sb.bucket_article_low
+					THEN true
+					ELSE false
+				END AS scrape_progress_known
+			FROM indexer_scrape_day_boundaries sb, bounds b
+			WHERE sb.bucket_day >= b.cutoff_day
 		),
 		upserted AS (
 			INSERT INTO indexer_daily_bucket_stats (
@@ -293,6 +319,7 @@ func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (i
 				bucket_day,
 				tier,
 				scrape_progress_known,
+				scrape_progress_pct,
 				lower_boundary_crossed,
 				upper_boundary_crossed,
 				bucket_article_low,
@@ -317,11 +344,22 @@ func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (i
 				k.newsgroup_id,
 				k.bucket_day,
 				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS tier,
-				false,
-				false,
-				false,
-				COALESCE(sd.article_low, 0),
-				COALESCE(sd.article_high, 0),
+				COALESCE(bnd.scrape_progress_known, false),
+				CASE
+					WHEN COALESCE(bnd.scrape_progress_known, false)
+					 AND COALESCE(bnd.bucket_article_high, 0) >= COALESCE(bnd.bucket_article_low, 0)
+					 AND COALESCE(bnd.bucket_article_low, 0) > 0
+					THEN LEAST(100::double precision, GREATEST(0::double precision, (COALESCE(sd.headers_staged, 0)::double precision / NULLIF((bnd.bucket_article_high - bnd.bucket_article_low + 1)::double precision, 0)) * 100))
+					ELSE 0::double precision
+				END,
+				COALESCE(bnd.lower_boundary_crossed, false),
+				COALESCE(bnd.upper_boundary_crossed, false),
+				CASE
+					WHEN COALESCE(bnd.bucket_article_low, 0) > 0 AND COALESCE(sd.article_low, 0) > 0 THEN LEAST(bnd.bucket_article_low, sd.article_low)
+					WHEN COALESCE(bnd.bucket_article_low, 0) > 0 THEN bnd.bucket_article_low
+					ELSE COALESCE(sd.article_low, 0)
+				END,
+				GREATEST(COALESCE(bnd.bucket_article_high, 0), COALESCE(sd.article_high, 0)),
 				COALESCE(sd.article_low, 0),
 				COALESCE(sd.article_high, 0),
 				COALESCE(sd.headers_staged, 0),
@@ -342,10 +380,12 @@ func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (i
 			LEFT JOIN yenc_days yd ON yd.provider_id = k.provider_id AND yd.newsgroup_id = k.newsgroup_id AND yd.bucket_day = k.bucket_day
 			LEFT JOIN binary_days bd ON bd.provider_id = k.provider_id AND bd.newsgroup_id = k.newsgroup_id AND bd.bucket_day = k.bucket_day
 			LEFT JOIN release_days rd ON rd.provider_id = k.provider_id AND rd.newsgroup_id = k.newsgroup_id AND rd.bucket_day = k.bucket_day
+			LEFT JOIN boundary_days bnd ON bnd.provider_id = k.provider_id AND bnd.newsgroup_id = k.newsgroup_id AND bnd.bucket_day = k.bucket_day
 			ON CONFLICT (provider_id, newsgroup_id, bucket_day)
 			DO UPDATE SET
 				tier = EXCLUDED.tier,
 				scrape_progress_known = EXCLUDED.scrape_progress_known,
+				scrape_progress_pct = EXCLUDED.scrape_progress_pct,
 				lower_boundary_crossed = EXCLUDED.lower_boundary_crossed,
 				upper_boundary_crossed = EXCLUDED.upper_boundary_crossed,
 				bucket_article_low = EXCLUDED.bucket_article_low,
