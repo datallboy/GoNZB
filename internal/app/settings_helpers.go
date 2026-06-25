@@ -35,6 +35,10 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			Assemble:                     defaultAssembleStage(false, 2, 5000, 1),
 			RecoverYEnc:                  defaultRecoverYEncStage(false),
 			SourceWindow:                 defaultSourceWindowSettings(),
+			Retention:                    defaultRetentionSettings(),
+			RecoveryAdmission:            defaultRecoveryAdmissionSettings(),
+			ScrapeTiers:                  defaultScrapeTierSettings(),
+			DeferredBackfill:             defaultDeferredBackfillSettings(),
 			ReleaseSummaryRefresh:        defaultReleaseSummaryRefreshStage(false),
 			Release:                      defaultReleaseStage(false),
 			ReleaseGenerateNZB:           defaultStage(false, 10, 100, 0),
@@ -139,6 +143,51 @@ func defaultSourceWindowSettings() IndexingSourceWindowRuntimeSettings {
 		ResumeOpenHeaders:  10000,
 		MaxBlockingYEnc:    50000,
 		ResumeBlockingYEnc: 10000,
+	}
+}
+
+func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
+	return IndexingRetentionRuntimeSettings{
+		RawStageHotHours:                48,
+		RawStageWarmHours:               24,
+		RawStageColdHours:               12,
+		FailedProbeHours:                48,
+		ArchivedReleaseDetailGraceHours: 6,
+		MetadataIncompleteReleaseHours:  48,
+		CreatePartitionsDaysBefore:      1,
+		CreatePartitionsDaysAhead:       8,
+		PurgeDryRunDefault:              true,
+	}
+}
+
+func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings {
+	return IndexingRecoveryAdmissionRuntimeSettings{
+		TargetHotLagHours:      4,
+		TargetWarmLagHours:     24,
+		SoftQueueHours:         4,
+		HardQueueMultiplier:    2,
+		AbsoluteHardQueueCap:   250000,
+		EWMAWindowMinutes:      30,
+		BootstrapProbesPerHour: 25000,
+	}
+}
+
+func defaultScrapeTierSettings() IndexingScrapeTierRuntimeSettings {
+	return IndexingScrapeTierRuntimeSettings{
+		HotWindowMinutes:          30,
+		WarmWindowMinutes:         120,
+		ColdSampleHeaders:         2000,
+		MaxArticlesPerGroupWindow: 50000,
+		AllowGlobalDailyGate:      false,
+	}
+}
+
+func defaultDeferredBackfillSettings() IndexingDeferredBackfillRuntimeSettings {
+	return IndexingDeferredBackfillRuntimeSettings{
+		Enabled:                  true,
+		MaxRangesPerRun:          10,
+		MaxArticlesPerRangeChunk: 10000,
+		RunOnlyBelowQueueRatio:   0.25,
 	}
 }
 
@@ -250,6 +299,10 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.SourceWindow = defaultSourceWindowSettings()
+	out.Retention = defaultRetentionSettings()
+	out.RecoveryAdmission = defaultRecoveryAdmissionSettings()
+	out.ScrapeTiers = defaultScrapeTierSettings()
+	out.DeferredBackfill = defaultDeferredBackfillSettings()
 	out.ReleaseSummaryRefresh = mergeStageRuntimeSettings(
 		defaultReleaseSummaryRefreshStage(boolValue(cfg.Release.Enabled, true)),
 		indexStageRuntimeFromConfig(cfg.ReleaseSummaryRefresh, boolValue(cfg.Release.Enabled, true), 2, 10000),
@@ -865,6 +918,10 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		Assemble:                     mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
 		RecoverYEnc:                  mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		SourceWindow:                 normalizeSourceWindowRuntimeSettings(in.SourceWindow),
+		Retention:                    mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
+		RecoveryAdmission:            mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
+		ScrapeTiers:                  mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
+		DeferredBackfill:             mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
 		ReleaseSummaryRefresh:        mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                      in.Release,
 		ReleaseGenerateNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
@@ -1151,6 +1208,93 @@ func normalizeSourceWindowRuntimeSettings(in IndexingSourceWindowRuntimeSettings
 		}
 	}
 	return out
+}
+
+func mergeRetentionRuntimeSettings(base, override IndexingRetentionRuntimeSettings) IndexingRetentionRuntimeSettings {
+	if override.RawStageHotHours > 0 {
+		base.RawStageHotHours = override.RawStageHotHours
+	}
+	if override.RawStageWarmHours > 0 {
+		base.RawStageWarmHours = override.RawStageWarmHours
+	}
+	if override.RawStageColdHours > 0 {
+		base.RawStageColdHours = override.RawStageColdHours
+	}
+	if override.FailedProbeHours > 0 {
+		base.FailedProbeHours = override.FailedProbeHours
+	}
+	if override.ArchivedReleaseDetailGraceHours > 0 {
+		base.ArchivedReleaseDetailGraceHours = override.ArchivedReleaseDetailGraceHours
+	}
+	if override.MetadataIncompleteReleaseHours > 0 {
+		base.MetadataIncompleteReleaseHours = override.MetadataIncompleteReleaseHours
+	}
+	if override.CreatePartitionsDaysBefore > 0 {
+		base.CreatePartitionsDaysBefore = override.CreatePartitionsDaysBefore
+	}
+	if override.CreatePartitionsDaysAhead > 0 {
+		base.CreatePartitionsDaysAhead = override.CreatePartitionsDaysAhead
+	}
+	if !override.PurgeDryRunDefault {
+		base.PurgeDryRunDefault = false
+	}
+	return base
+}
+
+func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmissionRuntimeSettings) IndexingRecoveryAdmissionRuntimeSettings {
+	if override.TargetHotLagHours > 0 {
+		base.TargetHotLagHours = override.TargetHotLagHours
+	}
+	if override.TargetWarmLagHours > 0 {
+		base.TargetWarmLagHours = override.TargetWarmLagHours
+	}
+	if override.SoftQueueHours > 0 {
+		base.SoftQueueHours = override.SoftQueueHours
+	}
+	if override.HardQueueMultiplier > 0 {
+		base.HardQueueMultiplier = override.HardQueueMultiplier
+	}
+	if override.AbsoluteHardQueueCap > 0 {
+		base.AbsoluteHardQueueCap = override.AbsoluteHardQueueCap
+	}
+	if override.EWMAWindowMinutes > 0 {
+		base.EWMAWindowMinutes = override.EWMAWindowMinutes
+	}
+	if override.BootstrapProbesPerHour > 0 {
+		base.BootstrapProbesPerHour = override.BootstrapProbesPerHour
+	}
+	return base
+}
+
+func mergeScrapeTierRuntimeSettings(base, override IndexingScrapeTierRuntimeSettings) IndexingScrapeTierRuntimeSettings {
+	if override.HotWindowMinutes > 0 {
+		base.HotWindowMinutes = override.HotWindowMinutes
+	}
+	if override.WarmWindowMinutes > 0 {
+		base.WarmWindowMinutes = override.WarmWindowMinutes
+	}
+	if override.ColdSampleHeaders > 0 {
+		base.ColdSampleHeaders = override.ColdSampleHeaders
+	}
+	if override.MaxArticlesPerGroupWindow > 0 {
+		base.MaxArticlesPerGroupWindow = override.MaxArticlesPerGroupWindow
+	}
+	base.AllowGlobalDailyGate = override.AllowGlobalDailyGate
+	return base
+}
+
+func mergeDeferredBackfillRuntimeSettings(base, override IndexingDeferredBackfillRuntimeSettings) IndexingDeferredBackfillRuntimeSettings {
+	base.Enabled = override.Enabled
+	if override.MaxRangesPerRun > 0 {
+		base.MaxRangesPerRun = override.MaxRangesPerRun
+	}
+	if override.MaxArticlesPerRangeChunk > 0 {
+		base.MaxArticlesPerRangeChunk = override.MaxArticlesPerRangeChunk
+	}
+	if override.RunOnlyBelowQueueRatio > 0 {
+		base.RunOnlyBelowQueueRatio = override.RunOnlyBelowQueueRatio
+	}
+	return base
 }
 
 func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) IndexingStageRuntimeSettings {

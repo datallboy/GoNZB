@@ -249,24 +249,40 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 	}
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 
+	admission, err := s.RefreshYEncRecoveryAdmissionSnapshot(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	remainingToHard := admission.RemainingToHard
+	overHardCap := admission.OpenTotal >= admission.HardCap
+
 	var totalUpserted int64
 	var totalRetired int64
 	for start := 0; start < len(unique); start += yencRecoveryWorkItemSyncChunk {
+		if remainingToHard <= 0 && !overHardCap {
+			break
+		}
 		end := start + yencRecoveryWorkItemSyncChunk
 		if end > len(unique) {
 			end = len(unique)
 		}
-		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end])
+		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end], remainingToHard, overHardCap)
 		if err != nil {
 			return 0, 0, err
 		}
 		totalUpserted += upserted
 		totalRetired += retired
+		if !overHardCap {
+			remainingToHard -= upserted
+			if remainingToHard < 0 {
+				remainingToHard = 0
+			}
+		}
 	}
 	return totalUpserted, totalRetired, nil
 }
 
-func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64) (int64, int64, error) {
+func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64, remainingToHard int64, overHardCap bool) (int64, int64, error) {
 	var upserted int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
@@ -308,7 +324,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				bic.release_family_key,
 				bic.base_stem,
 				COALESCE(s.readiness_bucket, '') AS readiness_bucket,
-				COALESCE(bic.grouping_summary_fallback_used, false) AS structured_identity_binary_matched
+				COALESCE(bic.grouping_summary_fallback_used, false) AS structured_identity_binary_matched,
+				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS group_tier
 			FROM requested r
 			JOIN binary_core bc ON bc.binary_id = r.binary_id
 			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
@@ -319,6 +336,9 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			 AND s.newsgroup_id = bc.newsgroup_id
 			 AND s.key_kind = 'release_family'
 			 AND s.family_key = bic.release_family_key
+			LEFT JOIN indexer_group_profiles igp
+			  ON igp.provider_id = bc.provider_id
+			 AND igp.newsgroup_id = bc.newsgroup_id
 			JOIN LATERAL (
 				SELECT bp.article_header_id
 				FROM binary_parts bp
@@ -334,6 +354,22 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
 `+yencRecoveryWeakFamilyEligibilityPredicate+`
 `+yencRecoverySubjectFileNamePredicate+`
+			  AND (
+			  	$3::boolean = FALSE
+			  	OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
+			  )
+			  AND NOT EXISTS (
+			  	SELECT 1
+			  	FROM yenc_recovery_work_items existing_article
+			  	WHERE existing_article.article_header_id = ah.id
+			  	  AND existing_article.binary_id <> bc.binary_id
+			  )
+			ORDER BY `+yencRecoveryWorkItemPriorityRankSQL+`, COALESCE(ah.date_utc, NOW()) DESC, bc.binary_id
+			LIMIT CASE
+				WHEN $3::boolean THEN 10000
+				WHEN $2::bigint <= 0 THEN 0
+				ELSE LEAST($2::bigint, 10000)
+			END
 		),
 		upserted AS (
 			INSERT INTO yenc_recovery_work_items (
@@ -365,6 +401,11 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				current_base_stem,
 				current_readiness_bucket,
 				structured_identity_binary_matched,
+				group_tier,
+				admission_reason,
+				admission_score,
+				source_posted_at,
+				partition_day,
 				updated_at
 			)
 			SELECT
@@ -396,6 +437,19 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				e.base_stem,
 				e.readiness_bucket,
 				e.structured_identity_binary_matched,
+				e.group_tier,
+				CASE
+					WHEN e.priority_rank = 0 THEN 'near_complete_or_multipart'
+					ELSE 'bounded_admission'
+				END,
+				CASE
+					WHEN e.group_tier = 'hot' THEN 100
+					WHEN e.group_tier = 'warm' THEN 50
+					WHEN e.group_tier = 'cold' THEN 10
+					ELSE 0
+				END + GREATEST(0, 10 - e.priority_rank),
+				COALESCE(e.date_utc, NOW()),
+				COALESCE(e.date_utc, NOW())::date,
 				NOW()
 			FROM eligible e
 			ON CONFLICT (binary_id) DO UPDATE
@@ -426,13 +480,26 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			    current_base_stem = EXCLUDED.current_base_stem,
 			    current_readiness_bucket = EXCLUDED.current_readiness_bucket,
 			    structured_identity_binary_matched = EXCLUDED.structured_identity_binary_matched,
+			    group_tier = EXCLUDED.group_tier,
+			    admission_reason = EXCLUDED.admission_reason,
+			    admission_score = EXCLUDED.admission_score,
+			    source_posted_at = EXCLUDED.source_posted_at,
+			    partition_day = EXCLUDED.partition_day,
 			    lease_owner = '',
 			    lease_expires_at = NULL,
 			    updated_at = NOW()
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM yenc_recovery_work_items existing_article
+				WHERE existing_article.article_header_id = EXCLUDED.article_header_id
+				  AND existing_article.binary_id <> yenc_recovery_work_items.binary_id
+			)
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM upserted`,
 		unique,
+		remainingToHard,
+		overHardCap,
 	).Scan(&upserted); err != nil {
 		return 0, 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
 	}
