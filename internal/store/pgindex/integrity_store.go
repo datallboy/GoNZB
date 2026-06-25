@@ -129,6 +129,14 @@ func (s *Store) checkCriticalIndexerHeap(ctx context.Context, relation string, a
 		return check, fmt.Errorf("inspect critical heap metadata %s: %w", relation, err)
 	}
 
+	if relkind == "p" {
+		check.AccessMethod = "partitioned"
+		check.MetadataOK = true
+		check.OK = true
+		check.Detail = "metadata-only check passed; relation is a partitioned table parent"
+		return check, nil
+	}
+
 	check.AccessMethod = "heap"
 	check.MetadataOK = relkind == "r"
 	if !check.MetadataOK {
