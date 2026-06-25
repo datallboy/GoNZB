@@ -2803,14 +2803,11 @@ func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params 
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM binary_identity_current bic
-		JOIN binary_core bc
-		  ON bc.source_posted_at = bic.source_posted_at
-		 AND bc.binary_id = bic.binary_id
 		WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM release_files rf
-			WHERE rf.binary_id = bc.binary_id
+			WHERE rf.binary_id = bic.binary_id
 		  )`, identityStrength).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count weak unformed indexer binaries: %w", err)
 	}
@@ -2818,9 +2815,8 @@ func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params 
 	rows, err := s.db.QueryContext(ctx, `
 		WITH page AS (
 			SELECT
-				bc.binary_id,
-				bc.source_posted_at,
-				bc.newsgroup_id,
+				bic.binary_id,
+				bic.source_posted_at,
 				COALESCE(bic.release_name, '') AS release_name,
 				COALESCE(bic.binary_name, '') AS binary_name,
 				COALESCE(bic.file_name, '') AS file_name,
@@ -2829,25 +2825,15 @@ func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params 
 				COALESCE(bic.grouping_summary_status, '') AS grouping_summary_status,
 				COALESCE(bic.match_status, '') AS match_status,
 				COALESCE(bic.match_confidence, 0) AS match_confidence,
-				bos.posted_at,
-				COALESCE(bos.total_parts, 0) AS total_parts,
-				COALESCE(bos.observed_parts, 0) AS observed_parts,
-				COALESCE(bos.total_bytes, 0) AS total_bytes,
-				GREATEST(bic.updated_at, bos.updated_at) AS updated_at
+				bic.updated_at
 			FROM binary_identity_current bic
-			JOIN binary_core bc
-			  ON bc.source_posted_at = bic.source_posted_at
-			 AND bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bc.source_posted_at
-			 AND bos.binary_id = bc.binary_id
 			WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM release_files rf
-				WHERE rf.binary_id = bc.binary_id
+				WHERE rf.binary_id = bic.binary_id
 			  )
-			ORDER BY GREATEST(bic.updated_at, bos.updated_at) DESC, bc.binary_id DESC
+			ORDER BY bic.updated_at DESC, bic.binary_id DESC
 			LIMIT $2 OFFSET $3
 		)
 		SELECT
@@ -2863,26 +2849,32 @@ func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params 
 			page.grouping_summary_status,
 			page.match_status,
 			page.match_confidence,
-			page.posted_at,
-			page.total_parts,
-			page.observed_parts,
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
 			CASE
-				WHEN page.total_parts > 0
-				THEN LEAST(100, (page.observed_parts::numeric * 100.0 / page.total_parts))::float8
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
 				ELSE 0
 			END AS completion_pct,
-			page.total_bytes,
+			COALESCE(bos.total_bytes, 0),
 			COALESCE(brc.recovered_source, ''),
 			COALESCE(brc.recovered_file_name, ''),
 			COALESCE(wi.status, ''),
 			COALESCE(wi.priority_rank, 0),
 			COALESCE(ins.inspection_count, 0),
-			page.updated_at
+			GREATEST(page.updated_at, COALESCE(bos.updated_at, TIMESTAMPTZ 'epoch')) AS updated_at
 		FROM page
+		JOIN binary_core bc
+		  ON bc.source_posted_at = page.source_posted_at
+		 AND bc.binary_id = page.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = page.source_posted_at
+		 AND bos.binary_id = page.binary_id
 		LEFT JOIN binary_recovery_current brc
 		  ON brc.source_posted_at = page.source_posted_at
 		 AND brc.binary_id = page.binary_id
-		LEFT JOIN newsgroups ng ON ng.id = page.newsgroup_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN LATERAL (
 			SELECT status, priority_rank
 			FROM yenc_recovery_work_items wi
