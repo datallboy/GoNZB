@@ -681,6 +681,11 @@ func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStor
 			},
 			Warnings: []string{"v1 delegates to the existing combined indexer maintenance cleanup path"},
 		}, nil
+	case "partition_retention_drop":
+		if dryRun {
+			return store.DryRunPartitionRetentionTask(ctx, batchSize)
+		}
+		return store.RunPartitionRetentionTask(ctx, batchSize)
 	case "inspect_workspace_cleanup":
 		return &pgindex.MaintenanceTaskResult{
 			TaskKey:              taskKey,
