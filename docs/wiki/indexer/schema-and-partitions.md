@@ -48,7 +48,31 @@ These tables stay unpartitioned:
 - Joins to partitioned source tables must include `source_posted_at`.
 - Upserts into partitioned tables must use conflict targets that include
   `source_posted_at`.
+- Inserts into partitioned parents must provide `source_posted_at`; do not rely
+  on defaults or follow-up updates to route rows.
+- Deletes and updates against partitioned parents should include
+  `source_posted_at` whenever the row's day is known so PostgreSQL can prune
+  partitions.
 - Long-running stages must claim from stage-owned work tables and hydrate
   source facts after claiming exact keys.
 - Daily bucket scans should use bounded `source_posted_at >= day_start AND
   source_posted_at < day_end` predicates.
+
+## Index Alignment
+
+Parent indexes are recreated on native partition parents so child partitions
+inherit local indexes for the hot query shapes:
+
+- queue claim queries start with `source_posted_at`, status/priority/lease
+  columns, and the stage-specific identity key;
+- source hydration joins use `(source_posted_at, article_header_id)` or
+  `(source_posted_at, id)`;
+- binary projection joins use `binary_id` plus `source_posted_at` when joining
+  back to partitioned source/work rows;
+- release-family work uses `(source_posted_at, provider_id, newsgroup_id,
+  key_kind, family_key)`;
+- retention dry-runs and drops use daily partition metadata and bounded
+  `source_posted_at` predicates.
+
+If a DBO query changes shape, update the matching parent index or document why
+an existing index still supports it before merging.

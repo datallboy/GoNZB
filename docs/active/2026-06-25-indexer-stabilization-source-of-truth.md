@@ -143,29 +143,33 @@ Complete partitioning for high-volume source/work/projection tables:
   `release_ready_candidates`, `release_recovered_file_set_candidates`,
   `release_stage_dirty_families`.
 
-Native partition conversion tasks still required before signoff:
+Native partition conversion completed in this branch:
 
-- convert binary projection writers to partition-key conflict targets:
+- binary projection writers use partition-key conflict targets for
   `binary_observation_stats`, `binary_identity_current`,
   `binary_recovery_current`, `binary_lifecycle`, `binary_completion_keys`,
   `binary_grouping_evidence`, `binary_projection_events`, and
   `binary_superseded_sources`;
-- convert inspect work/evidence writers to partition-key conflict targets where
-  uniqueness is used: `binary_inspection_ready_queue`, `binary_inspections`,
+- inspect work/evidence writers carry `source_posted_at` for
+  `binary_inspection_ready_queue`, `binary_inspections`,
   `binary_inspection_artifacts`, `binary_archive_entries`,
   `binary_text_evidence`, `binary_media_streams`, `binary_par2_sets`, and
   `binary_par2_targets`;
-- convert release-derived work writers to partition-key conflict targets:
+- release-derived work writers use partition-key conflict targets for
   `release_family_readiness_summaries`, `release_ready_candidates`,
   `release_recovered_file_set_candidates`, and
   `release_stage_dirty_families`;
-- add native partition parent migration for the remaining tables only after the
-  corresponding writer conflict targets include `source_posted_at`;
-- update guardrail tests so old conflict targets such as
-  `ON CONFLICT (binary_id)`, `ON CONFLICT (stage_name, binary_id)`, and
-  `ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key)` cannot return
-  in partitioned writer files;
-- validate fresh migrations in PostgreSQL and run the focused Go test suite.
+- migration `026_native_projection_work_partitions` rebuilds the high-volume
+  projection/work tables as native daily partition parents on a fresh schema;
+- parent indexes and foreign keys are restored on the converted partition
+  parents;
+- guardrail tests reject forbidden assemble/yEnc write-backs, partitioned
+  source joins without `source_posted_at`, old partition-incompatible conflict
+  targets in hot writer files, and partitioned inspection evidence inserts that
+  omit `source_posted_at`;
+- fresh migration smoke verified 28 target partition parents, non-null
+  `source_posted_at` on those parents, restored parent indexes, and restored
+  parent foreign keys.
 
 Retention drop order:
 
@@ -192,6 +196,54 @@ rows that would make the drop incomplete.
   regression test documenting the remaining debt.
 - Maintain recovered identity merge semantics so recovered filenames merge
   fragments into file-level binaries instead of leaving one binary per article.
+
+## Grouped yEnc Evidence Investigation
+
+The archived ChatGPT Pro handoff is still correct that adversarially obfuscated
+headers cannot be treated as final grouping proof without yEnc BODY evidence.
+However, header-level patterns may be strong enough to prioritize and reduce
+recovery probes after evidence is measured.
+
+Investigate, but do not use as a correctness shortcut yet:
+
+- articles posted within the same second or adjacent seconds;
+- similar `Message-ID` suffix or poster identity/signature;
+- monotonic provider article numbers within a same-second upload burst;
+- subject family hints such as repeated random base, numeric suffixes, or
+  consistent total part counts;
+- sampled yEnc `name=`, `part=`, `total=`, `size=`, `begin=`, and `end=`
+  evidence from a few representative articles in the candidate cohort.
+
+During soak, sample formed and weak binaries and record whether those signals
+line up with recovered yEnc file/part evidence. If the signal is strong, future
+work may add a recovery cohort table with confidence scoring and probe a small
+sample per cohort first. Until then, recovery admission may prioritize likely
+cohorts, but release/bin grouping must still be backed by recovered yEnc or
+existing strong header evidence.
+
+## Soak And Signoff Tasks
+
+Before signoff:
+
+- wipe the old local database and run fresh migrations through `gonzb run
+  serve`;
+- confirm scrape latest feeds current hot groups and backfill runs only while
+  downstream hard caps allow room;
+- confirm hot/warm/cold group tiering affects scrape/recovery admission and
+  cold work does not dominate hot freshness;
+- confirm assemble Lane A and Lane B both claim from
+  `article_header_assembly_queue`, hydrate exact
+  `(source_posted_at, article_header_id)` facts, write only assemble-owned
+  binary tables, and delete completed queue rows;
+- confirm yEnc recovery consumes `yenc_recovery_work_items`, writes
+  recovery-owned projection/evidence, and does not write progress into scrape
+  tables;
+- confirm release summary refresh and release formation produce releases from
+  newly assembled/recovered work;
+- run partition retention in dry-run mode and verify blocker reporting and
+  drop order use partition metadata instead of broad unbounded source scans;
+- collect 30 minutes of stage-run, backlog, gate, release, and yEnc throughput
+  metrics.
 
 ## Acceptance Criteria
 

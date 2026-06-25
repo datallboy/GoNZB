@@ -129,6 +129,19 @@ func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (boo
 	return exists, nil
 }
 
+func binarySourcePostedAtInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (time.Time, bool, error) {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(source_posted_at, created_at)
+		FROM binary_core
+		WHERE binary_id = $1`, binaryID).Scan(&sourcePostedAt); err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	} else if err != nil {
+		return time.Time{}, false, fmt.Errorf("load binary source_posted_at %d: %w", binaryID, err)
+	}
+	return sourcePostedAt.UTC(), true, nil
+}
+
 func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
 	releaseIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -2332,15 +2345,15 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE binary_id = $1`, binaryID); err != nil {
-		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
+		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, archiveEntryReleaseIDs(rows))
@@ -2360,6 +2373,7 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			strings.TrimSpace(row.EntryName),
 			row.IsDir,
@@ -2377,6 +2391,7 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_archive_entries (
 				binary_id,
+				source_posted_at,
 				release_id,
 				entry_name,
 				is_dir,
@@ -2410,15 +2425,15 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE binary_id = $1`, binaryID); err != nil {
-		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
+		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, mediaStreamReleaseIDs(rows))
@@ -2438,6 +2453,7 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			row.StreamIndex,
 			strings.TrimSpace(row.StreamType),
@@ -2460,6 +2476,7 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_media_streams (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stream_index,
 				stream_type,
@@ -2502,9 +2519,17 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	}
 	defer rollbackTx(tx)
 
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return tx.Commit()
+	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM binary_text_evidence
-		WHERE binary_id = $1 AND stage_name = $2`,
+		WHERE source_posted_at = $1 AND binary_id = $2 AND stage_name = $3`,
+		sourcePostedAt,
 		binaryID,
 		stageName,
 	); err != nil {
@@ -2527,6 +2552,7 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			stageName,
 			strings.TrimSpace(sanitizeUTF8(row.EvidenceKind)),
@@ -2540,6 +2566,7 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_text_evidence (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stage_name,
 				evidence_kind,
@@ -2689,20 +2716,21 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 }
 
 func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sql.Tx, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM binary_inspection_artifacts
-		WHERE binary_id = $1 AND stage_name = $2`,
-		binaryID,
-		stageName,
-	); err != nil {
-		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_inspection_artifacts
+		WHERE source_posted_at = $1 AND binary_id = $2 AND stage_name = $3`,
+		sourcePostedAt,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
@@ -2722,6 +2750,7 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			stageName,
 			strings.TrimSpace(row.ArtifactRole),
@@ -2739,6 +2768,7 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_inspection_artifacts (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stage_name,
 				artifact_role,
@@ -2758,7 +2788,14 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 }
 
 func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2SetRecord) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE binary_id = $1`, binaryID); err != nil {
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
 		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
 	}
 
@@ -2779,6 +2816,7 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			strings.TrimSpace(row.SetName),
 			strings.TrimSpace(row.BaseName),
@@ -2793,6 +2831,7 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_sets (
 				binary_id,
+				source_posted_at,
 				release_id,
 				set_name,
 				base_name,
@@ -2810,7 +2849,14 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 }
 
 func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2TargetRecord) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE binary_id = $1`, binaryID); err != nil {
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
 		return fmt.Errorf("delete par2 targets %d: %w", binaryID, err)
 	}
 
@@ -2835,6 +2881,7 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			fileName,
 			row.FileSize,
@@ -2845,6 +2892,7 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_targets (
 				binary_id,
+				source_posted_at,
 				release_id,
 				file_name,
 				file_size,
