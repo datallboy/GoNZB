@@ -35,13 +35,6 @@ BEGIN
         RAISE EXCEPTION 'native projection/work partition migration requires empty target tables, found % rows; wipe database or run an offline data-copy migration', total_rows;
     END IF;
 
-    ALTER SEQUENCE IF EXISTS public.binary_projection_events_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_inspections_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_inspection_artifacts_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_archive_entries_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_text_evidence_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_media_streams_id_seq OWNED BY NONE;
-    ALTER SEQUENCE IF EXISTS public.binary_par2_sets_id_seq OWNED BY NONE;
 END $$;
 
 CREATE OR REPLACE FUNCTION public.pgindex_rebuild_empty_source_partition_parent(parent_table text)
@@ -369,13 +362,37 @@ CREATE INDEX IF NOT EXISTS idx_release_stage_dirty_families_source_posted
 CREATE INDEX IF NOT EXISTS idx_release_stage_dirty_families_updated_at
     ON public.release_stage_dirty_families (source_posted_at, updated_at, provider_id, newsgroup_id);
 
-ALTER SEQUENCE IF EXISTS public.binary_projection_events_id_seq OWNED BY public.binary_projection_events.id;
-ALTER SEQUENCE IF EXISTS public.binary_inspections_id_seq OWNED BY public.binary_inspections.id;
-ALTER SEQUENCE IF EXISTS public.binary_inspection_artifacts_id_seq OWNED BY public.binary_inspection_artifacts.id;
-ALTER SEQUENCE IF EXISTS public.binary_archive_entries_id_seq OWNED BY public.binary_archive_entries.id;
-ALTER SEQUENCE IF EXISTS public.binary_text_evidence_id_seq OWNED BY public.binary_text_evidence.id;
-ALTER SEQUENCE IF EXISTS public.binary_media_streams_id_seq OWNED BY public.binary_media_streams.id;
-ALTER SEQUENCE IF EXISTS public.binary_par2_sets_id_seq OWNED BY public.binary_par2_sets.id;
+DO $$
+DECLARE
+    item record;
+BEGIN
+    FOR item IN
+        SELECT *
+        FROM (VALUES
+            ('binary_projection_events', 'binary_projection_events_id_seq'),
+            ('binary_inspections', 'binary_inspections_id_seq'),
+            ('binary_inspection_artifacts', 'binary_inspection_artifacts_id_seq'),
+            ('binary_archive_entries', 'binary_archive_entries_id_seq'),
+            ('binary_text_evidence', 'binary_text_evidence_id_seq'),
+            ('binary_media_streams', 'binary_media_streams_id_seq'),
+            ('binary_par2_sets', 'binary_par2_sets_id_seq'),
+            ('binary_par2_targets', 'binary_par2_targets_id_seq')
+        ) AS t(table_name, sequence_name)
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id DROP IDENTITY IF EXISTS', item.table_name);
+        EXECUTE format('CREATE SEQUENCE IF NOT EXISTS public.%I', item.sequence_name);
+        EXECUTE format(
+            'ALTER TABLE public.%I ALTER COLUMN id SET DEFAULT nextval(%L::regclass)',
+            item.table_name,
+            'public.' || item.sequence_name
+        );
+        EXECUTE format(
+            'ALTER SEQUENCE public.%I OWNED BY public.%I.id',
+            item.sequence_name,
+            item.table_name
+        );
+    END LOOP;
+END $$;
 CREATE OR REPLACE FUNCTION public.pgindex_ensure_source_work_partitions(start_day date DEFAULT (CURRENT_DATE - 1), days_ahead integer DEFAULT 9)
 RETURNS integer
 LANGUAGE plpgsql
