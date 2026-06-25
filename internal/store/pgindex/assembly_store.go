@@ -1398,12 +1398,13 @@ func (s *Store) CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (i
 	var deleted int
 	if err := s.db.QueryRowContext(ctx, `
 		WITH stale AS (
-			SELECT q.article_header_id
+			SELECT q.source_posted_at, q.article_header_id
 			FROM article_header_assembly_queue q
 			WHERE EXISTS (
 				SELECT 1
 				FROM binary_parts bp
-				WHERE bp.article_header_id = q.article_header_id
+				WHERE bp.source_posted_at = q.source_posted_at
+				  AND bp.article_header_id = q.article_header_id
 			)
 			ORDER BY q.article_header_id
 			LIMIT $1
@@ -1411,7 +1412,8 @@ func (s *Store) CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (i
 		deleted AS (
 			DELETE FROM article_header_assembly_queue q
 			USING stale
-			WHERE q.article_header_id = stale.article_header_id
+			WHERE q.source_posted_at = stale.source_posted_at
+			  AND q.article_header_id = stale.article_header_id
 			RETURNING q.article_header_id
 		)
 		SELECT COUNT(*) FROM deleted`, limit).Scan(&deleted); err != nil {
