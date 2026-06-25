@@ -167,6 +167,145 @@ ALTER TABLE IF EXISTS public.release_recovered_file_set_candidates
 ALTER TABLE IF EXISTS public.release_stage_dirty_families
     ADD CONSTRAINT release_stage_dirty_families_pkey PRIMARY KEY (source_posted_at, provider_id, newsgroup_id, key_kind, family_key);
 
+CREATE INDEX IF NOT EXISTS idx_binary_observation_stats_source_posted
+    ON public.binary_observation_stats (source_posted_at, provider_id, newsgroup_id, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_observation_completeness
+    ON public.binary_observation_stats (source_posted_at, provider_id, newsgroup_id, observed_parts, total_parts);
+
+CREATE INDEX IF NOT EXISTS idx_binary_observation_incomplete_rank
+    ON public.binary_observation_stats (source_posted_at, observed_parts DESC, binary_id DESC)
+    INCLUDE (provider_id, newsgroup_id, total_parts)
+    WHERE total_parts > 0 AND observed_parts < total_parts;
+
+CREATE INDEX IF NOT EXISTS idx_binary_identity_current_source_posted
+    ON public.binary_identity_current (source_posted_at, provider_id, newsgroup_id, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_identity_release_family
+    ON public.binary_identity_current (source_posted_at, provider_id, newsgroup_id, release_family_key);
+
+CREATE INDEX IF NOT EXISTS idx_binary_identity_file_set
+    ON public.binary_identity_current (source_posted_at, provider_id, file_set_key, newsgroup_id)
+    WHERE btrim(file_set_key) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_binary_identity_inspect_discovery_backlog
+    ON public.binary_identity_current (source_posted_at, updated_at DESC, binary_id DESC)
+    INCLUDE (release_family_key, base_stem, release_name, binary_name, file_name, file_index, expected_file_count, expected_archive_file_count, is_auxiliary, is_main_payload, match_confidence, match_status)
+    WHERE ((is_main_payload = true) OR (is_auxiliary = false))
+      AND (
+        lower(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, ''), '')) LIKE '%.bin'
+        OR COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+      );
+
+CREATE INDEX IF NOT EXISTS idx_binary_identity_inspect_par2_backlog
+    ON public.binary_identity_current (source_posted_at, updated_at DESC, binary_id DESC)
+    INCLUDE (release_family_key, release_name, binary_name, file_name, match_confidence)
+    WHERE lower(COALESCE(NULLIF(file_name, ''), NULLIF(binary_name, ''), '')) LIKE '%.par2';
+
+CREATE INDEX IF NOT EXISTS idx_binary_recovery_current_source_posted
+    ON public.binary_recovery_current (source_posted_at, provider_id, newsgroup_id, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_recovery_backlog
+    ON public.binary_recovery_current (source_posted_at, provider_id, newsgroup_id, recovered_source, recovered_confidence);
+
+CREATE INDEX IF NOT EXISTS idx_binary_lifecycle_source_posted
+    ON public.binary_lifecycle (source_posted_at, provider_id, newsgroup_id, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_lifecycle_release
+    ON public.binary_lifecycle (source_posted_at, release_id, lifecycle_status);
+
+CREATE INDEX IF NOT EXISTS idx_binary_completion_keys_match
+    ON public.binary_completion_keys (source_posted_at, provider_id, newsgroup_id, normalized_file_name, is_main_payload DESC, observed_parts DESC, binary_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_binary_completion_keys_match_rank
+    ON public.binary_completion_keys (source_posted_at, provider_id, newsgroup_id, normalized_file_name, is_main_payload DESC, completion_ratio DESC, observed_parts DESC, binary_id DESC)
+    INCLUDE (posted_at);
+
+CREATE INDEX IF NOT EXISTS idx_binary_completion_keys_rank
+    ON public.binary_completion_keys (source_posted_at, is_main_payload DESC, completion_ratio DESC, observed_parts DESC, binary_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_binary_grouping_evidence_source_posted
+    ON public.binary_grouping_evidence (source_posted_at, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_projection_events_source_posted
+    ON public.binary_projection_events (source_posted_at, event_stage, event_kind, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_projection_events_stage
+    ON public.binary_projection_events (source_posted_at, event_stage, event_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_binary_superseded_sources_source_posted
+    ON public.binary_superseded_sources (source_posted_at, provider_id, newsgroup_id, source_binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_superseded_sources_target
+    ON public.binary_superseded_sources (source_posted_at, target_binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_superseded_sources_release_family
+    ON public.binary_superseded_sources (source_posted_at, provider_id, newsgroup_id, release_family_key);
+
+CREATE INDEX IF NOT EXISTS idx_binary_inspection_ready_queue_source_posted
+    ON public.binary_inspection_ready_queue (source_posted_at, stage_name, status, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_inspections_source_posted
+    ON public.binary_inspections (source_posted_at, stage_name, status, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_inspections_status
+    ON public.binary_inspections (source_posted_at, stage_name, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_binary_inspection_artifacts_source_posted
+    ON public.binary_inspection_artifacts (source_posted_at, stage_name, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_archive_entries_source_posted
+    ON public.binary_archive_entries (source_posted_at, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_text_evidence_source_posted
+    ON public.binary_text_evidence (source_posted_at, stage_name, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_media_streams_source_posted
+    ON public.binary_media_streams (source_posted_at, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_par2_sets_source_posted
+    ON public.binary_par2_sets (source_posted_at, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_binary_par2_targets_source_posted
+    ON public.binary_par2_targets (source_posted_at, binary_id);
+
+CREATE INDEX IF NOT EXISTS idx_release_family_readiness_source_posted
+    ON public.release_family_readiness_summaries (source_posted_at, provider_id, newsgroup_id, key_kind, family_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_family_readiness_bucket_lookup
+    ON public.release_family_readiness_summaries (source_posted_at, readiness_bucket, provider_id, newsgroup_id, key_kind, family_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_family_readiness_summaries_pending
+    ON public.release_family_readiness_summaries (source_posted_at, updated_at, provider_id, newsgroup_id)
+    WHERE updated_at > COALESCE(processed_at, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_release_family_readiness_summaries_release_queue
+    ON public.release_family_readiness_summaries (source_posted_at, updated_at, provider_id, newsgroup_id, key_kind, family_key)
+    WHERE recover_pending = false;
+
+CREATE INDEX IF NOT EXISTS idx_release_family_yenc_recovery_candidates
+    ON public.release_family_readiness_summaries (source_posted_at, provider_id, newsgroup_id, family_key)
+    WHERE key_kind = 'release_family'
+      AND readiness_bucket = ANY (ARRAY['overgrouped_contextual'::text, 'weak_single_binary'::text, 'weak_obfuscated_set'::text]);
+
+CREATE INDEX IF NOT EXISTS idx_release_ready_candidates_source_posted
+    ON public.release_ready_candidates (source_posted_at, provider_id, newsgroup_id, key_kind, family_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_ready_candidates_queue
+    ON public.release_ready_candidates (source_posted_at, updated_at, provider_id, newsgroup_id, key_kind, family_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_recovered_file_set_candidates_source_posted
+    ON public.release_recovered_file_set_candidates (source_posted_at, provider_id, file_set_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_recovered_file_set_candidates_queue
+    ON public.release_recovered_file_set_candidates (source_posted_at, updated_at, provider_id, representative_newsgroup_id, file_set_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_stage_dirty_families_source_posted
+    ON public.release_stage_dirty_families (source_posted_at, provider_id, newsgroup_id, key_kind, family_key);
+
+CREATE INDEX IF NOT EXISTS idx_release_stage_dirty_families_updated_at
+    ON public.release_stage_dirty_families (source_posted_at, updated_at, provider_id, newsgroup_id);
+
 ALTER SEQUENCE IF EXISTS public.binary_projection_events_id_seq OWNED BY public.binary_projection_events.id;
 ALTER SEQUENCE IF EXISTS public.binary_inspections_id_seq OWNED BY public.binary_inspections.id;
 ALTER SEQUENCE IF EXISTS public.binary_inspection_artifacts_id_seq OWNED BY public.binary_inspection_artifacts.id;
