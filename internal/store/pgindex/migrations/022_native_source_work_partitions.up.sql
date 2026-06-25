@@ -348,4 +348,4 @@ BEGIN
 END;
 $$;
 
-SELECT public.pgindex_ensure_source_work_partitions(CURRENT_DATE - 1, 9);
+SELECT public.pgindex_ensure_source_work_partitions(CURRENT_DATE - 60, 69);
