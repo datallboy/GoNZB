@@ -2585,6 +2585,9 @@ func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryLis
 	if isRecentIndexerBinaryFastPath(params) {
 		return s.listRecentIndexerBinariesFast(ctx, limit, offset)
 	}
+	if isWeakUnformedIndexerBinaryFastPath(params) {
+		return s.listWeakUnformedIndexerBinariesFast(ctx, params, limit, offset)
+	}
 
 	where := []string{"1=1"}
 	args := []any{}
@@ -2774,6 +2777,137 @@ func isRecentIndexerBinaryFastPath(params IndexerBinaryListParams) bool {
 	}
 	sort := strings.ToLower(strings.TrimSpace(params.Sort))
 	return sort == "" || sort == "updated_desc"
+}
+
+func isWeakUnformedIndexerBinaryFastPath(params IndexerBinaryListParams) bool {
+	if strings.TrimSpace(params.Query) != "" ||
+		strings.TrimSpace(params.GroupName) != "" ||
+		strings.TrimSpace(params.ReadinessBucket) != "" ||
+		strings.TrimSpace(params.MatchStatus) != "" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(params.ReleaseState)) != "unformed" {
+		return false
+	}
+	identityStrength := strings.ToLower(strings.TrimSpace(params.IdentityStrength))
+	if identityStrength != "weak" && identityStrength != "provisional" {
+		return false
+	}
+	sort := strings.ToLower(strings.TrimSpace(params.Sort))
+	return sort == "" || sort == "updated_desc"
+}
+
+func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params IndexerBinaryListParams, limit, offset int) ([]IndexerBinarySummary, int, error) {
+	identityStrength := strings.ToLower(strings.TrimSpace(params.IdentityStrength))
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_identity_current bic
+		JOIN binary_core bc
+		  ON bc.source_posted_at = bic.source_posted_at
+		 AND bc.binary_id = bic.binary_id
+		WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM release_files rf
+			WHERE rf.binary_id = bc.binary_id
+		  )`, identityStrength).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count weak unformed indexer binaries: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH page AS (
+			SELECT
+				bc.binary_id,
+				bc.source_posted_at,
+				bc.newsgroup_id,
+				COALESCE(bic.release_name, '') AS release_name,
+				COALESCE(bic.binary_name, '') AS binary_name,
+				COALESCE(bic.file_name, '') AS file_name,
+				COALESCE(bic.family_kind, '') AS family_kind,
+				COALESCE(bic.identity_strength, '') AS identity_strength,
+				COALESCE(bic.grouping_summary_status, '') AS grouping_summary_status,
+				COALESCE(bic.match_status, '') AS match_status,
+				COALESCE(bic.match_confidence, 0) AS match_confidence,
+				bos.posted_at,
+				COALESCE(bos.total_parts, 0) AS total_parts,
+				COALESCE(bos.observed_parts, 0) AS observed_parts,
+				COALESCE(bos.total_bytes, 0) AS total_bytes,
+				GREATEST(bic.updated_at, bos.updated_at) AS updated_at
+			FROM binary_identity_current bic
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM release_files rf
+				WHERE rf.binary_id = bc.binary_id
+			  )
+			ORDER BY GREATEST(bic.updated_at, bos.updated_at) DESC, bc.binary_id DESC
+			LIMIT $2 OFFSET $3
+		)
+		SELECT
+			page.binary_id,
+			'' AS release_id,
+			'' AS release_title,
+			COALESCE(ng.group_name, ''),
+			page.release_name,
+			page.binary_name,
+			page.file_name,
+			page.family_kind,
+			page.identity_strength,
+			page.grouping_summary_status,
+			page.match_status,
+			page.match_confidence,
+			page.posted_at,
+			page.total_parts,
+			page.observed_parts,
+			CASE
+				WHEN page.total_parts > 0
+				THEN LEAST(100, (page.observed_parts::numeric * 100.0 / page.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			page.total_bytes,
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			page.updated_at
+		FROM page
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = page.source_posted_at
+		 AND brc.binary_id = page.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = page.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.source_posted_at = page.source_posted_at
+			  AND wi.binary_id = page.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.source_posted_at = page.source_posted_at
+			  AND bi.binary_id = page.binary_id
+		) ins ON TRUE
+		ORDER BY page.updated_at DESC, page.binary_id DESC`, identityStrength, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list weak unformed indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanIndexerBinarySummaries(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 func (s *Store) listRecentIndexerBinariesFast(ctx context.Context, limit, offset int) ([]IndexerBinarySummary, int, error) {
