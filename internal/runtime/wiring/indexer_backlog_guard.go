@@ -8,6 +8,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 const (
@@ -21,6 +22,7 @@ type unassembledBacklogReader interface {
 	EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error)
+	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 }
 
 type cachedScrapeBacklogGuard struct {
@@ -169,33 +171,24 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 		g.mu.Unlock()
 	}
 
-	if recoverYEncEnabled(runtime.Indexing) && runtime.Indexing.SourceWindow.Enabled {
-		highWater, lowWater := yencBacklogThresholds(runtime.Indexing)
-		backlog, err := g.repo.CountBlockingYEncRecoveryBacklog(ctx)
+	if recoverYEncEnabled(runtime.Indexing) {
+		snapshot, err := g.repo.RefreshYEncRecoveryAdmissionSnapshot(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("count blocking yenc recovery backlog: %w", err)
+			return nil, fmt.Errorf("refresh yenc recovery admission snapshot: %w", err)
 		}
-
-		g.mu.Lock()
-		blocked := g.yencBlocked
-		g.mu.Unlock()
-
-		if blocked || backlog >= highWater {
-			if blocked && backlog <= lowWater {
-				g.mu.Lock()
-				g.yencBlocked = false
-				g.mu.Unlock()
-			} else {
-				label := "resume_threshold"
-				threshold := lowWater
-				if !blocked && backlog >= highWater {
-					label = "high_water"
-					threshold = highWater
-				}
-				g.mu.Lock()
-				g.yencBlocked = true
-				g.mu.Unlock()
-				return yencBlockedDecisions(backlog, threshold, label), nil
+		if snapshot != nil && snapshot.OpenTotal >= snapshot.HardCap {
+			g.mu.Lock()
+			g.yencBlocked = true
+			g.mu.Unlock()
+			return yencHardCapBlockedDecisions(snapshot), nil
+		}
+		if snapshot != nil && snapshot.OpenTotal >= snapshot.SoftCap {
+			g.mu.Lock()
+			g.yencBlocked = false
+			g.mu.Unlock()
+			allowed[supervisor.StageScrapeBackfill] = supervisor.StageGateDecision{
+				Allowed: false,
+				Reason:  fmt.Sprintf("scrape_backfill paused for recover_yenc capacity: open_yenc=%d soft_cap=%d hard_cap=%d", snapshot.OpenTotal, snapshot.SoftCap, snapshot.HardCap),
 			}
 		}
 	} else {
@@ -226,8 +219,14 @@ func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int
 	return decisions
 }
 
-func yencBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {
-	reason := fmt.Sprintf("scrape paused for recover_yenc catch-up: blocking_yenc=%d %s=%d", backlog, thresholdLabel, threshold)
+func yencHardCapBlockedDecisions(snapshot *pgindex.YEncRecoveryAdmissionSnapshot) map[supervisor.StageName]supervisor.StageGateDecision {
+	var openTotal, softCap, hardCap int64
+	if snapshot != nil {
+		openTotal = snapshot.OpenTotal
+		softCap = snapshot.SoftCap
+		hardCap = snapshot.HardCap
+	}
+	reason := fmt.Sprintf("scrape paused for recover_yenc hard cap: open_yenc=%d soft_cap=%d hard_cap=%d", openTotal, softCap, hardCap)
 	return map[supervisor.StageName]supervisor.StageGateDecision{
 		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
 		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
@@ -285,24 +284,6 @@ func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater i
 		highWater = scrapeBacklogGuardMinHighWater
 	}
 	lowWater = highWater / 2
-	if lowWater < scrapeBacklogGuardMinLowWater {
-		lowWater = scrapeBacklogGuardMinLowWater
-	}
-	return highWater, lowWater
-}
-
-func yencBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
-	if indexing == nil {
-		return scrapeBacklogGuardMinHighWater, scrapeBacklogGuardMinLowWater
-	}
-	highWater = int64(indexing.SourceWindow.MaxBlockingYEnc)
-	lowWater = int64(indexing.SourceWindow.ResumeBlockingYEnc)
-	if highWater < scrapeBacklogGuardMinHighWater {
-		highWater = scrapeBacklogGuardMinHighWater
-	}
-	if lowWater <= 0 || lowWater >= highWater {
-		lowWater = highWater / 2
-	}
 	if lowWater < scrapeBacklogGuardMinLowWater {
 		lowWater = scrapeBacklogGuardMinLowWater
 	}
