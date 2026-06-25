@@ -285,6 +285,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	if binaryCount == 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO release_family_readiness_summaries (
+				source_posted_at,
 				provider_id,
 				newsgroup_id,
 				key_kind,
@@ -312,7 +313,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				processed_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,FALSE,0,0,TIMESTAMPTZ 'epoch',NOW())
+			VALUES (NOW(),$1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,FALSE,0,0,TIMESTAMPTZ 'epoch',NOW())
 			ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -455,6 +456,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO release_family_readiness_summaries (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -482,7 +484,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,FALSE,$22,$23,TIMESTAMPTZ 'epoch',NOW())
+		VALUES (COALESCE($17::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,FALSE,$22,$23,TIMESTAMPTZ 'epoch',NOW())
 		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -788,6 +790,13 @@ func releaseFamilySummaryBatchValues(keys []releaseFamilySummaryKey) (string, []
 	return strings.Join(values, ","), args
 }
 
+func releaseSummarySourcePostedAt(t sql.NullTime) time.Time {
+	if t.Valid {
+		return t.Time.UTC()
+	}
+	return time.Now().UTC()
+}
+
 func buildReleaseFamilySummaryRefreshRecord(row releaseFamilySummaryRow) []any {
 	readinessBucket := releaseReadinessFragmentOnly
 	if row.BinaryCount == 0 {
@@ -827,6 +836,7 @@ func buildReleaseFamilySummaryRefreshRecord(row releaseFamilySummaryRow) []any {
 	}
 
 	return []any{
+		releaseSummarySourcePostedAt(row.EarliestPostedAt),
 		row.ProviderID,
 		row.NewsgroupID,
 		row.KeyKind,
@@ -1431,12 +1441,12 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 		}
 		batch := summaries[start:end]
 		values := make([]string, 0, len(batch))
-		args := make([]any, 0, len(batch)*24)
+		args := make([]any, 0, len(batch)*25)
 		for i, row := range batch {
 			record := buildReleaseFamilySummaryRefreshRecord(row)
-			base := i*24 + 1
-			placeholders := make([]string, 0, 24)
-			for offset := range 24 {
+			base := i*25 + 1
+			placeholders := make([]string, 0, 25)
+			for offset := range 25 {
 				placeholders = append(placeholders, fmt.Sprintf("$%d", base+offset))
 			}
 			values = append(values, "("+strings.Join(placeholders, ",")+",TIMESTAMPTZ 'epoch',NOW())")
@@ -1445,6 +1455,7 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 
 		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO release_family_readiness_summaries (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1618,6 +1629,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 			VALUES %s
 		)
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1640,6 +1652,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 			updated_at
 		)
 		SELECT
+			s.source_posted_at,
 			s.provider_id,
 			s.newsgroup_id,
 			s.key_kind,
@@ -1721,6 +1734,7 @@ func syncReadyReleaseCandidateForSummaryState(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1742,7 +1756,7 @@ func syncReadyReleaseCandidateForSummaryState(ctx context.Context, runner sqlExe
 			ready_reason,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		VALUES (COALESCE($18::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -2265,6 +2279,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		),
 		upserted_recovered AS (
 			INSERT INTO release_recovered_file_set_candidates (
+			source_posted_at,
 			provider_id,
 			file_set_key,
 			representative_newsgroup_id,
@@ -2286,6 +2301,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			updated_at
 			)
 			SELECT
+				COALESCE(earliest_posted_at, NOW()),
 				provider_id,
 				file_set_key,
 				representative_newsgroup_id,
@@ -2328,6 +2344,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		),
 		upserted_ready AS (
 			INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2350,6 +2367,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			updated_at
 			)
 			SELECT
+				COALESCE(earliest_posted_at, NOW()),
 				provider_id,
 				representative_newsgroup_id,
 				$`+fmt.Sprint(keyKindParam)+`,
@@ -2534,6 +2552,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_recovered_file_set_candidates (
+			source_posted_at,
 			provider_id,
 			file_set_key,
 			representative_newsgroup_id,
@@ -2554,7 +2573,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			readiness_bucket,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		VALUES (COALESCE($15::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (source_posted_at, provider_id, file_set_key) DO UPDATE
 		SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
 		    source_release_key = EXCLUDED.source_release_key,
@@ -2613,6 +2632,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2634,7 +2654,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			ready_reason,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		VALUES (COALESCE($18::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -2869,6 +2889,7 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			LIMIT $2
 		)
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2891,6 +2912,7 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			updated_at
 		)
 		SELECT
+			s.source_posted_at,
 			s.provider_id,
 			s.newsgroup_id,
 			s.key_kind,

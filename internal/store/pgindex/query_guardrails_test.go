@@ -150,6 +150,45 @@ func TestPartitionedInspectionEvidenceInsertsCarrySourcePostedAt(t *testing.T) {
 	}
 }
 
+func TestPartitionedReleaseWorkInsertsCarrySourcePostedAt(t *testing.T) {
+	src := readGuardrailSource(t, "release_family_summary_store.go")
+	tables := []string{
+		"release_family_readiness_summaries",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+	}
+	for _, table := range tables {
+		needle := "INSERT INTO " + table
+		searchFrom := 0
+		found := 0
+		for {
+			insertAt := strings.Index(src[searchFrom:], needle)
+			if insertAt < 0 {
+				break
+			}
+			found++
+			insertAt += searchFrom
+			valuesAt := strings.Index(src[insertAt:], "VALUES")
+			selectAt := strings.Index(src[insertAt:], "SELECT")
+			endAt := valuesAt
+			if selectAt >= 0 && (endAt < 0 || selectAt < endAt) {
+				endAt = selectAt
+			}
+			if endAt < 0 {
+				t.Fatalf("release_family_summary_store.go insert into %s missing VALUES/SELECT", table)
+			}
+			columnList := src[insertAt : insertAt+endAt]
+			if !strings.Contains(columnList, "source_posted_at") {
+				t.Fatalf("release_family_summary_store.go insert into %s must carry source_posted_at", table)
+			}
+			searchFrom = insertAt + len(needle)
+		}
+		if found == 0 {
+			t.Fatalf("release_family_summary_store.go missing insert into %s", table)
+		}
+	}
+}
+
 func readGuardrailSource(t *testing.T, fileName string) string {
 	t.Helper()
 	data, err := os.ReadFile(fileName)
