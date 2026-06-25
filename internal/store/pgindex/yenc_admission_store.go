@@ -116,6 +116,65 @@ func (s *Store) yEncPriority0OverflowCap(ctx context.Context, tx *sql.Tx) (int64
 	return cap, nil
 }
 
+func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncRecoveryAdmissionSnapshot, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	var (
+		snapshot    YEncRecoveryAdmissionSnapshot
+		oldestReady sql.NullTime
+		newestReady sql.NullTime
+	)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT
+			probes_per_hour_ewma,
+			soft_cap,
+			hard_cap,
+			open_ready,
+			open_running,
+			oldest_ready_at,
+			newest_ready_at,
+			calculated_at
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`,
+	).Scan(
+		&snapshot.ProbesPerHourEWMA,
+		&snapshot.SoftCap,
+		&snapshot.HardCap,
+		&snapshot.OpenReady,
+		&snapshot.OpenRunning,
+		&oldestReady,
+		&newestReady,
+		&snapshot.CalculatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return &YEncRecoveryAdmissionSnapshot{
+				ProbesPerHourEWMA: defaultYEncAdmissionBootstrapProbesPerHour,
+				SoftCap:           defaultYEncAdmissionBootstrapProbesPerHour * defaultYEncAdmissionSoftQueueHours,
+				HardCap:           defaultYEncAdmissionAbsoluteHardQueueCap,
+				RemainingToHard:   defaultYEncAdmissionAbsoluteHardQueueCap,
+				CalculatedAt:      time.Now().UTC(),
+			}, nil
+		}
+		return nil, fmt.Errorf("get yenc recovery admission snapshot: %w", err)
+	}
+	snapshot.OpenTotal = snapshot.OpenReady + snapshot.OpenRunning
+	snapshot.RemainingToHard = snapshot.HardCap - snapshot.OpenTotal
+	if snapshot.RemainingToHard < 0 {
+		snapshot.RemainingToHard = 0
+	}
+	snapshot.CalculatedAt = snapshot.CalculatedAt.UTC()
+	if oldestReady.Valid {
+		t := oldestReady.Time.UTC()
+		snapshot.OldestReadyAt = &t
+	}
+	if newestReady.Valid {
+		t := newestReady.Time.UTC()
+		snapshot.NewestReadyAt = &t
+	}
+	return &snapshot, nil
+}
+
 func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncRecoveryAdmissionSnapshot, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store is required")

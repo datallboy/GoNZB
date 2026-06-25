@@ -570,6 +570,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			updated, err := appCtx.PGIndexStore.RefreshIndexerGroupProfiles(ctx)
 			return map[string]any{"groups_scored": updated}, err
 		}),
+		maintenanceTaskStage(runtimeCfg, "daily_bucket_stats_refresh", supervisor.StageName("maintenance.daily_bucket_stats_refresh"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			refreshed, err := appCtx.PGIndexStore.RefreshIndexerDailyBucketStats(ctx, cfg.BatchSize)
+			return map[string]any{"daily_buckets_refreshed": refreshed}, err
+		}),
 		maintenanceTaskStage(runtimeCfg, "raw_stage_retention", supervisor.StageName("maintenance.raw_stage_retention"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunRawStageRetentionTask(ctx, cfg.BatchSize, runtimeCfg.RetentionPolicy)
 			return maintenanceTaskMetrics(result), err

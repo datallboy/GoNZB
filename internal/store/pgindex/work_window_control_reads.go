@@ -165,85 +165,35 @@ func (s *Store) ListIndexerDailyBucketStats(ctx context.Context, limit int) ([]I
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		WITH source_days AS (
-			SELECT
-				ah.provider_id,
-				ah.newsgroup_id,
-				COALESCE(ah.date_utc, ah.scraped_at)::date AS bucket_day,
-				MIN(ah.article_number) AS article_low,
-				MAX(ah.article_number) AS article_high,
-				COUNT(*) AS headers_staged,
-				COUNT(*) FILTER (WHERE ah.assembled_at IS NULL) AS unassembled_headers
-			FROM article_headers ah
-			WHERE COALESCE(ah.date_utc, ah.scraped_at) >= NOW() - INTERVAL '7 days'
-			GROUP BY ah.provider_id, ah.newsgroup_id, COALESCE(ah.date_utc, ah.scraped_at)::date
-		),
-		yenc_days AS (
-			SELECT
-				wi.provider_id,
-				wi.newsgroup_id,
-				COALESCE(wi.partition_day, COALESCE(wi.date_utc, wi.created_at)::date) AS bucket_day,
-				COUNT(*) FILTER (WHERE wi.status = 'ready') AS yenc_ready,
-				COUNT(*) FILTER (WHERE wi.status = 'running') AS yenc_running,
-				COUNT(*) FILTER (WHERE wi.status = 'done') AS yenc_done
-			FROM yenc_recovery_work_items wi
-			WHERE COALESCE(wi.source_posted_at, wi.date_utc, wi.created_at) >= NOW() - INTERVAL '7 days'
-			GROUP BY wi.provider_id, wi.newsgroup_id, COALESCE(wi.partition_day, COALESCE(wi.date_utc, wi.created_at)::date)
-		),
-		binary_days AS (
-			SELECT
-				bc.provider_id,
-				bc.newsgroup_id,
-				COALESCE(bos.posted_at, bc.created_at)::date AS bucket_day,
-				COUNT(*) AS binaries_total,
-				COUNT(*) FILTER (WHERE COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)) AS binaries_complete,
-				COUNT(*) FILTER (WHERE LOWER(COALESCE(bic.identity_strength, '')) IN ('weak', 'provisional')) AS binaries_weak
-			FROM binary_core bc
-			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			WHERE COALESCE(bos.posted_at, bc.created_at) >= NOW() - INTERVAL '7 days'
-			GROUP BY bc.provider_id, bc.newsgroup_id, COALESCE(bos.posted_at, bc.created_at)::date
-		),
-		keys AS (
-			SELECT provider_id, newsgroup_id, bucket_day FROM source_days
-			UNION
-			SELECT provider_id, newsgroup_id, bucket_day FROM yenc_days
-			UNION
-			SELECT provider_id, newsgroup_id, bucket_day FROM binary_days
-		)
 		SELECT
-			k.provider_id,
+			db.provider_id,
 			up.provider_key,
-			k.newsgroup_id,
+			db.newsgroup_id,
 			ng.group_name,
-			k.bucket_day::text,
-			COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS tier,
-			false AS scrape_progress_known,
-			false AS lower_boundary_crossed,
-			false AS upper_boundary_crossed,
-			COALESCE(sd.article_low, 0),
-			COALESCE(sd.article_high, 0),
-			COALESCE(sd.article_low, 0),
-			COALESCE(sd.article_high, 0),
-			COALESCE(sd.headers_staged, 0),
-			COALESCE(sd.unassembled_headers, 0),
-			COALESCE(yd.yenc_ready, 0),
-			COALESCE(yd.yenc_running, 0),
-			COALESCE(yd.yenc_done, 0),
-			COALESCE(bd.binaries_total, 0),
-			COALESCE(bd.binaries_complete, 0),
-			COALESCE(bd.binaries_weak, 0),
-			0::bigint AS releases_created,
-			0::bigint AS blocker_count,
-			NOW() AS last_refreshed_at
-		FROM keys k
-		JOIN usenet_providers up ON up.id = k.provider_id
-		JOIN newsgroups ng ON ng.id = k.newsgroup_id
-		LEFT JOIN indexer_group_profiles igp ON igp.provider_id = k.provider_id AND igp.newsgroup_id = k.newsgroup_id
-		LEFT JOIN source_days sd ON sd.provider_id = k.provider_id AND sd.newsgroup_id = k.newsgroup_id AND sd.bucket_day = k.bucket_day
-		LEFT JOIN yenc_days yd ON yd.provider_id = k.provider_id AND yd.newsgroup_id = k.newsgroup_id AND yd.bucket_day = k.bucket_day
-		LEFT JOIN binary_days bd ON bd.provider_id = k.provider_id AND bd.newsgroup_id = k.newsgroup_id AND bd.bucket_day = k.bucket_day
-		ORDER BY k.bucket_day DESC, COALESCE(sd.headers_staged, 0) DESC
+			db.bucket_day::text,
+			db.tier,
+			db.scrape_progress_known,
+			db.lower_boundary_crossed,
+			db.upper_boundary_crossed,
+			db.bucket_article_low,
+			db.bucket_article_high,
+			db.scrape_cursor_low,
+			db.scrape_cursor_high,
+			db.headers_staged,
+			db.unassembled_headers,
+			db.yenc_ready,
+			db.yenc_running,
+			db.yenc_done,
+			db.binaries_total,
+			db.binaries_complete,
+			db.binaries_weak,
+			db.releases_created,
+			db.blocker_count,
+			db.last_refreshed_at
+		FROM indexer_daily_bucket_stats db
+		JOIN usenet_providers up ON up.id = db.provider_id
+		JOIN newsgroups ng ON ng.id = db.newsgroup_id
+		ORDER BY db.bucket_day DESC, db.headers_staged DESC, db.yenc_ready DESC, db.last_refreshed_at DESC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list indexer daily bucket stats: %w", err)
@@ -258,4 +208,174 @@ func (s *Store) ListIndexerDailyBucketStats(ctx context.Context, limit int) ([]I
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store is required")
+	}
+	if days <= 0 {
+		days = 2
+	}
+	if days > 7 {
+		days = 7
+	}
+	var refreshed int64
+	if err := s.db.QueryRowContext(ctx, `
+		WITH bounds AS (
+			SELECT (CURRENT_DATE - (($1::int - 1) * INTERVAL '1 day'))::date AS cutoff_day
+		),
+		source_days AS (
+			SELECT
+				ah.provider_id,
+				ah.newsgroup_id,
+				ah.date_utc::date AS bucket_day,
+				MIN(ah.article_number) AS article_low,
+				MAX(ah.article_number) AS article_high,
+				COUNT(*) AS headers_staged,
+				COUNT(*) FILTER (WHERE ah.assembled_at IS NULL) AS unassembled_headers
+			FROM article_headers ah, bounds b
+			WHERE ah.date_utc >= b.cutoff_day
+			GROUP BY ah.provider_id, ah.newsgroup_id, ah.date_utc::date
+		),
+		yenc_days AS (
+			SELECT
+				wi.provider_id,
+				wi.newsgroup_id,
+				wi.partition_day AS bucket_day,
+				COUNT(*) FILTER (WHERE wi.status = 'ready') AS yenc_ready,
+				COUNT(*) FILTER (WHERE wi.status = 'running') AS yenc_running,
+				COUNT(*) FILTER (WHERE wi.status = 'done') AS yenc_done,
+				COUNT(*) FILTER (WHERE wi.status = 'stale') AS yenc_stale
+			FROM yenc_recovery_work_items wi, bounds b
+			WHERE wi.partition_day >= b.cutoff_day
+			GROUP BY wi.provider_id, wi.newsgroup_id, wi.partition_day
+		),
+		binary_days AS (
+			SELECT
+				bc.provider_id,
+				bc.newsgroup_id,
+				COALESCE(bos.posted_at, bc.created_at)::date AS bucket_day,
+				COUNT(*) AS binaries_total,
+				COUNT(*) FILTER (WHERE COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)) AS binaries_complete,
+				COUNT(*) FILTER (WHERE LOWER(COALESCE(bic.identity_strength, '')) IN ('weak', 'provisional')) AS binaries_weak
+			FROM binary_core bc
+			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			LEFT JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+			JOIN bounds b ON COALESCE(bos.posted_at, bc.created_at) >= b.cutoff_day
+			GROUP BY bc.provider_id, bc.newsgroup_id, COALESCE(bos.posted_at, bc.created_at)::date
+		),
+		release_days AS (
+			SELECT
+				bc.provider_id,
+				bc.newsgroup_id,
+				COALESCE(r.posted_at, r.created_at)::date AS bucket_day,
+				COUNT(DISTINCT r.release_id) AS releases_created
+			FROM releases r
+			JOIN release_files rf ON rf.release_id = r.release_id
+			JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			JOIN bounds b ON COALESCE(r.posted_at, r.created_at) >= b.cutoff_day
+			GROUP BY bc.provider_id, bc.newsgroup_id, COALESCE(r.posted_at, r.created_at)::date
+		),
+		keys AS (
+			SELECT provider_id, newsgroup_id, bucket_day FROM source_days
+			UNION
+			SELECT provider_id, newsgroup_id, bucket_day FROM yenc_days
+			UNION
+			SELECT provider_id, newsgroup_id, bucket_day FROM binary_days
+			UNION
+			SELECT provider_id, newsgroup_id, bucket_day FROM release_days
+		),
+		upserted AS (
+			INSERT INTO indexer_daily_bucket_stats (
+				provider_id,
+				newsgroup_id,
+				bucket_day,
+				tier,
+				scrape_progress_known,
+				lower_boundary_crossed,
+				upper_boundary_crossed,
+				bucket_article_low,
+				bucket_article_high,
+				scrape_cursor_low,
+				scrape_cursor_high,
+				headers_staged,
+				unassembled_headers,
+				yenc_ready,
+				yenc_running,
+				yenc_done,
+				yenc_stale,
+				binaries_total,
+				binaries_complete,
+				binaries_weak,
+				releases_created,
+				blocker_count,
+				last_refreshed_at
+			)
+			SELECT
+				k.provider_id,
+				k.newsgroup_id,
+				k.bucket_day,
+				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS tier,
+				false,
+				false,
+				false,
+				COALESCE(sd.article_low, 0),
+				COALESCE(sd.article_high, 0),
+				COALESCE(sd.article_low, 0),
+				COALESCE(sd.article_high, 0),
+				COALESCE(sd.headers_staged, 0),
+				COALESCE(sd.unassembled_headers, 0),
+				COALESCE(yd.yenc_ready, 0),
+				COALESCE(yd.yenc_running, 0),
+				COALESCE(yd.yenc_done, 0),
+				COALESCE(yd.yenc_stale, 0),
+				COALESCE(bd.binaries_total, 0),
+				COALESCE(bd.binaries_complete, 0),
+				COALESCE(bd.binaries_weak, 0),
+				COALESCE(rd.releases_created, 0),
+				0::bigint,
+				NOW()
+			FROM keys k
+			LEFT JOIN indexer_group_profiles igp ON igp.provider_id = k.provider_id AND igp.newsgroup_id = k.newsgroup_id
+			LEFT JOIN source_days sd ON sd.provider_id = k.provider_id AND sd.newsgroup_id = k.newsgroup_id AND sd.bucket_day = k.bucket_day
+			LEFT JOIN yenc_days yd ON yd.provider_id = k.provider_id AND yd.newsgroup_id = k.newsgroup_id AND yd.bucket_day = k.bucket_day
+			LEFT JOIN binary_days bd ON bd.provider_id = k.provider_id AND bd.newsgroup_id = k.newsgroup_id AND bd.bucket_day = k.bucket_day
+			LEFT JOIN release_days rd ON rd.provider_id = k.provider_id AND rd.newsgroup_id = k.newsgroup_id AND rd.bucket_day = k.bucket_day
+			ON CONFLICT (provider_id, newsgroup_id, bucket_day)
+			DO UPDATE SET
+				tier = EXCLUDED.tier,
+				scrape_progress_known = EXCLUDED.scrape_progress_known,
+				lower_boundary_crossed = EXCLUDED.lower_boundary_crossed,
+				upper_boundary_crossed = EXCLUDED.upper_boundary_crossed,
+				bucket_article_low = EXCLUDED.bucket_article_low,
+				bucket_article_high = EXCLUDED.bucket_article_high,
+				scrape_cursor_low = EXCLUDED.scrape_cursor_low,
+				scrape_cursor_high = EXCLUDED.scrape_cursor_high,
+				headers_staged = EXCLUDED.headers_staged,
+				unassembled_headers = EXCLUDED.unassembled_headers,
+				yenc_ready = EXCLUDED.yenc_ready,
+				yenc_running = EXCLUDED.yenc_running,
+				yenc_done = EXCLUDED.yenc_done,
+				yenc_stale = EXCLUDED.yenc_stale,
+				binaries_total = EXCLUDED.binaries_total,
+				binaries_complete = EXCLUDED.binaries_complete,
+				binaries_weak = EXCLUDED.binaries_weak,
+				releases_created = EXCLUDED.releases_created,
+				blocker_count = EXCLUDED.blocker_count,
+				last_refreshed_at = NOW()
+			RETURNING 1
+		),
+		deleted_old AS (
+			DELETE FROM indexer_daily_bucket_stats db
+			USING bounds b
+			WHERE db.bucket_day < b.cutoff_day
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM upserted`,
+		days,
+	).Scan(&refreshed); err != nil {
+		return 0, fmt.Errorf("refresh indexer daily bucket stats: %w", err)
+	}
+	return refreshed, nil
 }
