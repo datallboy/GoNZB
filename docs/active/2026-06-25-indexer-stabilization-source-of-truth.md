@@ -441,6 +441,15 @@ Completed in this sprint branch:
   structured queue rows first, then general rows. Explicit Lane A still uses
   completion-key probes, but the default mixed lane no longer probes
   `binary_completion_keys` for every general row.
+- assemble now records split queue timing for cleanup, claim, and hydration so
+  the stage log no longer hides cleanup cost inside `candidate_selection_ms`;
+- stale assembly queue cleanup now carries `(source_posted_at,
+  article_header_id)` into the `binary_parts` existence probe and queue delete,
+  preserving partition-key pruning and avoiding broad `article_header_id`-only
+  cleanup probes;
+- weak/provisional unformed binary workbench reads now use an identity-first
+  fast path: page from `binary_identity_current`, anti-join release files by
+  `binary_id`, then hydrate only the selected page.
 
 Live evidence already collected:
 
@@ -472,6 +481,23 @@ Live evidence already collected:
   completed without timeout/deadlock, candidate selection dropped from timeout
   failure to about 7s then 4.2s, yEnc recovery was running at concurrency 100,
   and default binaries/daily-buckets APIs remained bounded.
+- assemble selection root cause identified at `2026-06-25 15:55-04`: the claim
+  query itself was fast (`assembly_claim_ms=66.91`) and hydration was modest
+  (`assembly_hydration_ms=1186.61`); the old 30s
+  `candidate_selection_ms` was dominated by stale queue cleanup
+  (`queue_cleanup_ms=29699.01`);
+- after the partition-key cleanup fix, live assemble runs dropped stale cleanup
+  to about 90-350ms; examples include `queue_cleanup_ms=102.53`,
+  `assembly_claim_ms=133.51`, `assembly_hydration_ms=1379.67` at
+  `2026-06-25 15:58-04`, and `queue_cleanup_ms=350.97`,
+  `assembly_claim_ms=610.27`, `assembly_hydration_ms=2769.56` for an 8,125-row
+  batch at `2026-06-25 16:02-04`;
+- weak/unformed binary workbench endpoint improved from the observed
+  27-second request to 3.62s after page hydration moved behind the filter, then
+  to HTTP 200 in 280ms after identity-first paging. Supporting
+  `EXPLAIN (ANALYZE, BUFFERS)` notes: weak count over about 158k rows ran in
+  about 704ms, and the identity-first page seed used the
+  `binary_identity_current_*_strength_updated_idx` path in about 1.46ms.
 
 Known open signoff items:
 
