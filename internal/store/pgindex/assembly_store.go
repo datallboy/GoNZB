@@ -2846,12 +2846,12 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			tbp.total_parts,
 			tbp.segment_bytes,
 			tbp.file_name,
-			COALESCE(ah.source_posted_at, ah.date_utc),
+			COALESCE(ah.source_posted_at, ah.date_utc, NOW()),
 			NOW()
 		FROM tmp_binary_parts tbp
 		LEFT JOIN article_headers ah ON ah.id = tbp.article_header_id
 		ORDER BY tbp.binary_id, tbp.part_number, tbp.article_header_id
-		ON CONFLICT (binary_id, part_number) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id, part_number) DO UPDATE
 		SET article_header_id = EXCLUDED.article_header_id,
 		    message_id = EXCLUDED.message_id,
 		    total_parts = GREATEST(binary_parts.total_parts, EXCLUDED.total_parts),

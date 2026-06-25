@@ -1056,9 +1056,9 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		args = append(args, item.ArticleNumber)
 		fmt.Fprintf(&query, "$%d::text,", len(args)+1)
 		args = append(args, item.MessageID)
-		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
 		args = append(args, item.DateUTC)
-		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
 		args = append(args, item.DateUTC)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, item.Bytes)
@@ -1108,7 +1108,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				r.article_number,
 				r.message_id,
 				r.date_utc,
-				r.source_posted_at,
+				COALESCE(r.source_posted_at, NOW()),
 				r.bytes,
 				r.lines,
 				NOW()
@@ -1369,13 +1369,13 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		args = append(args, row.YEncTotalParts)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
-		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
 		args = append(args, row.SourcePostedAt)
 		query.WriteString("NOW())")
 	}
 
 	query.WriteString(`
-		ON CONFLICT (article_header_id) DO UPDATE
+		ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
 		SET subject = EXCLUDED.subject,
 		    poster_id = COALESCE(EXCLUDED.poster_id, article_header_ingest_payloads.poster_id),
 		    poster = EXCLUDED.poster,
@@ -1455,12 +1455,12 @@ func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, provi
 			args = append(args, row.FileName)
 			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
 			args = append(args, queueKind)
-			fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+			fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
 			args = append(args, row.SourcePostedAt)
 			query.WriteString("NOW(),NOW())")
 		}
 		query.WriteString(`
-			ON CONFLICT (article_header_id) DO UPDATE
+			ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
 			SET provider_id = EXCLUDED.provider_id,
 			    newsgroup_id = EXCLUDED.newsgroup_id,
 			    article_number = EXCLUDED.article_number,

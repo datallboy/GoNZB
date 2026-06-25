@@ -474,7 +474,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				COALESCE(e.date_utc, NOW())::date,
 				NOW()
 			FROM eligible e
-			ON CONFLICT (binary_id) DO UPDATE
+			ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 			SET article_header_id = EXCLUDED.article_header_id,
 			    provider_id = EXCLUDED.provider_id,
 			    newsgroup_id = EXCLUDED.newsgroup_id,
@@ -514,6 +514,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				SELECT 1
 				FROM yenc_recovery_work_items existing_article
 				WHERE existing_article.article_header_id = EXCLUDED.article_header_id
+				  AND existing_article.source_posted_at = EXCLUDED.source_posted_at
 				  AND existing_article.binary_id <> yenc_recovery_work_items.binary_id
 			)
 			RETURNING 1
