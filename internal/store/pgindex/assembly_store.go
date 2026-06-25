@@ -465,13 +465,13 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		return nil, fmt.Errorf("iterate claimed assembly queue batch: %w", err)
 	}
 
-	out, err := s.hydrateAssemblyCandidates(ctx, tx, selected)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit assembly claim tx: %w", err)
+	}
+
+	out, err := s.hydrateAssemblyCandidates(ctx, s.db, selected)
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
