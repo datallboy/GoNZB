@@ -61,4 +61,22 @@ func TestFreshBaselineMigration(t *testing.T) {
 	if hasLegacyBinaries {
 		t.Fatalf("fresh v0.8.0 baseline must not create retired public.binaries")
 	}
+
+	report, err := store.CheckCriticalIndexerIntegrity(context.Background(), false)
+	if err != nil {
+		t.Fatalf("check critical indexer integrity on fresh schema: %v", err)
+	}
+	if report.HasFailures() {
+		t.Fatalf("fresh schema critical integrity failed: %s", report.FailureSummary())
+	}
+	var checkedPartitionParent bool
+	for _, check := range report.Checks {
+		if check.AccessMethod == "partitioned" {
+			checkedPartitionParent = true
+			break
+		}
+	}
+	if !checkedPartitionParent {
+		t.Fatalf("fresh schema integrity check did not cover partitioned parents: %+v", report.Checks)
+	}
 }
