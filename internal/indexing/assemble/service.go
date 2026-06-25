@@ -72,6 +72,7 @@ type recoveryCounters struct {
 type pendingBinaryPart struct {
 	binaryCacheKey  string
 	articleHeaderID int64
+	sourcePostedAt  time.Time
 	messageID       string
 	partNumber      int
 	totalParts      int
@@ -451,6 +452,7 @@ func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.Assem
 		work.partSeeds = append(work.partSeeds, pendingBinaryPart{
 			binaryCacheKey:  binaryCacheKey,
 			articleHeaderID: header.ID,
+			sourcePostedAt:  header.SourcePostedAt,
 			messageID:       header.MessageID,
 			partNumber:      matched.PartNumber,
 			totalParts:      matched.TotalParts,
@@ -515,6 +517,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		partRecords = append(partRecords, pgindex.BinaryPartRecord{
 			BinaryID:        binaryID,
 			ArticleHeaderID: seed.articleHeaderID,
+			SourcePostedAt:  seed.sourcePostedAt,
 			MessageID:       seed.messageID,
 			PartNumber:      seed.partNumber,
 			TotalParts:      seed.totalParts,

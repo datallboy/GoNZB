@@ -335,8 +335,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(bos.total_parts, 0)) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
 `+yencRecoveryWorkItemPriorityRankSQL+` AS priority_rank,
-				COALESCE(p.yenc_recovery_retry_after, NOW()) AS ready_at,
-				COALESCE(p.yenc_recovery_missing_count, 0) AS missing_count,
+				NOW() AS ready_at,
+				0 AS missing_count,
 				bc.binary_key,
 				bic.release_family_key,
 				bic.base_stem,
@@ -357,14 +357,18 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  ON igp.provider_id = bc.provider_id
 			 AND igp.newsgroup_id = bc.newsgroup_id
 			JOIN LATERAL (
-				SELECT bp.article_header_id
+				SELECT bp.source_posted_at, bp.article_header_id
 				FROM binary_parts bp
 				WHERE bp.binary_id = bc.binary_id
 				ORDER BY bp.part_number, bp.id
 				LIMIT 1
 			) bp ON true
-			JOIN article_headers ah ON ah.id = bp.article_header_id
-			LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_ingest_payloads p
+			  ON p.source_posted_at = ah.source_posted_at
+			 AND p.article_header_id = ah.id
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 			WHERE bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND bic.is_main_payload = TRUE
@@ -381,10 +385,11 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  	OR COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'hot'
 			  )
 			  AND NOT EXISTS (
-			  	SELECT 1
-			  	FROM yenc_recovery_work_items existing_article
-			  	WHERE existing_article.article_header_id = ah.id
-			  	  AND existing_article.binary_id <> bc.binary_id
+			    SELECT 1
+			    FROM yenc_recovery_work_items existing_article
+			    WHERE existing_article.source_posted_at = ah.source_posted_at
+			      AND existing_article.article_header_id = ah.id
+			      AND existing_article.binary_id <> bc.binary_id
 			  )
 			ORDER BY `+yencRecoveryWorkItemPriorityRankSQL+`, COALESCE(ah.date_utc, NOW()) DESC, bc.binary_id
 			LIMIT CASE
@@ -546,13 +551,15 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			 AND s.key_kind = 'release_family'
 			 AND s.family_key = bic.release_family_key
 			JOIN LATERAL (
-				SELECT bp.article_header_id
+				SELECT bp.source_posted_at, bp.article_header_id
 				FROM binary_parts bp
 				WHERE bp.binary_id = bc.binary_id
 				ORDER BY bp.part_number, bp.id
 				LIMIT 1
 			) bp ON true
-			LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = bp.article_header_id
+			LEFT JOIN article_header_ingest_payloads p
+			  ON p.source_posted_at = bp.source_posted_at
+			 AND p.article_header_id = bp.article_header_id
 			WHERE bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND bic.is_main_payload = TRUE
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'

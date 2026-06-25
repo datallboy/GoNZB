@@ -97,7 +97,7 @@ func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing
 	}
 }
 
-func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T) {
+func TestScrapeBacklogGuardBlocksLatestAndBackfillDuringAssembleCatchup(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
@@ -111,8 +111,8 @@ func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T
 	if err != nil {
 		t.Fatalf("allow latest returned error: %v", err)
 	}
-	if !latest.Allowed {
-		t.Fatalf("expected scrape_latest trickle to be allowed, got %+v", latest)
+	if latest.Allowed {
+		t.Fatalf("expected scrape_latest to stay blocked, got %+v", latest)
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
