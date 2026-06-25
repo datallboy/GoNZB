@@ -1,5 +1,8 @@
 # Source/Work Partitioning Sprint Plan
 
+> Superseded by `docs/active/2026-06-25-indexer-yenc-retention-throughput-implementation-plan.md`.
+> Keep this document as historical context only; do not implement new work from it.
+
 ## Summary
 
 Implement daily PostgreSQL range partitioning for indexer source/work data so
