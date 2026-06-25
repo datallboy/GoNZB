@@ -1055,8 +1055,13 @@ func ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, db *sql.D
 			continue
 		}
 		seen[partitionDay] = struct{}{}
-		if _, err := db.ExecContext(ctx, `SELECT public.pgindex_ensure_source_work_partitions($1::date, 0)`, partitionDay); err != nil {
-			return fmt.Errorf("ensure source work partitions for day %s: %w", partitionDay, err)
+		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+			if _, err := db.ExecContext(ctx, `SELECT public.pgindex_ensure_source_work_partitions($1::date, 0)`, partitionDay); err != nil {
+				return fmt.Errorf("ensure source work partitions for day %s: %w", partitionDay, err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
