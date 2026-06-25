@@ -488,6 +488,40 @@ func (ctrl *IndexerAdminController) GetRelease(c *echo.Context) error {
 	return c.JSON(http.StatusOK, releaseView)
 }
 
+func (ctrl *IndexerAdminController) ListBinaries(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total, err := ctrl.Service.ListBinaries(c.Request().Context(), pgindex.IndexerBinaryListParams{
+		Query:            queryParamTrimmed(c, "q"),
+		GroupName:        queryParamTrimmed(c, "newsgroup"),
+		IdentityStrength: queryParamTrimmed(c, "identity_strength"),
+		ReadinessBucket:  queryParamTrimmed(c, "readiness_bucket"),
+		MatchStatus:      queryParamTrimmed(c, "match_status"),
+		ReleaseState:     queryParamTrimmed(c, "release_state"),
+		Sort:             queryParamTrimmed(c, "sort"),
+		Limit:            limit,
+		Offset:           offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(items) < total,
+	})
+}
+
 func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

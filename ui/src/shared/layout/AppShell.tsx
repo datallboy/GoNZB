@@ -120,6 +120,7 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
               <NavLink to="/admin/indexer/runs">Runs</NavLink>
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
+              <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
             </>
           ) : null}
           {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (

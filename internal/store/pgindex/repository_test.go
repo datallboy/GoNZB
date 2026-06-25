@@ -2014,11 +2014,11 @@ func TestResolveArticleHeaderIDsBatchFindsCommittedConflictRows(t *testing.T) {
 		DateUTC:       &now,
 		Bytes:         100,
 		Lines:         1,
-	}}, []int64{0})
+	}}, []articleHeaderResolution{{}})
 	if err != nil {
 		t.Fatalf("resolve article header ids fallback: %v", err)
 	}
-	if count != 1 || len(resolved) != 1 || resolved[0] <= 0 {
+	if count != 1 || len(resolved) != 1 || resolved[0].ID <= 0 || resolved[0].SourcePostedAt.IsZero() {
 		t.Fatalf("expected one resolved id, count=%d ids=%v", count, resolved)
 	}
 }

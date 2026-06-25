@@ -53,6 +53,13 @@ type maintenanceVacuumCandidate struct {
 	DeadPct    float64
 }
 
+type partitionRetentionCandidate struct {
+	Day         time.Time
+	TableName   string
+	ChildTable  string
+	RowEstimate int64
+}
+
 func (s *Store) DryRunReleaseSourcePurge(ctx context.Context, limit int, policy ReleaseReadyPolicy) (*MaintenanceTaskResult, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
@@ -265,24 +272,18 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	if batchSize <= 0 {
 		batchSize = 7
 	}
-	targetTables := []string{
-		"article_headers",
-		"article_header_ingest_payloads",
-		"article_header_crosspost_groups",
-		"article_header_poster_refs",
-		"article_header_assembly_queue",
-		"poster_materialization_queue",
-		"yenc_recovery_work_items",
-		"binary_parts",
-	}
+	targetTables := nativeSourceWorkPartitionTables()
 	result := &MaintenanceTaskResult{
 		TaskKey:              "partition_retention_drop",
 		DryRun:               dryRun,
 		EstimatedRowsByTable: map[string]int64{},
 		Warnings: []string{
-			"reports the v1 native source/header/yenc/binary-parts partition set; binary_core and durable release/archive/catalog tables remain unpartitioned by design",
-			"batch size is interpreted as retention-days horizon for this readiness report",
+			"targets the v1 native source/header/yenc/binary-parts partition set; binary_core and durable release/archive/catalog tables remain unpartitioned by design",
+			"batch size is interpreted as retention-days horizon",
 		},
+	}
+	if !dryRun {
+		result.DeletedRowsByTable = map[string]int64{}
 	}
 	targetValues := strings.Builder{}
 	args := make([]any, 0, len(targetTables))
@@ -398,10 +399,264 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	if nonPartitioned > 0 {
 		result.Blockers = append(result.Blockers, "native partition drop is blocked until target source/work tables are rebuilt as daily partitions")
 	}
-	if !dryRun {
-		result.Warnings = append(result.Warnings, "run mode intentionally performs no partition drops until dated partition eligibility checks are wired to the retention horizon")
+	if len(result.Blockers) > 0 {
+		return result, nil
+	}
+
+	defaultRows, err := s.partitionDefaultRows(ctx, targetTables)
+	if err != nil {
+		return nil, err
+	}
+	for table, count := range defaultRows {
+		result.EstimatedRowsByTable[table+"_default_rows"] = count
+		if count > 0 {
+			result.Blockers = append(result.Blockers, fmt.Sprintf("%s default partition contains %d rows", table, count))
+		}
+	}
+	if len(result.Blockers) > 0 {
+		return result, nil
+	}
+
+	candidates, err := s.partitionRetentionCandidates(ctx, batchSize, targetTables)
+	if err != nil {
+		return nil, err
+	}
+	byDay := map[string][]partitionRetentionCandidate{}
+	for _, candidate := range candidates {
+		dayKey := candidate.Day.Format("2006-01-02")
+		byDay[dayKey] = append(byDay[dayKey], candidate)
+		result.EstimatedRowsByTable["partition_"+candidate.ChildTable] = candidate.RowEstimate
+		result.EstimatedRowsByTable["eligible_partition_rows"] += candidate.RowEstimate
+	}
+	result.EstimatedRowsByTable["eligible_partition_count"] = int64(len(candidates))
+	result.EstimatedRowsByTable["eligible_day_count"] = int64(len(byDay))
+
+	eligibleDays := make([]string, 0, len(byDay))
+	for dayKey := range byDay {
+		eligibleDays = append(eligibleDays, dayKey)
+	}
+	sort.Strings(eligibleDays)
+	for _, dayKey := range eligibleDays {
+		day, err := time.Parse("2006-01-02", dayKey)
+		if err != nil {
+			return nil, err
+		}
+		dayBlockers, err := s.partitionRetentionDayBlockers(ctx, day)
+		if err != nil {
+			return nil, err
+		}
+		if len(dayBlockers) > 0 {
+			for _, blocker := range dayBlockers {
+				result.Blockers = append(result.Blockers, dayKey+": "+blocker)
+			}
+			continue
+		}
+		if dryRun {
+			continue
+		}
+		dropped, err := s.dropPartitionRetentionDay(ctx, byDay[dayKey])
+		if err != nil {
+			return nil, err
+		}
+		for table, count := range dropped {
+			result.DeletedRowsByTable[table] += count
+		}
 	}
 	return result, nil
+}
+
+func nativeSourceWorkPartitionTables() []string {
+	return []string{
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"yenc_recovery_work_items",
+		"binary_parts",
+	}
+}
+
+func nativeSourceWorkPartitionDropOrder() []string {
+	return []string{
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"yenc_recovery_work_items",
+		"binary_parts",
+		"article_header_poster_refs",
+		"article_header_crosspost_groups",
+		"article_header_ingest_payloads",
+		"article_headers",
+	}
+}
+
+func (s *Store) partitionDefaultRows(ctx context.Context, targetTables []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(targetTables))
+	for _, table := range targetTables {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		var count int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdentifier(defaultTable)).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count %s rows: %w", defaultTable, err)
+		}
+		out[table] = count
+	}
+	return out, nil
+}
+
+func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public'
+			  AND c.relname = $1
+		)`, table).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays int, targetTables []string) ([]partitionRetentionCandidate, error) {
+	targetValues := strings.Builder{}
+	args := make([]any, 0, len(targetTables)+1)
+	for i, table := range targetTables {
+		if i > 0 {
+			targetValues.WriteString(",")
+		}
+		fmt.Fprintf(&targetValues, "($%d::text)", len(args)+1)
+		args = append(args, table)
+	}
+	args = append(args, retentionDays)
+	rows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		)
+		SELECT
+			parent.relname AS parent_table,
+			child.relname AS child_table,
+			to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD')::date AS partition_day,
+			GREATEST(COALESCE(child.reltuples, 0), 0)::bigint AS row_estimate
+		FROM target t
+		JOIN pg_class parent
+		  ON parent.relname = t.table_name
+		JOIN pg_namespace pn
+		  ON pn.oid = parent.relnamespace
+		 AND pn.nspname = 'public'
+		JOIN pg_inherits i
+		  ON i.inhparent = parent.oid
+		JOIN pg_class child
+		  ON child.oid = i.inhrelid
+		WHERE child.relname ~ '_[0-9]{8}$'
+		  AND to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD') < CURRENT_DATE - ($`+fmt.Sprint(len(args))+`::int)
+		ORDER BY partition_day, parent.relname`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list partition retention candidates: %w", err)
+	}
+	defer rows.Close()
+	out := []partitionRetentionCandidate{}
+	for rows.Next() {
+		var item partitionRetentionCandidate
+		if err := rows.Scan(&item.TableName, &item.ChildTable, &item.Day, &item.RowEstimate); err != nil {
+			return nil, fmt.Errorf("scan partition retention candidate: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention candidates: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) partitionRetentionDayBlockers(ctx context.Context, day time.Time) ([]string, error) {
+	start := day.UTC()
+	end := start.AddDate(0, 0, 1)
+	checks := []struct {
+		label string
+		query string
+	}{
+		{
+			label: "assembly queue rows still exist",
+			query: `SELECT COUNT(*) FROM article_header_assembly_queue WHERE source_posted_at >= $1 AND source_posted_at < $2`,
+		},
+		{
+			label: "ready/running yEnc work still exists",
+			query: `SELECT COUNT(*) FROM yenc_recovery_work_items WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'running')`,
+		},
+		{
+			label: "running inspect ready queue rows still exist",
+			query: `SELECT COUNT(*) FROM binary_inspection_ready_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status = 'running'`,
+		},
+		{
+			label: "running binary inspections still exist",
+			query: `SELECT COUNT(*) FROM binary_inspections WHERE source_updated_at >= $1 AND source_updated_at < $2 AND status = 'running'`,
+		},
+		{
+			label: "non-archived release files still reference this day",
+			query: `
+				SELECT COUNT(*)
+				FROM release_files rf
+				JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+				LEFT JOIN release_archive_state ras ON ras.release_id = rf.release_id
+				WHERE bp.source_posted_at >= $1
+				  AND bp.source_posted_at < $2
+				  AND COALESCE(ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')`,
+		},
+	}
+	out := []string{}
+	for _, check := range checks {
+		var count int64
+		if err := s.db.QueryRowContext(ctx, check.query, start, end).Scan(&count); err != nil {
+			return nil, fmt.Errorf("check partition retention blocker %q: %w", check.label, err)
+		}
+		if count > 0 {
+			out = append(out, fmt.Sprintf("%s: %d", check.label, count))
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) dropPartitionRetentionDay(ctx context.Context, candidates []partitionRetentionCandidate) (map[string]int64, error) {
+	byTable := map[string]partitionRetentionCandidate{}
+	for _, candidate := range candidates {
+		byTable[candidate.TableName] = candidate
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin partition drop tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	out := map[string]int64{}
+	for _, table := range nativeSourceWorkPartitionDropOrder() {
+		candidate, ok := byTable[table]
+		if !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE %s DETACH PARTITION %s`,
+			quoteIdentifier(candidate.TableName),
+			quoteIdentifier(candidate.ChildTable),
+		)); err != nil {
+			return nil, fmt.Errorf("detach partition %s: %w", candidate.ChildTable, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE `+quoteIdentifier(candidate.ChildTable)); err != nil {
+			return nil, fmt.Errorf("drop partition %s: %w", candidate.ChildTable, err)
+		}
+		out[candidate.ChildTable] = candidate.RowEstimate
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit partition drop tx: %w", err)
+	}
+	return out, nil
 }
 
 func normalizeRawStageRetentionPolicy(policy RawStageRetentionPolicy) RawStageRetentionPolicy {

@@ -753,11 +753,11 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 			bp.article_header_id,
 			COALESCE(ah.provider_id, 0),
 			COALESCE(ah.newsgroup_id, 0),
-			COALESCE(ng.name, ''),
+			COALESCE(ng.group_name, ''),
 			COALESCE(ah.article_number, 0),
 			bp.message_id,
-			COALESCE(ah.subject, ''),
-			COALESCE(ah.poster, ''),
+			COALESCE(p.subject, ''),
+			COALESCE(p.poster, ''),
 			ah.date_utc,
 			bp.part_number,
 			bp.total_parts,
@@ -770,15 +770,21 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 			COALESCE(p.yenc_file_size, 0),
 			COALESCE(wi.status, ''),
 			wi.ready_at,
-			COALESCE(wi.last_error, ''),
+			COALESCE(wi.admission_reason, ''),
 			COALESCE(brc.recovered_kind, ''),
 			COALESCE(brc.recovered_source, ''),
 			COALESCE(brc.recovered_file_name, '')
 		FROM binary_parts bp
-		LEFT JOIN article_headers ah ON ah.id = bp.article_header_id
+		LEFT JOIN article_headers ah
+		  ON ah.source_posted_at = bp.source_posted_at
+		 AND ah.id = bp.article_header_id
 		LEFT JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = bp.article_header_id
-		LEFT JOIN yenc_recovery_work_items wi ON wi.article_header_id = bp.article_header_id
+		LEFT JOIN article_header_ingest_payloads p
+		  ON p.source_posted_at = bp.source_posted_at
+		 AND p.article_header_id = bp.article_header_id
+		LEFT JOIN yenc_recovery_work_items wi
+		  ON wi.source_posted_at = bp.source_posted_at
+		 AND wi.article_header_id = bp.article_header_id
 		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bp.binary_id
 		WHERE bp.binary_id = $1
 		ORDER BY bp.part_number, bp.id`, binaryID)
