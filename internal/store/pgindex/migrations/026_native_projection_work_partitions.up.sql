@@ -167,6 +167,69 @@ ALTER TABLE IF EXISTS public.release_recovered_file_set_candidates
 ALTER TABLE IF EXISTS public.release_stage_dirty_families
     ADD CONSTRAINT release_stage_dirty_families_pkey PRIMARY KEY (source_posted_at, provider_id, newsgroup_id, key_kind, family_key);
 
+ALTER TABLE IF EXISTS public.binary_observation_stats
+    ADD CONSTRAINT binary_observation_stats_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_identity_current
+    ADD CONSTRAINT binary_identity_current_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_recovery_current
+    ADD CONSTRAINT binary_recovery_current_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_lifecycle
+    ADD CONSTRAINT binary_lifecycle_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_completion_keys
+    ADD CONSTRAINT binary_completion_keys_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_grouping_evidence
+    ADD CONSTRAINT binary_grouping_evidence_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_projection_events
+    ADD CONSTRAINT binary_projection_events_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_superseded_sources
+    ADD CONSTRAINT binary_superseded_sources_source_fkey FOREIGN KEY (source_binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE,
+    ADD CONSTRAINT binary_superseded_sources_target_fkey FOREIGN KEY (target_binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_inspection_ready_queue
+    ADD CONSTRAINT binary_inspection_ready_queue_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_inspections
+    ADD CONSTRAINT binary_inspections_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_inspection_artifacts
+    ADD CONSTRAINT binary_inspection_artifacts_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_archive_entries
+    ADD CONSTRAINT binary_archive_entries_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_text_evidence
+    ADD CONSTRAINT binary_text_evidence_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_media_streams
+    ADD CONSTRAINT binary_media_streams_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_par2_sets
+    ADD CONSTRAINT binary_par2_sets_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.binary_par2_targets
+    ADD CONSTRAINT binary_par2_targets_binary_id_fkey FOREIGN KEY (binary_id) REFERENCES public.binary_core(binary_id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.release_family_readiness_summaries
+    ADD CONSTRAINT release_family_readiness_summaries_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE,
+    ADD CONSTRAINT release_family_readiness_summaries_newsgroup_id_fkey FOREIGN KEY (newsgroup_id) REFERENCES public.newsgroups(id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.release_ready_candidates
+    ADD CONSTRAINT release_ready_candidates_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.release_recovered_file_set_candidates
+    ADD CONSTRAINT release_recovered_file_set_candidates_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS public.release_stage_dirty_families
+    ADD CONSTRAINT release_stage_dirty_families_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.usenet_providers(id) ON DELETE CASCADE,
+    ADD CONSTRAINT release_stage_dirty_families_newsgroup_id_fkey FOREIGN KEY (newsgroup_id) REFERENCES public.newsgroups(id) ON DELETE CASCADE;
+
 CREATE INDEX IF NOT EXISTS idx_binary_observation_stats_source_posted
     ON public.binary_observation_stats (source_posted_at, provider_id, newsgroup_id, binary_id);
 
