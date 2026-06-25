@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -171,7 +172,7 @@ func TestRunLatestAdvancesSingleBatchPerRun(t *testing.T) {
 	repo := &fakeScrapeRepo{latestCheckpoint: 100}
 	var gotFrom, gotTo int64
 	provider := fakeScrapeProvider{
-		stats: GroupStats{Low: 1, High: 150},
+		stats: GroupStats{Low: 1, High: 110},
 		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
 			gotFrom, gotTo = from, to
 			headers := make([]OverviewHeader, 0, to-from+1)
@@ -207,6 +208,53 @@ func TestRunLatestAdvancesSingleBatchPerRun(t *testing.T) {
 	}
 	if got := metrics["articles_inserted"]; got != int64(10) {
 		t.Fatalf("expected articles_inserted=10, got %+v", got)
+	}
+}
+
+func TestRunLatestJumpsToHeadAndSeedsBackfillForLargeGap(t *testing.T) {
+	repo := &fakeScrapeRepo{latestCheckpoint: 100, backfillCheckpoint: 25}
+	var gotFrom, gotTo int64
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 1000},
+		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+			gotFrom, gotTo = from, to
+			headers := make([]OverviewHeader, 0, to-from+1)
+			for n := from; n <= to; n++ {
+				headers = append(headers, OverviewHeader{
+					ArticleNumber: n,
+					MessageID:     fmt.Sprintf("<msg-%d@test>", n),
+				})
+			}
+			return headers, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  100,
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if gotFrom != 901 || gotTo != 1000 {
+		t.Fatalf("expected latest to fetch head range 901-1000, got %d-%d", gotFrom, gotTo)
+	}
+	if repo.latestCheckpointValue != 1000 {
+		t.Fatalf("expected latest checkpoint value 1000, got %d", repo.latestCheckpointValue)
+	}
+	if got := repo.backfillCheckpointByGroup["alt.binaries.test"]; got != 900 {
+		t.Fatalf("expected backfill checkpoint seeded to gap high 900, got %d", got)
+	}
+	if len(repo.deferredRanges) != 1 {
+		t.Fatalf("expected one deferred latest gap record, got %+v", repo.deferredRanges)
+	}
+	gap := repo.deferredRanges[0]
+	if gap.ArticleLow != 101 || gap.ArticleHigh != 900 || gap.Reason != "latest_gap" {
+		t.Fatalf("unexpected latest gap record: %+v", gap)
+	}
+	if got := metrics["ranges_fetched"]; got != 1 {
+		t.Fatalf("expected ranges_fetched=1, got %+v", got)
 	}
 }
 
