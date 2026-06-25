@@ -432,13 +432,13 @@ App dry-run for the first 50 default-policy candidates estimated:
 This is high-risk but properly gated. It will not reclaim large OS space by
 itself, and the first batch is small relative to the database.
 
-### Emergency Source Window Reset
+### Emergency Unreleased Backlog Reset
 
 `emergency_source_window_reset` is the high-risk test/admin path for a host that
-accidentally scraped or assembled outside the intended active window and now
-needs to discard stale, unreleased backlog without dropping the database. It is
-manual by default and uses the same fixed `7` day retention window as the
-source-window guard.
+needs to discard stale, unreleased source/binary/yEnc backlog without dropping
+the database. It is manual by default. It is not the strategic retention path;
+the current sprint target is daily `source_posted_at` partition retention for
+source/work/projection tables.
 
 What it deletes in each batch:
 
@@ -470,9 +470,8 @@ Tradeoff:
 
 - This is intentionally destructive for old unformed work. Future releases
   cannot be created from the purged binary/source/yEnc rows.
-- It is the right test for a too-small database partition scenario where the
-  admin would rather discard old unreleased backlog than drop the whole
-  database.
+- It is the fallback for a too-small database scenario where the admin would
+  rather discard old unreleased backlog than drop the whole database.
 - It still does not return OS space by itself. Run plain vacuum for internal
   reuse, then use `pg_repack` or `VACUUM FULL` on the affected largest tables
   when the system has lock/disk headroom.
@@ -499,10 +498,10 @@ go run ./cmd/gonzb --config config.yaml indexer maintenance task emergency_sourc
    The live queue-based assemble path consumes `article_header_assembly_queue`
    and writes `binary_parts`; `assembled_at` is legacy state and can be null for
    rows that already have `binary_parts`.
-3. Keep stale source purge separate from scrape gating. Runtime source windows
-   now pause scheduled scrape on open assemble or blocking yEnc backlog and cap
-   backfill to `source_window.backfill_window_days` (default: 7 days), but they
-   do not delete existing old headers.
+3. Keep stale source purge separate from scrape gating. Runtime backlog gates
+   may pause scheduled scrape on open assemble or blocking yEnc backlog, but
+   they do not delete existing old headers. Retention and purge are separate
+   maintenance workflows.
 4. Run `crosspost_group_raw_purge` as medium-risk cleanup only after reviewing
    the dry-run count. It removes raw crosspost telemetry older than 72h after
    summary watermark consumption, but it does not participate in current release

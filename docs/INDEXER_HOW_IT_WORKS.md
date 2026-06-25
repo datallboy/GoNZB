@@ -16,6 +16,11 @@ It explains:
 For retention, purge safety, and current storage audit findings, see
 [Indexer Storage Retention And Purge Map](./INDEXER_STORAGE_RETENTION_AND_PURGE.md).
 
+For stage ownership, allowed writes, forbidden write-backs, and query-shape
+policy, see
+[Indexer Current Schema And System Interactions](./INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md).
+That document is canonical when this narrative reference is incomplete.
+
 This document reflects the current implementation after the stabilization and migration squash work.
 
 ## Pipeline Overview
@@ -355,10 +360,11 @@ Code path:
 
 Input query:
 
-- `ListUnassembledArticleHeaders`
-- reads `article_headers`
-- joins `article_header_ingest_payloads`
-- filters `article_headers.assembled_at IS NULL`
+- `ClaimAssemblyQueueBatch`
+- claims exact keys from `article_header_assembly_queue`
+- hydrates claimed keys from `article_headers` and `article_header_ingest_payloads`
+- uses `(source_posted_at, article_header_id)` for partition-key joins
+- never uses `article_headers.assembled_at` or article-header claim columns as active state
 
 Matcher input from each header:
 
@@ -415,7 +421,8 @@ What `UpsertBinary` does:
 What `UpsertBinaryPart` does:
 
 - inserts or updates one part row in `binary_parts`
-- marks that header’s `article_headers.assembled_at`
+- deletes the completed row from `article_header_assembly_queue`
+- does not write completion state back to `article_headers`
 
 What `RefreshBinaryStats` does:
 
@@ -443,8 +450,8 @@ Yes, indirectly.
 What actually happens:
 
 1. new article headers are scraped
-2. those new headers are still `assembled_at IS NULL`
-3. assemble processes those new headers
+2. scrape seeds rows into `article_header_assembly_queue`
+3. assemble claims those queue rows
 4. `UpsertBinary` updates the existing binary row with the same `binary_key`
 5. `UpsertBinaryPart` adds missing parts
 6. `RefreshBinaryStats` recalculates completeness

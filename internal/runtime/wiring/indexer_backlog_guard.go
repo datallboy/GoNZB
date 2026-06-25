@@ -13,7 +13,6 @@ import (
 
 const (
 	scrapeBacklogGuardRefreshInterval = 15 * time.Second
-	scrapeLatestTrickleInterval       = 5 * time.Minute
 	scrapeBacklogGuardMinHighWater    = int64(50000)
 	scrapeBacklogGuardMinLowWater     = int64(10000)
 )
@@ -30,14 +29,13 @@ type cachedScrapeBacklogGuard struct {
 	settingsStore app.SettingsStore
 	repo          unassembledBacklogReader
 
-	mu                sync.Mutex
-	cond              *sync.Cond
-	evaluating        bool
-	lastCheck         time.Time
-	lastResults       map[supervisor.StageName]supervisor.StageGateDecision
-	assembleBlocked   bool
-	yencBlocked       bool
-	lastLatestTrickle time.Time
+	mu              sync.Mutex
+	cond            *sync.Cond
+	evaluating      bool
+	lastCheck       time.Time
+	lastResults     map[supervisor.StageName]supervisor.StageGateDecision
+	assembleBlocked bool
+	yencBlocked     bool
 }
 
 func newIndexerScrapeBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc {
@@ -217,21 +215,10 @@ func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSetti
 
 func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {
 	reason := fmt.Sprintf("scrape paused for assemble catch-up: unassembled_headers=%d %s=%d", backlog, thresholdLabel, threshold)
-	decisions := map[supervisor.StageName]supervisor.StageGateDecision{
+	return map[supervisor.StageName]supervisor.StageGateDecision{
 		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
 		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
 	}
-	now := time.Now()
-
-	g.mu.Lock()
-	lastTrickle := g.lastLatestTrickle
-	if lastTrickle.IsZero() || now.Sub(lastTrickle) >= scrapeLatestTrickleInterval {
-		g.lastLatestTrickle = now
-		decisions[supervisor.StageScrapeLatest] = supervisor.StageGateDecision{Allowed: true}
-	}
-	g.mu.Unlock()
-
-	return decisions
 }
 
 func yencHardCapBlockedDecisions(snapshot *pgindex.YEncRecoveryAdmissionSnapshot) map[supervisor.StageName]supervisor.StageGateDecision {

@@ -36,6 +36,7 @@ const (
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
 	ID                              int64
+	SourcePostedAt                  time.Time
 	ProviderID                      int64
 	NewsgroupID                     int64
 	NewsgroupName                   string
@@ -112,6 +113,7 @@ type binaryEvidenceRecord struct {
 type BinaryPartRecord struct {
 	BinaryID        int64
 	ArticleHeaderID int64
+	SourcePostedAt  time.Time
 	MessageID       string
 	PartNumber      int
 	TotalParts      int
@@ -256,6 +258,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 	rows, err := s.db.QueryContext(ctx, `
 		WITH selected AS (
 			SELECT
+				q.source_posted_at,
 				q.article_header_id AS id,
 				ROW_NUMBER() OVER (ORDER BY q.article_header_id DESC)::integer AS ord,
 				FALSE AS structured_identity_binary_matched
@@ -265,6 +268,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 		)
 		SELECT
 			ah.id,
+			ah.source_posted_at,
 			ah.provider_id,
 			ah.newsgroup_id,
 			ng.group_name,
@@ -288,10 +292,16 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			selected.structured_identity_binary_matched,
 			'' AS raw_overview
 		FROM selected
-		JOIN article_headers ah ON ah.id = selected.id
-		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		JOIN article_headers ah
+		  ON ah.source_posted_at = selected.source_posted_at
+		 AND ah.id = selected.id
+		JOIN article_header_ingest_payloads p
+		  ON p.source_posted_at = ah.source_posted_at
+		 AND p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = p.article_header_id
+		LEFT JOIN article_header_poster_refs apr
+		  ON apr.source_posted_at = p.source_posted_at
+		 AND apr.article_header_id = p.article_header_id
 		LEFT JOIN posters po ON po.id = apr.poster_id
 		ORDER BY selected.ord ASC`, limit)
 	if err != nil {
@@ -375,10 +385,40 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			SELECT
 				q.source_posted_at,
 				q.article_header_id,
-				FALSE AS structured_identity_binary_matched,
+				EXISTS (
+					SELECT 1
+					FROM binary_completion_keys bck
+					WHERE bck.provider_id = q.provider_id
+					  AND bck.newsgroup_id = q.newsgroup_id
+					  AND bck.normalized_file_name = q.normalized_file_name
+				) AS structured_identity_binary_matched,
 				0 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND (
+				$5::text = ''
+				OR (
+					$5::text = 'lane_a'
+					AND q.queue_kind = 'structured'
+					AND EXISTS (
+						SELECT 1
+						FROM binary_completion_keys bck
+						WHERE bck.provider_id = q.provider_id
+						  AND bck.newsgroup_id = q.newsgroup_id
+						  AND bck.normalized_file_name = q.normalized_file_name
+					)
+				)
+				OR (
+					$5::text = 'lane_b'
+					AND NOT EXISTS (
+						SELECT 1
+						FROM binary_completion_keys bck
+						WHERE bck.provider_id = q.provider_id
+						  AND bck.newsgroup_id = q.newsgroup_id
+						  AND bck.normalized_file_name = q.normalized_file_name
+					)
+				)
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
@@ -397,62 +437,37 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			RETURNING q.source_posted_at, q.article_header_id, s.structured_identity_binary_matched, s.lane_rank
 		)
 		SELECT
-			ah.id,
-			ah.provider_id,
-			ah.newsgroup_id,
-			ng.group_name,
-			ah.article_number,
-			ah.message_id,
-			p.subject,
-			COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
-			ah.date_utc,
-			ah.bytes,
-			ah.lines,
-			p.xref,
-			COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
-			COALESCE(p.subject_file_name, '') AS subject_file_name,
-			COALESCE(p.subject_file_index, 0) AS subject_file_index,
-			COALESCE(p.subject_file_total, 0) AS subject_file_total,
-			COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-			COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
-			COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-			COALESCE(p.yenc_recovery_missing_count, 0) AS yenc_recovery_missing_count,
-			p.yenc_recovery_retry_after,
-			claimed.structured_identity_binary_matched,
-			'' AS raw_overview
+			claimed.source_posted_at,
+			claimed.article_header_id,
+			claimed.structured_identity_binary_matched
 		FROM claimed
-		JOIN article_headers ah
-		  ON ah.source_posted_at = claimed.source_posted_at
-		 AND ah.id = claimed.article_header_id
-		JOIN article_header_ingest_payloads p
-		  ON p.source_posted_at = ah.source_posted_at
-		 AND p.article_header_id = ah.id
-		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN article_header_poster_refs apr
-		  ON apr.source_posted_at = p.source_posted_at
-		 AND apr.article_header_id = p.article_header_id
-		LEFT JOIN posters po ON po.id = apr.poster_id
 		ORDER BY claimed.lane_rank ASC, claimed.article_header_id DESC`,
 		limit,
 		int64(req.LeaseDuration/time.Second),
 		req.Owner,
 		claimToken,
+		strings.TrimSpace(strings.ToLower(req.Lane)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim assembly queue batch: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]AssemblyCandidate, 0, limit)
+	selected := make([]assemblyCandidateSelection, 0, limit)
 	for rows.Next() {
-		item, err := scanAssemblyCandidate(rows)
-		if err != nil {
-			return nil, err
+		var item assemblyCandidateSelection
+		if err := rows.Scan(&item.SourcePostedAt, &item.ID, &item.StructuredIdentityBinaryMatched); err != nil {
+			return nil, fmt.Errorf("scan claimed assembly queue key: %w", err)
 		}
-		out = append(out, item)
+		selected = append(selected, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate claimed assembly queue batch: %w", err)
+	}
+
+	out, err := s.hydrateAssemblyCandidates(ctx, tx, selected)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -554,6 +569,7 @@ func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q asse
 }
 
 type assemblyCandidateSelection struct {
+	SourcePostedAt                  time.Time
 	ID                              int64
 	StructuredIdentityBinaryMatched bool
 }
@@ -616,19 +632,13 @@ func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQue
 				cb.binary_rank
 			FROM candidate_binaries cb
 			JOIN LATERAL (
-				SELECT ah.id
-				FROM article_header_assembly_keys hk
-				JOIN article_headers ah
-				  ON ah.id = hk.article_header_id
-				WHERE hk.provider_id = cb.provider_id
-				  AND hk.newsgroup_id = cb.newsgroup_id
-				  AND hk.normalized_file_name = cb.normalized_file_name
-				  AND ah.assembled_at IS NULL
-				  AND (
-					ah.assembly_claimed_until IS NULL
-					OR ah.assembly_claimed_until < NOW()
-				  )
-				ORDER BY hk.article_header_id DESC
+				SELECT q.article_header_id AS id
+				FROM article_header_assembly_queue q
+				WHERE q.provider_id = cb.provider_id
+				  AND q.newsgroup_id = cb.newsgroup_id
+				  AND q.normalized_file_name = cb.normalized_file_name
+				  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+				ORDER BY q.article_header_id DESC
 				LIMIT 1
 			) matches ON true
 			ORDER BY
@@ -790,6 +800,7 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 		SELECT
 			rb.binary_id,
 			matches.id,
+			matches.source_posted_at,
 			matches.provider_id,
 			matches.newsgroup_id,
 			matches.group_name,
@@ -814,6 +825,7 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 		JOIN LATERAL (
 			SELECT
 				ah.id,
+				ah.source_posted_at,
 				ah.provider_id,
 				ah.newsgroup_id,
 				ng.group_name,
@@ -836,16 +848,14 @@ func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binar
 				'' AS raw_overview
 			FROM article_header_ingest_payloads p
 			JOIN article_headers ah
-			  ON ah.id = p.article_header_id
+			  ON ah.source_posted_at = p.source_posted_at
+			 AND ah.id = p.article_header_id
 			 AND ah.provider_id = rb.provider_id
 			 AND ah.newsgroup_id = rb.newsgroup_id
-			 AND ah.assembled_at IS NULL
-			 AND (
-			 	ah.assembly_claimed_until IS NULL
-			 	OR ah.assembly_claimed_until < NOW()
-			 )
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = p.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = p.source_posted_at
+			 AND apr.article_header_id = p.article_header_id
 			LEFT JOIN posters po ON po.id = apr.poster_id
 			WHERE BTRIM(p.subject_file_name) <> ''
 			  AND LOWER(BTRIM(p.subject_file_name)) = rb.normalized_file_name
@@ -890,14 +900,10 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 
 	if len(excludeIDs) == 0 && !excludeStructuredMatches {
 		rows, err := q.QueryContext(ctx, `
-			SELECT ah.id
-			FROM article_headers ah
-			WHERE ah.assembled_at IS NULL
-			  AND (
-			  	ah.assembly_claimed_until IS NULL
-			  	OR ah.assembly_claimed_until < NOW()
-			  )
-			ORDER BY ah.id DESC
+			SELECT q.article_header_id
+			FROM article_header_assembly_queue q
+			WHERE q.claim_until IS NULL OR q.claim_until < NOW()
+			ORDER BY q.article_header_id DESC
 			LIMIT $1`, limit)
 		if err != nil {
 			return nil, fmt.Errorf("list recent unassembled header ids: %w", err)
@@ -923,16 +929,12 @@ func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQu
 	query := `
 		WITH recent_pending AS (
 			SELECT
-				ah.id,
-				ah.provider_id,
-				ah.newsgroup_id
-			FROM article_headers ah
-			WHERE ah.assembled_at IS NULL
-			  AND (
-			  	ah.assembly_claimed_until IS NULL
-			  	OR ah.assembly_claimed_until < NOW()
-			  )
-			ORDER BY ah.id DESC
+				q.article_header_id AS id,
+				q.provider_id,
+				q.newsgroup_id
+			FROM article_header_assembly_queue q
+			WHERE q.claim_until IS NULL OR q.claim_until < NOW()
+			ORDER BY q.article_header_id DESC
 			LIMIT $2
 		)
 		SELECT rp.id
@@ -999,21 +1001,24 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 	}
 
 	ids := make([]int64, 0, len(selected))
+	sourcePostedAts := make([]time.Time, 0, len(selected))
 	ords := make([]int32, 0, len(selected))
 	structuredMatches := make([]bool, 0, len(selected))
 	for idx, item := range selected {
 		ids = append(ids, item.ID)
+		sourcePostedAts = append(sourcePostedAts, item.SourcePostedAt)
 		ords = append(ords, int32(idx))
 		structuredMatches = append(structuredMatches, item.StructuredIdentityBinaryMatched)
 	}
 
 	rows, err := q.QueryContext(ctx, `
-		WITH requested(id, ord, structured_identity_binary_matched) AS (
+		WITH requested(source_posted_at, id, ord, structured_identity_binary_matched) AS (
 			SELECT *
-			FROM UNNEST($1::bigint[], $2::integer[], $3::boolean[])
+			FROM UNNEST($1::timestamptz[], $2::bigint[], $3::integer[], $4::boolean[])
 		)
 		SELECT
 			ah.id,
+			ah.source_posted_at,
 			ah.provider_id,
 			ah.newsgroup_id,
 			ng.group_name,
@@ -1037,12 +1042,18 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 			requested.structured_identity_binary_matched,
 			'' AS raw_overview
 		FROM requested
-		JOIN article_headers ah ON ah.id = requested.id
-		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		JOIN article_headers ah
+		  ON ah.source_posted_at = requested.source_posted_at
+		 AND ah.id = requested.id
+		JOIN article_header_ingest_payloads p
+		  ON p.source_posted_at = ah.source_posted_at
+		 AND p.article_header_id = ah.id
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = p.article_header_id
+		LEFT JOIN article_header_poster_refs apr
+		  ON apr.source_posted_at = p.source_posted_at
+		 AND apr.article_header_id = p.article_header_id
 		LEFT JOIN posters po ON po.id = apr.poster_id
-		ORDER BY requested.ord ASC`, ids, ords, structuredMatches)
+		ORDER BY requested.ord ASC`, sourcePostedAts, ids, ords, structuredMatches)
 	if err != nil {
 		return nil, fmt.Errorf("hydrate assembly candidates: %w", err)
 	}
@@ -1085,6 +1096,7 @@ func scanAssemblyCandidateWithBinaryID(scanner interface {
 	}
 	dest = append(dest,
 		&item.ID,
+		&item.SourcePostedAt,
 		&item.ProviderID,
 		&item.NewsgroupID,
 		&item.NewsgroupName,
@@ -1156,21 +1168,23 @@ func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID 
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE article_header_ingest_payloads
-		SET yenc_recovery_missing_count = article_header_ingest_payloads.yenc_recovery_missing_count + 1,
-		    yenc_recovery_last_missing_at = NOW(),
-		    yenc_recovery_retry_after = NOW() + CASE
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '1 hour'
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '6 hours'
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '24 hours'
-		    	ELSE INTERVAL '72 hours'
-		    END
-		WHERE article_header_id = $1`, articleHeaderID,
-	)
+		UPDATE yenc_recovery_work_items
+		SET status = 'ready',
+		    ready_at = NOW() + CASE
+		        WHEN missing_count + 1 = 1 THEN INTERVAL '1 hour'
+		        WHEN missing_count + 1 = 2 THEN INTERVAL '6 hours'
+		        WHEN missing_count + 1 = 3 THEN INTERVAL '24 hours'
+		        ELSE INTERVAL '72 hours'
+		    END,
+		    missing_count = missing_count + 1,
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE article_header_id = $1`, articleHeaderID)
 	if err != nil {
 		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
 	}
-	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
+	return nil
 }
 
 func (s *Store) RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHeaderIDs []int64) error {
@@ -1181,30 +1195,21 @@ func (s *Store) RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHead
 	if _, err := s.db.ExecContext(ctx, `
 		WITH requested(article_header_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
-		),
-		updated_payloads AS (
-			UPDATE article_header_ingest_payloads p
-			SET yenc_recovery_missing_count = p.yenc_recovery_missing_count + 1,
-			    yenc_recovery_last_missing_at = NOW(),
-			    yenc_recovery_retry_after = NOW() + CASE
-				WHEN p.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '1 hour'
-				WHEN p.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '6 hours'
-				WHEN p.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '24 hours'
-				ELSE INTERVAL '72 hours'
-			    END
-			FROM requested r
-			WHERE p.article_header_id = r.article_header_id
-			RETURNING p.article_header_id, p.yenc_recovery_missing_count, p.yenc_recovery_retry_after
 		)
 		UPDATE yenc_recovery_work_items wi
 		SET status = 'ready',
-		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW()),
-		    missing_count = COALESCE(p.yenc_recovery_missing_count, wi.missing_count),
+		    ready_at = NOW() + CASE
+				WHEN wi.missing_count + 1 = 1 THEN INTERVAL '1 hour'
+				WHEN wi.missing_count + 1 = 2 THEN INTERVAL '6 hours'
+				WHEN wi.missing_count + 1 = 3 THEN INTERVAL '24 hours'
+				ELSE INTERVAL '72 hours'
+		    END,
+		    missing_count = wi.missing_count + 1,
 		    lease_owner = '',
 		    lease_expires_at = NULL,
 		    updated_at = NOW()
-		FROM updated_payloads p
-		WHERE wi.article_header_id = p.article_header_id`,
+		FROM requested r
+		WHERE wi.article_header_id = r.article_header_id`,
 		articleHeaderIDs,
 	); err != nil {
 		return fmt.Errorf("record yenc recovery not found batch count=%d: %w", len(articleHeaderIDs), err)
@@ -1218,21 +1223,23 @@ func (s *Store) RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int6
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE article_header_ingest_payloads
-		SET yenc_recovery_missing_count = article_header_ingest_payloads.yenc_recovery_missing_count + 1,
-		    yenc_recovery_last_missing_at = NOW(),
-		    yenc_recovery_retry_after = NOW() + CASE
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '15 minutes'
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '1 hour'
-		    	WHEN article_header_ingest_payloads.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '6 hours'
-		    	ELSE INTERVAL '24 hours'
-		    END
-		WHERE article_header_id = $1`, articleHeaderID,
-	)
+		UPDATE yenc_recovery_work_items
+		SET status = 'ready',
+		    ready_at = NOW() + CASE
+		        WHEN missing_count + 1 = 1 THEN INTERVAL '15 minutes'
+		        WHEN missing_count + 1 = 2 THEN INTERVAL '1 hour'
+		        WHEN missing_count + 1 = 3 THEN INTERVAL '6 hours'
+		        ELSE INTERVAL '24 hours'
+		    END,
+		    missing_count = missing_count + 1,
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = NOW()
+		WHERE article_header_id = $1`, articleHeaderID)
 	if err != nil {
 		return fmt.Errorf("record yenc recovery noop for article header %d: %w", articleHeaderID, err)
 	}
-	return s.syncYEncRecoveryWorkItemRetryState(ctx, articleHeaderID)
+	return nil
 }
 
 func (s *Store) RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderIDs []int64) error {
@@ -1243,56 +1250,24 @@ func (s *Store) RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderID
 	if _, err := s.db.ExecContext(ctx, `
 		WITH requested(article_header_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
-		),
-		updated_payloads AS (
-			UPDATE article_header_ingest_payloads p
-			SET yenc_recovery_missing_count = p.yenc_recovery_missing_count + 1,
-			    yenc_recovery_last_missing_at = NOW(),
-			    yenc_recovery_retry_after = NOW() + CASE
-				WHEN p.yenc_recovery_missing_count + 1 = 1 THEN INTERVAL '15 minutes'
-				WHEN p.yenc_recovery_missing_count + 1 = 2 THEN INTERVAL '1 hour'
-				WHEN p.yenc_recovery_missing_count + 1 = 3 THEN INTERVAL '6 hours'
-				ELSE INTERVAL '24 hours'
-			    END
-			FROM requested r
-			WHERE p.article_header_id = r.article_header_id
-			RETURNING p.article_header_id, p.yenc_recovery_missing_count, p.yenc_recovery_retry_after
 		)
 		UPDATE yenc_recovery_work_items wi
 		SET status = 'ready',
-		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW()),
-		    missing_count = COALESCE(p.yenc_recovery_missing_count, wi.missing_count),
+		    ready_at = NOW() + CASE
+				WHEN wi.missing_count + 1 = 1 THEN INTERVAL '15 minutes'
+				WHEN wi.missing_count + 1 = 2 THEN INTERVAL '1 hour'
+				WHEN wi.missing_count + 1 = 3 THEN INTERVAL '6 hours'
+				ELSE INTERVAL '24 hours'
+		    END,
+		    missing_count = wi.missing_count + 1,
 		    lease_owner = '',
 		    lease_expires_at = NULL,
 		    updated_at = NOW()
-		FROM updated_payloads p
-		WHERE wi.article_header_id = p.article_header_id`,
+		FROM requested r
+		WHERE wi.article_header_id = r.article_header_id`,
 		articleHeaderIDs,
 	); err != nil {
 		return fmt.Errorf("record yenc recovery noop batch count=%d: %w", len(articleHeaderIDs), err)
-	}
-	return nil
-}
-
-func (s *Store) syncYEncRecoveryWorkItemRetryState(ctx context.Context, articleHeaderID int64) error {
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE yenc_recovery_work_items
-		SET status = 'ready',
-		    ready_at = COALESCE((
-		    	SELECT p.yenc_recovery_retry_after
-		    	FROM article_header_ingest_payloads p
-		    	WHERE p.article_header_id = $1
-		    ), NOW()),
-		    missing_count = COALESCE((
-		    	SELECT p.yenc_recovery_missing_count
-		    	FROM article_header_ingest_payloads p
-		    	WHERE p.article_header_id = $1
-		    ), missing_count),
-		    lease_owner = '',
-		    lease_expires_at = NULL,
-		    updated_at = NOW()
-		WHERE article_header_id = $1`, articleHeaderID); err != nil {
-		return fmt.Errorf("update yenc recovery work item retry state for article header %d: %w", articleHeaderID, err)
 	}
 	return nil
 }
@@ -2545,8 +2520,8 @@ func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error
 	return s.UpsertBinaryParts(ctx, []BinaryPartRecord{in})
 }
 
-// UpsertBinaryParts adds or updates binary parts in one transaction and marks
-// the source article headers assembled with one set-based update.
+// UpsertBinaryParts adds or updates binary parts in one transaction and deletes
+// completed rows from the assemble-owned queue.
 func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -2598,7 +2573,7 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	}
 	validRecords := make([]BinaryPartRecord, 0, len(dedupedRecords))
 	validHeaderIDs := make([]int64, 0, len(headerIDs))
-	retryHeaderIDs := make([]int64, 0, 8)
+	retryKeys := make([]assemblyRetryKey, 0, 8)
 	retrySeen := make(map[int64]struct{}, 8)
 	for _, record := range dedupedRecords {
 		if _, ok := existingBinaryIDs[record.BinaryID]; ok {
@@ -2608,7 +2583,10 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		if record.ArticleHeaderID > 0 {
 			if _, seen := retrySeen[record.ArticleHeaderID]; !seen {
 				retrySeen[record.ArticleHeaderID] = struct{}{}
-				retryHeaderIDs = append(retryHeaderIDs, record.ArticleHeaderID)
+				retryKeys = append(retryKeys, assemblyRetryKey{
+					sourcePostedAt:  record.SourcePostedAt,
+					articleHeaderID: record.ArticleHeaderID,
+				})
 			}
 		}
 	}
@@ -2619,8 +2597,8 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	}
 	dedupedRecords = validRecords
 	headerIDs = validHeaderIDs
-	if len(retryHeaderIDs) > 0 {
-		if err := releaseAssemblyClaims(ctx, tx, retryHeaderIDs); err != nil {
+	if len(retryKeys) > 0 {
+		if err := releaseAssemblyClaims(ctx, tx, retryKeys); err != nil {
 			return err
 		}
 	}
@@ -2632,6 +2610,7 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		CREATE TEMP TABLE IF NOT EXISTS tmp_binary_parts (
 			binary_id bigint NOT NULL,
 			article_header_id bigint NOT NULL,
+			source_posted_at timestamptz NOT NULL,
 			message_id text NOT NULL,
 			part_number integer NOT NULL,
 			total_parts integer NOT NULL,
@@ -2646,6 +2625,7 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 
 	binaryIDs := make([]int64, 0, len(dedupedRecords))
 	partHeaderIDs := make([]int64, 0, len(dedupedRecords))
+	sourcePostedAts := make([]time.Time, 0, len(dedupedRecords))
 	messageIDs := make([]string, 0, len(dedupedRecords))
 	partNumbers := make([]int, 0, len(dedupedRecords))
 	totalParts := make([]int, 0, len(dedupedRecords))
@@ -2655,12 +2635,16 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		if record.BinaryID <= 0 || record.ArticleHeaderID <= 0 {
 			return fmt.Errorf("binary id and article header id are required")
 		}
+		if record.SourcePostedAt.IsZero() {
+			return fmt.Errorf("source posted at is required for article header %d", record.ArticleHeaderID)
+		}
 		if record.PartNumber <= 0 {
 			return fmt.Errorf("part number is required")
 		}
 
 		binaryIDs = append(binaryIDs, record.BinaryID)
 		partHeaderIDs = append(partHeaderIDs, record.ArticleHeaderID)
+		sourcePostedAts = append(sourcePostedAts, record.SourcePostedAt)
 		messageIDs = append(messageIDs, strings.TrimSpace(record.MessageID))
 		partNumbers = append(partNumbers, record.PartNumber)
 		totalParts = append(totalParts, record.TotalParts)
@@ -2672,6 +2656,7 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		INSERT INTO tmp_binary_parts (
 			binary_id,
 			article_header_id,
+			source_posted_at,
 			message_id,
 			part_number,
 			total_parts,
@@ -2682,14 +2667,16 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		FROM UNNEST(
 			$1::bigint[],
 			$2::bigint[],
-			$3::text[],
-			$4::integer[],
+			$3::timestamptz[],
+			$4::text[],
 			$5::integer[],
-			$6::bigint[],
-			$7::text[]
+			$6::integer[],
+			$7::bigint[],
+			$8::text[]
 		)`,
 		binaryIDs,
 		partHeaderIDs,
+		sourcePostedAts,
 		messageIDs,
 		partNumbers,
 		totalParts,
@@ -2719,10 +2706,9 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 			tbp.total_parts,
 			tbp.segment_bytes,
 			tbp.file_name,
-			COALESCE(ah.source_posted_at, ah.date_utc, NOW()),
+			tbp.source_posted_at,
 			NOW()
 		FROM tmp_binary_parts tbp
-		LEFT JOIN article_headers ah ON ah.id = tbp.article_header_id
 		ORDER BY tbp.binary_id, tbp.part_number, tbp.article_header_id
 		ON CONFLICT (source_posted_at, binary_id, part_number) DO UPDATE
 		SET article_header_id = EXCLUDED.article_header_id,
@@ -2730,7 +2716,6 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		    total_parts = GREATEST(binary_parts.total_parts, EXCLUDED.total_parts),
 		    segment_bytes = EXCLUDED.segment_bytes,
 		    file_name = EXCLUDED.file_name,
-		    source_posted_at = COALESCE(binary_parts.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return fmt.Errorf("upsert %d binary parts: %w", len(dedupedRecords), err)
 	}
@@ -2738,10 +2723,11 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM article_header_assembly_queue q
 		USING (
-			SELECT DISTINCT article_header_id
+			SELECT DISTINCT source_posted_at, article_header_id
 			FROM tmp_binary_parts
 		) completed
-		WHERE q.article_header_id = completed.article_header_id`); err != nil {
+		WHERE q.source_posted_at = completed.source_posted_at
+		  AND q.article_header_id = completed.article_header_id`); err != nil {
 		return fmt.Errorf("complete %d article header assembly queue rows: %w", len(headerIDs), err)
 	}
 
@@ -2791,17 +2777,43 @@ func existingBinaryIDsForPartRecords(ctx context.Context, tx *sql.Tx, records []
 	return out, nil
 }
 
-func releaseAssemblyClaims(ctx context.Context, tx *sql.Tx, articleHeaderIDs []int64) error {
+type assemblyRetryKey struct {
+	sourcePostedAt  time.Time
+	articleHeaderID int64
+}
+
+func releaseAssemblyClaims(ctx context.Context, tx *sql.Tx, keys []assemblyRetryKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	sourcePostedAts := make([]time.Time, 0, len(keys))
+	articleHeaderIDs := make([]int64, 0, len(keys))
+	for _, key := range keys {
+		if key.sourcePostedAt.IsZero() || key.articleHeaderID <= 0 {
+			continue
+		}
+		sourcePostedAts = append(sourcePostedAts, key.sourcePostedAt)
+		articleHeaderIDs = append(articleHeaderIDs, key.articleHeaderID)
+	}
 	if len(articleHeaderIDs) == 0 {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `
+		WITH retry(source_posted_at, article_header_id) AS (
+			SELECT *
+			FROM UNNEST($1::timestamptz[], $2::bigint[])
+		)
 		UPDATE article_header_assembly_queue
 		SET claim_owner = '',
 		    claim_token = NULL,
 		    claim_until = NULL,
 		    updated_at = NOW()
-		WHERE article_header_id = ANY($1::bigint[])`, articleHeaderIDs); err != nil {
+		FROM retry
+		WHERE article_header_assembly_queue.source_posted_at = retry.source_posted_at
+		  AND article_header_assembly_queue.article_header_id = retry.article_header_id`,
+		sourcePostedAts,
+		articleHeaderIDs,
+	); err != nil {
 		return fmt.Errorf("release %d assembly header claims for retry: %w", len(articleHeaderIDs), err)
 	}
 	return nil
@@ -3042,7 +3054,8 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			SELECT
 				bp.binary_id,
 				bp.segment_bytes,
-				bp.article_header_id
+				bp.article_header_id,
+				bp.source_posted_at
 			FROM locked_binaries lb
 			JOIN binary_parts bp ON bp.binary_id = lb.binary_id
 		),
@@ -3053,7 +3066,9 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 				ah.article_number,
 				ah.date_utc
 			FROM part_rows p
-			JOIN article_headers ah ON ah.id = p.article_header_id
+			JOIN article_headers ah
+			  ON ah.source_posted_at = p.source_posted_at
+			 AND ah.id = p.article_header_id
 		),
 		agg AS (
 			SELECT

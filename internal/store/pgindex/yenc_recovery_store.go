@@ -960,12 +960,11 @@ func (s *Store) RecordYEncRecoveryTransientFailureBatch(ctx context.Context, art
 		)
 		UPDATE yenc_recovery_work_items wi
 		SET status = 'ready',
-		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW() + INTERVAL '15 minutes'),
+		    ready_at = NOW() + INTERVAL '15 minutes',
 		    lease_owner = '',
 		    lease_expires_at = NULL,
 		    updated_at = NOW()
 		FROM requested r
-		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = r.article_header_id
 		WHERE wi.article_header_id = r.article_header_id`,
 		articleHeaderIDs,
 	); err != nil {
@@ -1345,31 +1344,12 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 
 	started = time.Now()
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE article_header_ingest_payloads
-		SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
-		    yenc_total_parts = GREATEST(yenc_total_parts, $3),
-		    yenc_file_size = GREATEST(yenc_file_size, $4),
-		    yenc_recovery_missing_count = 0,
-		    yenc_recovery_last_missing_at = NULL,
-		    yenc_recovery_retry_after = NULL
-		WHERE article_header_id = $1`,
-		in.ArticleHeaderID,
-		in.PartNumber,
-		in.TotalParts,
-		in.FileSize,
-	); err != nil {
-		return nil, 0, nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
-	}
-	if stats != nil {
-		stats.IngestPayloadUpdateDuration += time.Since(started)
-	}
-	started = time.Now()
-	if _, err := tx.ExecContext(ctx, `
 		UPDATE yenc_recovery_work_items
 		SET status = 'done',
 		    ready_at = NOW(),
 		    lease_owner = '',
 		    lease_expires_at = NULL,
+		    missing_count = 0,
 		    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
 		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
 		    yenc_file_size = GREATEST(yenc_file_size, $6),

@@ -309,7 +309,7 @@ This matrix is the schema contract for current and near-term code changes.
 | Table / Surface | Type | Primary Owner | Other Allowed Writers | Notes |
 | --- | --- | --- | --- | --- |
 | `article_headers` | canonical fact | `scrape_*` | none | Durable ingest fact row per article. Assemble does not write claim/progress state here. |
-| `article_header_ingest_payloads` | work/support | `scrape_*` | `recover_yenc` for bounded retry/support state only | Transitional raw ingest metadata; keeps raw poster/xref text. Poster materialization must not write back to this table. |
+| `article_header_ingest_payloads` | work/support | `scrape_*` | none in the target model | Transitional raw ingest metadata; keeps raw poster/xref text. Poster materialization must not write back to this table. Existing recovery retry/backoff writes are transitional debt and must not expand. |
 | `article_header_assembly_queue` | queue/work selector projection | `assemble` | `scrape_*` seed only | Canonical assemble header queue. Scrape seeds structured/general work rows; assemble claims, releases, records errors, and deletes rows after binary part assignment. |
 | `article_header_poster_refs` | derived/support projection | `poster_materialize` | none | Per-header poster dimension projection derived from raw payload poster text. |
 | `poster_materialization_queue` | queue/work | `scrape_*` seed | `poster_materialize` claim/complete only | Bounded queue that removes poster dimension writes from scrape ingest. |
@@ -827,7 +827,7 @@ Primary DBO entry points:
 Allowed reads:
 
 - `article_headers` only during bounded queue seeding/refresh
-- `article_header_ingest_payloads` only during bounded queue seeding/refresh and legacy retry compatibility writes
+- `article_header_ingest_payloads` only during bounded queue seeding/refresh and temporary legacy retry compatibility reads
 - `binary_core`
 - `binary_identity_current`
 - `binary_observation_stats`
@@ -851,6 +851,7 @@ Allowed writes:
 Not allowed:
 
 - mutating `article_headers`
+- adding new retry/progress write-backs to `article_header_ingest_payloads`
 - materializing readiness summaries directly
 - writing release catalog rows to reflect recovery progress
 - deleting `binary_core` source rows inline; purge owns terminal source deletion after archive eligibility
@@ -876,7 +877,7 @@ Current audit note:
 - transient fetch/apply failures release the queue claim with a short queue-local backoff
 - `recover_yenc` is queue-first and only seeds/backfills on hot-queue shortfall
 - seed/backfill is branch-prioritized rather than one monolithic selector
-- retry/backoff state still lives partly in `article_header_ingest_payloads`, which remains a transitional boundary debt
+- retry/backoff state still lives partly in `article_header_ingest_payloads`, which remains transitional boundary debt; new code must move this state to recovery-owned work/evidence tables instead of adding more ingest-payload writes
 
 ### `inspect_discovery`, `inspect_par2`, `inspect_nfo`, `inspect_archive`, `inspect_password`, `inspect_media`
 
@@ -1259,7 +1260,7 @@ To keep purge from becoming a new contention source:
 These are accepted transitional debts, not permanent design goals.
 
 - `article_header_ingest_payloads` still mixes ingest support state and recovery retry/backoff state
-- `assemble_*` still updates `article_headers` claim/lease and assembled markers instead of moving all assembly runtime bookkeeping into a separate work surface
+- legacy schema columns for `article_headers.assembled_at` and article-header assembly claims still exist, but active assemble code must not use or update them; `article_header_assembly_queue` is the active runtime work surface
 - `recover_yenc` and binary-recovery refinement still rewrite `release_files` and `binary_parts` when binary identity or recovered filenames change
 - `release_files` and `nzb_cache` still exist as transitional compatibility surfaces
 - `release_archive_detail_*` still exists in schema history, but active runtime writes and maintenance backfill have been removed
