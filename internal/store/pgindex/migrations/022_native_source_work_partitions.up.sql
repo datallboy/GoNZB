@@ -297,6 +297,8 @@ DECLARE
     partition_name text;
     default_name text;
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('pgindex-ensure-daily-partition:' || parent_table || ':' || day_start::text));
+
     default_name := parent_table || '_default';
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS public.%I PARTITION OF public.%I DEFAULT',

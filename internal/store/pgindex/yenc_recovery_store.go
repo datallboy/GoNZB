@@ -1811,22 +1811,6 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		return fmt.Errorf("update yenc recovered binary recovery %d: %w", binaryID, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE binary_parts
-		SET file_name = $2,
-		    part_number = CASE WHEN $4 > 0 THEN $4 ELSE part_number END,
-		    total_parts = GREATEST(total_parts, $3),
-		    updated_at = NOW()
-		WHERE binary_id = $1
-		  AND article_header_id = $5`,
-		binaryID,
-		in.FileName,
-		in.TotalParts,
-		in.PartNumber,
-		in.ArticleHeaderID,
-	); err != nil {
-		return fmt.Errorf("update yenc recovered binary parts %d: %w", binaryID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
 		UPDATE release_files
 		SET file_name = $2
 		WHERE binary_id = $1`,
