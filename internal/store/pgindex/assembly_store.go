@@ -33,6 +33,22 @@ const (
 	binaryPartUpsertBatchRecords           = 5000
 )
 
+func assemblyClaimCompletionKeyExistsSQL() string {
+	return `EXISTS (
+		SELECT 1
+		FROM binary_completion_keys bck
+		WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
+		  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
+		  AND bck.provider_id = q.provider_id
+		  AND bck.newsgroup_id = q.newsgroup_id
+		  AND bck.normalized_file_name = q.normalized_file_name
+	)`
+}
+
+func assemblyClaimStructuredMatchSQL() string {
+	return assemblyClaimCompletionKeyExistsSQL()
+}
+
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
 	ID                              int64
@@ -379,56 +395,109 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 		return nil, fmt.Errorf("unknown assembly claim lane %q", req.Lane)
 	}
 	claimToken := uuid.NewString()
+	lane := strings.TrimSpace(strings.ToLower(req.Lane))
 
-	rows, err := tx.QueryContext(ctx, `
+	selectionSQL := `
 		WITH selected_targets AS MATERIALIZED (
 			SELECT
 				q.source_posted_at,
 				q.article_header_id,
-				EXISTS (
-					SELECT 1
-					FROM binary_completion_keys bck
-					WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
-					  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
-					  AND bck.provider_id = q.provider_id
-					  AND bck.newsgroup_id = q.newsgroup_id
-					  AND bck.normalized_file_name = q.normalized_file_name
-				) AS structured_identity_binary_matched,
+				` + assemblyClaimStructuredMatchSQL() + ` AS structured_identity_binary_matched,
 				0 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND (
-				$5::text = ''
-				OR (
-					$5::text = 'lane_a'
-					AND q.queue_kind = 'structured'
-					AND EXISTS (
-						SELECT 1
-						FROM binary_completion_keys bck
-						WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
-						  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
-						  AND bck.provider_id = q.provider_id
-						  AND bck.newsgroup_id = q.newsgroup_id
-						  AND bck.normalized_file_name = q.normalized_file_name
-					)
-				)
-				OR (
-					$5::text = 'lane_b'
-					AND NOT EXISTS (
-						SELECT 1
-						FROM binary_completion_keys bck
-						WHERE bck.source_posted_at >= q.source_posted_at - INTERVAL '1 day'
-						  AND bck.source_posted_at < q.source_posted_at + INTERVAL '1 day'
-						  AND bck.provider_id = q.provider_id
-						  AND bck.newsgroup_id = q.newsgroup_id
-						  AND bck.normalized_file_name = q.normalized_file_name
-					)
-				)
+			ORDER BY q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),`
+	queryArgs := []any{
+		limit,
+		int64(req.LeaseDuration / time.Second),
+		req.Owner,
+		claimToken,
+	}
+	switch lane {
+	case AssemblyClaimLaneA:
+		selectionSQL = `
+		WITH selected_targets AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				TRUE AS structured_identity_binary_matched,
+				0 AS lane_rank
+			FROM article_header_assembly_queue q
+			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queue_kind = 'structured'
+			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
+			ORDER BY q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),`
+	case AssemblyClaimLaneB:
+		selectionSQL = `
+		WITH selected_targets AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				FALSE AS structured_identity_binary_matched,
+				1 AS lane_rank
+			FROM article_header_assembly_queue q
+			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			ORDER BY q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),`
+	case AssemblyClaimLaneCombined:
+		laneALimit := (limit * req.LaneATargetPct) / 100
+		if laneALimit < 1 && limit > 1 {
+			laneALimit = 1
+		}
+		selectionSQL = `
+		WITH lane_a AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				TRUE AS structured_identity_binary_matched,
+				0 AS lane_rank
+			FROM article_header_assembly_queue q
+			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queue_kind = 'structured'
+			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
+			ORDER BY q.article_header_id DESC
+			LIMIT $5
+			FOR UPDATE SKIP LOCKED
+		),
+		lane_b AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				FALSE AS structured_identity_binary_matched,
+				1 AS lane_rank
+			FROM article_header_assembly_queue q
+			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM lane_a a
+				WHERE a.source_posted_at = q.source_posted_at
+				  AND a.article_header_id = q.article_header_id
 			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		),
+		selected_targets AS MATERIALIZED (
+			SELECT * FROM lane_a
+			UNION ALL
+			SELECT * FROM lane_b
+			ORDER BY lane_rank ASC, article_header_id DESC
+			LIMIT $1
+		),`
+		queryArgs = append(queryArgs, laneALimit)
+	}
+
+	rows, err := tx.QueryContext(ctx, selectionSQL+`
 		claimed AS (
 			UPDATE article_header_assembly_queue q
 			SET claim_owner = $3,
@@ -448,11 +517,7 @@ func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRe
 			claimed.structured_identity_binary_matched
 		FROM claimed
 		ORDER BY claimed.lane_rank ASC, claimed.article_header_id DESC`,
-		limit,
-		int64(req.LeaseDuration/time.Second),
-		req.Owner,
-		claimToken,
-		strings.TrimSpace(strings.ToLower(req.Lane)),
+		queryArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim assembly queue batch: %w", err)
