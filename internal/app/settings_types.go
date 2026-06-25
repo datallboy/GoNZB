@@ -126,6 +126,7 @@ type IndexingRecoveryAdmissionRuntimeSettings struct {
 	AbsoluteHardQueueCap   int `json:"absolute_hard_queue_cap,omitempty"`
 	EWMAWindowMinutes      int `json:"ewma_window_minutes,omitempty"`
 	BootstrapProbesPerHour int `json:"bootstrap_probes_per_hour,omitempty"`
+	Priority0OverflowCap   int `json:"priority0_overflow_cap,omitempty"`
 }
 
 type IndexingScrapeTierRuntimeSettings struct {
