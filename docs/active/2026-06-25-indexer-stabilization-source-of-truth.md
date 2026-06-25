@@ -7,8 +7,7 @@ partitioning. Use those archived files only as historical context.
 
 ## Canonical Reference
 
-`docs/INDEXER_CURRENT_SCHEMA_AND_SYSTEM_INTERACTIONS.md` is the canonical
-long-lived reference for:
+`docs/wiki/indexer/` is the canonical long-lived reference for:
 
 - stage ownership;
 - table shapes and table ownership;
@@ -19,11 +18,9 @@ long-lived reference for:
 - release formation data contracts.
 
 If another document contradicts that reference, update or remove the
-contradiction before changing code. `docs/INDEXER_HOW_IT_WORKS.md`,
-`docs/INDEXER_RELEASE_FORMATION_PLAYBOOK.md`, and
-`docs/INDEXER_STORAGE_RETENTION_AND_PURGE.md` may provide narrative or
-operator detail, but they must defer to the canonical reference for stage/table
-ownership.
+contradiction before changing code. Root-level `docs/INDEXER_*.md` files are
+compatibility entry points and must link into the focused wiki instead of
+carrying independent, stale pipeline details.
 
 ## Sprint Goals
 
@@ -59,6 +56,9 @@ ownership.
 ## Documentation Tasks
 
 - Keep this file as the only `docs/active/*.md` sprint plan.
+- Keep durable indexer documentation in `docs/wiki/indexer/` focused by topic:
+  stage ownership, stage flow, schema/partitions, retention, release formation,
+  and operations.
 - Archive superseded active plans under
   `docs/archive/development/indexer/2026-06-25-superseded-active-plans/`.
 - Update root docs so stale text cannot reintroduce old behavior:
@@ -142,6 +142,30 @@ Complete partitioning for high-volume source/work/projection tables:
 - release-derived work: `release_family_readiness_summaries`,
   `release_ready_candidates`, `release_recovered_file_set_candidates`,
   `release_stage_dirty_families`.
+
+Native partition conversion tasks still required before signoff:
+
+- convert binary projection writers to partition-key conflict targets:
+  `binary_observation_stats`, `binary_identity_current`,
+  `binary_recovery_current`, `binary_lifecycle`, `binary_completion_keys`,
+  `binary_grouping_evidence`, `binary_projection_events`, and
+  `binary_superseded_sources`;
+- convert inspect work/evidence writers to partition-key conflict targets where
+  uniqueness is used: `binary_inspection_ready_queue`, `binary_inspections`,
+  `binary_inspection_artifacts`, `binary_archive_entries`,
+  `binary_text_evidence`, `binary_media_streams`, `binary_par2_sets`, and
+  `binary_par2_targets`;
+- convert release-derived work writers to partition-key conflict targets:
+  `release_family_readiness_summaries`, `release_ready_candidates`,
+  `release_recovered_file_set_candidates`, and
+  `release_stage_dirty_families`;
+- add native partition parent migration for the remaining tables only after the
+  corresponding writer conflict targets include `source_posted_at`;
+- update guardrail tests so old conflict targets such as
+  `ON CONFLICT (binary_id)`, `ON CONFLICT (stage_name, binary_id)`, and
+  `ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key)` cannot return
+  in partitioned writer files;
+- validate fresh migrations in PostgreSQL and run the focused Go test suite.
 
 Retention drop order:
 

@@ -1638,15 +1638,14 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			0,
 			0,
 			r.posted_at,
-			r.posted_at,
+			e.source_posted_at,
 			NOW(),
 			NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET total_parts = GREATEST(binary_observation_stats.total_parts, EXCLUDED.total_parts),
 		    posted_at = COALESCE(binary_observation_stats.posted_at, EXCLUDED.posted_at),
-		    source_posted_at = COALESCE(binary_observation_stats.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_observation_stats batch: %w", err)
 	}
@@ -1710,11 +1709,11 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.grouping_summary_kind,
 			r.grouping_summary_status,
 			r.grouping_summary_fallback_used,
-			r.posted_at,
+			e.source_posted_at,
 			NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET source_release_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.source_release_key ELSE binary_identity_current.source_release_key END,
 		    release_family_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.release_family_key ELSE binary_identity_current.release_family_key END,
 		    file_set_key = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.file_set_key ELSE binary_identity_current.file_set_key END,
@@ -1741,7 +1740,6 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    grouping_summary_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_kind ELSE binary_identity_current.grouping_summary_kind END,
 		    grouping_summary_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_status ELSE binary_identity_current.grouping_summary_status END,
 		    grouping_summary_fallback_used = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_fallback_used ELSE binary_identity_current.grouping_summary_fallback_used END,
-		    source_posted_at = COALESCE(binary_identity_current.source_posted_at, EXCLUDED.source_posted_at),
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
 	}
@@ -1757,11 +1755,11 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			e.binary_id,
 			r.provider_id,
 			r.newsgroup_id,
-			r.posted_at,
+			e.source_posted_at,
 			NOW()
 		FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		ON CONFLICT (binary_id) DO NOTHING`); err != nil {
+		ON CONFLICT (source_posted_at, binary_id) DO NOTHING`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_recovery_current seed batch: %w", err)
 	}
 	if _, err := runner.ExecContext(ctx, `
@@ -1769,6 +1767,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			binary_id,
 			provider_id,
 			newsgroup_id,
+			source_posted_at,
 			lifecycle_status,
 			updated_at
 		)
@@ -1776,11 +1775,12 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			e.binary_id,
 			r.provider_id,
 			r.newsgroup_id,
+			e.source_posted_at,
 			'active',
 			NOW()
 	FROM tmp_upsert_binaries r
 		JOIN tmp_existing_binaries e ON e.ordinal = r.ordinal
-		ON CONFLICT (binary_id) DO NOTHING`); err != nil {
+		ON CONFLICT (source_posted_at, binary_id) DO NOTHING`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_lifecycle seed batch: %w", err)
 	}
 	if err := syncBinaryCompletionKeysForStagedBinaries(ctx, runner); err != nil {
@@ -1801,7 +1801,9 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			r.newsgroup_id
 		FROM tmp_existing_binaries e
 		JOIN tmp_upsert_binaries r ON r.ordinal = e.ordinal
-		JOIN binary_identity_current bic ON bic.binary_id = e.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.binary_id = e.binary_id
+		 AND bic.source_posted_at = e.source_posted_at
 		ORDER BY e.ordinal`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query persisted binaries batch: %w", err)
@@ -2163,6 +2165,7 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 		SELECT
 			r.ordinal,
 			bc.binary_id,
+			COALESCE(bc.source_posted_at, r.posted_at, NOW()) AS source_posted_at,
 			COALESCE(bic.release_family_key, '') AS existing_release_family_key,
 			COALESCE(bic.base_stem, '') AS existing_base_stem,
 			COALESCE(bic.expected_file_count, 0) AS existing_expected_file_count
@@ -2171,7 +2174,9 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 		  ON bc.provider_id = r.provider_id
 		 AND bc.newsgroup_id = r.newsgroup_id
 		 AND bc.binary_key = r.binary_key
-		LEFT JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id`); err != nil {
+		LEFT JOIN binary_identity_current bic
+		  ON bic.binary_id = bc.binary_id
+		 AND bic.source_posted_at = COALESCE(bc.source_posted_at, r.posted_at, NOW())`); err != nil {
 		return fmt.Errorf("stage existing binary upsert rows: %w", err)
 	}
 	if _, err := runner.ExecContext(ctx, `
@@ -2195,6 +2200,7 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binary_completion_keys (
 			binary_id,
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			normalized_file_name,
@@ -2207,6 +2213,7 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 		)
 		SELECT
 			bic.binary_id,
+			bic.source_posted_at,
 			bic.provider_id,
 			bic.newsgroup_id,
 			lower(btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, '')))),
@@ -2220,12 +2227,16 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 			bos.posted_at,
 			NOW()
 		FROM tmp_existing_binaries e
-		JOIN binary_identity_current bic ON bic.binary_id = e.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = e.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.binary_id = e.binary_id
+		 AND bic.source_posted_at = e.source_posted_at
+		JOIN binary_observation_stats bos
+		  ON bos.binary_id = e.binary_id
+		 AND bos.source_posted_at = e.source_posted_at
 		WHERE bos.total_parts > 0
 		  AND bos.observed_parts < bos.total_parts
 		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
 		    normalized_file_name = EXCLUDED.normalized_file_name,
@@ -2305,6 +2316,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 		)
 		INSERT INTO binary_completion_keys (
 			binary_id,
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			normalized_file_name,
@@ -2317,6 +2329,7 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 		)
 		SELECT
 			bic.binary_id,
+			bic.source_posted_at,
 			bic.provider_id,
 			bic.newsgroup_id,
 			lower(btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, '')))),
@@ -2330,12 +2343,18 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 			bos.posted_at,
 			NOW()
 		FROM requested r
-		JOIN binary_identity_current bic ON bic.binary_id = r.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = r.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.binary_id = r.binary_id
+		JOIN binary_core bc
+		  ON bc.binary_id = bic.binary_id
+		 AND COALESCE(bc.source_posted_at, bic.source_posted_at) = bic.source_posted_at
+		JOIN binary_observation_stats bos
+		  ON bos.binary_id = r.binary_id
+		 AND bos.source_posted_at = bic.source_posted_at
 		WHERE bos.total_parts > 0
 		  AND bos.observed_parts < bos.total_parts
 		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
 		    normalized_file_name = EXCLUDED.normalized_file_name,
@@ -2457,19 +2476,31 @@ func upsertBinaryGroupingEvidenceBatch(ctx context.Context, runner sqlExecQuerye
 	args := make([]any, 0, len(records)*2)
 	for i, record := range records {
 		base := (i * 2) + 1
-		values = append(values, fmt.Sprintf("($%d::bigint,'matcher','v1',$%d::jsonb,NOW())", base, base+1))
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::jsonb)", base, base+1))
 		args = append(args, record.BinaryID, record.Payload)
 	}
 	if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
+		WITH requested(binary_id, payload_json) AS (
+			VALUES %s
+		)
 		INSERT INTO binary_grouping_evidence (
 			binary_id,
+			source_posted_at,
 			evidence_source,
 			evidence_version,
 			payload_json,
 			updated_at
 		)
-		VALUES %s
-		ON CONFLICT (binary_id) DO UPDATE
+		SELECT
+			r.binary_id,
+			COALESCE(bc.source_posted_at, NOW()),
+			'matcher',
+			'v1',
+			r.payload_json,
+			NOW()
+		FROM requested r
+		JOIN binary_core bc ON bc.binary_id = r.binary_id
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET payload_json = EXCLUDED.payload_json,
 		    updated_at = NOW()
 		WHERE binary_grouping_evidence.payload_json IS DISTINCT FROM EXCLUDED.payload_json`, strings.Join(values, ",")), args...); err != nil {
@@ -2497,13 +2528,22 @@ func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int6
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_grouping_evidence (
 			binary_id,
+			source_posted_at,
 			evidence_source,
 			evidence_version,
 			payload_json,
 			updated_at
 		)
-		VALUES ($1, 'matcher', 'v1', $2, NOW())
-		ON CONFLICT (binary_id) DO UPDATE
+		SELECT
+			bc.binary_id,
+			COALESCE(bc.source_posted_at, NOW()),
+			'matcher',
+			'v1',
+			$2,
+			NOW()
+		FROM binary_core bc
+		WHERE bc.binary_id = $1
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET payload_json = EXCLUDED.payload_json,
 		    updated_at = NOW()
 		WHERE binary_grouping_evidence.payload_json IS DISTINCT FROM EXCLUDED.payload_json`,
@@ -3043,27 +3083,30 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		WITH requested(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
 		),
-		locked_binaries AS MATERIALIZED (
-			SELECT bos.binary_id
-			FROM binary_observation_stats bos
-			JOIN requested r ON r.binary_id = bos.binary_id
-			ORDER BY bos.binary_id
+			locked_binaries AS MATERIALIZED (
+				SELECT bos.binary_id, bos.source_posted_at
+				FROM binary_observation_stats bos
+				JOIN requested r ON r.binary_id = bos.binary_id
+				ORDER BY bos.binary_id
 			FOR UPDATE OF bos
 		),
 		part_rows AS MATERIALIZED (
 			SELECT
-				bp.binary_id,
-				bp.segment_bytes,
-				bp.article_header_id,
-				bp.source_posted_at
-			FROM locked_binaries lb
-			JOIN binary_parts bp ON bp.binary_id = lb.binary_id
+					bp.binary_id,
+					bp.segment_bytes,
+					bp.article_header_id,
+					bp.source_posted_at
+				FROM locked_binaries lb
+				JOIN binary_parts bp
+				  ON bp.binary_id = lb.binary_id
+				 AND bp.source_posted_at = lb.source_posted_at
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT
-				p.binary_id,
-				p.segment_bytes,
-				ah.article_number,
+					p.binary_id,
+					p.source_posted_at,
+					p.segment_bytes,
+					ah.article_number,
 				ah.date_utc
 			FROM part_rows p
 			JOIN article_headers ah
@@ -3072,15 +3115,16 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		),
 		agg AS (
 			SELECT
-				p.binary_id,
-				COUNT(*)::INTEGER AS observed_parts,
+					p.binary_id,
+					p.source_posted_at,
+					COUNT(*)::INTEGER AS observed_parts,
 				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(p.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(p.article_number), 0)::BIGINT AS last_article_number,
 				MIN(p.date_utc) AS posted_at
 			FROM part_rows_with_headers p
-			GROUP BY p.binary_id
-		),
+				GROUP BY p.binary_id, p.source_posted_at
+			),
 		updated AS (
 			UPDATE binary_observation_stats bos
 			SET observed_parts = agg.observed_parts,
@@ -3090,12 +3134,14 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			    posted_at = COALESCE(agg.posted_at, bos.posted_at),
 			    refreshed_at = NOW(),
 			    updated_at = NOW()
-			FROM agg
-			WHERE bos.binary_id = agg.binary_id
-			RETURNING
-				bos.binary_id,
-				bos.provider_id,
-				bos.newsgroup_id
+				FROM agg
+				WHERE bos.binary_id = agg.binary_id
+				  AND bos.source_posted_at = agg.source_posted_at
+				RETURNING
+					bos.binary_id,
+					bos.source_posted_at,
+					bos.provider_id,
+					bos.newsgroup_id
 		)
 		SELECT
 			u.provider_id,
@@ -3105,7 +3151,9 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			COALESCE(bic.expected_file_count, 0),
 			COALESCE(bic.expected_archive_file_count, 0)
 		FROM updated u
-		JOIN binary_identity_current bic ON bic.binary_id = u.binary_id`, requestedBinaryIDs)
+			JOIN binary_identity_current bic
+			  ON bic.binary_id = u.binary_id
+			 AND bic.source_posted_at = u.source_posted_at`, requestedBinaryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
 	}

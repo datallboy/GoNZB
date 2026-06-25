@@ -1323,6 +1323,7 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		}
 		record := yencRecoverySupersededSource{
 			SourceBinaryID:   in.BinaryID,
+			SourcePostedAt:   seed.SourcePostedAt,
 			TargetBinaryID:   targetID,
 			ProviderID:       seed.ProviderID,
 			NewsgroupID:      seed.NewsgroupID,
@@ -1510,6 +1511,7 @@ func dedupeYEncRecoveryInt64s(in []int64) []int64 {
 
 type yencRecoveryBinarySeed struct {
 	ID               int64
+	SourcePostedAt   time.Time
 	ProviderID       int64
 	NewsgroupID      int64
 	ReleaseFamilyKey string
@@ -1519,6 +1521,7 @@ type yencRecoveryBinarySeed struct {
 
 type yencRecoverySupersededSource struct {
 	SourceBinaryID   int64
+	SourcePostedAt   time.Time
 	TargetBinaryID   int64
 	ProviderID       int64
 	NewsgroupID      int64
@@ -1530,18 +1533,21 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 	var seed yencRecoveryBinarySeed
 	err := tx.QueryRowContext(ctx, `
 		SELECT
-			bc.binary_id,
-			bc.provider_id,
-			bc.newsgroup_id,
+				bc.binary_id,
+				COALESCE(bc.source_posted_at, bic.source_posted_at, NOW()),
+				bc.provider_id,
+				bc.newsgroup_id,
 			bic.release_family_key,
 			bic.base_stem,
 			bc.binary_key
-		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		WHERE bc.binary_id = $1
-		FOR UPDATE OF bc, bic`,
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.binary_id = bc.binary_id
+			 AND bic.source_posted_at = COALESCE(bc.source_posted_at, bic.source_posted_at)
+			WHERE bc.binary_id = $1
+			FOR UPDATE OF bc, bic`,
 		binaryID,
-	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
+	).Scan(&seed.ID, &seed.SourcePostedAt, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
 	if err == sql.ErrNoRows {
 		return seed, fmt.Errorf("%w: %d for yenc recovery", ErrBinaryNotFound, binaryID)
 	}
@@ -1612,7 +1618,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	sort.Slice(sourceIDs, func(i, j int) bool { return sourceIDs[i] < sourceIDs[j] })
 
 	values := make([]string, 0, len(sourceIDs))
-	args := make([]any, 0, len(sourceIDs)*7)
+	args := make([]any, 0, len(sourceIDs)*8)
 	for _, sourceID := range sourceIDs {
 		record := bySource[sourceID]
 		targetBinaryKey, ok := targetKeys[record.TargetBinaryID]
@@ -1620,9 +1626,10 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 			return fmt.Errorf("load yenc superseded target binary %d: %w", record.TargetBinaryID, sql.ErrNoRows)
 		}
 		base := len(args) + 1
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,'yenc_recovery_merge',NOW())", base, base+1, base+2, base+3, base+4, base+5, base+6))
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,'yenc_recovery_merge',NOW())", base, base+1, base+2, base+3, base+4, base+5, base+6, base+7))
 		args = append(args,
 			record.SourceBinaryID,
+			record.SourcePostedAt,
 			record.TargetBinaryID,
 			record.ProviderID,
 			record.NewsgroupID,
@@ -1634,6 +1641,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_superseded_sources (
 			source_binary_id,
+			source_posted_at,
 			target_binary_id,
 			provider_id,
 			newsgroup_id,
@@ -1644,7 +1652,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 			superseded_at
 		)
 		VALUES `+strings.Join(values, ",")+`
-		ON CONFLICT (source_binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, source_binary_id) DO UPDATE
 		SET target_binary_id = EXCLUDED.target_binary_id,
 		    provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
@@ -1664,19 +1672,20 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	for _, sourceID := range sourceIDs {
 		record := bySource[sourceID]
 		base := len(args) + 1
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,'superseded',NOW())", base, base+1, base+2))
-		args = append(args, record.SourceBinaryID, record.ProviderID, record.NewsgroupID)
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,'superseded',NOW())", base, base+1, base+2, base+3))
+		args = append(args, record.SourceBinaryID, record.SourcePostedAt, record.ProviderID, record.NewsgroupID)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_lifecycle (
 			binary_id,
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			lifecycle_status,
 			updated_at
 		)
 		VALUES `+strings.Join(values, ",")+`
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
 		    lifecycle_status = 'superseded',
