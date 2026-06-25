@@ -93,8 +93,8 @@ func parsePositiveInt64(raw string) (int64, error) {
 	return n, nil
 }
 
-func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, providerID, sourceNewsgroupID int64, batch []preparedArticleHeaderInsert, resolvedIDs []int64) error {
-	if len(batch) == 0 || len(resolvedIDs) == 0 {
+func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, providerID, sourceNewsgroupID int64, batch []preparedArticleHeaderInsert, resolvedHeaders []articleHeaderResolution) error {
+	if len(batch) == 0 || len(resolvedHeaders) == 0 {
 		return nil
 	}
 	type row struct {
@@ -107,9 +107,10 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 	rows := make([]row, 0, len(batch)*2)
 	seen := make(map[string]struct{}, len(batch)*2)
 	for idx, item := range batch {
-		if idx >= len(resolvedIDs) || resolvedIDs[idx] <= 0 {
+		if idx >= len(resolvedHeaders) || resolvedHeaders[idx].ID <= 0 {
 			continue
 		}
+		resolvedHeader := resolvedHeaders[idx]
 		refs := parseXrefGroupRefs(item.Xref)
 		if len(refs) == 0 {
 			continue
@@ -119,17 +120,18 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			if groupName == "" {
 				continue
 			}
-			key := fmt.Sprintf("%d\x00%s", resolvedIDs[idx], groupName)
+			key := fmt.Sprintf("%d\x00%s", resolvedHeader.ID, groupName)
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
+			sourcePostedAt := resolvedHeader.SourcePostedAt
 			rows = append(rows, row{
-				articleHeaderID:    resolvedIDs[idx],
+				articleHeaderID:    resolvedHeader.ID,
 				messageID:          item.MessageID,
 				observedGroupName:  groupName,
 				observedArticleNum: ref.ArticleNumber,
-				sourcePostedAt:     item.DateUTC,
+				sourcePostedAt:     &sourcePostedAt,
 			})
 		}
 	}

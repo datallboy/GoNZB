@@ -816,6 +816,53 @@ export type AdminFileDetail = {
   articles: AdminFileArticle[]
 }
 
+export type AdminBinarySummary = {
+  binary_id: number
+  release_id: string
+  release_title: string
+  group_name: string
+  release_name: string
+  binary_name: string
+  file_name: string
+  family_kind: string
+  identity_strength: string
+  readiness_bucket: string
+  match_status: string
+  match_confidence: number
+  posted_at?: string
+  total_parts: number
+  observed_parts: number
+  completion_pct: number
+  total_bytes: number
+  recovered_source: string
+  recovered_file_name: string
+  yenc_status: string
+  yenc_priority_rank: number
+  inspection_count: number
+  updated_at: string
+}
+
+export type AdminBinaryListResponse = {
+  items: AdminBinarySummary[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export type AdminBinaryListParams = {
+  q?: string
+  newsgroup?: string
+  identity_strength?: string
+  readiness_bucket?: string
+  match_status?: string
+  release_state?: string
+  sort?: string
+  limit?: number
+  offset?: number
+}
+
 export type AdminBinaryInspectionArtifact = {
   stage_name: string
   artifact_role: string

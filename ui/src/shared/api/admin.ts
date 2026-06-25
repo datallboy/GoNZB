@@ -11,6 +11,8 @@ import type {
   IndexerStorageStatus,
   IndexerStageThroughput,
   AdminReleaseDetailResponse,
+  AdminBinaryListParams,
+  AdminBinaryListResponse,
   AdminBinaryDetail,
   AdminFileDetail,
   AdminReleaseListResponse,
@@ -294,6 +296,19 @@ export function getAdminReleases(params: AdminReleaseListParams) {
 export function getAdminRelease(id: string) {
   return apiRequest<AdminReleaseDetailResponse>(
     `/api/v1/admin/indexer/releases/${id}`,
+  )
+}
+
+export function getAdminBinaries(params: AdminBinaryListParams) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  return apiRequest<AdminBinaryListResponse>(
+    `/api/v1/admin/indexer/binaries?${query.toString()}`,
   )
 }
 

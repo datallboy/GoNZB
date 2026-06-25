@@ -58,6 +58,11 @@ type preparedArticleHeaderInsert struct {
 	Parsed        parsedArticleMetadata
 }
 
+type articleHeaderResolution struct {
+	ID             int64
+	SourcePostedAt time.Time
+}
+
 type payloadUpsertRow struct {
 	ArticleHeaderID int64
 	ArticleNumber   int64
@@ -958,7 +963,7 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			defer tx.Rollback()
 
 			batchInserted = 0
-			resolvedIDs, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
+			resolvedHeaders, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
 			if err != nil {
 				return err
 			}
@@ -966,10 +971,12 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			payloadRows := make([]payloadUpsertRow, 0, len(batch))
 			posterQueueRows := make([]posterMaterializationQueueRow, 0, len(batch))
 			for idx, item := range batch {
-				articleHeaderID := resolvedIDs[idx]
+				resolvedHeader := resolvedHeaders[idx]
+				articleHeaderID := resolvedHeader.ID
 				if articleHeaderID <= 0 {
 					return fmt.Errorf("insert article header %d: no article header id returned", item.ArticleNumber)
 				}
+				sourcePostedAt := resolvedHeader.SourcePostedAt
 
 				payloadRows = append(payloadRows, payloadUpsertRow{
 					ArticleHeaderID: articleHeaderID,
@@ -985,13 +992,13 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 					YEncPart:        item.Parsed.YEncPart,
 					YEncTotalParts:  item.Parsed.YEncTotalParts,
 					FileSize:        item.Parsed.FileSize,
-					SourcePostedAt:  item.DateUTC,
+					SourcePostedAt:  &sourcePostedAt,
 				})
 				if item.Poster != "" {
 					posterQueueRows = append(posterQueueRows, posterMaterializationQueueRow{
 						ArticleHeaderID: articleHeaderID,
 						PosterName:      item.Poster,
-						SourcePostedAt:  item.DateUTC,
+						SourcePostedAt:  &sourcePostedAt,
 					})
 				}
 			}
@@ -1005,7 +1012,7 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			if err := upsertPosterMaterializationQueueBatch(ctx, tx, posterQueueRows); err != nil {
 				return err
 			}
-			if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs); err != nil {
+			if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedHeaders); err != nil {
 				return err
 			}
 
@@ -1025,7 +1032,7 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 	return inserted, nil
 }
 
-func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]int64, error) {
+func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]articleHeaderResolution, error) {
 	query := strings.Builder{}
 	query.WriteString(`
 		WITH requested (
@@ -1073,6 +1080,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			SELECT
 				r.ord,
 				ah.id,
+				ah.source_posted_at,
 				0 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
@@ -1084,6 +1092,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			SELECT
 				r.ord,
 				ah.id,
+				ah.source_posted_at,
 				1 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
@@ -1119,12 +1128,13 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				WHERE ec.ord = r.ord
 			)
 			ON CONFLICT DO NOTHING
-			RETURNING id, newsgroup_id, article_number, message_id
+			RETURNING id, newsgroup_id, article_number, message_id, source_posted_at
 		),
 		inserted_candidates AS (
 			SELECT
 				r.ord,
 				i.id,
+				i.source_posted_at,
 				0 AS match_rank
 			FROM requested r
 			JOIN inserted i
@@ -1136,6 +1146,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			SELECT
 				r.ord,
 				i.id,
+				i.source_posted_at,
 				1 AS match_rank
 			FROM requested r
 			JOIN inserted i
@@ -1145,11 +1156,13 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		resolved AS (
 			SELECT DISTINCT ON (candidate.ord)
 				candidate.ord,
-				candidate.id
+				candidate.id,
+				candidate.source_posted_at
 			FROM (
 				SELECT
 					ic.ord,
 					ic.id,
+					ic.source_posted_at,
 					0 AS source_rank,
 					ic.match_rank
 				FROM inserted_candidates ic
@@ -1159,6 +1172,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				SELECT
 					ec.ord,
 					ec.id,
+					ec.source_posted_at,
 					1 AS source_rank,
 					ec.match_rank
 				FROM existing_candidates ec
@@ -1167,7 +1181,8 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		)
 		SELECT
 			ord,
-			id
+			id,
+			source_posted_at
 		FROM resolved
 		ORDER BY ord`)
 
@@ -1177,27 +1192,28 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 	}
 	defer rows.Close()
 
-	resolvedIDs := make([]int64, len(batch))
+	resolvedHeaders := make([]articleHeaderResolution, len(batch))
 	var count int
 	for rows.Next() {
 		var (
-			ord int
-			id  int64
+			ord            int
+			id             int64
+			sourcePostedAt time.Time
 		)
-		if err := rows.Scan(&ord, &id); err != nil {
+		if err := rows.Scan(&ord, &id, &sourcePostedAt); err != nil {
 			return nil, fmt.Errorf("scan article header ids batch: %w", err)
 		}
 		if ord < 0 || ord >= len(batch) {
 			return nil, fmt.Errorf("scan article header ids batch: invalid ord %d", ord)
 		}
-		resolvedIDs[ord] = id
+		resolvedHeaders[ord] = articleHeaderResolution{ID: id, SourcePostedAt: sourcePostedAt}
 		count++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate article header ids batch: %w", err)
 	}
 	if count != len(batch) {
-		resolvedIDs, count, err = resolveArticleHeaderIDsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedIDs)
+		resolvedHeaders, count, err = resolveArticleHeaderIDsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedHeaders)
 		if err != nil {
 			return nil, err
 		}
@@ -1206,12 +1222,12 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		}
 	}
 
-	return resolvedIDs, nil
+	return resolvedHeaders, nil
 }
 
-func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert, resolvedIDs []int64) ([]int64, int, error) {
-	if len(resolvedIDs) != len(batch) {
-		resolvedIDs = make([]int64, len(batch))
+func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert, resolvedHeaders []articleHeaderResolution) ([]articleHeaderResolution, int, error) {
+	if len(resolvedHeaders) != len(batch) {
+		resolvedHeaders = make([]articleHeaderResolution, len(batch))
 	}
 
 	query := strings.Builder{}
@@ -1249,6 +1265,7 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 			SELECT
 				r.ord,
 				ah.id,
+				ah.source_posted_at,
 				0 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
@@ -1260,6 +1277,7 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 			SELECT
 				r.ord,
 				ah.id,
+				ah.source_posted_at,
 				1 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
@@ -1269,13 +1287,15 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 		resolved AS (
 			SELECT DISTINCT ON (ord)
 				ord,
-				id
+				id,
+				source_posted_at
 			FROM candidates
 			ORDER BY ord, match_rank, id
 		)
 		SELECT
 			ord,
-			id
+			id,
+			source_posted_at
 		FROM resolved
 		ORDER BY ord`)
 
@@ -1288,23 +1308,24 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 	count := 0
 	for rows.Next() {
 		var (
-			ord int
-			id  int64
+			ord            int
+			id             int64
+			sourcePostedAt time.Time
 		)
-		if err := rows.Scan(&ord, &id); err != nil {
+		if err := rows.Scan(&ord, &id, &sourcePostedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan resolved article header ids batch: %w", err)
 		}
 		if ord < 0 || ord >= len(batch) {
 			return nil, 0, fmt.Errorf("scan resolved article header ids batch: invalid ord %d", ord)
 		}
-		resolvedIDs[ord] = id
+		resolvedHeaders[ord] = articleHeaderResolution{ID: id, SourcePostedAt: sourcePostedAt}
 		count++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterate resolved article header ids batch: %w", err)
 	}
 
-	return resolvedIDs, count, nil
+	return resolvedHeaders, count, nil
 }
 
 func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []payloadUpsertRow) error {

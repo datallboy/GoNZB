@@ -210,6 +210,10 @@ func (s *stubIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pg
 	return s.binary, nil
 }
 
+func (s *stubIndexerService) ListBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error) {
+	return nil, 0, nil
+}
+
 func (s *stubIndexerService) GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error) {
 	return s.file, nil
 }

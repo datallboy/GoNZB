@@ -398,6 +398,44 @@ type IndexerBinaryDetail struct {
 	Parts              []IndexerBinaryPartSummary               `json:"parts"`
 }
 
+type IndexerBinaryListParams struct {
+	Query            string
+	GroupName        string
+	IdentityStrength string
+	ReadinessBucket  string
+	MatchStatus      string
+	ReleaseState     string
+	Sort             string
+	Limit            int
+	Offset           int
+}
+
+type IndexerBinarySummary struct {
+	BinaryID          int64      `json:"binary_id"`
+	ReleaseID         string     `json:"release_id"`
+	ReleaseTitle      string     `json:"release_title"`
+	GroupName         string     `json:"group_name"`
+	ReleaseName       string     `json:"release_name"`
+	BinaryName        string     `json:"binary_name"`
+	FileName          string     `json:"file_name"`
+	FamilyKind        string     `json:"family_kind"`
+	IdentityStrength  string     `json:"identity_strength"`
+	ReadinessBucket   string     `json:"readiness_bucket"`
+	MatchStatus       string     `json:"match_status"`
+	MatchConfidence   float64    `json:"match_confidence"`
+	PostedAt          *time.Time `json:"posted_at,omitempty"`
+	TotalParts        int        `json:"total_parts"`
+	ObservedParts     int        `json:"observed_parts"`
+	CompletionPct     float64    `json:"completion_pct"`
+	TotalBytes        int64      `json:"total_bytes"`
+	RecoveredSource   string     `json:"recovered_source"`
+	RecoveredFileName string     `json:"recovered_file_name"`
+	YEncStatus        string     `json:"yenc_status"`
+	YEncPriorityRank  int        `json:"yenc_priority_rank"`
+	InspectionCount   int        `json:"inspection_count"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
 type IndexerFileDetail struct {
 	FileID           int64                       `json:"file_id"`
 	ReleaseID        string                      `json:"release_id"`
@@ -2498,6 +2536,184 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	item.Parts = parts
 
 	return &item, nil
+}
+
+func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryListParams) ([]IndexerBinarySummary, int, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	where := []string{"1=1"}
+	args := []any{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if q := strings.TrimSpace(params.Query); q != "" {
+		needle := "%" + strings.ToLower(q) + "%"
+		where = append(where, fmt.Sprintf(`(
+			LOWER(COALESCE(bic.binary_name, '')) LIKE %s
+			OR LOWER(COALESCE(bic.file_name, '')) LIKE %s
+			OR LOWER(COALESCE(bic.release_name, '')) LIKE %s
+			OR LOWER(COALESCE(bc.binary_key, '')) LIKE %s
+			OR bc.binary_id::text = %s
+		)`, addArg(needle), addArg(needle), addArg(needle), addArg(needle), addArg(strings.TrimSpace(params.Query))))
+	}
+	if group := strings.TrimSpace(params.GroupName); group != "" {
+		where = append(where, "LOWER(ng.group_name) LIKE "+addArg("%"+strings.ToLower(group)+"%"))
+	}
+	if value := strings.TrimSpace(params.IdentityStrength); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.identity_strength, '')) = "+addArg(strings.ToLower(value)))
+	}
+	if value := strings.TrimSpace(params.ReadinessBucket); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.grouping_summary_status, '')) = "+addArg(strings.ToLower(value)))
+	}
+	if value := strings.TrimSpace(params.MatchStatus); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.match_status, '')) = "+addArg(strings.ToLower(value)))
+	}
+	switch strings.ToLower(strings.TrimSpace(params.ReleaseState)) {
+	case "formed":
+		where = append(where, "rf.release_id IS NOT NULL")
+	case "unformed":
+		where = append(where, "rf.release_id IS NULL")
+	}
+
+	orderBy := "COALESCE(bos.posted_at, bic.updated_at) DESC NULLS LAST, bc.binary_id DESC"
+	switch strings.ToLower(strings.TrimSpace(params.Sort)) {
+	case "updated_asc":
+		orderBy = "GREATEST(bic.updated_at, bos.updated_at) ASC, bc.binary_id ASC"
+	case "updated_desc":
+		orderBy = "GREATEST(bic.updated_at, bos.updated_at) DESC, bc.binary_id DESC"
+	case "completion_asc":
+		orderBy = "completion_pct ASC, bc.binary_id DESC"
+	case "completion_desc":
+		orderBy = "completion_pct DESC, bc.binary_id DESC"
+	case "parts_desc":
+		orderBy = "COALESCE(bos.total_parts, 0) DESC, bc.binary_id DESC"
+	case "parts_asc":
+		orderBy = "COALESCE(bos.total_parts, 0) ASC, bc.binary_id DESC"
+	}
+
+	whereSQL := strings.Join(where, " AND ")
+	countQuery := `
+		SELECT COUNT(*)
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		WHERE ` + whereSQL
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count indexer binaries: %w", err)
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			bc.binary_id,
+			COALESCE(rf.release_id, ''),
+			COALESCE(r.title, ''),
+			COALESCE(ng.group_name, ''),
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.family_kind, ''),
+			COALESCE(bic.identity_strength, ''),
+			COALESCE(bic.grouping_summary_status, ''),
+			COALESCE(bic.match_status, ''),
+			COALESCE(bic.match_confidence, 0),
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
+			CASE
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			COALESCE(bos.total_bytes, 0),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			GREATEST(bic.updated_at, bos.updated_at)
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.binary_id = bc.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.binary_id = bc.binary_id
+		) ins ON TRUE
+		WHERE `+whereSQL+`
+		ORDER BY `+orderBy+`
+		LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items := []IndexerBinarySummary{}
+	for rows.Next() {
+		var item IndexerBinarySummary
+		var postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.GroupName,
+			&item.ReleaseName,
+			&item.BinaryName,
+			&item.FileName,
+			&item.FamilyKind,
+			&item.IdentityStrength,
+			&item.ReadinessBucket,
+			&item.MatchStatus,
+			&item.MatchConfidence,
+			&postedAt,
+			&item.TotalParts,
+			&item.ObservedParts,
+			&item.CompletionPct,
+			&item.TotalBytes,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
+			&item.YEncStatus,
+			&item.YEncPriorityRank,
+			&item.InspectionCount,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan indexer binary summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate indexer binaries: %w", err)
+	}
+	return items, total, nil
 }
 
 func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*IndexerFileDetail, error) {
