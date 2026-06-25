@@ -2582,6 +2582,10 @@ func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryLis
 		offset = 0
 	}
 
+	if isRecentIndexerBinaryFastPath(params) {
+		return s.listRecentIndexerBinariesFast(ctx, limit, offset)
+	}
+
 	where := []string{"1=1"}
 	args := []any{}
 	addArg := func(value any) string {
@@ -2757,6 +2761,144 @@ func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryLis
 		return nil, 0, fmt.Errorf("iterate indexer binaries: %w", err)
 	}
 	return items, total, nil
+}
+
+func isRecentIndexerBinaryFastPath(params IndexerBinaryListParams) bool {
+	if strings.TrimSpace(params.Query) != "" ||
+		strings.TrimSpace(params.GroupName) != "" ||
+		strings.TrimSpace(params.IdentityStrength) != "" ||
+		strings.TrimSpace(params.ReadinessBucket) != "" ||
+		strings.TrimSpace(params.MatchStatus) != "" ||
+		strings.TrimSpace(params.ReleaseState) != "" {
+		return false
+	}
+	sort := strings.ToLower(strings.TrimSpace(params.Sort))
+	return sort == "" || sort == "updated_desc"
+}
+
+func (s *Store) listRecentIndexerBinariesFast(ctx context.Context, limit, offset int) ([]IndexerBinarySummary, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_core`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count recent indexer binaries: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH recent_core AS (
+			SELECT binary_id, source_posted_at, newsgroup_id
+			FROM binary_core
+			ORDER BY binary_id DESC
+			LIMIT $1 OFFSET $2
+		)
+		SELECT
+			bc.binary_id,
+			COALESCE(rf.release_id, ''),
+			COALESCE(r.title, ''),
+			COALESCE(ng.group_name, ''),
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.family_kind, ''),
+			COALESCE(bic.identity_strength, ''),
+			COALESCE(bic.grouping_summary_status, ''),
+			COALESCE(bic.match_status, ''),
+			COALESCE(bic.match_confidence, 0),
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
+			CASE
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			COALESCE(bos.total_bytes, 0),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			GREATEST(COALESCE(bic.updated_at, TIMESTAMPTZ 'epoch'), COALESCE(bos.updated_at, TIMESTAMPTZ 'epoch')) AS updated_at
+		FROM recent_core bc
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bc.source_posted_at
+		 AND brc.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.source_posted_at = bc.source_posted_at
+			  AND wi.binary_id = bc.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.source_posted_at = bc.source_posted_at
+			  AND bi.binary_id = bc.binary_id
+		) ins ON TRUE
+		ORDER BY bc.binary_id DESC`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list recent indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanIndexerBinarySummaries(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func scanIndexerBinarySummaries(rows *sql.Rows) ([]IndexerBinarySummary, error) {
+	items := []IndexerBinarySummary{}
+	for rows.Next() {
+		var item IndexerBinarySummary
+		var postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.GroupName,
+			&item.ReleaseName,
+			&item.BinaryName,
+			&item.FileName,
+			&item.FamilyKind,
+			&item.IdentityStrength,
+			&item.ReadinessBucket,
+			&item.MatchStatus,
+			&item.MatchConfidence,
+			&postedAt,
+			&item.TotalParts,
+			&item.ObservedParts,
+			&item.CompletionPct,
+			&item.TotalBytes,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
+			&item.YEncStatus,
+			&item.YEncPriorityRank,
+			&item.InspectionCount,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan indexer binary summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer binary summaries: %w", err)
+	}
+	return items, nil
 }
 
 func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*IndexerFileDetail, error) {
