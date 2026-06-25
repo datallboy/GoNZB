@@ -53,6 +53,52 @@ func TestPartitionedSourceJoinsUseSourcePostedAt(t *testing.T) {
 	}
 }
 
+func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
+	want := []string{
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"binary_parts",
+		"binary_observation_stats",
+		"binary_identity_current",
+		"binary_recovery_current",
+		"binary_lifecycle",
+		"binary_completion_keys",
+		"binary_grouping_evidence",
+		"binary_projection_events",
+		"binary_superseded_sources",
+		"yenc_recovery_work_items",
+		"binary_inspection_ready_queue",
+		"binary_inspections",
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_sets",
+		"binary_par2_targets",
+		"release_family_readiness_summaries",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+		"release_stage_dirty_families",
+	}
+	got := nativeSourceWorkPartitionTables()
+	if len(got) != len(want) {
+		t.Fatalf("partition target count mismatch: got %d want %d: %v", len(got), len(want), got)
+	}
+	seen := make(map[string]struct{}, len(got))
+	for _, table := range got {
+		seen[table] = struct{}{}
+	}
+	for _, table := range want {
+		if _, ok := seen[table]; !ok {
+			t.Fatalf("partition target list missing %s: %v", table, got)
+		}
+	}
+}
+
 func readGuardrailSource(t *testing.T, fileName string) string {
 	t.Helper()
 	data, err := os.ReadFile(fileName)
