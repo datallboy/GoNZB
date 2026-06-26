@@ -3141,11 +3141,14 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64) 
 	}
 	summaryMarkDuration := time.Since(summaryMarkStarted)
 
-	yencSyncStarted := time.Now()
-	if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, binaryIDs); err != nil {
-		return err
+	yencSyncDuration := time.Duration(0)
+	if !skipYEncRecoveryWorkItemSyncFromContext(ctx) {
+		yencSyncStarted := time.Now()
+		if _, _, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, binaryIDs); err != nil {
+			return err
+		}
+		yencSyncDuration = time.Since(yencSyncStarted)
 	}
-	yencSyncDuration := time.Since(yencSyncStarted)
 
 	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), deferredSummaryRefresh, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
@@ -3188,18 +3191,18 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		part_rows AS MATERIALIZED (
 			SELECT
 					bp.binary_id,
+					lb.source_posted_at AS stats_source_posted_at,
 					bp.segment_bytes,
 					bp.article_header_id,
 					bp.source_posted_at
 				FROM locked_binaries lb
 				JOIN binary_parts bp
 				  ON bp.binary_id = lb.binary_id
-				 AND bp.source_posted_at = lb.source_posted_at
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT
 					p.binary_id,
-					p.source_posted_at,
+					p.stats_source_posted_at,
 					p.segment_bytes,
 					ah.article_number,
 				ah.date_utc
@@ -3211,14 +3214,14 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		agg AS (
 			SELECT
 					p.binary_id,
-					p.source_posted_at,
+					p.stats_source_posted_at AS source_posted_at,
 					COUNT(*)::INTEGER AS observed_parts,
 				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(p.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(p.article_number), 0)::BIGINT AS last_article_number,
 				MIN(p.date_utc) AS posted_at
 			FROM part_rows_with_headers p
-				GROUP BY p.binary_id, p.source_posted_at
+				GROUP BY p.binary_id, p.stats_source_posted_at
 			),
 		updated AS (
 			UPDATE binary_observation_stats bos

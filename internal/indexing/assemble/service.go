@@ -42,6 +42,10 @@ type assemblyClaimStatsRepository interface {
 	ClaimAssemblyQueueBatchWithStats(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, pgindex.AssemblyClaimStats, error)
 }
 
+type subjectMultipartRegroupRepository interface {
+	RegroupSubjectMultipartBinaries(ctx context.Context, limit int) (*pgindex.SubjectMultipartRegroupResult, error)
+}
+
 // narrow matcher dependency.
 type subjectMatcher interface {
 	Match(candidate match.Candidate) match.Result
@@ -185,7 +189,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 	selectionDuration := cleanupDuration + claimStats.ClaimDuration + claimStats.HydrationDuration
 	if len(headers) == 0 {
-		return map[string]any{
+		metrics := map[string]any{
 			"selected_headers":                0,
 			"processed_headers":               0,
 			"binaries_refreshed":              0,
@@ -202,7 +206,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			"total_duration_ms":               durationMillis(time.Since(started)),
 			"headers_per_second":              0.0,
 			"refreshed_binaries_per_second":   0.0,
-		}, nil
+		}
+		if err := s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize); err != nil {
+			return metrics, err
+		}
+		return metrics, nil
 	}
 
 	workerCount := s.opts.Concurrency
@@ -270,6 +278,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics, err := s.persistAssembleWork(ctx, started, combined, work, s.opts.BatchSize)
 	combined["selected_headers"] = len(headers)
 	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
+	if err == nil {
+		err = s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
+	}
 	return metrics, err
 }
 
@@ -376,6 +387,12 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		s.log.Debug("assemble: no unassembled article headers found")
 		metrics["processed_headers"] = 0
 		metrics["binaries_refreshed"] = 0
+		if err := s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize); err != nil {
+			metrics["total_duration_ms"] = durationMillis(time.Since(started))
+			metrics["headers_per_second"] = 0.0
+			metrics["refreshed_binaries_per_second"] = 0.0
+			return metrics, err
+		}
 		metrics["total_duration_ms"] = durationMillis(time.Since(started))
 		metrics["headers_per_second"] = 0.0
 		metrics["refreshed_binaries_per_second"] = 0.0
@@ -390,7 +407,55 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		return metrics, err
 	}
 
-	return s.persistAssembleWork(ctx, started, metrics, work, batchSize)
+	metrics, err = s.persistAssembleWork(ctx, started, metrics, work, batchSize)
+	if err == nil {
+		err = s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
+	}
+	return metrics, err
+}
+
+func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics map[string]any, limit int) error {
+	metrics["subject_multipart_regroup_groups"] = int64(0)
+	metrics["subject_multipart_regroup_sources"] = int64(0)
+	metrics["subject_multipart_regroup_parts_moved"] = int64(0)
+	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = int64(0)
+	repo, ok := s.repo.(subjectMultipartRegroupRepository)
+	if !ok {
+		return nil
+	}
+	if limit <= 0 {
+		limit = s.opts.BatchSize
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	started := time.Now()
+	result, err := repo.RegroupSubjectMultipartBinaries(ctx, limit)
+	metrics["subject_multipart_regroup_duration_ms"] = durationMillis(time.Since(started))
+	if err != nil {
+		return fmt.Errorf("regroup subject multipart binaries: %w", err)
+	}
+	if result == nil {
+		return nil
+	}
+	metrics["subject_multipart_regroup_groups"] = result.Groups
+	metrics["subject_multipart_regroup_sources"] = result.SourceBinaries
+	metrics["subject_multipart_regroup_parts_moved"] = result.PartsMoved
+	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = result.DuplicatePartsDeleted
+	if result.Groups > 0 && s.log != nil {
+		s.log.Info(
+			"assemble: subject multipart regroup groups=%d sources=%d parts_moved=%d duplicate_parts_deleted=%d duration_ms=%.2f",
+			result.Groups,
+			result.SourceBinaries,
+			result.PartsMoved,
+			result.DuplicatePartsDeleted,
+			metrics["subject_multipart_regroup_duration_ms"],
+		)
+	}
+	return nil
 }
 
 func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.AssemblyCandidate) (assembleWork, error) {
@@ -590,6 +655,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
 		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
+		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemSync(refreshCtx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {

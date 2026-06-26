@@ -118,9 +118,15 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 		`
 			SELECT bc.binary_id
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			WHERE bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND bic.is_main_payload = TRUE
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
@@ -142,9 +148,15 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 		`
 			SELECT bc.binary_id
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			WHERE bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 			  AND bic.is_main_payload = TRUE
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
@@ -163,9 +175,15 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 		`
 			SELECT bc.binary_id
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			JOIN release_family_readiness_summaries s
 			  ON s.provider_id = bc.provider_id
 			 AND s.newsgroup_id = bc.newsgroup_id
@@ -345,9 +363,15 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS group_tier
 			FROM requested r
 			JOIN binary_core bc ON bc.binary_id = r.binary_id
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			LEFT JOIN release_family_readiness_summaries s
 			  ON s.provider_id = bc.provider_id
 			 AND s.newsgroup_id = bc.newsgroup_id
@@ -542,9 +566,15 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			SELECT DISTINCT bc.binary_id
 			FROM requested r
 			JOIN binary_core bc ON bc.binary_id = r.binary_id
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			LEFT JOIN release_family_readiness_summaries s
 			  ON s.provider_id = bc.provider_id
 			 AND s.newsgroup_id = bc.newsgroup_id
@@ -575,7 +605,9 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				END AS next_status
 			FROM requested r
 			JOIN yenc_recovery_work_items wi ON wi.binary_id = r.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = wi.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = wi.source_posted_at
+			 AND brc.binary_id = wi.binary_id
 			LEFT JOIN eligible e ON e.binary_id = wi.binary_id
 			WHERE e.binary_id IS NULL
 		),
