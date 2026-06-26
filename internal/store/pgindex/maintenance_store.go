@@ -7,12 +7,14 @@ import (
 
 const articleHeaderPayloadPurgeWindowSize = 250000
 const releaseCatalogFilesBackfillBatchSize = 500
+const staleBinaryObservationRepairBatchSize = 1000
 
 type IndexerMaintenanceResult struct {
 	AbandonedStageRuns         int64
 	ClearedStageLeases         int64
 	AbandonedScrapeRuns        int64
 	AbandonedBinaryInspections int64
+	RepairedBinaryObservations int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
 	InspectDiscoveryReadyRows  int64
@@ -65,6 +67,12 @@ func (s *Store) RunIndexerMaintenance(ctx context.Context) (*IndexerMaintenanceR
 			break
 		}
 	}
+
+	repaired, err := s.RepairStaleBinaryObservationStats(ctx, staleBinaryObservationRepairBatchSize)
+	if err != nil {
+		return nil, err
+	}
+	result.RepairedBinaryObservations = repaired
 
 	if err := s.runIndexerMaintenanceMetadataCleanup(ctx, result); err != nil {
 		return nil, err

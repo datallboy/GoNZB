@@ -112,6 +112,45 @@ Subject-complete posts should be assembled from HEAD first. Recovery may be
 used as validation, but recovered yEnc `name=` has lower grouping priority when
 it is random and conflicts with a complete, stable Subject identity.
 
+### Priority Policy
+
+`recover_yenc` is not FIFO. Candidate selection reads from
+`yenc_recovery_work_items` and uses `priority_rank`, posted-time fairness
+buckets, and a newest-work lane. Admission into that work table must therefore
+preserve the evidence priority:
+
+- `priority_rank = 0`: work likely to unlock binary grouping or release
+  formation. This includes incomplete multipart binaries, indexed multi-file
+  candidates, and suspicious opaque near-time cohorts.
+- `priority_rank = 1`: weak/provisional binaries that may need BODY identity
+  but do not yet have strong cohort pressure.
+- `priority_rank = 2`: low-value validation or cleanup candidates.
+
+Suspicious opaque cohorts are HEAD-only groups where all of these are true:
+
+- same provider and newsgroup;
+- `binary_identity_current.family_kind = 'opaque_set'`;
+- `binary_identity_current.identity_reason = 'opaque_subject_set'`;
+- each current binary is still a one-part provisional/weak singleton;
+- `binary_observation_stats.posted_at` falls in a bounded near-time window;
+- the cohort has at least 20 active singleton binaries.
+
+The default admission bucket is five minutes. That is intentionally a hint,
+not grouping truth: large uploads, slow uploaders, throttling, multi-connection
+posting, and provider acceptance order can spread related articles across
+seconds or minutes. These cohorts should be admitted as `priority_rank = 0`
+with `admission_reason = 'opaque_near_time_cohort'`. This does not promote the
+cohort to a real binary by itself. It only tells `recover_yenc` to spend BODY
+probes there before generic weak backlog because the timeframe suggests the
+current singleton identities may be incomplete.
+
+Do not rely on article number order or near-time bucketing to probe only a
+handful of articles in this class. Article number order and near-time
+clustering are scheduling and diagnostic hints only. Until a separate
+sampled-yEnc promotion workflow exists, every admitted singleton that needs
+BODY identity remains eligible for yEnc recovery; the prioritization decides
+which BODY probes happen first.
+
 ## Confidence Labels
 
 Use these grouping methods when persisting evidence:

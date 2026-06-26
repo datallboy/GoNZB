@@ -3299,3 +3299,105 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 
 	return summaryKeys, nil
 }
+
+func (s *Store) RepairStaleBinaryObservationStats(ctx context.Context, limit int) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stale binary observation repair tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH scan_window AS MATERIALIZED (
+			(
+				SELECT
+					bos.binary_id,
+					bos.source_posted_at,
+					bos.observed_parts
+				FROM binary_observation_stats bos
+				LEFT JOIN binary_lifecycle bl
+				  ON bl.source_posted_at = bos.source_posted_at
+				 AND bl.binary_id = bos.binary_id
+				WHERE COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
+				  AND bos.total_parts > 0
+				  AND bos.observed_parts < bos.total_parts
+				ORDER BY bos.updated_at ASC, bos.binary_id ASC
+				LIMIT $1
+			)
+			UNION
+			(
+				SELECT
+					bos.binary_id,
+					bos.source_posted_at,
+					bos.observed_parts
+				FROM binary_observation_stats bos
+				LEFT JOIN binary_lifecycle bl
+				  ON bl.source_posted_at = bos.source_posted_at
+				 AND bl.binary_id = bos.binary_id
+				WHERE COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
+				  AND bos.total_parts > 0
+				  AND bos.observed_parts < bos.total_parts
+				ORDER BY (bos.total_parts - bos.observed_parts) DESC, bos.updated_at ASC, bos.binary_id ASC
+				LIMIT $1
+			)
+		),
+		stale AS MATERIALIZED (
+			SELECT
+				sw.binary_id,
+				sw.source_posted_at
+			FROM scan_window sw
+			JOIN LATERAL (
+				SELECT COUNT(*)::integer AS actual_parts
+				FROM binary_parts bp
+				WHERE bp.binary_id = sw.binary_id
+			) part_counts ON true
+			WHERE part_counts.actual_parts > sw.observed_parts
+		)
+		SELECT binary_id
+		FROM stale
+		ORDER BY binary_id`,
+		limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("select stale binary observation stats: %w", err)
+	}
+	binaryIDs := make([]int64, 0, limit)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan stale binary observation stat: %w", err)
+		}
+		binaryIDs = append(binaryIDs, binaryID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate stale binary observation stats: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale binary observation stats rows: %w", err)
+	}
+	if len(binaryIDs) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit empty stale binary observation repair tx: %w", err)
+		}
+		return 0, nil
+	}
+	if _, err := refreshBinaryStatsIDsInTx(ctx, tx, binaryIDs); err != nil {
+		return 0, err
+	}
+	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, binaryIDs); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stale binary observation repair tx: %w", err)
+	}
+	return int64(len(binaryIDs)), nil
+}

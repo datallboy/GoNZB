@@ -194,6 +194,17 @@ rows that would make the drop incomplete.
 
 - Keep yEnc admission limits and deferred range behavior from the existing
   runtime-settings implementation.
+- `recover_yenc` selection is priority/time-bucket based, not FIFO. Keep
+  `priority_rank = 0` reserved for work likely to unlock grouping or release
+  formation, including suspicious near-time opaque singleton cohorts.
+- Admit suspicious `opaque_subject_set` singleton cohorts as priority-0 work
+  when at least 20 active one-part binaries share the same provider, newsgroup,
+  and bounded near-time bucket. The default bucket is five minutes because
+  upload speed, throttling, multi-connection posting, and provider acceptance
+  order can spread a single large upload across seconds or minutes. Use
+  `admission_reason = 'opaque_near_time_cohort'`. This is admission priority
+  only; yEnc BODY evidence remains required before stronger grouping is
+  trusted.
 - Ensure work-item upserts are idempotent on partition-key-inclusive
   `binary_id` and `article_header_id` uniqueness.
 - Move retry/backoff/progress state out of scrape-owned ingest payload rows
@@ -239,8 +250,20 @@ Implement evidence priority in assemble/match before this sprint is signed off:
 4. Weak and random cohorts:
    - use provider/newsgroup, timestamp, byte/line, article-number, and
      message/poster suffix hints only to prioritize probes;
+   - seed yEnc work for high-pressure opaque near-time singleton cohorts even
+     when lower-priority yEnc backlog is already large;
    - keep unresolved fully random cohorts weak/provisional and prune by
      retention policy after the investigation window.
+
+## Binary Projection Repair Tasks
+
+- `binary_observation_stats.observed_parts` must reflect the authoritative
+  `binary_parts` relationship. Admin/API pages must not need to live-count
+  `binary_parts` for routine display.
+- Add bounded maintenance repair for active binaries where
+  `COUNT(binary_parts) > binary_observation_stats.observed_parts`.
+- Keep the repair assemble-owned and partition-key aware; do not mutate
+  scrape-owned source facts or use API-side live aggregates as the normal fix.
 
 Regression fixture to add:
 
@@ -317,7 +340,7 @@ Fall back to full recovery when:
 - confidence is below threshold.
 
 Signoff requires a probe report from live data before release grouping can trust
-weak sampled cohorts. The report must compare same-second upload timing,
+weak sampled cohorts. The report must compare near-time upload timing,
 provider article order, Message-ID/poster suffixes, byte/line consistency, and
 sampled yEnc file/part evidence for both formed binaries and weak/stale
 binaries. Until that report passes, recovery admission may prioritize likely
@@ -464,7 +487,7 @@ Before signoff:
   the sprint is not signed off until the exact relation/query lock cycle is
   documented and fixed;
 - sample grouped yEnc evidence from live weak and formed binaries and record
-  whether same-second timing, Message-ID/poster suffix, article order, and
+  whether near-time timing, Message-ID/poster suffix, article order, and
   sampled yEnc parts support speculative grouping;
 - collect 30 minutes of stage-run, backlog, gate, release, and yEnc throughput
   metrics.
