@@ -1093,15 +1093,61 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		return nil, nil
 	}
 
-	ids := make([]int64, 0, len(selected))
-	sourcePostedAts := make([]time.Time, 0, len(selected))
-	ords := make([]int32, 0, len(selected))
-	structuredMatches := make([]bool, 0, len(selected))
+	const hydrateAssemblyCandidatesChunkSize = 2500
+	byDay := make(map[time.Time][]assemblyHydrateRequest)
 	for idx, item := range selected {
-		ids = append(ids, item.ID)
-		sourcePostedAts = append(sourcePostedAts, item.SourcePostedAt)
-		ords = append(ords, int32(idx))
-		structuredMatches = append(structuredMatches, item.StructuredIdentityBinaryMatched)
+		day := item.SourcePostedAt.UTC().Truncate(24 * time.Hour)
+		byDay[day] = append(byDay[day], assemblyHydrateRequest{selection: item, ord: int32(idx)})
+	}
+	days := make([]time.Time, 0, len(byDay))
+	for day := range byDay {
+		days = append(days, day)
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+
+	byOrd := make(map[int32]AssemblyCandidate, len(selected))
+	for _, day := range days {
+		requests := byDay[day]
+		for start := 0; start < len(requests); start += hydrateAssemblyCandidatesChunkSize {
+			end := start + hydrateAssemblyCandidatesChunkSize
+			if end > len(requests) {
+				end = len(requests)
+			}
+			if err := hydrateAssemblyCandidatesChunk(ctx, q, requests[start:end], day, byOrd); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	out := make([]AssemblyCandidate, 0, len(selected))
+	for idx := range selected {
+		item, ok := byOrd[int32(idx)]
+		if !ok {
+			return nil, fmt.Errorf("hydrate assembly candidates: selected header ord=%d was not returned", idx)
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+type assemblyHydrateRequest struct {
+	selection assemblyCandidateSelection
+	ord       int32
+}
+
+func hydrateAssemblyCandidatesChunk(ctx context.Context, q assemblyQueryer, requests []assemblyHydrateRequest, day time.Time, byOrd map[int32]AssemblyCandidate) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(requests))
+	sourcePostedAts := make([]time.Time, 0, len(requests))
+	ords := make([]int32, 0, len(requests))
+	structuredMatches := make([]bool, 0, len(requests))
+	for _, item := range requests {
+		ids = append(ids, item.selection.ID)
+		sourcePostedAts = append(sourcePostedAts, item.selection.SourcePostedAt)
+		ords = append(ords, item.ord)
+		structuredMatches = append(structuredMatches, item.selection.StructuredIdentityBinaryMatched)
 	}
 
 	rows, err := q.QueryContext(ctx, `
@@ -1146,25 +1192,30 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		  ON apr.source_posted_at = p.source_posted_at
 		 AND apr.article_header_id = p.article_header_id
 		LEFT JOIN posters po ON po.id = apr.poster_id
-		ORDER BY requested.ord ASC`, sourcePostedAts, ids, ords, structuredMatches)
+		WHERE ah.source_posted_at >= $5
+		  AND ah.source_posted_at < $6
+		ORDER BY requested.ord ASC`, sourcePostedAts, ids, ords, structuredMatches, day, day.Add(24*time.Hour))
 	if err != nil {
-		return nil, fmt.Errorf("hydrate assembly candidates: %w", err)
+		return fmt.Errorf("hydrate assembly candidates: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]AssemblyCandidate, 0, len(selected))
+	rowIndex := 0
 	for rows.Next() {
 		item, err := scanAssemblyCandidate(rows)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, item)
+		if rowIndex >= len(requests) {
+			return fmt.Errorf("hydrate assembly candidates: returned more rows than requested")
+		}
+		byOrd[requests[rowIndex].ord] = item
+		rowIndex++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate hydrated assembly candidates: %w", err)
+		return fmt.Errorf("iterate hydrated assembly candidates: %w", err)
 	}
-
-	return out, nil
+	return nil
 }
 
 func scanAssemblyCandidate(scanner interface {
@@ -3189,13 +3240,21 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		WITH requested(binary_id) AS (
+		WITH requested_ids(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
+		),
+		requested(binary_id, source_posted_at) AS MATERIALIZED (
+			SELECT bc.binary_id, bc.source_posted_at
+			FROM binary_core bc
+			JOIN requested_ids r ON r.binary_id = bc.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
 		),
 			locked_binaries AS MATERIALIZED (
 				SELECT bos.binary_id, bos.source_posted_at
 				FROM binary_observation_stats bos
-				JOIN requested r ON r.binary_id = bos.binary_id
+				JOIN requested r
+				  ON r.source_posted_at = bos.source_posted_at
+				 AND r.binary_id = bos.binary_id
 				ORDER BY bos.binary_id
 			FOR UPDATE OF bos
 		),
@@ -3208,7 +3267,8 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 					bp.source_posted_at
 				FROM locked_binaries lb
 				JOIN binary_parts bp
-				  ON bp.binary_id = lb.binary_id
+				  ON bp.source_posted_at = lb.source_posted_at
+				 AND bp.binary_id = lb.binary_id
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT

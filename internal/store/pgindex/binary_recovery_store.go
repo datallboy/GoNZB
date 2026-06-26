@@ -9,10 +9,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type binaryRecoverySeed struct {
 	ID                int64
+	SourcePostedAt    time.Time
 	ProviderID        int64
 	NewsgroupID       int64
 	ReleaseFamilyKey  string
@@ -72,7 +74,8 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		    END,
 		    recovered_at = NOW(),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $8`,
 		in.BinaryID,
 		in.Kind,
 		in.Extension,
@@ -80,6 +83,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		in.Confidence,
 		in.Canonicalize,
 		newName,
+		seed.SourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update binary recovery %d: %w", in.BinaryID, err)
 	}
@@ -91,9 +95,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 			    	ELSE file_name
 			    END,
 			    updated_at = NOW()
-			WHERE binary_id = $1`,
+			WHERE binary_id = $1
+			  AND source_posted_at = $3`,
 			in.BinaryID,
 			newName,
+			seed.SourcePostedAt,
 		); err != nil {
 			return fmt.Errorf("update binary recovery identity %d: %w", in.BinaryID, err)
 		}
@@ -117,9 +123,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 			UPDATE binary_parts
 			SET file_name = $2
 			WHERE binary_id = $1
+			  AND source_posted_at = $3
 			  AND (`+renamePredicate+`)`,
 			in.BinaryID,
 			newName,
+			seed.SourcePostedAt,
 		); err != nil {
 			return fmt.Errorf("update binary part recovery %d: %w", in.BinaryID, err)
 		}
@@ -177,13 +185,15 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					    END,
 					    recovered_at = NOW(),
 					    updated_at = NOW()
-					WHERE binary_id = $1`,
+					WHERE binary_id = $1
+					  AND source_posted_at = $7`,
 					sibling.ID,
 					"archive",
 					in.Extension,
 					"family_signature",
 					in.Confidence*0.85,
 					recoveredName,
+					sibling.SourcePostedAt,
 				); err != nil {
 					return fmt.Errorf("update sibling binary recovery %d: %w", sibling.ID, err)
 				}
@@ -194,9 +204,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					    	ELSE file_name
 					    END,
 					    updated_at = NOW()
-					WHERE binary_id = $1`,
+					WHERE binary_id = $1
+					  AND source_posted_at = $3`,
 					sibling.ID,
 					recoveredName,
+					sibling.SourcePostedAt,
 				); err != nil {
 					return fmt.Errorf("update sibling binary recovery identity %d: %w", sibling.ID, err)
 				}
@@ -215,9 +227,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					UPDATE binary_parts
 					SET file_name = $2
 					WHERE binary_id = $1
+					  AND source_posted_at = $3
 					  AND (`+renamePredicate+`)`,
 					sibling.ID,
 					recoveredName,
+					sibling.SourcePostedAt,
 				); err != nil {
 					return fmt.Errorf("update sibling binary parts recovery %d: %w", sibling.ID, err)
 				}
@@ -243,6 +257,7 @@ func loadBinaryRecoverySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (bi
 	err := tx.QueryRowContext(ctx, `
 		SELECT
 			bc.binary_id,
+			bc.source_posted_at,
 			bc.provider_id,
 			bc.newsgroup_id,
 			bic.release_family_key,
@@ -255,12 +270,15 @@ func loadBinaryRecoverySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (bi
 			bic.is_auxiliary,
 			bic.is_main_payload
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic ON bic.source_posted_at = bc.source_posted_at
+		AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
 		WHERE bc.binary_id = $1`,
 		binaryID,
 	).Scan(
 		&row.ID,
+		&row.SourcePostedAt,
 		&row.ProviderID,
 		&row.NewsgroupID,
 		&row.ReleaseFamilyKey,
@@ -286,6 +304,7 @@ func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryReco
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			bc.binary_id,
+			bc.source_posted_at,
 			bc.provider_id,
 			bc.newsgroup_id,
 			bic.release_family_key,
@@ -298,8 +317,10 @@ func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryReco
 			bic.is_auxiliary,
 			bic.is_main_payload
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic ON bic.source_posted_at = bc.source_posted_at
+		AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
 		WHERE bc.provider_id = $1
 		  AND bc.newsgroup_id = $2
 		  AND bic.release_family_key = $3
@@ -321,6 +342,7 @@ func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryReco
 		var row binaryRecoverySeed
 		if err := rows.Scan(
 			&row.ID,
+			&row.SourcePostedAt,
 			&row.ProviderID,
 			&row.NewsgroupID,
 			&row.ReleaseFamilyKey,

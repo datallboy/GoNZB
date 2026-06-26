@@ -1884,12 +1884,25 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 }
 
 func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at
+		FROM binary_core
+		WHERE binary_id = $1
+		  AND source_posted_at IS NOT NULL`,
+		sourceID,
+	).Scan(&sourcePostedAt); err != nil {
+		return fmt.Errorf("load yenc source binary partition key %d: %w", sourceID, err)
+	}
+
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, part_number, segment_bytes
+		SELECT id, source_posted_at, part_number, segment_bytes
 		FROM binary_parts
 		WHERE binary_id = $1
+		  AND source_posted_at = $2
 		ORDER BY part_number, id`,
 		sourceID,
+		sourcePostedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("list yenc source binary parts %d: %w", sourceID, err)
@@ -1897,14 +1910,15 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 	defer rows.Close()
 
 	type part struct {
-		ID           int64
-		PartNumber   int
-		SegmentBytes int64
+		ID             int64
+		SourcePostedAt time.Time
+		PartNumber     int
+		SegmentBytes   int64
 	}
 	parts := []part{}
 	for rows.Next() {
 		var p part
-		if err := rows.Scan(&p.ID, &p.PartNumber, &p.SegmentBytes); err != nil {
+		if err := rows.Scan(&p.ID, &p.SourcePostedAt, &p.PartNumber, &p.SegmentBytes); err != nil {
 			return fmt.Errorf("scan yenc source part: %w", err)
 		}
 		parts = append(parts, p)
@@ -1925,21 +1939,23 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			FROM binary_parts
 			WHERE binary_id = $1
 			  AND part_number = $2
+			  AND source_posted_at = $3
 			FOR UPDATE`,
 			targetID,
 			partNumber,
+			p.SourcePostedAt,
 		).Scan(&existingID, &existingBytes)
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("lock yenc target part binary=%d part=%d: %w", targetID, partNumber, err)
 		}
 		if err == nil && existingBytes >= p.SegmentBytes {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE id = $1`, p.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, p.SourcePostedAt, p.ID); err != nil {
 				return fmt.Errorf("delete duplicate yenc source part %d: %w", p.ID, err)
 			}
 			continue
 		}
 		if err == nil {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE id = $1`, existingID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, p.SourcePostedAt, existingID); err != nil {
 				return fmt.Errorf("delete weaker yenc target part %d: %w", existingID, err)
 			}
 		}
@@ -1950,12 +1966,14 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			    part_number = $4,
 			    total_parts = GREATEST(total_parts, $5),
 			    updated_at = NOW()
-			WHERE id = $1`,
+			WHERE id = $1
+			  AND source_posted_at = $6`,
 			p.ID,
 			targetID,
 			fileName,
 			partNumber,
 			recoveredTotalParts,
+			p.SourcePostedAt,
 		); err != nil {
 			return fmt.Errorf("move yenc source part %d to binary %d: %w", p.ID, targetID, err)
 		}

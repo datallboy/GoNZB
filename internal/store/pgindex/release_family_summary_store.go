@@ -659,8 +659,9 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				 AND NOT EXISTS (
 					SELECT 1
 					FROM binary_lifecycle bl
-					WHERE bl.binary_id = bic.binary_id
-					  AND bl.lifecycle_status = 'superseded'
+					WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 				 )
 			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			LEFT JOIN binary_observation_stats bos
@@ -712,8 +713,9 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				 AND NOT EXISTS (
 					SELECT 1
 					FROM binary_lifecycle bl
-					WHERE bl.binary_id = bic.binary_id
-					  AND bl.lifecycle_status = 'superseded'
+					WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 				 )
 				LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
 				LEFT JOIN binary_observation_stats bos
@@ -965,7 +967,8 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 		 AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
@@ -1040,7 +1043,8 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 		 AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
@@ -1191,7 +1195,8 @@ func refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx context.Context, conn
 		 AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
@@ -1268,7 +1273,8 @@ func refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx context.Context, conn
 		 AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		 )
 		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
@@ -2003,7 +2009,8 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		  )`,
 		key.ProviderID,
@@ -2252,8 +2259,9 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			 AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
 			JOIN binary_observation_stats bos
@@ -2518,7 +2526,8 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		  )`,
 		providerID,

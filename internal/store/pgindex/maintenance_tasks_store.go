@@ -984,7 +984,7 @@ func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dr
 			result.AfterStorage, _ = s.maintenanceStorageSnapshot(ctx, "indexer_stage_runs", "scrape_runs")
 		}
 	case "grouping_evidence_cleanup":
-		from := `FROM binary_grouping_evidence bge JOIN binary_identity_current bic ON bic.binary_id = bge.binary_id WHERE bge.updated_at < NOW() - INTERVAL '24 hours' AND bic.match_confidence >= 0.85 AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional') AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set') AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false AND bge.payload_json ? 'summary'`
+		from := `FROM binary_grouping_evidence bge JOIN binary_identity_current bic ON bic.source_posted_at = bge.source_posted_at AND bic.binary_id = bge.binary_id WHERE bge.updated_at < NOW() - INTERVAL '24 hours' AND bic.match_confidence >= 0.85 AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional') AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set') AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false AND bge.payload_json ? 'summary'`
 		if dryRun {
 			count, err := countRowsFrom(ctx, s.db, from)
 			if err != nil {
@@ -992,7 +992,7 @@ func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dr
 			}
 			add("binary_grouping_evidence", count)
 		} else {
-			count, err := execDeleteCount(ctx, s.db, `WITH eligible AS (SELECT bge.binary_id `+from+`) DELETE FROM binary_grouping_evidence bge USING eligible e WHERE bge.binary_id = e.binary_id`)
+			count, err := execDeleteCount(ctx, s.db, `WITH eligible AS (SELECT bge.source_posted_at, bge.binary_id `+from+`) DELETE FROM binary_grouping_evidence bge USING eligible e WHERE bge.source_posted_at = e.source_posted_at AND bge.binary_id = e.binary_id`)
 			if err != nil {
 				return nil, err
 			}
