@@ -183,9 +183,6 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 	if limit <= 0 {
 		limit = yencRecoveryWorkItemSeedLimit
 	}
-	if s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
-		return 0, 0, nil
-	}
 	readyCount, err := s.countReadyYEncRecoveryCandidates(ctx, limit)
 	if err != nil {
 		return 0, 0, err
@@ -194,6 +191,9 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 		if readyCount > yencRecoverySeedScanLowYieldThreshold {
 			s.clearYEncRecoverySeedScanBackoff()
 		}
+		return 0, 0, nil
+	}
+	if s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
 		return 0, 0, nil
 	}
 	seedLimit := limit
@@ -206,6 +206,35 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 	}
 	s.recordYEncRecoverySeedScanResult(time.Now(), readyCount, upserted)
 	return upserted, retired, nil
+}
+
+func (s *Store) countReadyYEncRecoveryPriority0Candidates(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	var count int
+	windowLimit := yencRecoveryReadyWindowLimit(limit)
+	if err := s.withParallelGatherDisabledTx(ctx, true, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			WITH ready_window AS (
+				SELECT wi.binary_id
+				FROM yenc_recovery_work_items wi
+				WHERE wi.status = 'ready'
+				  AND wi.ready_at <= NOW()
+				  AND wi.priority_rank = 0
+				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+				ORDER BY wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+				LIMIT $1
+			)
+			SELECT COUNT(*) FROM (SELECT 1 FROM ready_window LIMIT $2) ready`,
+			windowLimit,
+			limit,
+		).Scan(&count)
+	}); err != nil {
+		return 0, fmt.Errorf("count ready priority0 yenc recovery candidates: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Store) shouldBackoffYEncRecoverySeedScan(now time.Time) bool {
