@@ -1493,8 +1493,8 @@ func TestRunSummaryRefreshOnceUsesExpandedSummaryRefreshBatchSize(t *testing.T) 
 	if repo.refreshQueuedSummariesCalls != 1 {
 		t.Fatalf("expected one summary refresh call, got %d", repo.refreshQueuedSummariesCalls)
 	}
-	if repo.lastRefreshQueuedSummariesLimit != 1000 {
-		t.Fatalf("expected timed effective summary refresh batch size 1000, got %d", repo.lastRefreshQueuedSummariesLimit)
+	if repo.lastRefreshQueuedSummariesLimit != 10000 {
+		t.Fatalf("expected effective summary refresh batch size 10000, got %d", repo.lastRefreshQueuedSummariesLimit)
 	}
 }
 
@@ -1523,8 +1523,8 @@ func TestRunSummaryRefreshOnceDrainsMultipleSummaryRefreshBatches(t *testing.T) 
 	if got := metrics["summary_refresh_count"]; got != 25000 {
 		t.Fatalf("expected summary_refresh_count=25000, got %#v", got)
 	}
-	if got := metrics["summary_refresh_effective_batch_size"]; got != 1000 {
-		t.Fatalf("expected effective summary refresh batch size 1000, got %#v", got)
+	if got := metrics["summary_refresh_effective_batch_size"]; got != 10000 {
+		t.Fatalf("expected effective summary refresh batch size 10000, got %#v", got)
 	}
 }
 

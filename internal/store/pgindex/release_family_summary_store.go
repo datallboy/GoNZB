@@ -20,11 +20,11 @@ const (
 	releaseReadinessPreferBaseStem           = "prefer_base_stem"
 	releaseReadinessOvergrouped              = "overgrouped_contextual"
 	releaseFamilyDirtyBatchSize              = 10000
-	releaseFamilySummaryRefreshBatch         = 5000
-	releaseFamilySummaryRefreshCap           = 5000
-	releaseFamilySummaryRefreshHotCap        = 1000
-	releaseFamilySummaryRefreshColdCap       = 1000
-	releaseFamilySummaryRefreshQueryBatchCap = 100
+	releaseFamilySummaryRefreshBatch         = 10000
+	releaseFamilySummaryRefreshCap           = 10000
+	releaseFamilySummaryRefreshHotCap        = 10000
+	releaseFamilySummaryRefreshColdCap       = 10000
+	releaseFamilySummaryRefreshQueryBatchCap = 5000
 	releaseFamilySummaryMergeRowsMax         = 2000
 )
 

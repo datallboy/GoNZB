@@ -39,10 +39,7 @@ type repository interface {
 	PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, providerID, newsgroupID int64, releaseFamilyKey string) error
 }
 
-const (
-	autoReformMinAge                   = 15 * time.Minute
-	releaseSummaryRefreshTimedBatchCap = 1000
-)
+const autoReformMinAge = 15 * time.Minute
 
 type summaryRefreshMetricsProvider interface {
 	RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Context, limit int) (pgindex.ReleaseSummaryRefreshMetrics, error)
@@ -171,9 +168,6 @@ func (s *Service) effectiveSummaryRefreshBatchSize() int {
 	limit := s.opts.SummaryRefreshBatchSize
 	if limit <= 0 {
 		limit = 10000
-	}
-	if s.opts.SummaryRefreshMaxDuration > 0 && limit > releaseSummaryRefreshTimedBatchCap {
-		return releaseSummaryRefreshTimedBatchCap
 	}
 	return limit
 }

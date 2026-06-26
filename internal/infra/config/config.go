@@ -310,7 +310,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
 	v.SetDefault("indexing.scrape_backfill.max_batches", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 1000)
 	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
 	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
 	v.SetDefault("indexing.assemble.lane_a_time_window_minutes", 15)

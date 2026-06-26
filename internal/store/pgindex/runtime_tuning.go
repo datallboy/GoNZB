@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const defaultBinaryUpsertDBChunkSize = 250
+const defaultBinaryUpsertDBChunkSize = 1000
 
 const (
 	defaultRetryableTxAttempts = 3

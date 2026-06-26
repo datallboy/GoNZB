@@ -2354,7 +2354,8 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 	if _, err := runner.ExecContext(ctx, `
 		DELETE FROM binary_completion_keys bck
 		USING tmp_existing_binaries e
-		WHERE bck.binary_id = e.binary_id`); err != nil {
+		WHERE bck.source_posted_at = e.source_posted_at
+		  AND bck.binary_id = e.binary_id`); err != nil {
 		return fmt.Errorf("delete staged binary completion keys: %w", err)
 	}
 	if _, err := runner.ExecContext(ctx, `
@@ -3170,20 +3171,83 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		return uniqueBinaryIDs[i] < uniqueBinaryIDs[j]
 	})
 
-	for start := 0; start < len(uniqueBinaryIDs); start += refreshBinaryStatsBatchSize {
-		end := start + refreshBinaryStatsBatchSize
-		if end > len(uniqueBinaryIDs) {
-			end = len(uniqueBinaryIDs)
+	targets, err := s.loadBinaryStatsRefreshTargets(ctx, uniqueBinaryIDs)
+	if err != nil {
+		return err
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		leftDay := utcDayStart(targets[i].SourcePostedAt)
+		rightDay := utcDayStart(targets[j].SourcePostedAt)
+		if !leftDay.Equal(rightDay) {
+			return leftDay.Before(rightDay)
 		}
-		if err := s.refreshBinaryStatsChunk(ctx, uniqueBinaryIDs[start:end]); err != nil {
+		return targets[i].BinaryID < targets[j].BinaryID
+	})
+
+	for start := 0; start < len(targets); {
+		dayStart := utcDayStart(targets[start].SourcePostedAt)
+		dayEnd := dayStart.Add(24 * time.Hour)
+		end := start
+		batchIDs := make([]int64, 0, refreshBinaryStatsBatchSize)
+		for end < len(targets) && len(batchIDs) < refreshBinaryStatsBatchSize && utcDayStart(targets[end].SourcePostedAt).Equal(dayStart) {
+			batchIDs = append(batchIDs, targets[end].BinaryID)
+			end++
+		}
+		if err := s.refreshBinaryStatsChunk(ctx, batchIDs, dayStart, dayEnd); err != nil {
 			return err
 		}
+		start = end
 	}
 
 	return nil
 }
 
-func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64) error {
+type binaryStatsRefreshTarget struct {
+	BinaryID       int64
+	SourcePostedAt time.Time
+}
+
+func utcDayStart(t time.Time) time.Time {
+	t = t.UTC()
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+func (s *Store) loadBinaryStatsRefreshTargets(ctx context.Context, binaryIDs []int64) ([]binaryStatsRefreshTarget, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH requested_ids(binary_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		)
+		SELECT bc.binary_id, bc.source_posted_at
+		FROM binary_core bc
+		JOIN requested_ids r ON r.binary_id = bc.binary_id
+		WHERE bc.source_posted_at IS NOT NULL
+		ORDER BY bc.source_posted_at, bc.binary_id`,
+		binaryIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load binary stats refresh targets: %w", err)
+	}
+	defer rows.Close()
+
+	targets := make([]binaryStatsRefreshTarget, 0, len(binaryIDs))
+	for rows.Next() {
+		var target binaryStatsRefreshTarget
+		if err := rows.Scan(&target.BinaryID, &target.SourcePostedAt); err != nil {
+			return nil, fmt.Errorf("scan binary stats refresh target: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate binary stats refresh targets: %w", err)
+	}
+	return targets, nil
+}
+
+func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, dayStart, dayEnd time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin refresh binary stats batch tx: %w", err)
@@ -3191,7 +3255,7 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64) 
 	defer rollbackTx(tx)
 
 	statsUpdateStarted := time.Now()
-	summaryKeys, err := refreshBinaryStatsIDsInTx(ctx, tx, binaryIDs)
+	summaryKeys, err := refreshBinaryStatsIDsInTxForWindow(ctx, tx, binaryIDs, dayStart, dayEnd)
 	if err != nil {
 		return err
 	}
@@ -3241,6 +3305,10 @@ func refreshBinaryStatsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) ([]
 }
 
 func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) ([]releaseFamilySummaryKey, error) {
+	return refreshBinaryStatsIDsInTxForWindow(ctx, tx, binaryIDs, time.Time{}, time.Time{})
+}
+
+func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryIDs []int64, dayStart, dayEnd time.Time) ([]releaseFamilySummaryKey, error) {
 	if len(binaryIDs) == 0 {
 		return nil, nil
 	}
@@ -3253,6 +3321,7 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 		requestedBinaryIDs = append(requestedBinaryIDs, binaryID)
 	}
 
+	hasWindow := !dayStart.IsZero() && !dayEnd.IsZero()
 	rows, err := tx.QueryContext(ctx, `
 		WITH requested_ids(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
@@ -3262,13 +3331,21 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			FROM binary_core bc
 			JOIN requested_ids r ON r.binary_id = bc.binary_id
 			WHERE bc.source_posted_at IS NOT NULL
+			  AND ($4::boolean = FALSE OR (bc.source_posted_at >= $2 AND bc.source_posted_at < $3))
 		),
-			locked_binaries AS MATERIALIZED (
-				SELECT bos.binary_id, bos.source_posted_at
-				FROM binary_observation_stats bos
-				JOIN requested r
-				  ON r.source_posted_at = bos.source_posted_at
-				 AND r.binary_id = bos.binary_id
+		locked_binaries AS MATERIALIZED (
+			SELECT
+				bos.binary_id,
+				bos.source_posted_at,
+				bos.provider_id,
+				bos.newsgroup_id,
+				bos.total_parts,
+				bos.posted_at AS existing_posted_at
+			FROM binary_observation_stats bos
+			JOIN requested r
+			  ON r.source_posted_at = bos.source_posted_at
+			 AND r.binary_id = bos.binary_id
+				WHERE ($4::boolean = FALSE OR (bos.source_posted_at >= $2 AND bos.source_posted_at < $3))
 				ORDER BY bos.binary_id
 			FOR UPDATE OF bos
 		),
@@ -3283,6 +3360,7 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 				JOIN binary_parts bp
 				  ON bp.source_posted_at = lb.source_posted_at
 				 AND bp.binary_id = lb.binary_id
+				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $2 AND bp.source_posted_at < $3))
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT
@@ -3295,36 +3373,65 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			JOIN article_headers ah
 			  ON ah.source_posted_at = p.source_posted_at
 			 AND ah.id = p.article_header_id
+			WHERE ($4::boolean = FALSE OR (ah.source_posted_at >= $2 AND ah.source_posted_at < $3))
 		),
 		agg AS (
 			SELECT
-					p.binary_id,
-					p.stats_source_posted_at AS source_posted_at,
+				p.binary_id,
+				p.stats_source_posted_at AS source_posted_at,
 					COUNT(*)::INTEGER AS observed_parts,
 				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(p.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(p.article_number), 0)::BIGINT AS last_article_number,
 				MIN(p.date_utc) AS posted_at
 			FROM part_rows_with_headers p
-				GROUP BY p.binary_id, p.stats_source_posted_at
-			),
-		updated AS (
-			UPDATE binary_observation_stats bos
-			SET observed_parts = agg.observed_parts,
-			    total_bytes = agg.total_bytes,
-			    first_article_number = agg.first_article_number,
-			    last_article_number = agg.last_article_number,
-			    posted_at = COALESCE(agg.posted_at, bos.posted_at),
+			GROUP BY p.binary_id, p.stats_source_posted_at
+		),
+		upserted AS (
+			INSERT INTO binary_observation_stats (
+				binary_id,
+				provider_id,
+				newsgroup_id,
+				total_parts,
+				observed_parts,
+				total_bytes,
+				first_article_number,
+				last_article_number,
+				posted_at,
+				source_posted_at,
+				refreshed_at,
+				updated_at
+			)
+			SELECT
+				agg.binary_id,
+				lb.provider_id,
+				lb.newsgroup_id,
+				lb.total_parts,
+				agg.observed_parts,
+				agg.total_bytes,
+				agg.first_article_number,
+				agg.last_article_number,
+				COALESCE(agg.posted_at, lb.existing_posted_at),
+				agg.source_posted_at,
+				NOW(),
+				NOW()
+			FROM agg
+			JOIN locked_binaries lb
+			  ON lb.source_posted_at = agg.source_posted_at
+			 AND lb.binary_id = agg.binary_id
+			ON CONFLICT (source_posted_at, binary_id) DO UPDATE
+			SET observed_parts = EXCLUDED.observed_parts,
+			    total_bytes = EXCLUDED.total_bytes,
+			    first_article_number = EXCLUDED.first_article_number,
+			    last_article_number = EXCLUDED.last_article_number,
+			    posted_at = COALESCE(EXCLUDED.posted_at, binary_observation_stats.posted_at),
 			    refreshed_at = NOW(),
 			    updated_at = NOW()
-				FROM agg
-				WHERE bos.binary_id = agg.binary_id
-				  AND bos.source_posted_at = agg.source_posted_at
-				RETURNING
-					bos.binary_id,
-					bos.source_posted_at,
-					bos.provider_id,
-					bos.newsgroup_id
+			RETURNING
+				binary_observation_stats.binary_id,
+				binary_observation_stats.source_posted_at,
+				binary_observation_stats.provider_id,
+				binary_observation_stats.newsgroup_id
 		)
 		SELECT
 			u.provider_id,
@@ -3333,10 +3440,24 @@ func refreshBinaryStatsIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int6
 			COALESCE(bic.base_stem, ''),
 			COALESCE(bic.expected_file_count, 0),
 			COALESCE(bic.expected_archive_file_count, 0)
-		FROM updated u
-			JOIN binary_identity_current bic
-			  ON bic.binary_id = u.binary_id
-			 AND bic.source_posted_at = u.source_posted_at`, requestedBinaryIDs)
+		FROM upserted u
+		JOIN LATERAL (
+			SELECT
+				bic.release_family_key,
+				bic.base_stem,
+				bic.expected_file_count,
+				bic.expected_archive_file_count
+			FROM binary_identity_current bic
+			WHERE bic.binary_id = u.binary_id
+			  AND bic.source_posted_at = u.source_posted_at
+			  AND ($4::boolean = FALSE OR (bic.source_posted_at >= $2 AND bic.source_posted_at < $3))
+			LIMIT 1
+		) bic ON TRUE`,
+		requestedBinaryIDs,
+		dayStart,
+		dayEnd,
+		hasWindow,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
 	}
