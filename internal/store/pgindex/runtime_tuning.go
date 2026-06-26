@@ -19,6 +19,7 @@ type binaryUpsertChunkSizeContextKey struct{}
 type deferReleaseFamilySummaryRefreshContextKey struct{}
 type binaryUpsertTelemetryContextKey struct{}
 type binaryStatsRefreshTelemetryContextKey struct{}
+type skipYEncRecoveryWorkItemSyncContextKey struct{}
 
 func WithBinaryUpsertChunkSize(ctx context.Context, size int) context.Context {
 	if ctx == nil {
@@ -51,6 +52,21 @@ func deferReleaseFamilySummaryRefreshFromContext(ctx context.Context) bool {
 		return false
 	}
 	value, _ := ctx.Value(deferReleaseFamilySummaryRefreshContextKey{}).(bool)
+	return value
+}
+
+func WithSkipYEncRecoveryWorkItemSync(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skipYEncRecoveryWorkItemSyncContextKey{}, true)
+}
+
+func skipYEncRecoveryWorkItemSyncFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(skipYEncRecoveryWorkItemSyncContextKey{}).(bool)
 	return value
 }
 
