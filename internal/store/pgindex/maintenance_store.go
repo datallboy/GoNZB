@@ -195,9 +195,12 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 	if res, err := tx.ExecContext(ctx, `
 		WITH eligible AS (
 			SELECT
+				bge.source_posted_at,
 				bge.binary_id
 			FROM binary_grouping_evidence bge
-			JOIN binary_identity_current bic ON bic.binary_id = bge.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bge.source_posted_at
+			 AND bic.binary_id = bge.binary_id
 			WHERE bge.updated_at < NOW() - INTERVAL '24 hours'
 			  AND bic.match_confidence >= 0.85
 			  AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional')
@@ -207,7 +210,8 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		)
 		DELETE FROM binary_grouping_evidence bge
 		USING eligible e
-		WHERE bge.binary_id = e.binary_id`); err != nil {
+		WHERE bge.source_posted_at = e.source_posted_at
+		  AND bge.binary_id = e.binary_id`); err != nil {
 		return fmt.Errorf("purge old stable grouping evidence: %w", err)
 	} else if result.PurgedGroupingEvidence, err = res.RowsAffected(); err != nil {
 		return fmt.Errorf("purge old stable grouping evidence rows affected: %w", err)

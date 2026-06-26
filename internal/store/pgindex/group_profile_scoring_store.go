@@ -42,7 +42,8 @@ func (s *Store) RefreshIndexerGroupProfiles(ctx context.Context) (int64, error) 
 					  AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)
 				) AS binaries_completed_1d
 			FROM binary_core bc
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
 			WHERE COALESCE(bos.posted_at, bc.created_at) >= NOW() - INTERVAL '1 day'
 			GROUP BY bc.provider_id, bc.newsgroup_id
 		),
