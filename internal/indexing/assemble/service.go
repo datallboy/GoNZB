@@ -99,11 +99,13 @@ type assembleWork struct {
 }
 
 type Service struct {
-	repo    repository
-	matcher subjectMatcher
-	fetcher articleFetcher
-	log     logger
-	opts    Options
+	repo                        repository
+	matcher                     subjectMatcher
+	fetcher                     articleFetcher
+	log                         logger
+	opts                        Options
+	subjectMultipartRegroupMu   sync.Mutex
+	lastSubjectMultipartRegroup time.Time
 }
 
 func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher, log logger, opts Options) *Service {
@@ -423,6 +425,16 @@ func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics m
 	if !ok {
 		return nil
 	}
+	const regroupInterval = 15 * time.Minute
+	s.subjectMultipartRegroupMu.Lock()
+	if !s.lastSubjectMultipartRegroup.IsZero() && time.Since(s.lastSubjectMultipartRegroup) < regroupInterval {
+		s.subjectMultipartRegroupMu.Unlock()
+		metrics["subject_multipart_regroup_skipped"] = true
+		return nil
+	}
+	s.lastSubjectMultipartRegroup = time.Now()
+	s.subjectMultipartRegroupMu.Unlock()
+
 	if limit <= 0 {
 		limit = s.opts.BatchSize
 	}

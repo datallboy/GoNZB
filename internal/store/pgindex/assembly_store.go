@@ -1181,19 +1181,33 @@ func hydrateAssemblyCandidatesChunk(ctx context.Context, q assemblyQueryer, requ
 			requested.structured_identity_binary_matched,
 			'' AS raw_overview
 		FROM requested
-		JOIN article_headers ah
-		  ON ah.source_posted_at = requested.source_posted_at
-		 AND ah.id = requested.id
-		JOIN article_header_ingest_payloads p
-		  ON p.source_posted_at = ah.source_posted_at
-		 AND p.article_header_id = ah.id
+		JOIN LATERAL (
+			SELECT ah.*
+			FROM article_headers ah
+			WHERE ah.source_posted_at = requested.source_posted_at
+			  AND ah.id = requested.id
+			  AND ah.source_posted_at >= $5
+			  AND ah.source_posted_at < $6
+		) ah ON TRUE
+		JOIN LATERAL (
+			SELECT p.*
+			FROM article_header_ingest_payloads p
+			WHERE p.source_posted_at = ah.source_posted_at
+			  AND p.article_header_id = ah.id
+			  AND p.source_posted_at >= $5
+			  AND p.source_posted_at < $6
+		) p ON TRUE
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN article_header_poster_refs apr
-		  ON apr.source_posted_at = p.source_posted_at
-		 AND apr.article_header_id = p.article_header_id
+		LEFT JOIN LATERAL (
+			SELECT apr.poster_id, apr.poster_name
+			FROM article_header_poster_refs apr
+			WHERE apr.source_posted_at = p.source_posted_at
+			  AND apr.article_header_id = p.article_header_id
+			  AND apr.source_posted_at >= $5
+			  AND apr.source_posted_at < $6
+			LIMIT 1
+		) apr ON TRUE
 		LEFT JOIN posters po ON po.id = apr.poster_id
-		WHERE ah.source_posted_at >= $5
-		  AND ah.source_posted_at < $6
 		ORDER BY requested.ord ASC`, sourcePostedAts, ids, ords, structuredMatches, day, day.Add(24*time.Hour))
 	if err != nil {
 		return fmt.Errorf("hydrate assembly candidates: %w", err)
