@@ -46,10 +46,6 @@ type subjectMultipartRegroupRepository interface {
 	RegroupSubjectMultipartBinaries(ctx context.Context, limit int) (*pgindex.SubjectMultipartRegroupResult, error)
 }
 
-type priorityYEncAdmissionRepository interface {
-	BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error)
-}
-
 // narrow matcher dependency.
 type subjectMatcher interface {
 	Match(candidate match.Candidate) match.Result
@@ -672,18 +668,6 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		}
 		binaryRefreshDuration += time.Since(refreshStarted)
 		addBinaryStatsRefreshTelemetryMetrics(metrics, refreshTelemetry.Snapshot())
-		if priorityRepo, ok := s.repo.(priorityYEncAdmissionRepository); ok {
-			admissionCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			upserted, retired, err := priorityRepo.BackfillPriorityYEncRecoveryWorkItemsForBinaries(admissionCtx, refreshIDs)
-			cancel()
-			if err != nil {
-				s.log.Warn("assemble: priority yenc admission skipped err=%v", err)
-				metrics["priority_yenc_admission_skipped"] = 1
-			} else {
-				metrics["priority_yenc_work_items_upserted"] = int(upserted)
-				metrics["priority_yenc_work_items_retired"] = int(retired)
-			}
-		}
 	}
 	metrics["lane_a_selected"] = work.laneASelected
 	metrics["lane_b_selected"] = work.laneBSelected

@@ -250,8 +250,14 @@ func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, t
 	args = append(args, bucketSeconds)
 
 	query := `
-		WITH requested(binary_id) AS (
+		WITH requested_ids(binary_id) AS (
 			VALUES ` + strings.Join(placeholders, ",") + `
+		),
+		requested AS MATERIALIZED (
+			SELECT bc.binary_id, bc.source_posted_at
+			FROM requested_ids r
+			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
 		),
 		eligible AS MATERIALIZED (
 			SELECT
@@ -264,7 +270,8 @@ func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, t
 				bos.total_bytes
 			FROM requested r
 			JOIN binary_identity_current bic
-			  ON bic.binary_id = r.binary_id
+			  ON bic.source_posted_at = r.source_posted_at
+			 AND bic.binary_id = r.binary_id
 			JOIN binary_observation_stats bos
 			  ON bos.source_posted_at = bic.source_posted_at
 			 AND bos.binary_id = bic.binary_id
@@ -286,7 +293,8 @@ func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, t
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items wi
-				WHERE wi.binary_id = bic.binary_id
+				WHERE wi.source_posted_at = bic.source_posted_at
+				  AND wi.binary_id = bic.binary_id
 			  	  AND wi.status IN ('ready', 'running', 'done')
 			  )
 		),
@@ -386,7 +394,8 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items wi
-				WHERE wi.binary_id = bc.binary_id
+				WHERE wi.source_posted_at = bc.source_posted_at
+				  AND wi.binary_id = bc.binary_id
 			  	  AND wi.status IN ('ready', 'running', 'done')
 			  )
 			ORDER BY rb.updated_at DESC, bc.binary_id DESC
@@ -468,7 +477,8 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items wi
-                    WHERE wi.binary_id = bc.binary_id
+                    WHERE wi.source_posted_at = bc.source_posted_at
+                      AND wi.binary_id = bc.binary_id
 			  	  AND wi.status = 'ready'
                       AND wi.updated_at >= GREATEST(bic.updated_at, bos.updated_at, COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch'))
 			  )
@@ -495,7 +505,8 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items wi
-                    WHERE wi.binary_id = bc.binary_id
+                    WHERE wi.source_posted_at = bc.source_posted_at
+                      AND wi.binary_id = bc.binary_id
 			  	  AND wi.status = 'ready'
                       AND wi.updated_at >= GREATEST(bic.updated_at, bos.updated_at, COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch'))
 			  )
@@ -530,7 +541,8 @@ func (s *Store) selectYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx 
 			  AND NOT EXISTS (
 			  	SELECT 1
 			  	FROM yenc_recovery_work_items wi
-                    WHERE wi.binary_id = bc.binary_id
+                    WHERE wi.source_posted_at = bc.source_posted_at
+                      AND wi.binary_id = bc.binary_id
 			  	  AND wi.status = 'ready'
                       AND wi.updated_at >= GREATEST(bic.updated_at, bos.updated_at, COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch'))
 			  )
@@ -1015,12 +1027,14 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 		retire_candidates AS (
 			SELECT
 				wi.binary_id,
+				wi.source_posted_at,
 				CASE
 					WHEN COALESCE(brc.recovered_source, '') = 'yenc_header' THEN 'done'
 					ELSE 'stale'
 				END AS next_status
 			FROM requested r
-			JOIN yenc_recovery_work_items wi ON wi.binary_id = r.binary_id
+			JOIN yenc_recovery_work_items wi
+			  ON wi.binary_id = r.binary_id
 			LEFT JOIN binary_recovery_current brc
 			  ON brc.source_posted_at = wi.source_posted_at
 			 AND brc.binary_id = wi.binary_id
@@ -1032,7 +1046,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			SET status = rc.next_status,
 			    updated_at = NOW()
 			FROM retire_candidates rc
-			WHERE wi.binary_id = rc.binary_id
+			WHERE wi.source_posted_at = rc.source_posted_at
+			  AND wi.binary_id = rc.binary_id
 			  AND wi.status <> rc.next_status
 			RETURNING 1
 		)

@@ -1374,6 +1374,12 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 
 	started = time.Now()
 	if _, err := tx.ExecContext(ctx, `
+		WITH target_sources AS (
+			SELECT binary_id, source_posted_at
+			FROM binary_core
+			WHERE binary_id IN ($1, $2)
+			  AND source_posted_at IS NOT NULL
+		)
 		UPDATE yenc_recovery_work_items
 		SET status = 'done',
 		    ready_at = NOW(),
@@ -1384,7 +1390,9 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
 		    yenc_file_size = GREATEST(yenc_file_size, $6),
 		    updated_at = NOW()
-		WHERE binary_id IN ($1, $2)`,
+		FROM target_sources ts
+		WHERE yenc_recovery_work_items.source_posted_at = ts.source_posted_at
+		  AND yenc_recovery_work_items.binary_id = ts.binary_id`,
 		in.BinaryID,
 		targetID,
 		in.ArticleHeaderID,
@@ -1571,9 +1579,10 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 			bc.binary_key
 			FROM binary_core bc
 			JOIN binary_identity_current bic
-			  ON bic.binary_id = bc.binary_id
-			 AND bic.source_posted_at = COALESCE(bc.source_posted_at, bic.source_posted_at)
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
 			WHERE bc.binary_id = $1
+			  AND bc.source_posted_at IS NOT NULL
 			FOR UPDATE OF bc, bic`,
 		binaryID,
 	).Scan(&seed.ID, &seed.SourcePostedAt, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
@@ -1749,6 +1758,20 @@ func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, n
 }
 
 func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int64, in YEncHeaderRecoveryRecord) error {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at
+		FROM binary_core
+		WHERE binary_id = $1
+		  AND source_posted_at IS NOT NULL`,
+		binaryID,
+	).Scan(&sourcePostedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("%w: %d for yenc recovery update", ErrBinaryNotFound, binaryID)
+		}
+		return fmt.Errorf("load yenc recovered binary source_posted_at %d: %w", binaryID, err)
+	}
+
 	groupingSummaryKind, groupingSummaryStatus, groupingSummaryFallbackUsed := groupingSummaryScalars(sanitizeStringMap(in.GroupingEvidence))
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_core
@@ -1786,7 +1809,8 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    grouping_summary_status = $23,
 		    grouping_summary_fallback_used = $24,
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $25`,
 		binaryID,
 		in.SourceReleaseKey,
 		in.ReleaseFamilyKey,
@@ -1811,6 +1835,7 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		groupingSummaryKind,
 		groupingSummaryStatus,
 		groupingSummaryFallbackUsed,
+		sourcePostedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("update yenc recovered binary identity %d: %w", binaryID, err)
@@ -1819,9 +1844,11 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		UPDATE binary_observation_stats
 		SET total_parts = GREATEST(total_parts, $2),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $3`,
 		binaryID,
 		in.TotalParts,
+		sourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update yenc recovered binary stats %d: %w", binaryID, err)
 	}
@@ -1832,10 +1859,12 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    recovered_file_name = $3,
 		    recovered_at = NOW(),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $4`,
 		binaryID,
 		in.MatchConfidence,
 		in.FileName,
+		sourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update yenc recovered binary recovery %d: %w", binaryID, err)
 	}

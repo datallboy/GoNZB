@@ -173,11 +173,15 @@ func requeueStaleInspectReadyRows(ctx context.Context, tx *sql.Tx, stageName str
 func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		WITH retire AS (
-			SELECT q.binary_id
+			SELECT q.binary_id, q.source_posted_at
 			FROM binary_inspection_ready_queue q
 			LEFT JOIN binary_core bc ON bc.binary_id = q.binary_id
-			LEFT JOIN binary_identity_current bic ON bic.binary_id = q.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = q.binary_id
+			LEFT JOIN binary_identity_current bic
+			  ON bic.source_posted_at = q.source_posted_at
+			 AND bic.binary_id = q.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = q.source_posted_at
+			 AND brc.binary_id = q.binary_id
 			LEFT JOIN binary_inspections cfi
 				ON cfi.stage_name = 'inspect_discovery'
 				AND cfi.binary_id = q.binary_id
@@ -204,6 +208,7 @@ func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) 
 		    updated_at = NOW()
 		FROM retire r
 		WHERE q.stage_name = 'inspect_discovery'
+		  AND q.source_posted_at = r.source_posted_at
 		  AND q.binary_id = r.binary_id`)
 	if err != nil {
 		return 0, fmt.Errorf("retire ineligible inspect_discovery ready rows: %w", err)
@@ -228,10 +233,16 @@ func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int)
 						COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
 					) AS source_updated_at,
 					COALESCE(bc.source_posted_at, bos.source_posted_at, bos.posted_at) AS source_posted_at
-			FROM binary_identity_current bic
-			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			LEFT JOIN binary_inspections bi
 				ON bi.stage_name = 'inspect_discovery'
 				AND bi.binary_id = bic.binary_id
@@ -461,7 +472,7 @@ func (s *Store) listInspectionReadyQueueCandidates(ctx context.Context, q binary
 	}
 	query := `
 		WITH selected AS (
-			SELECT q.binary_id, q.release_id
+			SELECT q.source_posted_at, q.binary_id, q.release_id
 			FROM binary_inspection_ready_queue q
 			WHERE q.stage_name = $1
 			  AND q.status = 'ready'
@@ -497,12 +508,18 @@ func (s *Store) listInspectionReadyQueueCandidates(ctx context.Context, q binary
 			COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 			'{}'::jsonb AS archive_summary_json
 		FROM selected s
-		JOIN binary_identity_current bic ON bic.binary_id = s.binary_id
-		JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		JOIN binary_core bc ON bc.binary_id = s.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = s.source_posted_at
+		 AND bic.binary_id = s.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = s.source_posted_at
+		 AND bos.binary_id = bic.binary_id
 		LEFT JOIN releases r ON r.release_id = s.release_id
 		LEFT JOIN release_files rf ON rf.release_id = s.release_id AND rf.binary_id = s.binary_id
-		LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bic.source_posted_at
+		 AND brc.binary_id = bic.binary_id
 		LEFT JOIN posters p ON p.id = bc.poster_id
 		LEFT JOIN binary_inspections bi
 			ON bi.stage_name = $1
@@ -530,13 +547,21 @@ func (s *Store) markInspectReadyQueueRunning(ctx context.Context, stageName stri
 		lease = 15 * time.Minute
 	}
 	_, err := s.db.ExecContext(ctx, `
+		WITH target AS (
+			SELECT source_posted_at
+			FROM binary_core
+			WHERE binary_id = $2
+			  AND source_posted_at IS NOT NULL
+		)
 		UPDATE binary_inspection_ready_queue
 		SET status = 'running',
 		    claimed_by = $3,
 		    claimed_until = NOW() + ($4::DOUBLE PRECISION * INTERVAL '1 second'),
 		    source_updated_at = COALESCE($5, source_updated_at),
 		    updated_at = NOW()
+		FROM target t
 		WHERE stage_name = $1
+		  AND binary_inspection_ready_queue.source_posted_at = t.source_posted_at
 		  AND binary_id = $2
 		  AND status IN ('ready', 'running')`,
 		stageName,
@@ -573,13 +598,21 @@ func markInspectReadyQueueRowsRunning(ctx context.Context, execer inspectionExec
 	}
 
 	if _, err := execer.ExecContext(ctx, fmt.Sprintf(`
+		WITH target AS (
+			SELECT binary_id, source_posted_at
+			FROM binary_core
+			WHERE binary_id IN (%s)
+			  AND source_posted_at IS NOT NULL
+		)
 		UPDATE binary_inspection_ready_queue
 		SET status = 'running',
 		    claimed_by = $2,
 		    claimed_until = NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 		    updated_at = NOW()
+		FROM target t
 		WHERE stage_name = $1
-		  AND binary_id IN (%s)
+		  AND binary_inspection_ready_queue.source_posted_at = t.source_posted_at
+		  AND binary_inspection_ready_queue.binary_id = t.binary_id
 		  AND status IN ('ready', 'running')`, strings.Join(values, ",")), args...); err != nil {
 		return fmt.Errorf("mark inspect ready queue rows running %s: %w", stageName, err)
 	}
@@ -596,6 +629,12 @@ func finishInspectReadyQueueRow(ctx context.Context, execer inspectionExecer, st
 		queueStatus = "ready"
 	}
 	_, err := execer.ExecContext(ctx, fmt.Sprintf(`
+		WITH target AS (
+			SELECT source_posted_at
+			FROM binary_core
+			WHERE binary_id = $2
+			  AND source_posted_at IS NOT NULL
+		)
 		UPDATE binary_inspection_ready_queue
 		SET status = $3,
 		    ready_at = %s,
@@ -603,7 +642,9 @@ func finishInspectReadyQueueRow(ctx context.Context, execer inspectionExecer, st
 		    claimed_until = NULL,
 		    last_error = $4,
 		    updated_at = NOW()
+		FROM target t
 		WHERE stage_name = $1
+		  AND binary_inspection_ready_queue.source_posted_at = t.source_posted_at
 		  AND binary_id = $2`, readyAt),
 		stageName,
 		binaryID,
