@@ -12,7 +12,6 @@ const (
 	yencRecoveryWorkItemSeedLimit          = 5000
 	yencRecoveryWorkItemSyncChunk          = 10000
 	yencRecoveryOpaqueCohortMin            = 20
-	yencRecoveryOpaqueCohortBucketSeconds  = 5 * 60
 	yencRecoveryPrioritySeedMax            = 512
 	yencRecoveryOpaqueCohortAdmissionScore = 100
 )
@@ -123,7 +122,11 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, err
 	}
 
-	binaryIDs, err := selectOpaqueSameSecondYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit)
+	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	binaryIDs, err := selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit, bucketSeconds)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -165,7 +168,11 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Con
 	if siblingLimit > yencRecoveryWorkItemSyncChunk {
 		siblingLimit = yencRecoveryWorkItemSyncChunk
 	}
-	siblingIDs, err := selectOpaqueSameSecondYEncRecoverySiblingBinaryIDsInTx(ctx, tx, binaryIDs, siblingLimit)
+	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	siblingIDs, err := selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx, tx, binaryIDs, siblingLimit, bucketSeconds)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -186,7 +193,26 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Con
 	return upserted, retired, nil
 }
 
-func selectOpaqueSameSecondYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64, limit int) ([]int64, error) {
+func yEncOpaqueCohortBucketSecondsInTx(ctx context.Context, tx *sql.Tx) (int, error) {
+	if tx == nil {
+		return defaultYEncAdmissionNearTimeBucketMinutes * 60, nil
+	}
+	var seconds int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT LEAST(86400, GREATEST(60, COALESCE(near_time_cohort_bucket_minutes, $1::integer) * 60))
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`,
+		defaultYEncAdmissionNearTimeBucketMinutes,
+	).Scan(&seconds); err != nil {
+		if err == sql.ErrNoRows {
+			return defaultYEncAdmissionNearTimeBucketMinutes * 60, nil
+		}
+		return 0, fmt.Errorf("load yenc opaque cohort bucket seconds: %w", err)
+	}
+	return seconds, nil
+}
+
+func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64, limit int, bucketSeconds int) ([]int64, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("yenc recovery work item tx is required")
 	}
@@ -220,6 +246,8 @@ func selectOpaqueSameSecondYEncRecoverySiblingBinaryIDsInTx(ctx context.Context,
 	}
 	limitParam := len(args) + 1
 	args = append(args, limit)
+	bucketParam := len(args) + 1
+	args = append(args, bucketSeconds)
 
 	query := `
 		WITH requested(binary_id) AS (
@@ -231,7 +259,7 @@ func selectOpaqueSameSecondYEncRecoverySiblingBinaryIDsInTx(ctx context.Context,
 				bic.source_posted_at,
 				bic.provider_id,
 				bic.newsgroup_id,
-				FLOOR(EXTRACT(EPOCH FROM bos.posted_at) / ` + fmt.Sprintf("%d", yencRecoveryOpaqueCohortBucketSeconds) + `)::bigint AS posted_bucket,
+				FLOOR(EXTRACT(EPOCH FROM bos.posted_at) / $` + fmt.Sprintf("%d", bucketParam) + `::double precision)::bigint AS posted_bucket,
 				bos.posted_at,
 				bos.total_bytes
 			FROM requested r
@@ -306,7 +334,7 @@ func selectOpaqueSameSecondYEncRecoverySiblingBinaryIDsInTx(ctx context.Context,
 	return out, nil
 }
 
-func selectOpaqueSameSecondYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx *sql.Tx, limit int) ([]int64, error) {
+func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) ([]int64, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -332,7 +360,7 @@ func selectOpaqueSameSecondYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context
 				rb.binary_id,
 				bic.provider_id,
 				bic.newsgroup_id,
-				FLOOR(EXTRACT(EPOCH FROM rb.posted_at) / `+fmt.Sprintf("%d", yencRecoveryOpaqueCohortBucketSeconds)+`)::bigint AS posted_bucket,
+				FLOOR(EXTRACT(EPOCH FROM rb.posted_at) / $2::double precision)::bigint AS posted_bucket,
 				rb.posted_at,
 				rb.total_bytes,
 				rb.updated_at
@@ -381,6 +409,7 @@ func selectOpaqueSameSecondYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context
 		ORDER BY c.latest_posted_at DESC, c.cohort_size DESC, r.total_bytes DESC, r.binary_id
 		LIMIT $1`,
 		limit,
+		bucketSeconds,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("select opaque near-time yenc recovery work item backfill binaries: %w", err)
@@ -616,14 +645,18 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		}
 	}
 	if remainingToHard > 0 || totalUpserted > 0 {
-		if err := promoteOpaqueSameSecondYEncWorkItemsInTx(ctx, tx, yencRecoveryWorkItemSeedLimit); err != nil {
+		bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+		if err != nil {
+			return 0, 0, err
+		}
+		if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, yencRecoveryWorkItemSeedLimit, bucketSeconds); err != nil {
 			return 0, 0, err
 		}
 	}
 	return totalUpserted, totalRetired, nil
 }
 
-func promoteOpaqueSameSecondYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) error {
+func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) error {
 	if tx == nil {
 		return fmt.Errorf("yenc recovery work item tx is required")
 	}
@@ -637,7 +670,7 @@ func promoteOpaqueSameSecondYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, l
 				wi.source_posted_at,
 				wi.provider_id,
 				wi.newsgroup_id,
-				FLOOR(EXTRACT(EPOCH FROM COALESCE(bos.posted_at, wi.date_utc)) / `+fmt.Sprintf("%d", yencRecoveryOpaqueCohortBucketSeconds)+`)::bigint AS posted_bucket,
+				FLOOR(EXTRACT(EPOCH FROM COALESCE(bos.posted_at, wi.date_utc)) / $2::double precision)::bigint AS posted_bucket,
 				COALESCE(bos.posted_at, wi.date_utc) AS posted_at,
 				wi.updated_at
 			FROM yenc_recovery_work_items wi
@@ -692,6 +725,7 @@ func promoteOpaqueSameSecondYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, l
 		WHERE wi.source_posted_at = p.source_posted_at
 		  AND wi.binary_id = p.binary_id`,
 		limit,
+		bucketSeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("promote opaque near-time yenc work items: %w", err)

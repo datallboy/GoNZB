@@ -162,14 +162,15 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 
 func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings {
 	return IndexingRecoveryAdmissionRuntimeSettings{
-		TargetHotLagHours:      4,
-		TargetWarmLagHours:     24,
-		SoftQueueHours:         4,
-		HardQueueMultiplier:    2,
-		AbsoluteHardQueueCap:   250000,
-		EWMAWindowMinutes:      30,
-		BootstrapProbesPerHour: 25000,
-		Priority0OverflowCap:   25000,
+		TargetHotLagHours:           4,
+		TargetWarmLagHours:          24,
+		SoftQueueHours:              4,
+		HardQueueMultiplier:         2,
+		AbsoluteHardQueueCap:        250000,
+		EWMAWindowMinutes:           30,
+		BootstrapProbesPerHour:      25000,
+		Priority0OverflowCap:        25000,
+		NearTimeCohortBucketMinutes: 5,
 	}
 }
 
@@ -1266,6 +1267,9 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.Priority0OverflowCap > 0 {
 		base.Priority0OverflowCap = override.Priority0OverflowCap
+	}
+	if override.NearTimeCohortBucketMinutes > 0 {
+		base.NearTimeCohortBucketMinutes = override.NearTimeCohortBucketMinutes
 	}
 	return base
 }

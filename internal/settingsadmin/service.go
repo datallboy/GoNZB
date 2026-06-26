@@ -386,6 +386,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	if indexing.MemoryGuard.MinSwapFreeBytes < 0 {
 		issues = append(issues, "indexing.memory_guard.min_swap_free_bytes must be greater than or equal to 0")
 	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes < 0 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes > 24*60 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be less than or equal to 1440")
+	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
 		clean = strings.ReplaceAll(clean, "0X", "")
