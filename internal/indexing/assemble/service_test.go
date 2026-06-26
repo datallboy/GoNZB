@@ -327,6 +327,85 @@ func TestRunOnceSkipsYEncRecoveryWhenSubjectAlreadyExposesFileName(t *testing.T)
 	}
 }
 
+func TestRunOnceGroupsSubjectMultipartObfuscatedPartsWithoutYEncRecovery(t *testing.T) {
+	firstPosted := time.Date(2026, 6, 25, 14, 28, 29, 0, time.UTC)
+	secondPosted := time.Date(2026, 6, 25, 16, 44, 2, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:             81,
+				ProviderID:     1,
+				NewsgroupID:    2,
+				NewsgroupName:  "alt.binaries.newznzb.bravo",
+				ArticleNumber:  2961163479,
+				MessageID:      "<TxVq9M3lZw0BXeSOK5lY8tq9eOkIXcDM@xI9O2SXR.zm5>",
+				Subject:        `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (7152/28465) 20403308372`,
+				Poster:         `ZZY5wdELKQYA7W <ChrqPqF0fcAwPv@0r2Px.uOc>`,
+				DateUTC:        &firstPosted,
+				SourcePostedAt: firstPosted,
+				Bytes:          740354,
+				Lines:          5691,
+				Xref:           `news.easynews.com alt.binaries.newznzb.bravo:2961163479`,
+			},
+			{
+				ID:             82,
+				ProviderID:     1,
+				NewsgroupID:    2,
+				NewsgroupName:  "alt.binaries.newznzb.bravo",
+				ArticleNumber:  2961166034,
+				MessageID:      "<XHmxauRue9IRwOdLNjPHePyIr4KoqzdJ@NGzwvBZW.0T2>",
+				Subject:        `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (8996/28465) 20403308372`,
+				Poster:         `zzwRVvdHpvTUN3 <vujC9maTnSIGI9@g1hmM.h62>`,
+				DateUTC:        &secondPosted,
+				SourcePostedAt: secondPosted,
+				Bytes:          740276,
+				Lines:          5691,
+				Xref:           `news.easynews.com alt.binaries.newznzb.bravo:2961166034`,
+			},
+		},
+	}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<TxVq9M3lZw0BXeSOK5lY8tq9eOkIXcDM@xI9O2SXR.zm5>": "=ybegin part=7152 total=28465 line=128 size=20403308372 name=976e18143f3a00cdd333a41017886215c57ca1653d5bfcf6\r\n",
+			"<XHmxauRue9IRwOdLNjPHePyIr4KoqzdJ@NGzwvBZW.0T2>": "=ybegin part=8996 total=28465 line=128 size=20403308372 name=cd6e277ecbd42befcc99a76a9355398d27468af2324a4231\r\n",
+		},
+	}
+
+	svc := NewService(repo, match.NewService(), fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if fetcher.calls != 0 {
+		t.Fatalf("expected subject multipart evidence to skip yEnc recovery, got %d fetches", fetcher.calls)
+	}
+	if len(repo.upsertedBinaries) != 1 {
+		t.Fatalf("expected one binary upsert for both subject parts, got %d", len(repo.upsertedBinaries))
+	}
+	if got := repo.upsertedBinaries[0]; got.FileName != "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" || got.TotalParts != 28465 {
+		t.Fatalf("expected subject-derived binary with 28465 parts, got file=%q total=%d", got.FileName, got.TotalParts)
+	}
+	if len(repo.upsertedParts) != 2 {
+		t.Fatalf("expected two binary parts, got %d", len(repo.upsertedParts))
+	}
+	if repo.upsertedParts[0].BinaryID != repo.upsertedParts[1].BinaryID {
+		t.Fatalf("expected both parts on the same binary id, got %d / %d", repo.upsertedParts[0].BinaryID, repo.upsertedParts[1].BinaryID)
+	}
+	if repo.upsertedParts[0].PartNumber != 7152 || repo.upsertedParts[1].PartNumber != 8996 {
+		t.Fatalf("expected sorted part numbers 7152 and 8996, got %d / %d", repo.upsertedParts[0].PartNumber, repo.upsertedParts[1].PartNumber)
+	}
+	if got := intValue(metrics["unique_binary_upserts"]); got != 1 {
+		t.Fatalf("expected one unique binary upsert, got %d", got)
+	}
+	if got := intValue(metrics["binary_upsert_cache_hits"]); got != 1 {
+		t.Fatalf("expected one binary upsert cache hit, got %d", got)
+	}
+	if got := intValue(metrics["recovery_attempts"]); got != 0 {
+		t.Fatalf("expected no inline recovery attempts, got %d", got)
+	}
+}
+
 func TestRunOnceCapsYEncRecoveryAttemptsPerBatch(t *testing.T) {
 	postedAt := time.Date(2026, 5, 6, 12, 30, 0, 0, time.UTC)
 	repo := &fakeRepository{

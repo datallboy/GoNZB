@@ -32,6 +32,7 @@ type matchState struct {
 	normalizedSubject   string
 	quotedFilename      string
 	structured          structuredData
+	subjectMultipart    bool
 	fileIndex           int
 	expectedFileCount   int
 	partNumber          int
@@ -98,6 +99,7 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 	if fileIndex <= 0 {
 		fileIndex = inferArchiveVolumeIndex(firstNonEmpty(structured.Name, extractQuotedFilename(clean)))
 	}
+	subjectMultipart := subjectMultipartComplete(clean, structured, fileIndex, expectedFileCount, partNumber, totalParts)
 
 	return &matchState{
 		candidate:          candidate,
@@ -107,6 +109,7 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 		normalizedSubject:  normalizeKey(clean),
 		quotedFilename:     extractQuotedFilename(clean),
 		structured:         structured,
+		subjectMultipart:   subjectMultipart,
 		fileIndex:          fileIndex,
 		expectedFileCount:  expectedFileCount,
 		partNumber:         maxInt(partNumber, 1),
@@ -378,6 +381,7 @@ func (s *matchState) finalize(opts Options) Result {
 		"identity_reason":       identityReason,
 		"subject_set_token":     subjectSetToken,
 		"subject_set_kind":      subjectSetKind,
+		"subject_multipart":     s.subjectMultipart,
 		"family_kind":           familyKind,
 		"base_stem":             baseStem,
 		"short_circuited_after": s.shortCircuitedAfter,
@@ -467,7 +471,10 @@ func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) stri
 	if key := s.smallIndexedArchiveStemReleaseKey(explicitFileName); key != "" {
 		releaseKey = key
 	}
-	if s.shouldPreferContextualReleaseKey(releaseName, explicitFileName) {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		releaseKey = canonicalReleaseKey(firstNonEmpty(releaseName, explicitFileName))
+	}
+	if releaseKey == "" && s.shouldPreferContextualReleaseKey(releaseName, explicitFileName) {
 		if releaseKey == "" {
 			releaseKey = canonicalReleaseKey(s.releaseContextSeed())
 		}
@@ -482,6 +489,11 @@ func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) stri
 }
 
 func (s *matchState) releaseFamilyKey(releaseName, explicitFileName, subjectSetToken, subjectSetKind string) (string, string, string) {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		if key := canonicalReleaseKey(firstNonEmpty(releaseName, explicitFileName)); key != "" {
+			return key, "subject_multipart_obfuscated", archiveFamilyBaseStem(explicitFileName)
+		}
+	}
 	if subjectSetKind == "readable_title" {
 		return subjectSetToken, "readable_title", archiveFamilyBaseStem(explicitFileName)
 	}
@@ -567,6 +579,8 @@ func identityClassification(familyKind, subjectSetKind, baseStem, explicitFileNa
 	switch familyKind {
 	case "archive_stem":
 		return "strong", "archive_stem"
+	case "subject_multipart_obfuscated":
+		return "probable", "subject_multipart_obfuscated"
 	case "readable_title":
 		if archiveFamilyBaseStem(explicitFileName) != "" || baseStem != "" {
 			return "strong", "readable_archive_filename"
@@ -634,6 +648,9 @@ func (s *matchState) smallIndexedArchiveStemReleaseKey(explicitFileName string) 
 }
 
 func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileName string) bool {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		return false
+	}
 	if s.structured.Total > 1 && isOpaqueReleaseIdentityCandidate(releaseName, explicitFileName) {
 		return true
 	}
@@ -660,6 +677,34 @@ func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileN
 		}
 	}
 	return true
+}
+
+func (s *matchState) shouldPreferSubjectMultipartReleaseKey(explicitFileName string) bool {
+	if !s.subjectMultipart {
+		return false
+	}
+	explicitFileName = sanitizeFileName(explicitFileName)
+	if explicitFileName == "" {
+		return false
+	}
+	lower := strings.ToLower(explicitFileName)
+	if splitArchiveRE.MatchString(lower) || rarFamilyRE.MatchString(lower) || strings.HasSuffix(lower, ".rar") || parFileRE.MatchString(lower) {
+		return false
+	}
+	if s.fileIndex <= 0 || s.expectedFileCount <= 0 || s.partNumber <= 0 || s.totalParts <= 1 {
+		return false
+	}
+	return true
+}
+
+func subjectMultipartComplete(subject string, structured structuredData, fileIndex, fileTotal, partNumber, totalParts int) bool {
+	if extractQuotedFilename(subject) == "" && strings.TrimSpace(structured.Name) == "" {
+		return false
+	}
+	if fileIndex <= 0 || fileTotal <= 0 || partNumber <= 0 || totalParts <= 1 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(subject), "yenc")
 }
 
 func isOpaqueReleaseIdentityCandidate(values ...string) bool {
