@@ -22,6 +22,48 @@ Use evidence in this order:
 Do not promote `From`, poster suffix, Message-ID suffix, Organization, or
 article-number proximity above a complete Subject multipart identity.
 
+## Uploader Fingerprints
+
+Uploader-specific fingerprints can improve scheduling and ordering hypotheses,
+but they do not outrank stronger evidence.
+
+### Nyuu
+
+Default Nyuu Message-IDs commonly have this shape:
+
+```text
+<RandomLetters24-EpochMilliseconds@nyuu>
+```
+
+The 13-digit suffix is a Unix epoch millisecond timestamp. When the Subject is
+obfuscated but the Message-ID matches this default form, the timestamp is a
+strong ordering hint after sampled yEnc validation confirms:
+
+- one consistent yEnc `name=`;
+- one consistent `total=`;
+- sampled `part=` values are monotonic with Message-ID timestamp order;
+- `Date`/`X-Trace` evidence is not obviously inconsistent with the timestamp.
+
+If Nyuu `postDate` override or custom Message-ID behavior is suspected, do not
+trust Message-ID timestamp ordering. Fall back to explicit Subject evidence or
+yEnc recovery.
+
+### ngPost
+
+ngPost full article obfuscation often uses UUID-like Subject and Message-ID
+values. UUID identity can help classify a post as ngPost-like, but UUID order
+is not meaningful. For this class:
+
+- do not sort by Message-ID;
+- treat provider article number as a local weak hypothesis only;
+- use sampled or full yEnc evidence to prove membership and ordering.
+
+### Article Number
+
+Article numbers are provider-local acceptance order. They can help schedule
+nearby probes on one provider, but they are not a cross-provider identity or
+ordering source and must not be persisted as authoritative ordering.
+
 ## Grouping Classes
 
 ### 1. Clear Subject

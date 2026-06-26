@@ -780,7 +780,7 @@ func claimYEncRecoveryCandidatesInPostedRange(ctx context.Context, tx *sql.Tx, l
 
 func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 	return `
-		WITH ready_window AS (
+		WITH locked_window AS (
 			SELECT
 				wi.binary_id,
 				wi.article_header_id,
@@ -809,36 +809,49 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 				wi.current_readiness_bucket,
 				wi.structured_identity_binary_matched,
 				wi.priority_rank,
-				wi.updated_at,
-				date_trunc('minute', COALESCE(wi.date_utc, wi.updated_at)) AS posted_minute,
-				CASE
-					WHEN POSITION('@' IN COALESCE(wi.poster, '')) > 0
-						THEN LOWER(regexp_replace(split_part(wi.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
-					ELSE ''
-				END AS poster_hint,
-				CASE
-					WHEN POSITION('@' IN BTRIM(COALESCE(wi.message_id, ''), '<>')) > 0
-						THEN LOWER(regexp_replace(split_part(BTRIM(wi.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
-					ELSE ''
-				END AS message_hint
+				wi.updated_at
 			FROM yenc_recovery_work_items wi
 			` + readyWindowClause + `
 			FOR UPDATE SKIP LOCKED
 		),
-		ranked AS (
+		ready_window AS (
 			SELECT
-				rw.binary_id,
+				lw.*,
+				date_trunc('minute', COALESCE(lw.date_utc, lw.updated_at)) AS posted_minute,
+				CASE
+					WHEN POSITION('@' IN COALESCE(lw.poster, '')) > 0
+						THEN LOWER(regexp_replace(split_part(lw.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS poster_hint,
+				CASE
+					WHEN POSITION('@' IN BTRIM(COALESCE(lw.message_id, ''), '<>')) > 0
+						THEN LOWER(regexp_replace(split_part(BTRIM(lw.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS message_hint,
 				ROW_NUMBER() OVER (
-					PARTITION BY rw.provider_id, rw.newsgroup_id, rw.priority_rank, rw.posted_minute, rw.poster_hint, rw.message_hint
-					ORDER BY rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+					PARTITION BY
+						lw.provider_id,
+						lw.newsgroup_id,
+						lw.priority_rank,
+						date_trunc('minute', COALESCE(lw.date_utc, lw.updated_at)),
+						CASE
+							WHEN POSITION('@' IN COALESCE(lw.poster, '')) > 0
+								THEN LOWER(regexp_replace(split_part(lw.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
+							ELSE ''
+						END,
+						CASE
+							WHEN POSITION('@' IN BTRIM(COALESCE(lw.message_id, ''), '<>')) > 0
+								THEN LOWER(regexp_replace(split_part(BTRIM(lw.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
+							ELSE ''
+						END
+					ORDER BY lw.date_utc DESC NULLS LAST, lw.article_number, lw.binary_id
 				) AS group_rank
-			FROM ready_window rw
+			FROM locked_window lw
 		),
 		selected AS (
-			SELECT rw.*, r.group_rank
+			SELECT rw.*
 			FROM ready_window rw
-			JOIN ranked r ON r.binary_id = rw.binary_id
-			ORDER BY rw.priority_rank, rw.posted_minute DESC, rw.poster_hint, rw.message_hint, r.group_rank, rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+			ORDER BY rw.priority_rank, rw.posted_minute DESC, rw.poster_hint, rw.message_hint, rw.group_rank, rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
 			LIMIT $1
 		),
 		claimed AS (

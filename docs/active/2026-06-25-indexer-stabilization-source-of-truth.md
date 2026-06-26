@@ -577,6 +577,54 @@ Live evidence already collected:
   `EXPLAIN (ANALYZE, BUFFERS)` notes: weak count over about 158k rows ran in
   about 704ms, and the identity-first page seed used the
   `binary_identity_current_*_strength_updated_idx` path in about 1.46ms.
+- hot query regression patch at `2026-06-26 14:20-04`:
+  - yEnc candidate selection removed the self-join against
+    `yenc_recovery_work_items`; the selector now locks a bounded ready window,
+    computes near-time grouping hints from that window, and orders the selected
+    work without rejoining the parent table. Read-only audit timing improved
+    from about 58.8s on a hot bucket to about 728ms for the patched selector;
+  - assemble hydration now uses bounded partition-key lateral lookups into
+    `article_headers`, `article_header_ingest_payloads`, and
+    `article_header_poster_refs` after claiming exact queue keys. Read-only
+    audit timing improved from about 20.3s to about 425ms for a 2,500-row
+    hydration sample;
+  - release summary refresh now splits release-family and base-stem summary
+    keys and uses materialized requested-key sets plus keyed lateral lookups
+    into `binary_identity_current`. The duplicate refresh queue was deduped and
+    protected with a unique key on `(provider_id, newsgroup_id, key_kind,
+    family_key)`;
+  - recovered-file-set impact discovery now uses requested-key lateral lookups
+    and partition-key `EXISTS` checks instead of broad joins through
+    `binary_identity_current`, `binary_observation_stats`, and
+    `binary_recovery_current`;
+  - subject multipart regroup now seeds from `binary_identity_current` with a
+    supporting partial lookup index and is cadence-limited to once every
+    15 minutes per assemble service instance, so routine assemble batches do
+    not pay the full regroup tax.
+- live patched serve evidence at `2026-06-26 14:32-14:35-04`:
+  - yEnc recovery selected full 5,000-item batches and ran at concurrency 100;
+    by `14:35:16` it had attempted 3,100 items, recovered 2,500, merged 1,159,
+    and continued to be limited mostly by NNTP prefix fetch timeouts rather than
+    SQL candidate selection;
+  - release summary refresh drained repeated 1,000-key hot batches. After a
+    stale pre-patch PostgreSQL backend was terminated, summary aggregate and
+    dominant work stayed about 1.1-3.7s per batch, ready sync about 0.3-1.0s,
+    and recovered-file-set sync commonly about 0.4-1.2s with occasional
+    4-10s batches;
+  - scrape latest/backfill ran when downstream capacity allowed, detected
+    provider-head gaps, and then gated again once assemble backlog exceeded the
+    configured high-water mark (`unassembled_headers=112723`,
+    `high_water=100000`);
+  - assemble completed 20,000-row batches without deadlock. Recurring
+    post-patch examples include `queue_cleanup_ms=3731.01`,
+    `assembly_claim_ms=3027.13`, `assembly_hydration_ms=19510.40`,
+    `binary_upsert_query_ms=45458.55`, and
+    `binary_refresh_stats_update_ms=24334.56` on a 9,558-binary refresh-heavy
+    batch. This is no longer the earlier yEnc selector regression, but assemble
+    write/refresh cost remains a follow-up optimization target.
+- focused validation after the hot query regression patch:
+  `go test ./internal/store/pgindex ./internal/indexing/assemble ./internal/indexing/release`
+  passed, and `git diff --check` passed.
 
 Known open signoff items:
 
@@ -586,8 +634,11 @@ Known open signoff items:
   counts, daily bucket stats, and default partition row counts after that soak;
 - prove hot/warm/cold tier behavior with at least one configured or observed
   group per tier; current configured scrape work is mostly `warm`;
-- collect short `EXPLAIN (ANALYZE, BUFFERS)` notes for the final hot query
-  shapes before sprint signoff.
+- collect short `EXPLAIN (ANALYZE, BUFFERS)` notes for any additional hot query
+  shape changed after the `2026-06-26` regression patch;
+- continue assemble write-path tuning. The current evidence points at binary
+  upsert and binary stats refresh cost on large, high-cardinality batches rather
+  than the yEnc selector self-join regression.
 
 ## Acceptance Criteria
 

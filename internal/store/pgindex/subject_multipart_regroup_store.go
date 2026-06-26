@@ -64,30 +64,30 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_subject_multipart_regroup_key_groups ON COMMIT DROP AS
 		SELECT
-			bc.provider_id,
-			bc.newsgroup_id,
+			bic.provider_id,
+			bic.newsgroup_id,
 			bic.file_name,
 			lower(btrim(bic.file_name)) AS normalized_lookup_file_name,
 			COUNT(*) AS binary_count,
 			MAX(COALESCE(bos.total_parts, 0)) AS max_total_parts,
 			MAX(COALESCE(bic.expected_file_count, 0)) AS max_expected_file_count
-		FROM binary_core bc
-		JOIN binary_identity_current bic
-		  ON bic.source_posted_at = bc.source_posted_at
-		 AND bic.binary_id = bc.binary_id
+		FROM binary_identity_current bic
 		JOIN binary_observation_stats bos
-		  ON bos.source_posted_at = bc.source_posted_at
-		 AND bos.binary_id = bc.binary_id
+		  ON bos.source_posted_at = bic.source_posted_at
+		 AND bos.binary_id = bic.binary_id
+		JOIN binary_core bc
+		  ON bc.source_posted_at = bic.source_posted_at
+		 AND bc.binary_id = bic.binary_id
 		LEFT JOIN binary_lifecycle bl
-		  ON bl.binary_id = bc.binary_id
-		 AND bl.source_posted_at = bc.source_posted_at
+		  ON bl.binary_id = bic.binary_id
+		 AND bl.source_posted_at = bic.source_posted_at
 		WHERE COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
 		  AND bic.family_kind = 'contextual_obfuscated'
 		  AND bic.identity_reason = 'contextual_fallback'
 		  AND bos.observed_parts <= 2
 		  AND btrim(COALESCE(bic.file_name, '')) <> ''
 		  AND lower(bic.file_name) !~ '(\.7z\.[0-9]+|\.part[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.par2|\.vol[0-9]+\+[0-9]+\.par2)$'
-		GROUP BY bc.provider_id, bc.newsgroup_id, bic.file_name, lower(btrim(bic.file_name))
+		GROUP BY bic.provider_id, bic.newsgroup_id, bic.file_name, lower(btrim(bic.file_name))
 		HAVING COUNT(*) > 1
 		ORDER BY COUNT(*) DESC, MAX(COALESCE(bos.total_parts, 0)) DESC
 		LIMIT $1`, limit); err != nil {
