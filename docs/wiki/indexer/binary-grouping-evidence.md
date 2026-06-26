@@ -135,11 +135,13 @@ Suspicious opaque cohorts are HEAD-only groups where all of these are true:
 - `binary_observation_stats.posted_at` falls in a bounded near-time window;
 - the cohort has at least 20 active singleton binaries.
 
-The default admission bucket is five minutes. That is intentionally a hint,
-not grouping truth: large uploads, slow uploaders, throttling, multi-connection
-posting, and provider acceptance order can spread related articles across
-seconds or minutes. These cohorts should be admitted as `priority_rank = 0`
-with `admission_reason = 'opaque_near_time_cohort'`. This does not promote the
+The admission bucket is runtime-configurable as
+`indexing.recovery_admission.near_time_cohort_bucket_minutes` and defaults to
+five minutes. That is intentionally a hint, not grouping truth: large uploads,
+slow uploaders, throttling, multi-connection posting, and provider acceptance
+order can spread related articles across seconds or minutes. These cohorts
+should be admitted as `priority_rank = 0` with
+`admission_reason = 'opaque_near_time_cohort'`. This does not promote the
 cohort to a real binary by itself. It only tells `recover_yenc` to spend BODY
 probes there before generic weak backlog because the timeframe suggests the
 current singleton identities may be incomplete.

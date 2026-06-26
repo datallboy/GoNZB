@@ -204,12 +204,13 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 
 func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSettings) pgindex.YEncRecoveryAdmissionConfig {
 	return pgindex.YEncRecoveryAdmissionConfig{
-		SoftQueueHours:         in.SoftQueueHours,
-		HardQueueMultiplier:    in.HardQueueMultiplier,
-		AbsoluteHardQueueCap:   int64(in.AbsoluteHardQueueCap),
-		BootstrapProbesPerHour: float64(in.BootstrapProbesPerHour),
-		EWMAWindowMinutes:      in.EWMAWindowMinutes,
-		Priority0OverflowCap:   int64(in.Priority0OverflowCap),
+		SoftQueueHours:              in.SoftQueueHours,
+		HardQueueMultiplier:         in.HardQueueMultiplier,
+		AbsoluteHardQueueCap:        int64(in.AbsoluteHardQueueCap),
+		BootstrapProbesPerHour:      float64(in.BootstrapProbesPerHour),
+		EWMAWindowMinutes:           in.EWMAWindowMinutes,
+		Priority0OverflowCap:        int64(in.Priority0OverflowCap),
+		NearTimeCohortBucketMinutes: in.NearTimeCohortBucketMinutes,
 	}
 }
 

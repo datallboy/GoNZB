@@ -14,15 +14,17 @@ const (
 	defaultYEncAdmissionBootstrapProbesPerHour = 25000
 	defaultYEncAdmissionEWMAWindow             = 30 * time.Minute
 	defaultYEncAdmissionPriority0OverflowCap   = 25000
+	defaultYEncAdmissionNearTimeBucketMinutes  = 5
 )
 
 type YEncRecoveryAdmissionConfig struct {
-	SoftQueueHours         int
-	HardQueueMultiplier    int
-	AbsoluteHardQueueCap   int64
-	BootstrapProbesPerHour float64
-	EWMAWindowMinutes      int
-	Priority0OverflowCap   int64
+	SoftQueueHours              int
+	HardQueueMultiplier         int
+	AbsoluteHardQueueCap        int64
+	BootstrapProbesPerHour      float64
+	EWMAWindowMinutes           int
+	Priority0OverflowCap        int64
+	NearTimeCohortBucketMinutes int
 }
 
 type YEncRecoveryAdmissionSnapshot struct {
@@ -52,9 +54,10 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 			bootstrap_probes_per_hour,
 			ewma_window_minutes,
 			priority0_overflow_cap,
+			near_time_cohort_bucket_minutes,
 			config_updated_at
 		)
-		VALUES (true, $1, $2, $3, $4, $5, $6, NOW())
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (id) DO UPDATE
 		SET soft_queue_hours = EXCLUDED.soft_queue_hours,
 		    hard_queue_multiplier = EXCLUDED.hard_queue_multiplier,
@@ -62,6 +65,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		    bootstrap_probes_per_hour = EXCLUDED.bootstrap_probes_per_hour,
 		    ewma_window_minutes = EXCLUDED.ewma_window_minutes,
 		    priority0_overflow_cap = EXCLUDED.priority0_overflow_cap,
+		    near_time_cohort_bucket_minutes = EXCLUDED.near_time_cohort_bucket_minutes,
 		    config_updated_at = NOW()`,
 		cfg.SoftQueueHours,
 		cfg.HardQueueMultiplier,
@@ -69,6 +73,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		cfg.BootstrapProbesPerHour,
 		cfg.EWMAWindowMinutes,
 		cfg.Priority0OverflowCap,
+		cfg.NearTimeCohortBucketMinutes,
 	); err != nil {
 		return fmt.Errorf("configure yenc recovery admission: %w", err)
 	}
@@ -93,6 +98,9 @@ func normalizeYEncAdmissionConfig(cfg YEncRecoveryAdmissionConfig) YEncRecoveryA
 	}
 	if cfg.Priority0OverflowCap <= 0 {
 		cfg.Priority0OverflowCap = defaultYEncAdmissionPriority0OverflowCap
+	}
+	if cfg.NearTimeCohortBucketMinutes <= 0 {
+		cfg.NearTimeCohortBucketMinutes = defaultYEncAdmissionNearTimeBucketMinutes
 	}
 	return cfg
 }

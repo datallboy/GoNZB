@@ -199,12 +199,13 @@ rows that would make the drop incomplete.
   formation, including suspicious near-time opaque singleton cohorts.
 - Admit suspicious `opaque_subject_set` singleton cohorts as priority-0 work
   when at least 20 active one-part binaries share the same provider, newsgroup,
-  and bounded near-time bucket. The default bucket is five minutes because
-  upload speed, throttling, multi-connection posting, and provider acceptance
-  order can spread a single large upload across seconds or minutes. Use
-  `admission_reason = 'opaque_near_time_cohort'`. This is admission priority
-  only; yEnc BODY evidence remains required before stronger grouping is
-  trusted.
+  and bounded near-time bucket. Configure the bucket with
+  `indexing.recovery_admission.near_time_cohort_bucket_minutes`; the default is
+  five minutes because upload speed, throttling, multi-connection posting, and
+  provider acceptance order can spread a single large upload across seconds or
+  minutes. Use `admission_reason = 'opaque_near_time_cohort'`. This is
+  admission priority only; yEnc BODY evidence remains required before stronger
+  grouping is trusted.
 - Ensure work-item upserts are idempotent on partition-key-inclusive
   `binary_id` and `article_header_id` uniqueness.
 - Move retry/backoff/progress state out of scrape-owned ingest payload rows
