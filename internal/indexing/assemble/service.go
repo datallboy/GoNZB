@@ -125,7 +125,7 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 		opts.MaxYEncRecoveryAttempts = 128
 	}
 	if opts.BinaryUpsertDBChunkSize <= 0 {
-		opts.BinaryUpsertDBChunkSize = 250
+		opts.BinaryUpsertDBChunkSize = 1000
 	}
 	if opts.LaneATargetPct <= 0 {
 		opts.LaneATargetPct = 70

@@ -625,6 +625,69 @@ Live evidence already collected:
 - focused validation after the hot query regression patch:
   `go test ./internal/store/pgindex ./internal/indexing/assemble ./internal/indexing/release`
   passed, and `git diff --check` passed.
+- release summary refresh regression follow-up at `2026-06-26 15:00-04`:
+  - the database aggregate path was still capable of 10,000-key work. A
+    read-only `EXPLAIN (ANALYZE, BUFFERS)` of the 10,000-key release-family
+    aggregate completed in about 1.62s;
+  - the observed 1,000-key behavior came from accumulated code caps:
+    `releaseSummaryRefreshTimedBatchCap = 1000`, store hot/cold caps of 1,000,
+    and a 100-key query chunk cap. Those caps were removed or restored to
+    10,000/5,000 query chunks;
+  - a separate dequeue regression came from joining
+    `release_family_summary_refresh_queue` to partitioned
+    `release_family_readiness_summaries` without a provider/key-first lookup
+    index. The slow hot-queue EXPLAIN took about 28.5s and the stale-key
+    branch took about 23.7s because each queue key probed every daily
+    partition. Migration `034_release_summary_partition_lookup_indexes` adds
+    `(provider_id, newsgroup_id, key_kind, family_key, readiness_bucket,
+    source_posted_at)`, reducing the same hot-queue check to about 55ms and the
+    stale-key branch to about 68ms;
+  - live post-index refresh runs drained hundreds of keys with dequeue commonly
+    about 30-745ms. Examples include `refreshed=702`,
+    `dequeue_duration_ms=359.74`, `refresh_duration_ms=3418.40` and
+    `refreshed=750`, `dequeue_duration_ms=267.95`,
+    `refresh_duration_ms=1726.86`.
+- assemble write/refresh follow-up at `2026-06-26 15:07-04`:
+  - binary stats refresh had regressed because the partitioned
+    `UPDATE binary_observation_stats ... FROM agg` and identity readback
+    scanned broad daily partitions. A read-only EXPLAIN of the old shape took
+    about 3.66s for about 6,100 binaries and scanned millions of rows across
+    `binary_observation_stats`/`binary_identity_current`; a day-bounded variant
+    still scanned the whole 2026-06-26 child and took about 2.26s;
+  - stats refresh now groups requested binaries by UTC `source_posted_at` day,
+    uses partition bounds, upserts only requested observation rows, and reads
+    identity with keyed lateral lookups. The equivalent EXPLAIN dropped to
+    about 950ms and live `binary_refresh_stats_update_ms` dropped from the
+    earlier 24.3s sample to about 1.0-4.1s depending on refreshed binary count;
+  - `binary_completion_keys` cleanup inside binary upsert now deletes by
+    `(source_posted_at, binary_id)` instead of `binary_id` alone, preserving
+    partition pruning;
+  - the default runtime assemble `binary_upsert_db_chunk_size` was raised from
+    250 to 1,000 and the live runtime setting was patched through
+    `/api/v1/admin/settings`. Post-update assemble used 18 chunks for 17,437
+    unique binary upserts with zero retry/deadlock/serialization events;
+  - binary upsert remains workload-sensitive on batches with many new binary
+    roots. Post-update samples used 18 chunks for 17,437-17,773 unique binary
+    upserts with zero retry/deadlock/serialization events. The first sample
+    had `binary_upsert_query_ms=30744.27`; the next comparable sample improved
+    to `binary_upsert_query_ms=21012.41`,
+    `binary_refresh_stats_update_ms=2573.53`, and
+    `queue_cleanup_ms=1095.46`. This is improved per binary versus the earlier
+    20,000-new-binary, 80-chunk sample, but binary upsert remains the next
+    optimization target if assemble drain rate is still insufficient.
+- binary grouping policy implementation check:
+  - `docs/wiki/indexer/binary-grouping-evidence.md` records the evidence
+    priority: complete Subject multipart identity first, canonical obfuscated
+    Subject before random poster/message-id context, recovered yEnc only when
+    HEAD evidence is incomplete/ambiguous, and weak cohorts as prioritization
+    hints only;
+  - existing matcher/assemble tests cover the reference
+    `subject_multipart_obfuscated` case so randomized poster context does not
+    split complete Subject multipart binaries;
+  - yEnc admission remains priority/rank based rather than FIFO, and the
+    near-time opaque singleton bucket is runtime-configurable. Live recovery
+    continued to claim full 5,000-item batches at concurrency 100 while ready
+    work was available.
 
 Known open signoff items:
 
@@ -637,8 +700,8 @@ Known open signoff items:
 - collect short `EXPLAIN (ANALYZE, BUFFERS)` notes for any additional hot query
   shape changed after the `2026-06-26` regression patch;
 - continue assemble write-path tuning. The current evidence points at binary
-  upsert and binary stats refresh cost on large, high-cardinality batches rather
-  than the yEnc selector self-join regression.
+  upsert cost on large, high-cardinality batches rather than the yEnc selector
+  self-join regression or binary stats refresh.
 
 ## Acceptance Criteria
 

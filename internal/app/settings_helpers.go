@@ -120,7 +120,7 @@ func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSetting
 
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, interval, batch, concurrency)
-	stage.BinaryUpsertDBChunkSize = 250
+	stage.BinaryUpsertDBChunkSize = 1000
 	stage.LaneATargetPct = 70
 	stage.LaneBMinPct = 30
 	stage.LaneATimeWindowMinutes = 15
