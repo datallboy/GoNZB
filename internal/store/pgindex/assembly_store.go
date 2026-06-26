@@ -2397,17 +2397,30 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		WITH requested(binary_id) AS (
+		WITH requested_ids(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
+		),
+		requested AS (
+			SELECT bc.binary_id, bc.source_posted_at
+			FROM requested_ids r
+			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
 		)
 		DELETE FROM binary_completion_keys bck
 		USING requested r
-		WHERE bck.binary_id = r.binary_id`, requestedBinaryIDs); err != nil {
+		WHERE bck.source_posted_at = r.source_posted_at
+		  AND bck.binary_id = r.binary_id`, requestedBinaryIDs); err != nil {
 		return fmt.Errorf("delete binary completion keys: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		WITH requested(binary_id) AS (
+		WITH requested_ids(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
+		),
+		requested AS (
+			SELECT bc.binary_id, bc.source_posted_at
+			FROM requested_ids r
+			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
 		)
 		INSERT INTO binary_completion_keys (
 			binary_id,
@@ -2439,13 +2452,11 @@ func syncBinaryCompletionKeyChunkInTx(ctx context.Context, tx *sql.Tx, binaryIDs
 			NOW()
 		FROM requested r
 		JOIN binary_identity_current bic
-		  ON bic.binary_id = r.binary_id
-		JOIN binary_core bc
-		  ON bc.binary_id = bic.binary_id
-		 AND COALESCE(bc.source_posted_at, bic.source_posted_at) = bic.source_posted_at
+		  ON bic.source_posted_at = r.source_posted_at
+		 AND bic.binary_id = r.binary_id
 		JOIN binary_observation_stats bos
-		  ON bos.binary_id = r.binary_id
-		 AND bos.source_posted_at = bic.source_posted_at
+		  ON bos.source_posted_at = r.source_posted_at
+		 AND bos.binary_id = r.binary_id
 		WHERE bos.total_parts > 0
 		  AND bos.observed_parts < bos.total_parts
 		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
