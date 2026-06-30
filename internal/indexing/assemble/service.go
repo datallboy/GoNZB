@@ -209,9 +209,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			"headers_per_second":              0.0,
 			"refreshed_binaries_per_second":   0.0,
 		}
-		if err := s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize); err != nil {
-			return metrics, err
-		}
+		s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
 		return metrics, nil
 	}
 
@@ -281,7 +279,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	combined["selected_headers"] = len(headers)
 	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
 	if err == nil {
-		err = s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
+		s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
 	}
 	return metrics, err
 }
@@ -389,12 +387,7 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		s.log.Debug("assemble: no unassembled article headers found")
 		metrics["processed_headers"] = 0
 		metrics["binaries_refreshed"] = 0
-		if err := s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize); err != nil {
-			metrics["total_duration_ms"] = durationMillis(time.Since(started))
-			metrics["headers_per_second"] = 0.0
-			metrics["refreshed_binaries_per_second"] = 0.0
-			return metrics, err
-		}
+		s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
 		metrics["total_duration_ms"] = durationMillis(time.Since(started))
 		metrics["headers_per_second"] = 0.0
 		metrics["refreshed_binaries_per_second"] = 0.0
@@ -411,26 +404,26 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 
 	metrics, err = s.persistAssembleWork(ctx, started, metrics, work, batchSize)
 	if err == nil {
-		err = s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
+		s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
 	}
 	return metrics, err
 }
 
-func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics map[string]any, limit int) error {
+func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics map[string]any, limit int) {
 	metrics["subject_multipart_regroup_groups"] = int64(0)
 	metrics["subject_multipart_regroup_sources"] = int64(0)
 	metrics["subject_multipart_regroup_parts_moved"] = int64(0)
 	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = int64(0)
 	repo, ok := s.repo.(subjectMultipartRegroupRepository)
 	if !ok {
-		return nil
+		return
 	}
-	const regroupInterval = 15 * time.Minute
+	const regroupInterval = 30 * time.Minute
 	s.subjectMultipartRegroupMu.Lock()
 	if !s.lastSubjectMultipartRegroup.IsZero() && time.Since(s.lastSubjectMultipartRegroup) < regroupInterval {
 		s.subjectMultipartRegroupMu.Unlock()
 		metrics["subject_multipart_regroup_skipped"] = true
-		return nil
+		return
 	}
 	s.lastSubjectMultipartRegroup = time.Now()
 	s.subjectMultipartRegroupMu.Unlock()
@@ -441,17 +434,21 @@ func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics m
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > 100 {
+		limit = 100
 	}
 	started := time.Now()
 	result, err := repo.RegroupSubjectMultipartBinaries(ctx, limit)
 	metrics["subject_multipart_regroup_duration_ms"] = durationMillis(time.Since(started))
 	if err != nil {
-		return fmt.Errorf("regroup subject multipart binaries: %w", err)
+		metrics["subject_multipart_regroup_error"] = err.Error()
+		if s.log != nil {
+			s.log.Warn("assemble: subject multipart regroup skipped err=%v", err)
+		}
+		return
 	}
 	if result == nil {
-		return nil
+		return
 	}
 	metrics["subject_multipart_regroup_groups"] = result.Groups
 	metrics["subject_multipart_regroup_sources"] = result.SourceBinaries
@@ -467,7 +464,6 @@ func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics m
 			metrics["subject_multipart_regroup_duration_ms"],
 		)
 	}
-	return nil
 }
 
 func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.AssemblyCandidate) (assembleWork, error) {

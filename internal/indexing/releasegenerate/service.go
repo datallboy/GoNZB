@@ -43,7 +43,11 @@ func NewService(repo repository, resolver nzbResolver, store blobStore, opts Opt
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 100
 	}
-	opts.Policy = pgindex.NormalizeReleaseReadyPolicy(opts.Policy)
+	if opts.Policy == (pgindex.ReleaseReadyPolicy{}) {
+		opts.Policy = pgindex.DefaultReleaseReadyPolicy()
+	} else {
+		opts.Policy = pgindex.NormalizeReleaseReadyPolicy(opts.Policy)
+	}
 	return &Service{repo: repo, resolver: resolver, store: store, opts: opts}
 }
 

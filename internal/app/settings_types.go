@@ -160,6 +160,7 @@ type IndexingReleaseRuntimeSettings struct {
 	PublicMinIdentityStatus                         string  `json:"public_min_identity_status,omitempty"`
 	PublicRequireInspection                         bool    `json:"public_require_inspection,omitempty"`
 	PublicRequireEnrichment                         bool    `json:"public_require_enrichment,omitempty"`
+	PublicRequireClearTitle                         bool    `json:"public_require_clear_title,omitempty"`
 	PublicRequirePayloadComplete                    bool    `json:"public_require_payload_complete,omitempty"`
 	PublicRequireExpectedFileCountComplete          bool    `json:"public_require_expected_file_count_complete,omitempty"`
 	PublicRequirePAR2                               bool    `json:"public_require_par2,omitempty"`

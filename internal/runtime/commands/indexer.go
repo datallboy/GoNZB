@@ -214,6 +214,7 @@ func releaseSourcePurgeReadyPolicy(indexing app.IndexingRuntimeSettings) pgindex
 		MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
 		RequireInspection:                    indexing.Release.PublicRequireInspection,
 		RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
+		RequireClearTitle:                    indexing.Release.PublicRequireClearTitle,
 		RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
 		RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
 		RequirePAR2:                          indexing.Release.PublicRequirePAR2,
