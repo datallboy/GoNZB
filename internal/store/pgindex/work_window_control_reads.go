@@ -227,6 +227,7 @@ func (s *Store) RefreshIndexerDailyBucketStats(ctx context.Context, days int) (i
 
 func (s *Store) refreshIndexerDailyBucketStatsByBoundary(ctx context.Context, days int) (int64, error) {
 	cutoffDay := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -(days - 1))
+	const maxDailyBucketRefreshesPerRun = 6
 
 	type bucket struct {
 		ProviderID           int64
@@ -240,21 +241,27 @@ func (s *Store) refreshIndexerDailyBucketStatsByBoundary(ctx context.Context, da
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			provider_id,
-			newsgroup_id,
-			bucket_day,
-			lower_boundary_crossed,
-			upper_boundary_crossed,
-			bucket_article_low,
-			bucket_article_high,
-			lower_boundary_crossed
-				AND upper_boundary_crossed
-				AND bucket_article_low > 0
-				AND bucket_article_high >= bucket_article_low AS scrape_progress_known
-		FROM indexer_scrape_day_boundaries
-		WHERE bucket_day >= $1
-		ORDER BY bucket_day DESC, provider_id, newsgroup_id`,
+			sb.provider_id,
+			sb.newsgroup_id,
+			sb.bucket_day,
+			sb.lower_boundary_crossed,
+			sb.upper_boundary_crossed,
+			sb.bucket_article_low,
+			sb.bucket_article_high,
+			sb.lower_boundary_crossed
+				AND sb.upper_boundary_crossed
+				AND sb.bucket_article_low > 0
+				AND sb.bucket_article_high >= sb.bucket_article_low AS scrape_progress_known
+		FROM indexer_scrape_day_boundaries sb
+		LEFT JOIN indexer_daily_bucket_stats existing
+		  ON existing.provider_id = sb.provider_id
+		 AND existing.newsgroup_id = sb.newsgroup_id
+		 AND existing.bucket_day = sb.bucket_day
+		WHERE sb.bucket_day >= $1
+		ORDER BY existing.last_refreshed_at NULLS FIRST, sb.bucket_day DESC, sb.provider_id, sb.newsgroup_id
+		LIMIT $2`,
 		cutoffDay,
+		maxDailyBucketRefreshesPerRun,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("list daily bucket refresh boundaries: %w", err)
@@ -290,9 +297,16 @@ func (s *Store) refreshIndexerDailyBucketStatsByBoundary(ctx context.Context, da
 				SELECT
 					MIN(article_number) AS article_low,
 					MAX(article_number) AS article_high,
-					COUNT(article_number)::bigint AS headers_staged,
-					COUNT(article_number) FILTER (WHERE assembled_at IS NULL)::bigint AS unassembled_headers
+					COUNT(article_number)::bigint AS headers_staged
 				FROM article_headers
+				WHERE source_posted_at >= $3::date
+				  AND source_posted_at < $3::date + INTERVAL '1 day'
+				  AND provider_id = $1
+				  AND newsgroup_id = $2
+			),
+			assembly_stats AS (
+				SELECT COUNT(*)::bigint AS unassembled_headers
+				FROM article_header_assembly_queue
 				WHERE source_posted_at >= $3::date
 				  AND source_posted_at < $3::date + INTERVAL '1 day'
 				  AND provider_id = $1
@@ -309,19 +323,15 @@ func (s *Store) refreshIndexerDailyBucketStatsByBoundary(ctx context.Context, da
 				  AND provider_id = $1
 				  AND newsgroup_id = $2
 			),
-			binary_stats AS (
+			cached_binary_stats AS (
 				SELECT
-					COUNT(bos.binary_id)::bigint AS binaries_total,
-					COUNT(bos.binary_id) FILTER (WHERE COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0))::bigint AS binaries_complete,
-					COUNT(bos.binary_id) FILTER (WHERE LOWER(COALESCE(bic.identity_strength, '')) IN ('weak', 'provisional'))::bigint AS binaries_weak
-				FROM binary_observation_stats bos
-				LEFT JOIN binary_identity_current bic
-				  ON bic.source_posted_at = bos.source_posted_at
-				 AND bic.binary_id = bos.binary_id
-				WHERE bos.source_posted_at >= $3::date
-				  AND bos.source_posted_at < $3::date + INTERVAL '1 day'
-				  AND bos.provider_id = $1
-				  AND bos.newsgroup_id = $2
+					COALESCE(binaries_total, 0)::bigint AS binaries_total,
+					COALESCE(binaries_complete, 0)::bigint AS binaries_complete,
+					COALESCE(binaries_weak, 0)::bigint AS binaries_weak
+				FROM indexer_daily_bucket_stats
+				WHERE provider_id = $1
+				  AND newsgroup_id = $2
+				  AND bucket_day = $3::date
 			),
 			release_stats AS (
 				SELECT COUNT(DISTINCT r.release_id)::bigint AS releases_created
@@ -384,20 +394,21 @@ func (s *Store) refreshIndexerDailyBucketStatsByBoundary(ctx context.Context, da
 					COALESCE(ss.article_low, 0),
 					COALESCE(ss.article_high, 0),
 					COALESCE(ss.headers_staged, 0),
-					COALESCE(ss.unassembled_headers, 0),
+					COALESCE(ast.unassembled_headers, 0),
 					COALESCE(ys.yenc_ready, 0),
 					COALESCE(ys.yenc_running, 0),
 					COALESCE(ys.yenc_done, 0),
 					COALESCE(ys.yenc_stale, 0),
-					COALESCE(bs.binaries_total, 0),
-					COALESCE(bs.binaries_complete, 0),
-					COALESCE(bs.binaries_weak, 0),
+					COALESCE(cbs.binaries_total, 0),
+					COALESCE(cbs.binaries_complete, 0),
+					COALESCE(cbs.binaries_weak, 0),
 					COALESCE(rs.releases_created, 0),
 					0::bigint,
 					NOW()
 				FROM source_stats ss
+				CROSS JOIN assembly_stats ast
 				CROSS JOIN yenc_stats ys
-				CROSS JOIN binary_stats bs
+				LEFT JOIN cached_binary_stats cbs ON TRUE
 				CROSS JOIN release_stats rs
 				LEFT JOIN indexer_group_profiles igp
 				  ON igp.provider_id = $1
@@ -485,17 +496,30 @@ func (s *Store) refreshIndexerDailyBucketStatsLegacy(ctx context.Context, days i
 				bnd.bucket_day,
 				MIN(ah.article_number) AS article_low,
 				MAX(ah.article_number) AS article_high,
-				COUNT(ah.article_number) AS headers_staged,
-				COUNT(ah.article_number) FILTER (WHERE ah.assembled_at IS NULL) AS unassembled_headers
+				COUNT(ah.article_number) AS headers_staged
 			FROM boundary_days bnd
 			LEFT JOIN LATERAL (
-				SELECT ah.article_number, ah.assembled_at
+				SELECT ah.article_number
 				FROM article_headers ah
 				WHERE ah.source_posted_at >= bnd.bucket_day
 				  AND ah.source_posted_at < bnd.bucket_day + INTERVAL '1 day'
 				  AND ah.provider_id = bnd.provider_id
 				  AND ah.newsgroup_id = bnd.newsgroup_id
 			) ah ON TRUE
+			GROUP BY bnd.provider_id, bnd.newsgroup_id, bnd.bucket_day
+		),
+		assembly_days AS (
+			SELECT
+				bnd.provider_id,
+				bnd.newsgroup_id,
+				bnd.bucket_day,
+				COUNT(q.article_header_id) AS unassembled_headers
+			FROM boundary_days bnd
+			LEFT JOIN article_header_assembly_queue q
+			  ON q.source_posted_at >= bnd.bucket_day
+			 AND q.source_posted_at < bnd.bucket_day + INTERVAL '1 day'
+			 AND q.provider_id = bnd.provider_id
+			 AND q.newsgroup_id = bnd.newsgroup_id
 			GROUP BY bnd.provider_id, bnd.newsgroup_id, bnd.bucket_day
 		),
 		yenc_days AS (
@@ -511,25 +535,36 @@ func (s *Store) refreshIndexerDailyBucketStatsLegacy(ctx context.Context, days i
 			WHERE wi.partition_day >= b.cutoff_day
 			GROUP BY wi.provider_id, wi.newsgroup_id, wi.partition_day
 		),
-		binary_days AS (
-			SELECT
-				bnd.provider_id,
-				bnd.newsgroup_id,
-				bnd.bucket_day,
-				COUNT(bos.binary_id) AS binaries_total,
-				COUNT(bos.binary_id) FILTER (WHERE COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)) AS binaries_complete,
-				COUNT(bos.binary_id) FILTER (WHERE LOWER(COALESCE(bic.identity_strength, '')) IN ('weak', 'provisional')) AS binaries_weak
-			FROM boundary_days bnd
-			LEFT JOIN binary_observation_stats bos
-			  ON bos.source_posted_at >= bnd.bucket_day
-			 AND bos.source_posted_at < bnd.bucket_day + INTERVAL '1 day'
-			 AND bos.provider_id = bnd.provider_id
-			 AND bos.newsgroup_id = bnd.newsgroup_id
-			LEFT JOIN binary_identity_current bic
-			  ON bic.source_posted_at = bos.source_posted_at
-			 AND bic.binary_id = bos.binary_id
-			GROUP BY bnd.provider_id, bnd.newsgroup_id, bnd.bucket_day
-		),
+			binary_days AS (
+				SELECT
+					bnd.provider_id,
+					bnd.newsgroup_id,
+					bnd.bucket_day,
+					COUNT(bos.binary_id) AS binaries_total,
+					COUNT(bos.binary_id) FILTER (WHERE COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)) AS binaries_complete
+				FROM boundary_days bnd
+				LEFT JOIN binary_observation_stats bos
+				  ON bos.source_posted_at >= bnd.bucket_day
+				 AND bos.source_posted_at < bnd.bucket_day + INTERVAL '1 day'
+				 AND bos.provider_id = bnd.provider_id
+				 AND bos.newsgroup_id = bnd.newsgroup_id
+				GROUP BY bnd.provider_id, bnd.newsgroup_id, bnd.bucket_day
+			),
+			weak_binary_days AS (
+				SELECT
+					bnd.provider_id,
+					bnd.newsgroup_id,
+					bnd.bucket_day,
+					COUNT(bic.binary_id) AS binaries_weak
+				FROM boundary_days bnd
+				LEFT JOIN binary_identity_current bic
+				  ON bic.source_posted_at >= bnd.bucket_day
+				 AND bic.source_posted_at < bnd.bucket_day + INTERVAL '1 day'
+				 AND bic.provider_id = bnd.provider_id
+				 AND bic.newsgroup_id = bnd.newsgroup_id
+				 AND LOWER(COALESCE(bic.identity_strength, '')) IN ('weak', 'provisional')
+				GROUP BY bnd.provider_id, bnd.newsgroup_id, bnd.bucket_day
+			),
 		release_days AS (
 			SELECT
 				bc.provider_id,
@@ -600,23 +635,25 @@ func (s *Store) refreshIndexerDailyBucketStatsLegacy(ctx context.Context, days i
 				COALESCE(sd.article_low, 0),
 				COALESCE(sd.article_high, 0),
 				COALESCE(sd.headers_staged, 0),
-				COALESCE(sd.unassembled_headers, 0),
+				COALESCE(ad.unassembled_headers, 0),
 				COALESCE(yd.yenc_ready, 0),
 				COALESCE(yd.yenc_running, 0),
 				COALESCE(yd.yenc_done, 0),
-				COALESCE(yd.yenc_stale, 0),
-				COALESCE(bd.binaries_total, 0),
-				COALESCE(bd.binaries_complete, 0),
-				COALESCE(bd.binaries_weak, 0),
+					COALESCE(yd.yenc_stale, 0),
+					COALESCE(bd.binaries_total, 0),
+					COALESCE(bd.binaries_complete, 0),
+					COALESCE(wbd.binaries_weak, 0),
 				COALESCE(rd.releases_created, 0),
 				0::bigint,
 				NOW()
 			FROM keys k
 			LEFT JOIN indexer_group_profiles igp ON igp.provider_id = k.provider_id AND igp.newsgroup_id = k.newsgroup_id
 			LEFT JOIN source_days sd ON sd.provider_id = k.provider_id AND sd.newsgroup_id = k.newsgroup_id AND sd.bucket_day = k.bucket_day
-			LEFT JOIN yenc_days yd ON yd.provider_id = k.provider_id AND yd.newsgroup_id = k.newsgroup_id AND yd.bucket_day = k.bucket_day
-			LEFT JOIN binary_days bd ON bd.provider_id = k.provider_id AND bd.newsgroup_id = k.newsgroup_id AND bd.bucket_day = k.bucket_day
-			LEFT JOIN release_days rd ON rd.provider_id = k.provider_id AND rd.newsgroup_id = k.newsgroup_id AND rd.bucket_day = k.bucket_day
+			LEFT JOIN assembly_days ad ON ad.provider_id = k.provider_id AND ad.newsgroup_id = k.newsgroup_id AND ad.bucket_day = k.bucket_day
+				LEFT JOIN yenc_days yd ON yd.provider_id = k.provider_id AND yd.newsgroup_id = k.newsgroup_id AND yd.bucket_day = k.bucket_day
+				LEFT JOIN binary_days bd ON bd.provider_id = k.provider_id AND bd.newsgroup_id = k.newsgroup_id AND bd.bucket_day = k.bucket_day
+				LEFT JOIN weak_binary_days wbd ON wbd.provider_id = k.provider_id AND wbd.newsgroup_id = k.newsgroup_id AND wbd.bucket_day = k.bucket_day
+				LEFT JOIN release_days rd ON rd.provider_id = k.provider_id AND rd.newsgroup_id = k.newsgroup_id AND rd.bucket_day = k.bucket_day
 			LEFT JOIN boundary_days bnd ON bnd.provider_id = k.provider_id AND bnd.newsgroup_id = k.newsgroup_id AND bnd.bucket_day = k.bucket_day
 			ON CONFLICT (provider_id, newsgroup_id, bucket_day)
 			DO UPDATE SET

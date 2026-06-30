@@ -158,10 +158,11 @@ func scanReleaseArchiveState(scanner interface{ Scan(dest ...any) error }) (*Rel
 	return item, nil
 }
 
-func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]ReleaseArchiveCandidate, error) {
+func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int, policy ReleaseReadyPolicy) ([]ReleaseArchiveCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	policy = NormalizeReleaseReadyPolicy(policy)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin archive claim tx: %w", err)
@@ -179,7 +180,7 @@ func (s *Store) ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([
 			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 			WHERE r.source_kind = 'usenet_index'
 			  AND n.generation_status = 'ready'
-			  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)
+			  AND (`+releaseReadyVisibilityClause("r", policy)+`)
 			  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 			  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
 			  AND EXISTS (
@@ -308,6 +309,9 @@ func (s *Store) MarkReleaseArchiveStored(ctx context.Context, in ReleaseArchiveS
 		archiveFirstNonBlank(in.SourceModule, "usenet_index"),
 	); err != nil {
 		return fmt.Errorf("upsert release archive state %s: %w", in.ReleaseID, err)
+	}
+	if err := upsertNZBCacheWithRunner(ctx, tx, in.ReleaseID, "ready", strings.TrimSpace(in.ContentHashSHA256), ""); err != nil {
+		return fmt.Errorf("mark nzb cache ready %s: %w", in.ReleaseID, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM release_archive_lineage_binaries WHERE release_id = $1`, in.ReleaseID); err != nil {

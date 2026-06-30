@@ -357,6 +357,9 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
 			}
+			if newestLimit <= 0 && len(out) == 0 && targetLimit > 0 {
+				newestLimit = limit
+			}
 			stats.NewestRequested = newestLimit
 			if newestLimit > 0 {
 				newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)

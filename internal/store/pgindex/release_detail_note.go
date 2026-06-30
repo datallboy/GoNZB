@@ -21,10 +21,11 @@ type ReleaseDetailDiagnostics struct {
 }
 
 func buildReleaseDetailDiagnostics(release IndexerReleaseSummary, files []IndexerReleaseFileSummary) ReleaseDetailDiagnostics {
+	payloadComplete, payloadKnown, payloadPct := releasePayloadState(release, files)
 	diag := ReleaseDetailDiagnostics{
-		PayloadComplete:               releasePayloadComplete(release),
-		PayloadCompletenessKnown:      releasePayloadCompletenessKnown(release),
-		PayloadCompletionPct:          releasePayloadCompletionPct(release),
+		PayloadComplete:               payloadComplete,
+		PayloadCompletenessKnown:      payloadKnown,
+		PayloadCompletionPct:          payloadPct,
 		KnownBinaryCompletionPct:      release.CompletionPct,
 		ExpectedFileCountComplete:     releaseExpectedFileCountComplete(release),
 		ExpectedFileCountKnown:        release.ExpectedFileCount > 0,
@@ -33,9 +34,9 @@ func buildReleaseDetailDiagnostics(release IndexerReleaseSummary, files []Indexe
 	if release.ExpectedFileCount > release.FileCount {
 		diag.MissingExpectedFileCount = release.ExpectedFileCount - release.FileCount
 	}
-	nonPARFileCount := releaseNonPARFileCount(release)
-	if release.ExpectedArchiveFileCount > nonPARFileCount {
-		diag.MissingExpectedArchiveFileCount = release.ExpectedArchiveFileCount - nonPARFileCount
+	payloadFileCount := releasePayloadFileCount(release, files)
+	if release.ExpectedArchiveFileCount > payloadFileCount {
+		diag.MissingExpectedArchiveFileCount = release.ExpectedArchiveFileCount - payloadFileCount
 	}
 
 	for _, file := range files {
@@ -52,36 +53,72 @@ func buildReleaseDetailDiagnostics(release IndexerReleaseSummary, files []Indexe
 	return diag
 }
 
-func releasePayloadComplete(release IndexerReleaseSummary) bool {
+func releasePayloadState(release IndexerReleaseSummary, files []IndexerReleaseFileSummary) (complete bool, known bool, pct float64) {
 	if release.ArchiveCount > 0 && release.ExpectedArchiveFileCount <= 0 {
-		return false
+		return false, false, 0
 	}
-	if release.ExpectedArchiveFileCount <= 0 {
+	if release.ExpectedArchiveFileCount > 0 {
+		payloadFiles := releasePayloadFileCount(release, files)
+		pct := (float64(payloadFiles) / float64(release.ExpectedArchiveFileCount)) * 100
+		if pct > 100 {
+			pct = 100
+		}
+		return payloadFiles >= release.ExpectedArchiveFileCount, true, pct
+	}
+
+	payloadFiles := releasePayloadFiles(files)
+	if len(payloadFiles) == 0 {
+		return release.CompletionPct >= 100, true, release.CompletionPct
+	}
+
+	observedParts := 0
+	expectedParts := 0
+	for _, file := range payloadFiles {
+		if file.ObservedParts > 0 && file.TotalParts <= 0 {
+			return false, false, 0
+		}
+		observedParts += file.ObservedParts
+		expectedParts += max(file.TotalParts, file.ObservedParts)
+	}
+	if expectedParts <= 0 {
+		return false, false, 0
+	}
+	pct = (float64(observedParts) / float64(expectedParts)) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	return observedParts >= expectedParts, true, pct
+}
+
+func releasePayloadFileCount(release IndexerReleaseSummary, files []IndexerReleaseFileSummary) int {
+	payloadFiles := releasePayloadFiles(files)
+	if len(payloadFiles) == 0 {
+		return max(release.FileCount-release.ParFileCount, 0)
+	}
+	return len(payloadFiles)
+}
+
+func releasePayloadFiles(files []IndexerReleaseFileSummary) []IndexerReleaseFileSummary {
+	out := make([]IndexerReleaseFileSummary, 0, len(files))
+	for _, file := range files {
+		if releaseFileIsAuxiliary(file.FileName, file.IsPars) {
+			continue
+		}
+		out = append(out, file)
+	}
+	return out
+}
+
+func releaseFileIsAuxiliary(fileName string, isPAR bool) bool {
+	if isPAR {
 		return true
 	}
-	return releaseNonPARFileCount(release) >= release.ExpectedArchiveFileCount
-}
-
-func releasePayloadCompletenessKnown(release IndexerReleaseSummary) bool {
-	return release.ArchiveCount <= 0 || release.ExpectedArchiveFileCount > 0
-}
-
-func releasePayloadCompletionPct(release IndexerReleaseSummary) float64 {
-	if release.ExpectedArchiveFileCount <= 0 {
-		if release.ArchiveCount > 0 {
-			return 0
-		}
-		return release.CompletionPct
-	}
-	pct := (float64(releaseNonPARFileCount(release)) / float64(release.ExpectedArchiveFileCount)) * 100
-	if pct > 100 {
-		return 100
-	}
-	return pct
-}
-
-func releaseNonPARFileCount(release IndexerReleaseSummary) int {
-	return max(release.FileCount-release.ParFileCount, 0)
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	return strings.HasSuffix(lower, ".nfo") ||
+		strings.HasSuffix(lower, ".sfv") ||
+		strings.HasSuffix(lower, ".srr") ||
+		strings.HasSuffix(lower, ".srs") ||
+		strings.HasSuffix(lower, ".nzb")
 }
 
 func releaseExpectedFileCountComplete(release IndexerReleaseSummary) bool {
@@ -90,6 +127,9 @@ func releaseExpectedFileCountComplete(release IndexerReleaseSummary) bool {
 
 func buildReleaseReadinessNote(release IndexerReleaseSummary, diag ReleaseDetailDiagnostics) string {
 	if !diag.PayloadCompletenessKnown {
+		if release.ArchiveCount <= 0 {
+			return "Payload completeness is unknown. The main payload has article evidence, but no authoritative total part count has been established yet."
+		}
 		if release.HasPAR2 && !diag.HasPAR2Manifest {
 			return "Payload completeness is unknown. Archive inspection found archive payload files, but no base PAR2 target manifest has established the expected archive file count."
 		}

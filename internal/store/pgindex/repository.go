@@ -554,6 +554,22 @@ type ReleasePredbUpdate struct {
 	MetadataUpdatedAt       *time.Time
 }
 
+type ReleaseManualIdentityUpdate struct {
+	ReleaseID               string
+	Title                   string
+	TitleSource             string
+	PredbEntryID            int64
+	ExternalMediaType       string
+	ExternalYear            int
+	SeasonNumber            int
+	EpisodeNumber           int
+	Classification          string
+	IdentityStatus          string
+	IdentityConfidenceScore float64
+	Notes                   string
+	MetadataUpdatedAt       *time.Time
+}
+
 type ReleaseTitleCandidate struct {
 	BinaryID   int64
 	Source     string
@@ -579,6 +595,9 @@ type ReleaseEnrichmentCandidate struct {
 	SeasonNumber            int
 	EpisodeNumber           int
 	PostedAt                *time.Time
+	SizeBytes               int64
+	PayloadSizeBytes        int64
+	PayloadSizeSource       string
 	RuntimeSeconds          int
 	PrimaryResolution       string
 	PrimaryVideoCodec       string
@@ -1087,7 +1106,8 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				0 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
-			  ON ah.newsgroup_id = r.newsgroup_id
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
 			 AND ah.article_number = r.article_number
 
 			UNION ALL
@@ -1099,7 +1119,8 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				1 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
-			  ON ah.newsgroup_id = r.newsgroup_id
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
 			 AND ah.message_id = r.message_id
 		),
 		inserted AS (
@@ -1240,10 +1261,11 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 			provider_id,
 			newsgroup_id,
 			article_number,
-			message_id
+			message_id,
+			source_posted_at
 		) AS (VALUES `)
 
-	args := make([]any, 0, len(batch)*5)
+	args := make([]any, 0, len(batch)*6)
 	for idx, item := range batch {
 		if idx > 0 {
 			query.WriteString(",")
@@ -1259,6 +1281,8 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 		args = append(args, item.ArticleNumber)
 		fmt.Fprintf(&query, "$%d::text", len(args)+1)
 		args = append(args, item.MessageID)
+		fmt.Fprintf(&query, ",COALESCE($%d::timestamptz, NOW())", len(args)+1)
+		args = append(args, item.DateUTC)
 		query.WriteString(")")
 	}
 
@@ -1272,7 +1296,8 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 				0 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
-			  ON ah.newsgroup_id = r.newsgroup_id
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
 			 AND ah.article_number = r.article_number
 
 			UNION ALL
@@ -1284,7 +1309,8 @@ func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, n
 				1 AS match_rank
 			FROM requested r
 			JOIN article_headers ah
-			  ON ah.newsgroup_id = r.newsgroup_id
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
 			 AND ah.message_id = r.message_id
 		),
 		resolved AS (

@@ -32,6 +32,9 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		return nil, fmt.Errorf("begin subject multipart regroup tx: %w", err)
 	}
 	defer rollbackTx(tx)
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '5s'`); err != nil {
+		return nil, fmt.Errorf("set subject multipart regroup statement timeout: %w", err)
+	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_subject_multipart_regroup_groups`); err != nil {
 		return nil, fmt.Errorf("drop subject multipart groups temp table: %w", err)
@@ -44,6 +47,9 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_subject_multipart_regroup_key_groups`); err != nil {
 		return nil, fmt.Errorf("drop subject multipart key groups temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_subject_multipart_regroup_candidate_binaries`); err != nil {
+		return nil, fmt.Errorf("drop subject multipart candidate binaries temp table: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_subject_multipart_regroup_source_binaries`); err != nil {
 		return nil, fmt.Errorf("drop subject multipart source binaries temp table: %w", err)
@@ -61,16 +67,28 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	}
 	result.TargetBinaries += statsOnly
 
+	candidateLimit := limit * 200
+	if candidateLimit < 2000 {
+		candidateLimit = 2000
+	}
+	if candidateLimit > 3000 {
+		candidateLimit = 3000
+	}
 	if _, err := tx.ExecContext(ctx, `
-		CREATE TEMP TABLE tmp_subject_multipart_regroup_key_groups ON COMMIT DROP AS
+		CREATE TEMP TABLE tmp_subject_multipart_regroup_candidate_binaries ON COMMIT DROP AS
 		SELECT
-			bic.provider_id,
-			bic.newsgroup_id,
-			bic.file_name,
+			bc.binary_id,
+			bc.source_posted_at AS binary_source_posted_at,
+			bc.provider_id,
+			bc.newsgroup_id,
+			bc.binary_key,
+			COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, '')) AS release_family_key,
+			bic.file_name AS identity_file_name,
 			lower(btrim(bic.file_name)) AS normalized_lookup_file_name,
-			COUNT(*) AS binary_count,
-			MAX(COALESCE(bos.total_parts, 0)) AS max_total_parts,
-			MAX(COALESCE(bic.expected_file_count, 0)) AS max_expected_file_count
+			bic.expected_file_count,
+			bos.total_parts,
+			bos.part_source_posted_at_min,
+			bos.part_source_posted_at_max
 		FROM binary_identity_current bic
 		JOIN binary_observation_stats bos
 		  ON bos.source_posted_at = bic.source_posted_at
@@ -81,52 +99,68 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		LEFT JOIN binary_lifecycle bl
 		  ON bl.binary_id = bic.binary_id
 		 AND bl.source_posted_at = bic.source_posted_at
-		WHERE COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-		  AND bic.family_kind = 'contextual_obfuscated'
-		  AND bic.identity_reason = 'contextual_fallback'
-		  AND bos.observed_parts <= 2
+		WHERE bic.source_posted_at >= NOW() - INTERVAL '7 days'
+		  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
+		  AND btrim(COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, ''))) <> ''
+		  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
 		  AND btrim(COALESCE(bic.file_name, '')) <> ''
-		  AND lower(bic.file_name) !~ '(\.7z\.[0-9]+|\.part[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.par2|\.vol[0-9]+\+[0-9]+\.par2)$'
-		GROUP BY bic.provider_id, bic.newsgroup_id, bic.file_name, lower(btrim(bic.file_name))
+		ORDER BY bic.source_posted_at DESC, bic.binary_id DESC
+		LIMIT $1`, candidateLimit); err != nil {
+		return nil, fmt.Errorf("stage subject multipart regroup candidate binaries: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE UNIQUE INDEX tmp_subject_multipart_regroup_candidate_binaries_id_idx
+		ON tmp_subject_multipart_regroup_candidate_binaries (binary_id)`); err != nil {
+		return nil, fmt.Errorf("index subject multipart regroup candidate binaries by id: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE INDEX tmp_subject_multipart_regroup_candidate_binaries_group_idx
+		ON tmp_subject_multipart_regroup_candidate_binaries (provider_id, newsgroup_id, release_family_key, normalized_lookup_file_name)`); err != nil {
+		return nil, fmt.Errorf("index subject multipart regroup candidate binaries by group: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_subject_multipart_regroup_key_groups ON COMMIT DROP AS
+		SELECT
+			provider_id,
+			newsgroup_id,
+			release_family_key AS stable_family_key,
+			identity_file_name AS file_name,
+			normalized_lookup_file_name,
+			COUNT(*) AS binary_count,
+			MAX(COALESCE(total_parts, 0)) AS max_total_parts,
+			MAX(COALESCE(expected_file_count, 0)) AS max_expected_file_count
+		FROM tmp_subject_multipart_regroup_candidate_binaries
+		GROUP BY provider_id, newsgroup_id, stable_family_key, file_name, normalized_lookup_file_name
 		HAVING COUNT(*) > 1
-		ORDER BY COUNT(*) DESC, MAX(COALESCE(bos.total_parts, 0)) DESC
+		ORDER BY COUNT(*) DESC, MAX(COALESCE(total_parts, 0)) DESC
 		LIMIT $1`, limit); err != nil {
 		return nil, fmt.Errorf("stage subject multipart regroup key groups: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		CREATE INDEX tmp_subject_multipart_regroup_key_groups_lookup_idx
-		ON tmp_subject_multipart_regroup_key_groups (provider_id, newsgroup_id, normalized_lookup_file_name)`); err != nil {
+			CREATE INDEX tmp_subject_multipart_regroup_key_groups_lookup_idx
+			ON tmp_subject_multipart_regroup_key_groups (provider_id, newsgroup_id, stable_family_key, normalized_lookup_file_name)`); err != nil {
 		return nil, fmt.Errorf("index subject multipart regroup key groups: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_subject_multipart_regroup_source_binaries ON COMMIT DROP AS
 		SELECT
-			bc.binary_id,
-			bc.source_posted_at AS binary_source_posted_at,
-			bc.provider_id,
-			bc.newsgroup_id,
-			bc.binary_key,
-			bic.release_family_key,
-			bic.file_name AS identity_file_name
+			cb.binary_id,
+			cb.binary_source_posted_at,
+			cb.provider_id,
+			cb.newsgroup_id,
+			cb.binary_key,
+			cb.release_family_key,
+			cb.identity_file_name,
+			cb.part_source_posted_at_min,
+			cb.part_source_posted_at_max
 		FROM tmp_subject_multipart_regroup_key_groups kg
-		JOIN binary_identity_current bic
-		  ON bic.provider_id = kg.provider_id
-		 AND bic.newsgroup_id = kg.newsgroup_id
-		 AND lower(btrim(bic.file_name)) = kg.normalized_lookup_file_name
-		JOIN binary_core bc
-		  ON bc.source_posted_at = bic.source_posted_at
-		 AND bc.binary_id = bic.binary_id
-		JOIN binary_observation_stats bos
-		  ON bos.source_posted_at = bic.source_posted_at
-		 AND bos.binary_id = bic.binary_id
-		LEFT JOIN binary_lifecycle bl
-		  ON bl.binary_id = bic.binary_id
-		 AND bl.source_posted_at = bic.source_posted_at
-		WHERE COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-		  AND bic.family_kind = 'contextual_obfuscated'
-		  AND bic.identity_reason = 'contextual_fallback'
-		  AND bos.observed_parts <= 2`); err != nil {
+		JOIN tmp_subject_multipart_regroup_candidate_binaries cb
+		  ON cb.provider_id = kg.provider_id
+		 AND cb.newsgroup_id = kg.newsgroup_id
+		 AND cb.release_family_key = kg.stable_family_key
+		 AND cb.normalized_lookup_file_name = kg.normalized_lookup_file_name`); err != nil {
 		return nil, fmt.Errorf("stage subject multipart regroup source binaries: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -144,31 +178,33 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			sb.newsgroup_id,
 			sb.binary_key,
 			sb.release_family_key,
-			p.subject_file_name AS file_name,
-			btrim(regexp_replace(lower(p.subject_file_name), '[^a-z0-9]+', ' ', 'g')) AS normalized_file_name,
-			btrim(regexp_replace(regexp_replace(lower(p.subject_file_name), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) AS base_stem,
-			p.subject_file_total AS expected_file_count,
-			p.yenc_total_parts AS total_parts,
+				p.subject_file_name AS file_name,
+				btrim(regexp_replace(lower(p.subject_file_name), '[^a-z0-9]+', ' ', 'g')) AS normalized_file_name,
+				btrim(regexp_replace(regexp_replace(lower(p.subject_file_name), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) AS base_stem,
+				p.subject_file_index AS file_index,
+				p.subject_file_total AS expected_file_count,
+				p.yenc_total_parts AS total_parts,
 			p.yenc_part_number AS part_number,
 			bp.segment_bytes
 		FROM tmp_subject_multipart_regroup_source_binaries sb
 		JOIN binary_parts bp
 		  ON bp.binary_id = sb.binary_id
+		 AND bp.source_posted_at >= COALESCE(sb.part_source_posted_at_min, sb.binary_source_posted_at - INTERVAL '1 day')
+		 AND bp.source_posted_at <= COALESCE(sb.part_source_posted_at_max, sb.binary_source_posted_at + INTERVAL '1 day')
 		JOIN article_header_ingest_payloads p
 		  ON p.article_header_id = bp.article_header_id
 		 AND p.source_posted_at = bp.source_posted_at
 		WHERE btrim(p.subject_file_name) <> ''
 		  AND lower(btrim(p.subject_file_name)) = lower(btrim(sb.identity_file_name))
-		  AND p.subject_file_index > 0
-		  AND p.subject_file_total > 0
-		  AND p.yenc_part_number > 0
-		  AND p.yenc_total_parts > 1
-		  AND lower(p.subject_file_name) !~ '(\.7z\.[0-9]+|\.part[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.par2|\.vol[0-9]+\+[0-9]+\.par2)$'`); err != nil {
+			  AND p.subject_file_index > 0
+			  AND p.subject_file_total > 0
+			  AND p.yenc_part_number > 0
+			  AND p.yenc_total_parts > 1`); err != nil {
 		return nil, fmt.Errorf("stage subject multipart regroup candidates: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		CREATE INDEX tmp_subject_multipart_regroup_candidates_group_idx
-		ON tmp_subject_multipart_regroup_candidates (provider_id, newsgroup_id, file_name, expected_file_count, total_parts)`); err != nil {
+			CREATE INDEX tmp_subject_multipart_regroup_candidates_group_idx
+			ON tmp_subject_multipart_regroup_candidates (provider_id, newsgroup_id, release_family_key, file_name, file_index, expected_file_count, total_parts)`); err != nil {
 		return nil, fmt.Errorf("index subject multipart regroup candidates: %w", err)
 	}
 
@@ -176,15 +212,17 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		CREATE TEMP TABLE tmp_subject_multipart_regroup_groups ON COMMIT DROP AS
 		WITH
 		grouped AS (
-			SELECT
-				provider_id,
-				newsgroup_id,
-				file_name,
-				normalized_file_name,
-				base_stem,
-				base_stem || '::' || normalized_file_name AS canonical_binary_key,
-				expected_file_count,
-				total_parts,
+				SELECT
+					provider_id,
+					newsgroup_id,
+					release_family_key,
+					file_name,
+					normalized_file_name,
+					base_stem,
+					base_stem || '::' || normalized_file_name AS canonical_binary_key,
+					file_index,
+					expected_file_count,
+					total_parts,
 				MIN(binary_source_posted_at) AS min_source_posted_at,
 				MIN(binary_id) AS fallback_target_binary_id,
 				COUNT(DISTINCT binary_id) AS source_binary_count,
@@ -194,7 +232,7 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			FROM tmp_subject_multipart_regroup_candidates
 			WHERE normalized_file_name <> ''
 			  AND base_stem <> ''
-			GROUP BY provider_id, newsgroup_id, file_name, normalized_file_name, base_stem, expected_file_count, total_parts
+				GROUP BY provider_id, newsgroup_id, release_family_key, file_name, normalized_file_name, base_stem, file_index, expected_file_count, total_parts
 			HAVING COUNT(DISTINCT binary_id) > 1
 			   AND COUNT(DISTINCT part_number) > 1
 		),
@@ -205,13 +243,15 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			LIMIT $1
 		)
 		SELECT
-			l.provider_id,
-			l.newsgroup_id,
-			l.file_name,
-			l.normalized_file_name,
-			l.base_stem,
-			l.canonical_binary_key,
-			l.expected_file_count,
+				l.provider_id,
+				l.newsgroup_id,
+				l.release_family_key,
+				l.file_name,
+				l.normalized_file_name,
+				l.base_stem,
+				l.canonical_binary_key,
+				l.file_index,
+				l.expected_file_count,
 			l.total_parts,
 			COALESCE(canon.binary_id, l.fallback_target_binary_id) AS target_binary_id,
 			COALESCE(canon.source_posted_at, fallback.source_posted_at, l.min_source_posted_at) AS target_source_posted_at,
@@ -274,28 +314,32 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tmp_subject_multipart_regroup_groups (
-			provider_id,
-			newsgroup_id,
-			file_name,
-			normalized_file_name,
-			base_stem,
-			canonical_binary_key,
-			expected_file_count,
-			total_parts,
+			INSERT INTO tmp_subject_multipart_regroup_groups (
+				provider_id,
+				newsgroup_id,
+				release_family_key,
+				file_name,
+				normalized_file_name,
+				base_stem,
+				canonical_binary_key,
+				file_index,
+				expected_file_count,
+				total_parts,
 			target_binary_id,
 			target_source_posted_at,
 			source_binary_count,
 			distinct_part_count
 		)
-		SELECT
-			bss.provider_id,
-			bss.newsgroup_id,
-			MIN(src_bic.file_name) AS file_name,
-			btrim(regexp_replace(lower(MIN(src_bic.file_name)), '[^a-z0-9]+', ' ', 'g')) AS normalized_file_name,
-			btrim(regexp_replace(regexp_replace(lower(MIN(src_bic.file_name)), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) AS base_stem,
-			COALESCE(NULLIF(MAX(bss.target_binary_key), ''), btrim(regexp_replace(regexp_replace(lower(MIN(src_bic.file_name)), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) || '::' || btrim(regexp_replace(lower(MIN(src_bic.file_name)), '[^a-z0-9]+', ' ', 'g'))) AS canonical_binary_key,
-			MAX(GREATEST(COALESCE(src_bic.expected_file_count, 0), 1)) AS expected_file_count,
+			SELECT
+				bss.provider_id,
+				bss.newsgroup_id,
+				bss.release_family_key,
+				MIN(src_bic.file_name) AS file_name,
+				btrim(regexp_replace(lower(MIN(src_bic.file_name)), '[^a-z0-9]+', ' ', 'g')) AS normalized_file_name,
+				btrim(regexp_replace(regexp_replace(lower(MIN(src_bic.file_name)), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) AS base_stem,
+				COALESCE(NULLIF(MAX(bss.target_binary_key), ''), btrim(regexp_replace(regexp_replace(lower(MIN(src_bic.file_name)), '\.[^.]+$', ''), '[^a-z0-9]+', ' ', 'g')) || '::' || btrim(regexp_replace(lower(MIN(src_bic.file_name)), '[^a-z0-9]+', ' ', 'g'))) AS canonical_binary_key,
+				MAX(GREATEST(COALESCE(src_bic.file_index, 0), 1)) AS file_index,
+				MAX(GREATEST(COALESCE(src_bic.expected_file_count, 0), 1)) AS expected_file_count,
 			MAX(GREATEST(COALESCE(src_bos.total_parts, 0), 1)) AS total_parts,
 			bss.target_binary_id,
 			et.target_source_posted_at,
@@ -312,7 +356,7 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		  ON src_bos.source_posted_at = src_bic.source_posted_at
 		 AND src_bos.binary_id = src_bic.binary_id
 		WHERE btrim(COALESCE(src_bic.file_name, '')) <> ''
-		GROUP BY bss.provider_id, bss.newsgroup_id, bss.target_binary_id, et.target_source_posted_at
+			GROUP BY bss.provider_id, bss.newsgroup_id, bss.release_family_key, bss.target_binary_id, et.target_source_posted_at
 		HAVING COUNT(DISTINCT bss.source_binary_id) > 0
 		   AND MAX(et.distinct_part_count) > 1
 		LIMIT $1`, limit); err != nil {
@@ -338,20 +382,23 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			c.release_family_key AS source_release_family_key,
 			g.target_binary_id,
 			g.target_source_posted_at,
-			g.provider_id,
-			g.newsgroup_id,
-			g.file_name,
-			g.base_stem,
-			g.canonical_binary_key,
-			g.expected_file_count,
-			g.total_parts
+				g.provider_id,
+				g.newsgroup_id,
+				g.file_name,
+				g.base_stem,
+				g.canonical_binary_key,
+				g.file_index,
+				g.expected_file_count,
+				g.total_parts
 		FROM tmp_subject_multipart_regroup_groups g
 		JOIN tmp_subject_multipart_regroup_candidates c
-		  ON c.provider_id = g.provider_id
-		 AND c.newsgroup_id = g.newsgroup_id
-		 AND lower(btrim(c.file_name)) = lower(btrim(g.file_name))
-		 AND c.expected_file_count = g.expected_file_count
-		 AND c.total_parts = g.total_parts
+			  ON c.provider_id = g.provider_id
+			 AND c.newsgroup_id = g.newsgroup_id
+			 AND c.release_family_key = g.release_family_key
+			 AND lower(btrim(c.file_name)) = lower(btrim(g.file_name))
+			 AND c.file_index = g.file_index
+			 AND c.expected_file_count = g.expected_file_count
+			 AND c.total_parts = g.total_parts
 		WHERE c.binary_id <> g.target_binary_id
 		GROUP BY
 			c.binary_id,
@@ -360,13 +407,14 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			c.release_family_key,
 			g.target_binary_id,
 			g.target_source_posted_at,
-			g.provider_id,
-			g.newsgroup_id,
-			g.file_name,
-			g.base_stem,
-			g.canonical_binary_key,
-			g.expected_file_count,
-			g.total_parts`); err != nil {
+				g.provider_id,
+				g.newsgroup_id,
+				g.file_name,
+				g.base_stem,
+				g.canonical_binary_key,
+				g.file_index,
+				g.expected_file_count,
+				g.total_parts`); err != nil {
 		return nil, fmt.Errorf("stage subject multipart regroup sources: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -377,13 +425,14 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			source_release_family_key,
 			target_binary_id,
 			target_source_posted_at,
-			provider_id,
-			newsgroup_id,
-			file_name,
-			base_stem,
-			canonical_binary_key,
-			expected_file_count,
-			total_parts
+				provider_id,
+				newsgroup_id,
+				file_name,
+				base_stem,
+				canonical_binary_key,
+				file_index,
+				expected_file_count,
+				total_parts
 		)
 		SELECT
 			bss.source_binary_id,
@@ -392,13 +441,14 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 			bss.release_family_key,
 			g.target_binary_id,
 			g.target_source_posted_at,
-			g.provider_id,
-			g.newsgroup_id,
-			g.file_name,
-			g.base_stem,
-			g.canonical_binary_key,
-			g.expected_file_count,
-			g.total_parts
+				g.provider_id,
+				g.newsgroup_id,
+				g.file_name,
+				g.base_stem,
+				g.canonical_binary_key,
+				g.file_index,
+				g.expected_file_count,
+				g.total_parts
 		FROM tmp_subject_multipart_regroup_groups g
 		JOIN binary_superseded_sources bss
 		  ON bss.target_binary_id = g.target_binary_id
@@ -443,9 +493,9 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_identity_current bic
-		SET source_release_key = g.base_stem,
-		    release_family_key = g.base_stem,
-		    file_set_key = g.base_stem || ' files ' || g.expected_file_count::text,
+		SET source_release_key = g.release_family_key,
+		    release_family_key = g.release_family_key,
+		    file_set_key = g.release_family_key || ' files ' || g.expected_file_count::text,
 		    file_family_key = g.base_stem,
 		    identity_strength = 'probable',
 		    identity_reason = 'subject_multipart_obfuscated',
@@ -453,13 +503,13 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		    subject_set_kind = '',
 		    family_kind = 'subject_multipart_obfuscated',
 		    base_stem = g.base_stem,
-		    is_auxiliary = false,
-		    is_main_payload = true,
-		    release_key = g.base_stem,
-		    release_name = g.base_stem,
+		    is_auxiliary = lower(g.file_name) ~ '(\.par2|\.vol[0-9]+\+[0-9]+\.par2|\.nfo|\.sfv|\.srr|\.srs|\.jpg|\.jpeg|\.png|\.gif|\.txt)$',
+		    is_main_payload = NOT (lower(g.file_name) ~ '(\.par2|\.vol[0-9]+\+[0-9]+\.par2|\.nfo|\.sfv|\.srr|\.srs|\.jpg|\.jpeg|\.png|\.gif|\.txt)$'),
+		    release_key = g.release_family_key,
+		    release_name = g.release_family_key,
 		    binary_name = g.file_name,
 		    file_name = g.file_name,
-		    file_index = 1,
+		    file_index = GREATEST(g.file_index, 1),
 		    expected_file_count = GREATEST(bic.expected_file_count, g.expected_file_count),
 		    match_confidence = GREATEST(bic.match_confidence, 0.86),
 		    match_status = 'matched',
@@ -552,22 +602,19 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 				g.target_source_posted_at,
 				COUNT(bp.*)::integer AS observed_parts,
 				COALESCE(SUM(bp.segment_bytes), 0)::bigint AS total_bytes,
-				COALESCE(MIN(ah.article_number), 0)::bigint AS first_article_number,
-				COALESCE(MAX(ah.article_number), 0)::bigint AS last_article_number,
-				MIN(ah.date_utc) AS posted_at
+				0::bigint AS first_article_number,
+				0::bigint AS last_article_number,
+				MIN(bp.source_posted_at) AS posted_at
 			FROM tmp_subject_multipart_regroup_groups g
 			JOIN binary_parts bp
 			  ON bp.binary_id = g.target_binary_id
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
 			GROUP BY g.target_binary_id, g.target_source_posted_at
 		)
 		UPDATE binary_observation_stats bos
 		SET observed_parts = agg.observed_parts,
 		    total_bytes = agg.total_bytes,
-		    first_article_number = agg.first_article_number,
-		    last_article_number = agg.last_article_number,
+		    first_article_number = CASE WHEN agg.first_article_number > 0 THEN agg.first_article_number ELSE bos.first_article_number END,
+		    last_article_number = CASE WHEN agg.last_article_number > 0 THEN agg.last_article_number ELSE bos.last_article_number END,
 		    posted_at = COALESCE(agg.posted_at, bos.posted_at),
 		    refreshed_at = NOW(),
 		    updated_at = NOW()
@@ -619,11 +666,11 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		SELECT
 			s.source_binary_id,
 			s.source_posted_at,
-			s.target_binary_id,
-			s.provider_id,
-			s.newsgroup_id,
-			s.base_stem,
-			s.source_binary_key,
+				s.target_binary_id,
+				s.provider_id,
+				s.newsgroup_id,
+				s.source_release_family_key,
+				s.source_binary_key,
 			s.canonical_binary_key,
 			'subject_multipart_regroup',
 			NOW()
@@ -694,6 +741,27 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		return nil, fmt.Errorf("mark subject multipart target binaries active: %w", err)
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id,
+			newsgroup_id,
+			key_kind,
+			family_key,
+			queued_at
+		)
+		SELECT DISTINCT
+			g.provider_id,
+			g.newsgroup_id,
+			'release_family',
+			g.release_family_key,
+			NOW()
+		FROM tmp_subject_multipart_regroup_groups g
+		WHERE btrim(COALESCE(g.release_family_key, '')) <> ''
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET queued_at = EXCLUDED.queued_at`); err != nil {
+		return nil, fmt.Errorf("queue subject multipart release summaries: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit subject multipart regroup tx: %w", err)
 	}
@@ -731,53 +799,59 @@ func refreshStaleSubjectMultipartObservationStats(ctx context.Context, tx *sql.T
 	if limit <= 0 {
 		limit = 100
 	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS tmp_subject_multipart_stale_stats`); err != nil {
+		return 0, fmt.Errorf("drop stale subject multipart stats temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE tmp_subject_multipart_stale_stats (
+			binary_id BIGINT NOT NULL,
+			source_posted_at TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (source_posted_at, binary_id)
+		) ON COMMIT DROP`); err != nil {
+		return 0, fmt.Errorf("create stale subject multipart stats temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_subject_multipart_stale_stats (binary_id, source_posted_at)
+		SELECT
+			bic.binary_id,
+			bic.source_posted_at
+		FROM binary_identity_current bic
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bic.source_posted_at
+		 AND bos.binary_id = bic.binary_id
+		WHERE bic.identity_reason = 'subject_multipart_obfuscated'
+		  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
+		ORDER BY bic.source_posted_at DESC, bic.binary_id
+		LIMIT $1`, limit); err != nil {
+		return 0, fmt.Errorf("stage stale subject multipart stats candidates: %w", err)
+	}
 	result, err := tx.ExecContext(ctx, `
-		WITH stale AS (
-			SELECT
-				bic.binary_id,
-				bic.source_posted_at
-			FROM binary_identity_current bic
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			JOIN LATERAL (
-				SELECT COUNT(*)::integer AS observed_parts
-				FROM binary_parts bp
-				WHERE bp.binary_id = bic.binary_id
-			) part_counts ON true
-			WHERE bic.identity_reason = 'subject_multipart_obfuscated'
-			  AND part_counts.observed_parts > bos.observed_parts
-			ORDER BY part_counts.observed_parts DESC, bic.binary_id
-			LIMIT $1
-		),
-		agg AS (
+		WITH agg AS (
 			SELECT
 				stale.binary_id,
 				stale.source_posted_at,
 				COUNT(bp.*)::integer AS observed_parts,
 				COALESCE(SUM(bp.segment_bytes), 0)::bigint AS total_bytes,
-				COALESCE(MIN(ah.article_number), 0)::bigint AS first_article_number,
-				COALESCE(MAX(ah.article_number), 0)::bigint AS last_article_number,
-				MIN(ah.date_utc) AS posted_at
-			FROM stale
+				0::bigint AS first_article_number,
+				0::bigint AS last_article_number,
+				MIN(bp.source_posted_at) AS posted_at
+			FROM tmp_subject_multipart_stale_stats stale
 			JOIN binary_parts bp
 			  ON bp.binary_id = stale.binary_id
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
 			GROUP BY stale.binary_id, stale.source_posted_at
 		)
 		UPDATE binary_observation_stats bos
 		SET observed_parts = agg.observed_parts,
 		    total_bytes = agg.total_bytes,
-		    first_article_number = agg.first_article_number,
-		    last_article_number = agg.last_article_number,
+		    first_article_number = CASE WHEN agg.first_article_number > 0 THEN agg.first_article_number ELSE bos.first_article_number END,
+		    last_article_number = CASE WHEN agg.last_article_number > 0 THEN agg.last_article_number ELSE bos.last_article_number END,
 		    posted_at = COALESCE(agg.posted_at, bos.posted_at),
 		    refreshed_at = NOW(),
 		    updated_at = NOW()
 		FROM agg
 		WHERE bos.binary_id = agg.binary_id
-		  AND bos.source_posted_at = agg.source_posted_at`, limit)
+		  AND bos.source_posted_at = agg.source_posted_at
+		  AND agg.observed_parts > bos.observed_parts`)
 	if err != nil {
 		return 0, fmt.Errorf("refresh stale subject multipart observation stats: %w", err)
 	}

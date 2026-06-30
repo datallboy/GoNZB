@@ -11,13 +11,15 @@ func (s *Store) RefreshIndexerGroupProfiles(ctx context.Context) (int64, error) 
 	}
 	var updated int64
 	if err := s.db.QueryRowContext(ctx, `
-		WITH article_metrics AS (
+		WITH bucket_metrics AS (
 			SELECT
 				provider_id,
 				newsgroup_id,
-				COUNT(*) AS articles_scraped_1d
-			FROM article_headers
-			WHERE COALESCE(date_utc, scraped_at) >= NOW() - INTERVAL '1 day'
+				SUM(headers_staged) AS articles_scraped_1d,
+				SUM(binaries_complete) AS binaries_completed_1d,
+				SUM(releases_created) AS releases_created_1d
+			FROM indexer_daily_bucket_stats
+			WHERE bucket_day >= CURRENT_DATE - 1
 			GROUP BY provider_id, newsgroup_id
 		),
 		recovery_metrics AS (
@@ -30,51 +32,24 @@ func (s *Store) RefreshIndexerGroupProfiles(ctx context.Context) (int64, error) 
 				AVG(EXTRACT(EPOCH FROM updated_at - ready_at)) FILTER (WHERE status = 'done' AND updated_at >= ready_at) AS avg_recovery_lag_seconds,
 				MAX(EXTRACT(EPOCH FROM updated_at - ready_at)) FILTER (WHERE status = 'done' AND updated_at >= ready_at) AS max_recovery_lag_seconds
 			FROM yenc_recovery_work_items
-			WHERE COALESCE(source_posted_at, date_utc, created_at) >= NOW() - INTERVAL '1 day'
+			WHERE source_posted_at >= NOW() - INTERVAL '1 day'
 			GROUP BY provider_id, newsgroup_id
-		),
-		binary_metrics AS (
-			SELECT
-				bc.provider_id,
-				bc.newsgroup_id,
-				COUNT(*) FILTER (
-					WHERE COALESCE(bos.total_parts, 0) > 0
-					  AND COALESCE(bos.observed_parts, 0) >= COALESCE(bos.total_parts, 0)
-				) AS binaries_completed_1d
-			FROM binary_core bc
-			JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
-			AND bos.binary_id = bc.binary_id
-			WHERE COALESCE(bos.posted_at, bc.created_at) >= NOW() - INTERVAL '1 day'
-			GROUP BY bc.provider_id, bc.newsgroup_id
-		),
-		release_metrics AS (
-			SELECT
-				bc.provider_id,
-				bc.newsgroup_id,
-				COUNT(DISTINCT r.release_id) AS releases_created_1d
-			FROM releases r
-			JOIN release_files rf ON rf.release_id = r.release_id
-			JOIN binary_core bc ON bc.binary_id = rf.binary_id
-			WHERE r.created_at >= NOW() - INTERVAL '1 day'
-			GROUP BY bc.provider_id, bc.newsgroup_id
 		),
 		metrics AS (
 			SELECT
 				igp.provider_id,
 				igp.newsgroup_id,
-				COALESCE(am.articles_scraped_1d, 0) AS articles_scraped_1d,
+				COALESCE(bm.articles_scraped_1d, 0) AS articles_scraped_1d,
 				COALESCE(rm.recovery_queued_1d, 0) AS recovery_queued_1d,
 				COALESCE(rm.yenc_probes_attempted_1d, 0) AS yenc_probes_attempted_1d,
 				COALESCE(rm.yenc_probes_successful_1d, 0) AS yenc_probes_successful_1d,
 				COALESCE(bm.binaries_completed_1d, 0) AS binaries_completed_1d,
-				COALESCE(rel.releases_created_1d, 0) AS releases_created_1d,
+				COALESCE(bm.releases_created_1d, 0) AS releases_created_1d,
 				COALESCE(rm.avg_recovery_lag_seconds, 0) AS avg_recovery_lag_seconds,
 				COALESCE(rm.max_recovery_lag_seconds, 0) AS max_recovery_lag_seconds
 			FROM indexer_group_profiles igp
-			LEFT JOIN article_metrics am ON am.provider_id = igp.provider_id AND am.newsgroup_id = igp.newsgroup_id
+			LEFT JOIN bucket_metrics bm ON bm.provider_id = igp.provider_id AND bm.newsgroup_id = igp.newsgroup_id
 			LEFT JOIN recovery_metrics rm ON rm.provider_id = igp.provider_id AND rm.newsgroup_id = igp.newsgroup_id
-			LEFT JOIN binary_metrics bm ON bm.provider_id = igp.provider_id AND bm.newsgroup_id = igp.newsgroup_id
-			LEFT JOIN release_metrics rel ON rel.provider_id = igp.provider_id AND rel.newsgroup_id = igp.newsgroup_id
 		),
 		scored AS (
 			SELECT

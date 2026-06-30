@@ -11,6 +11,7 @@ type ReleaseReadyPolicy struct {
 	MinIdentityStatus                    string
 	RequireInspection                    bool
 	RequireEnrichment                    bool
+	RequireClearTitle                    bool
 	RequirePayloadComplete               bool
 	RequireExpectedFileCountComplete     bool
 	RequirePAR2                          bool
@@ -29,6 +30,7 @@ func DefaultReleaseReadyPolicy() ReleaseReadyPolicy {
 		MinIdentityStatus:                    "probable",
 		RequireInspection:                    true,
 		RequireEnrichment:                    false,
+		RequireClearTitle:                    true,
 		RequirePayloadComplete:               true,
 		RequireExpectedFileCountComplete:     false,
 		RequirePAR2:                          false,
@@ -57,6 +59,7 @@ func NormalizeReleaseReadyPolicy(in ReleaseReadyPolicy) ReleaseReadyPolicy {
 	}
 	out.RequireInspection = in.RequireInspection
 	out.RequireEnrichment = in.RequireEnrichment
+	out.RequireClearTitle = in.RequireClearTitle
 	out.RequirePayloadComplete = in.RequirePayloadComplete
 	out.RequireExpectedFileCountComplete = in.RequireExpectedFileCountComplete
 	out.RequirePAR2 = in.RequirePAR2
@@ -112,6 +115,9 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 		"COALESCE(ro.hidden, FALSE) = FALSE",
 	}
 
+	if policy.RequireClearTitle {
+		clauses = append(clauses, clearTextReleaseTitleClause(alias))
+	}
 	if policy.RequireInspection {
 		clauses = append(clauses, fmt.Sprintf(
 			"(%s.runtime_seconds > 0 OR %s.primary_resolution <> '' OR %s.primary_video_codec <> '' OR %s.primary_audio_codec <> '' OR %s.has_nfo = TRUE OR %s.has_par2 = TRUE)",
@@ -143,14 +149,25 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 	return strings.Join(clauses, "\n\t\tAND ")
 }
 
+func clearTextReleaseTitleClause(alias string) string {
+	effectiveTitle := fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, '')))", alias)
+	return fmt.Sprintf(`(
+		%[2]s <> ''
+		AND %[2]s <> 'unknown-release'
+		AND %[2]s NOT IN ('vip', 'vip only', 'private', 'private release', 'exclusive', 'unknown')
+		AND %[2]s !~ '^[a-z0-9]{12,}([[:space:]]+(part|vol)[0-9]+([+._-][0-9]+)?)?$'
+		AND COALESCE(%[1]s.title_source, '') <> 'source_obfuscated'
+	)`, alias, effectiveTitle)
+}
+
 func probableWeakTitleClause(alias string) string {
 	effectiveTitle := fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, '')))", alias)
 	return fmt.Sprintf(`NOT (
 		COALESCE(%[1]s.identity_status, '') = 'probable'
 		AND COALESCE(%[1]s.category_id, 8010) = 8010
 		AND (
-			%[2]s ~ '(^|\\s)(part|vol)\\d+([+._-]\\d+)?$'
-			OR %[2]s ~ '^[a-z0-9]{12,}(\\s+(part|vol)\\d+([+._-]\\d+)?)?$'
+			%[2]s ~ '(^|[[:space:]])(part|vol)[0-9]+([+._-][0-9]+)?$'
+			OR %[2]s ~ '^[a-z0-9]{12,}([[:space:]]+(part|vol)[0-9]+([+._-][0-9]+)?)?$'
 		)
 	)`, alias, effectiveTitle)
 }
@@ -158,7 +175,7 @@ func probableWeakTitleClause(alias string) string {
 func opaqueTitleNeedsEvidenceClause(alias string) string {
 	effectiveTitle := fmt.Sprintf("LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %s.title, '')))", alias)
 	return fmt.Sprintf(`NOT (
-		%[2]s ~ '^[a-z0-9]{16,}(\\s+(part|vol)\\d+([+._-]\\d+)?)?$'
+		%[2]s ~ '^[a-z0-9]{16,}([[:space:]]+(part|vol)[0-9]+([+._-][0-9]+)?)?$'
 		AND COALESCE(%[1]s.deobfuscated_title, '') = ''
 		AND COALESCE(%[1]s.matched_media_title, '') = ''
 		AND COALESCE(%[1]s.original_media_title, '') = ''
