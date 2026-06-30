@@ -22,6 +22,36 @@ Use evidence in this order:
 Do not promote `From`, poster suffix, Message-ID suffix, Organization, or
 article-number proximity above a complete Subject multipart identity.
 
+## Posted-Time Boundary Policy
+
+`source_posted_at` is a partition, retention, query-pruning, and supporting
+cohort-evidence key. It is not stronger than canonical file identity evidence.
+
+Assemble may merge articles across different `source_posted_at` values and
+different daily partitions when stronger file evidence says they are the same
+binary. Strong cross-time merge evidence includes:
+
+- same provider and newsgroup;
+- same normalized filename or canonical subject token;
+- same release-family key, base stem, or file-set key;
+- compatible Subject multipart coordinates: file index/file total,
+  article part/article total, and file size;
+- compatible recovered yEnc coordinates when HEAD is incomplete:
+  `name=`, `part=`, `total=`, `size=`, and `ypart` offsets;
+- no conflicting sampled evidence from another filename, file size, part total,
+  or family key.
+
+When those fields agree, the binary should be represented as one file-level
+binary even if related articles arrived minutes or hours apart. Matching source
+time strengthens confidence, but mismatched source time must not split a
+canonical binary by itself. The partition-key columns remain on
+source/projection rows so retention can prune correctly.
+
+`source_posted_at` may still be used to bound candidate scans. Any bounded scan
+must include a second evidence join against existing completion keys or binary
+identity rows so late/early parts can attach to an already-known binary outside
+the current scan window.
+
 ## Uploader Fingerprints
 
 Uploader-specific fingerprints can improve scheduling and ordering hypotheses,
@@ -78,7 +108,7 @@ article part and total, and file size. Example shape:
 Expected behavior:
 
 - group by provider, newsgroup, normalized filename, file size, file index,
-  file total, article part total, and compatible posted/header range;
+  file total, and article part total;
 - use `(part/total)` as the article index within the binary;
 - do not require yEnc recovery for initial binary assembly;
 - yEnc recovery may later validate or enrich, but must not split the binary
@@ -217,6 +247,11 @@ poster-only or message-id-only similarity.
   before contextual fallback keys are built.
 - Contextual fallback keys must not include randomized poster/message-id tokens
   when a stable Subject multipart key exists.
+- Subject multipart regrouping must not require exact `source_posted_at`
+  equality. Use `(source_posted_at, binary_id)` only to address rows, not to
+  decide identity.
+- Same filename plus same family plus compatible Subject/yEnc part metadata is
+  strong enough to merge one binary across source-time boundaries.
 - If HEAD says `(7152/28465)` and yEnc BODY says `part=7152 total=28465` but
   BODY `name=` is random, keep the Subject filename as the binary identity and
   record BODY `name=` as lower-priority recovery evidence.

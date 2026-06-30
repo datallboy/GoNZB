@@ -266,6 +266,107 @@ Implement evidence priority in assemble/match before this sprint is signed off:
 - Keep the repair assemble-owned and partition-key aware; do not mutate
   scrape-owned source facts or use API-side live aggregates as the normal fix.
 
+### Cross-Second Binary Part Span Fix
+
+Observed regression:
+
+- complete multipart binaries can span many `source_posted_at` seconds while
+  `binary_core.source_posted_at` stores only the binary root/projection key;
+- catalog/materialization reads used
+  `binary_parts.source_posted_at = binary_core.source_posted_at`, which read
+  only one source-time slice of a complete binary;
+- `inspect_media` then materialized sparse partial payload files with zeroes
+  at offset 0 and ffprobe failed with invalid EBML/MKV header errors;
+- `release_catalog_files.article_count` reported the one-slice count while
+  `observed_parts` came from full binary stats, making the admin/API payload
+  details contradictory.
+
+Implementation tasks:
+
+1. [x] Add binary-owned part span metadata to `binary_observation_stats`:
+   `part_source_posted_at_min` and `part_source_posted_at_max`.
+2. [x] Populate the span in assemble binary stats refresh from the actual
+   `binary_parts.source_posted_at` min/max. Refresh may use a bounded
+   root-day-adjacent partition window to discover the span, but must not scan
+   every child partition for routine batches.
+3. [x] Keep `binary_core.source_posted_at` as the projection/root partition key.
+   Do not treat it as proof that every `binary_parts` row lives in the same
+   source second.
+4. [x] Change catalog/materialization reads to query `binary_parts` with both:
+   `binary_id = ?` and
+   `source_posted_at BETWEEN part_source_posted_at_min AND
+   part_source_posted_at_max`, falling back to the root day only when span
+   metadata is absent.
+   Catalog/materialization and admin detail reads first load the binary span,
+   then issue a second bounded partition query with span timestamps as query
+   parameters so PostgreSQL can prune daily children.
+5. [x] Change `release_catalog_files` sync to count all parts inside the recorded
+   span so `article_count`, `observed_parts`, and materialization evidence
+   agree.
+6. [x] Add a partition-friendly index for cross-second binary part reads:
+   `(binary_id, source_posted_at, part_number)`.
+7. [x] Make media/archive materialization fail or remain retryable when decoded
+   bytes are materially below the expected binary size. Failed ffprobe on a
+   direct media payload must not be stored as a successful completed media
+   inspection that improves release metadata.
+8. [x] Add regression tests for a release file whose binary parts span multiple
+   `source_posted_at` seconds. The catalog article read must return all parts,
+   not only the `binary_core.source_posted_at` slice.
+
+Signoff evidence:
+
+- [x] `3FgriKwJ1pbOruw8RStUodgaoqV` / binary `2741796` style payloads read all
+  `2651` parts through the catalog/materialization path. Live EXPLAIN of the
+  bounded span query returned `actual rows=2651`.
+- [x] `3FgrioDXoJfL4gLre11NBBDB3Yb` / binary `2990313` style payloads read all
+  `1211` parts through the catalog/materialization path. Live EXPLAIN of the
+  exact-span query returned `actual rows=1211`, used only
+  `binary_parts_20260626` and `article_headers_20260626`, and ran in
+  `2.708 ms`.
+- [x] `EXPLAIN (ANALYZE, BUFFERS)` for the catalog article read shows daily
+  partition pruning through the span predicate rather than appending every
+  `binary_parts` child. With literal/parameter span bounds for binary
+  `2741796`, PostgreSQL used only `binary_parts_20260626` and
+  `article_headers_20260626`; planning time was `2.408 ms`, execution time was
+  `6.010 ms`.
+- [x] media inspection does not mark partial direct payload materialization or
+  failed ffprobe as a successful completed probe. Tests cover incomplete
+  materialization and direct ffprobe failure.
+- [x] direct `inspect_media` for media payloads no longer materializes the full
+  payload. Live reinspection of `3FgriKwJ1pbOruw8RStUodgaoqV` / binary
+  `2741796` completed with `probe_mode=ffprobe_direct_prefix`,
+  `materialized_bytes=8388608`, resolution/audio/video metadata populated, and
+  no 2 GB sparse file materialization.
+- [x] direct media prefix fetch is bounded by `ToolTimeout`; stalled catalog or
+  NNTP prefix work records a failed/retryable inspection instead of holding a
+  long stage lease.
+- [x] stale live catalog rows can be repaired by normal maintenance, not only
+  by release re-formation. `BackfillMissingReleaseCatalogFiles` now refreshes
+  releases whose catalog counts are lower than binary observation stats.
+- [x] `release_catalog_files` sync and catalog read fallbacks no longer group
+  all `binary_parts` rows to infer poster metadata. They use indexed
+  `(binary_id, source_posted_at, part_number)` lookups and first-part metadata
+  sampling, which removed multi-minute catalog refresh/read stalls observed
+  during media inspection soak.
+- [x] completed media inspections with `probe_skip_reason = ffprobe_failed`
+  are eligible for media reinspection. The live bad inspection rows for
+  `3FgriKwJ1pbOruw8RStUodgaoqV` were removed so inspect stages can recreate
+  them with the corrected materialization path.
+- [x] admin binary diagnostics are split into a dedicated binary detail route:
+  `/admin/indexer/binaries/:id`. Release detail links to that page instead of
+  embedding source article rows inline.
+
+Validation run:
+
+- `go test ./internal/store/pgindex`
+- `go test ./internal/indexing/inspect/media ./internal/indexing/release`
+- `go test ./internal/store/pgindex ./internal/indexing/inspect/...`
+- `npm run build` in `ui/`
+- Live API check for binary `2741796`: `observed_parts=2651`,
+  `total_parts=2651`, `parts_len=2651`.
+- Live admin release check for `3FgriKwJ1pbOruw8RStUodgaoqV`: MKV
+  `article_count=2651`.
+
 Regression fixture to add:
 
 - `rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv` in
@@ -688,9 +789,38 @@ Live evidence already collected:
     near-time opaque singleton bucket is runtime-configurable. Live recovery
     continued to claim full 5,000-item batches at concurrency 100 while ready
     work was available.
+- Release formation singleton-payload guard at `2026-06-26`:
+  - `docs/wiki/indexer/release-formation.md` now states that sidecars can
+    support an authoritative main payload but must not promote a one-article
+    payload into a release;
+  - `internal/indexing/release` now requires the dominant main payload to carry
+    authoritative multipart evidence (`total_parts > 1` and complete) before
+    standalone or auxiliary-backed single-main release formation is allowed;
+  - regression coverage verifies that a one-article MKV plus PAR2 sidecars is
+    skipped, while a complete multipart MKV with PAR2 sidecars can still form an
+    internal release.
 
 Known open signoff items:
 
+- review and approve the updated binary grouping and release formation wiki
+  policies for the remaining grouping/regrouping work:
+  - `docs/wiki/indexer/binary-grouping-evidence.md` now states that
+    `source_posted_at` is not identity and strong filename/family/part evidence
+    may merge binaries across source-time and partition boundaries;
+  - `docs/wiki/indexer/release-formation.md` now separates binary
+    completeness, payload completeness, release completeness, public readiness,
+    and internal release formation;
+  - after approval, implement assemble regrouping so same filename plus same
+    family plus compatible Subject/yEnc part metadata forms one binary even
+    when source rows span minutes or hours;
+  - add regression coverage for the observed split-PAR2 case where the main
+    payload is complete but auxiliary PAR2 volume parts are split into many
+    one-part binary rows;
+- tune assemble query shape before signoff. Current live evidence showed
+  20,000-header batches taking 20-60s on high-cardinality batches, mostly in
+  candidate selection, header matching, and binary upsert work. Target follow-up
+  is bounded candidate selection, partition-keyed lookups, and cross-time
+  completion-key joins that do not broaden into unbounded source scans;
 - complete a clean 30-minute soak from the final patched serve boundary with
   zero `40P01`, zero `53200`, and no PostgreSQL backend crash;
 - record final stage-run counts, yEnc throughput, release counts, deferred gap
@@ -702,6 +832,58 @@ Known open signoff items:
 - continue assemble write-path tuning. The current evidence points at binary
   upsert cost on large, high-cardinality batches rather than the yEnc selector
   self-join regression or binary stats refresh.
+- Assemble insert-heavy audit at `2026-06-26 23:00-23:17`:
+  - read-only selector/hydration EXPLAIN showed the combined lane selector at
+    ~189 ms and 2,500-row hydration at ~109 ms when isolated;
+  - staged completion-key sync was the insert-heavy regression: the old shape
+    scanned/hashed ~436k incomplete `binary_observation_stats` rows for a
+    5,000-binary staged batch and took ~5,087 ms; the partition-keyed staged
+    lookup shape took ~243 ms for the same sample;
+  - live assemble improved from ~5 minutes for 20,000 headers to 99s, 106s,
+    97s, 40s, 30s, then 6.7s as insert-heavy backlog drained;
+  - `binary_core` had a redundant non-unique index
+    `idx_binary_core_provider_group_key` duplicating the unique constraint on
+    `(provider_id, newsgroup_id, binary_key)`. It was ~669 MB and was dropped
+    from the schema and live test DB;
+  - post-drop live run was not insert-heavy (`unique_binary_upserts=92`,
+    `binary_upsert_insert_ms=2.25`) but still slow due to hydration/IO
+    contention while scrape and daily bucket stats were active. Active
+    `pg_stat_activity` showed a minute-long daily bucket `source_stats` query
+    doing `DataFileRead` concurrently with scrape inserts. Next tuning target
+    is stage concurrency/query isolation, especially daily bucket stats and
+    scrape contention with assemble hydration.
+- Follow-up soak/query-shape pass at `2026-06-27 00:05-00:50`:
+  - scrape insert duplicate resolution was missing `source_posted_at` in both
+    article-number and message-id existing-header joins. This defeated daily
+    partition pruning and left multi-worker scrape CTEs active for 30+ seconds.
+    The lookup and fallback resolver now include `source_posted_at`, and live
+    scrape inserts returned to sub-second/low-second active DB time while still
+    inserting 5,000-header batches;
+  - assemble improved without reducing the 20,000 configured batch size. Under
+    scrape pressure it moved from ~90 headers/sec to ~156 headers/sec after the
+    scrape lookup fix. With scrape gated by backlog/hard caps, observed
+    assemble passes ranged from ~170-600 headers/sec, and existing-binary-heavy
+    passes had sub-second binary upsert/query phases;
+  - `subject_multipart_regroup` had three unbounded repair shapes. The stale
+    stats pre-pass hashed all ~4.9M `article_headers` rows for 100 binaries and
+    timed out at 60s in EXPLAIN. It now refreshes from binary-owned projection
+    data only; EXPLAIN dropped to ~436 ms for 100 staged binaries. Key-group
+    and source-binary staging are now bounded to recent partitioned candidates
+    with a 3,000-row cap per pass so regroup repair does not compete with hot
+    assemble writes;
+  - release formation correctly skipped weak/single-main candidates in the
+    observed soak (`skipped_fragments_single_main=2`) instead of forming
+    singleton payload releases;
+  - yEnc recovery was active and productive. Observed batches included
+    `attempted=30 recovered=30 merged=30` and `attempted=23 recovered=23`,
+    while scrape latest/backfill correctly paused at the yEnc hard cap;
+  - release summary refresh was usually low-second after recovered-file-set
+    bounding, but one outlier still reported
+    `recovered_file_set_duration_ms=28335.37` for a small batch. Treat this as
+    a remaining follow-up EXPLAIN target if it recurs during the longer soak;
+  - final observed serve was left running after focused tests passed. Recent
+    logs showed scrape gated by yEnc hard cap, assemble draining, yEnc
+    recovering, and release refresh processing newly dirtied summaries.
 
 ## Acceptance Criteria
 
@@ -727,3 +909,65 @@ Known open signoff items:
 - Speculative weak binary grouping remains investigation-only until sampled
   yEnc evidence is recorded and reviewed.
 - Focused Go tests and `git diff --check` pass before signoff.
+
+## 2026-06-29 Follow-Up: Clear Title And PreDB Fallback
+
+- [x] Add runtime public policy setting `public_require_clear_title`.
+  Default is enabled. Public catalog visibility, NZB generation, and archive
+  claiming must reject placeholder, weak, opaque, or `source_obfuscated` titles
+  until a real title is derived.
+- [x] Route `release_archive_nzb` through the same runtime
+  `ReleaseReadyPolicy` used by public/NZB generation instead of
+  `DefaultReleaseReadyPolicy()`.
+- [x] Improve PreDB metadata-only fallback for opaque media:
+  - include release `size_bytes` and largest non-PAR catalog payload size in
+    enrichment candidates;
+  - score PreDB `size_kb` against payload size as primary evidence;
+  - use posted time and media codec/resolution as corroborating evidence;
+  - stop treating runtime alone as a `MOVIE` category hint;
+  - widen the local window candidate limit to 1,000 rows.
+- [x] Restart serve with the new policy code, ensure
+  `public_require_clear_title=true` in runtime settings, sync/backfill PreDB
+  around the June 26 indexed window, run metadata fallback, and record whether
+  release `3Fgri8qDFNbgZWo5JtnVrj7tPLp` can be identified. Result:
+  PreDB backfill reached June 26 before `predb.club` returned HTTP 429. The
+  first metadata fallback pass incorrectly identified the release as
+  `Fleabag.S02E02.iTALiAN.720p.WEB.H264-NTROPiC` from a 51-minute-away
+  size/codec collision. That is now treated as a false positive. The release
+  was reset to `source_obfuscated`, the public API hides it again, and metadata
+  fallback records top PreDB candidates for manual review without choosing one
+  unless the best candidate is inside the tight auto-apply posted-time window.
+- [x] Add release-detail manual PreDB matching workflow:
+  - show the top 5 stored PreDB candidates on release details, including title,
+    category, posted time delta, size delta, decoded-size source,
+    resolution/codec evidence, and why the candidate was or was not
+    auto-applied;
+  - allow an admin to manually choose a PreDB candidate as the release identity
+    or manually suggest/override the title/content when PreDB is close but not
+    conclusive;
+  - persist manual choices separately from automatic enrichment so later
+    metadata jobs do not overwrite operator-confirmed identity;
+  - keep public/NZB visibility gated by `public_require_clear_title` until a
+    manual or high-confidence automatic identity is present;
+  - include the `3Fgri8qDFNbgZWo5JtnVrj7tPLp` investigation as a test case:
+    manual review confirmed `The Doomies S01E22`, while local PreDB contained
+    plausible but incomplete/ambiguous `S01E22` candidates and no explicit
+    Romanian marker.
+- [x] Fix PreDB size evidence to prefer decoded payload size:
+  - use valid PAR2 target size when available;
+  - otherwise use stored `yenc_file_size` when available. Current schema does
+    not distinguish recovered BODY `=ybegin size=` from Subject trailing-size
+    hints, so admin evidence labels this as yEnc-or-Subject size evidence
+    rather than a guaranteed BODY-derived value;
+  - for split archives, sum decoded archive-part sizes when multiple archive
+    payload files and split markers are present; direct media/software payloads
+    continue to use the largest decoded payload file;
+  - only fall back to observed/catalog article byte totals when decoded payload
+    size is unknown. The Doomies case showed catalog size `571,231,197` bytes
+    while PAR2/filesystem payload size was `553,127,684` bytes (`527.5 MiB`).
+- [x] Signoff: manual identity now uses
+  `POST /api/v1/admin/indexer/releases/:id/actions/identify`, writes real
+  release identity fields with `manual` or `manual_predb` title sources, marks
+  selected PreDB rows chosen, and keeps automatic enrichment from overwriting
+  operator-confirmed identity. Admin release details show PreDB candidate
+  evidence and actions.
