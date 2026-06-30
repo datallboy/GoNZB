@@ -327,6 +327,27 @@ export function patchAdminRelease(id: string, body: ReleaseOverridePatch) {
   })
 }
 
+export function identifyAdminRelease(
+  id: string,
+  body:
+    | { source: "predb"; predb_entry_id: number }
+    | {
+        source: "manual"
+        title: string
+        external_media_type?: string
+        external_year?: number
+        season_number?: number
+        episode_number?: number
+        classification?: string
+        notes?: string
+      },
+) {
+  return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/identify`, {
+    method: "POST",
+    body,
+  })
+}
+
 export function hideAdminRelease(id: string) {
   return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/hide`, {
     method: "POST",

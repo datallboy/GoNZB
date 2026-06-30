@@ -110,6 +110,9 @@ function releaseCompletenessLabel(item: AdminReleaseSummary) {
     return 'payload unknown'
   }
   if (item.payload_completion_state === 'complete') {
+    if (item.completion_pct < 100) {
+      return `payload complete (${Math.floor(item.completion_pct)}% overall)`
+    }
     return 'payload complete'
   }
   if (item.expected_archive_file_count > 0) {

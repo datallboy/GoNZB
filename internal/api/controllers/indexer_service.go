@@ -48,6 +48,7 @@ type indexerService interface {
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
+	IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error)
 	ReinspectRelease(ctx context.Context, releaseID string) error
 	ReenrichRelease(ctx context.Context, releaseID string) error
 	ListBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
@@ -121,6 +122,18 @@ type indexerReleaseOverridePatch struct {
 	Hidden                 *bool     `json:"hidden,omitempty"`
 	Notes                  *string   `json:"notes,omitempty"`
 	Tags                   *[]string `json:"tags,omitempty"`
+}
+
+type indexerReleaseIdentityPatch struct {
+	Source            string `json:"source"`
+	PredbEntryID      int64  `json:"predb_entry_id,omitempty"`
+	Title             string `json:"title,omitempty"`
+	ExternalMediaType string `json:"external_media_type,omitempty"`
+	ExternalYear      int    `json:"external_year,omitempty"`
+	SeasonNumber      int    `json:"season_number,omitempty"`
+	EpisodeNumber     int    `json:"episode_number,omitempty"`
+	Classification    string `json:"classification,omitempty"`
+	Notes             string `json:"notes,omitempty"`
 }
 
 type indexerMaintenanceTaskView struct {
@@ -1162,6 +1175,7 @@ func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.
 		MinIdentityStatus:                    release.PublicMinIdentityStatus,
 		RequireInspection:                    release.PublicRequireInspection,
 		RequireEnrichment:                    release.PublicRequireEnrichment,
+		RequireClearTitle:                    release.PublicRequireClearTitle,
 		RequirePayloadComplete:               release.PublicRequirePayloadComplete,
 		RequireExpectedFileCountComplete:     release.PublicRequireExpectedFileCountComplete,
 		RequirePAR2:                          release.PublicRequirePAR2,
@@ -1219,6 +1233,68 @@ func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, relea
 		return nil, err
 	}
 	return s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
+}
+
+func (s *runtimeIndexerService) IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+	source := strings.TrimSpace(strings.ToLower(patch.Source))
+	if source == "" {
+		source = "manual"
+	}
+	current, err := s.store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil || current == nil {
+		return nil, err
+	}
+
+	title := strings.TrimSpace(patch.Title)
+	titleSource := "manual"
+	predbEntryID := int64(0)
+	if source == "predb" || source == "manual_predb" {
+		if patch.PredbEntryID <= 0 {
+			return nil, fmt.Errorf("predb_entry_id is required")
+		}
+		for _, match := range current.PredbMatches {
+			if match.EntryID == patch.PredbEntryID {
+				title = strings.TrimSpace(match.Title)
+				predbEntryID = match.EntryID
+				break
+			}
+		}
+		if title == "" || predbEntryID <= 0 {
+			return nil, fmt.Errorf("predb candidate %d is not linked to release %s", patch.PredbEntryID, releaseID)
+		}
+		titleSource = "manual_predb"
+	} else if source != "manual" {
+		return nil, fmt.Errorf("unsupported identity source %q", patch.Source)
+	}
+	if title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+	now := time.Now().UTC()
+	if err := s.store.ApplyReleaseManualIdentity(ctx, pgindex.ReleaseManualIdentityUpdate{
+		ReleaseID:               releaseID,
+		Title:                   title,
+		TitleSource:             titleSource,
+		PredbEntryID:            predbEntryID,
+		ExternalMediaType:       strings.TrimSpace(strings.ToLower(patch.ExternalMediaType)),
+		ExternalYear:            patch.ExternalYear,
+		SeasonNumber:            patch.SeasonNumber,
+		EpisodeNumber:           patch.EpisodeNumber,
+		Classification:          strings.TrimSpace(strings.ToLower(patch.Classification)),
+		IdentityStatus:          "identified",
+		IdentityConfidenceScore: 1,
+		Notes:                   strings.TrimSpace(patch.Notes),
+		MetadataUpdatedAt:       &now,
+	}); err != nil {
+		return nil, err
+	}
+	return s.store.GetIndexerReleaseDetail(ctx, releaseID)
 }
 
 func (s *runtimeIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
@@ -1316,8 +1392,13 @@ func (s *runtimeIndexerService) runStageSequence(reason string, stages []string)
 		return
 	}
 	for _, stage := range stages {
-		if err := indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
-			s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
+		if err := indexer.RunStageOnce(context.Background(), stage); err != nil {
+			if strings.Contains(err.Error(), " is disabled") {
+				continue
+			}
+			if s.log != nil {
+				s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
+			}
 		}
 	}
 }

@@ -176,7 +176,7 @@ type UsenetIndexStore interface {
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
 	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
-	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
+	ClaimReleaseArchiveCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseArchiveCandidate, error)
 	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
 	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
 	ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error)
@@ -324,6 +324,7 @@ type UsenetIndexStore interface {
 	ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTMDBMatchRecord) error
 	ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTVDBMatchRecord) error
 	ApplyReleasePredbUpdate(ctx context.Context, in pgindex.ReleasePredbUpdate) error
+	ApplyReleaseManualIdentity(ctx context.Context, in pgindex.ReleaseManualIdentityUpdate) error
 	ApplyReleaseEnrichmentUpdate(ctx context.Context, in pgindex.ReleaseEnrichmentUpdate) error
 }
 

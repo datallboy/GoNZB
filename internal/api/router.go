@@ -205,6 +205,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.POST("/stages/:stage/actions/pause", indexerAdminCtrl.PauseStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimePause))
 		v1AdminIndexer.POST("/stages/:stage/actions/resume", indexerAdminCtrl.ResumeStage, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimePause))
 		v1AdminIndexer.PATCH("/releases/:id", indexerAdminCtrl.PatchRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesOverride))
+		v1AdminIndexer.POST("/releases/:id/actions/identify", indexerAdminCtrl.IdentifyRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesOverride))
 		v1AdminIndexer.POST("/releases/:id/actions/reinspect", indexerAdminCtrl.ReinspectRelease, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/releases/:id/actions/reenrich", indexerAdminCtrl.ReenrichRelease, authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRun))
 		v1AdminIndexer.POST("/releases/:id/actions/hide", indexerAdminCtrl.HideRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesHide))

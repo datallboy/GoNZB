@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
+import { AdminBinaryDetailPage } from './modules/admin/AdminBinaryDetailPage'
 import { AdminBinariesPage } from './modules/admin/AdminBinariesPage'
 import { AdminIndexerWorkPage } from './modules/admin/AdminIndexerWorkPage'
 import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
@@ -94,6 +95,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminBinariesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/binaries/:id"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminBinaryDetailPage />
               </RequireAuth>
             }
           />
