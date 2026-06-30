@@ -80,6 +80,17 @@ func DisplayTitleStyle(v string) string {
 
 func normalizeInspectionTitleCandidate(candidate InspectionCandidate) (InspectionTitle, bool) {
 	switch strings.TrimSpace(candidate.Source) {
+	case "media_title":
+		releaseTitle, displayTitle, ok := normalizePlainTitleCandidate(candidate.Value)
+		if !ok {
+			return InspectionTitle{}, false
+		}
+		return InspectionTitle{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "media_title",
+			Confidence:   clampConfidence(candidate.Confidence),
+		}, true
 	case "archive_entry":
 		releaseTitle, displayTitle, ok := normalizePathTitleCandidate(candidate.Value)
 		if !ok {
@@ -105,6 +116,18 @@ func normalizeInspectionTitleCandidate(candidate InspectionCandidate) (Inspectio
 	default:
 		return InspectionTitle{}, false
 	}
+}
+
+func normalizePlainTitleCandidate(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 180 {
+		return "", "", false
+	}
+	display := DisplayTitleStyle(value)
+	if !looksReadableTitle(display) {
+		return "", "", false
+	}
+	return releaseTitleStyle(display), display, true
 }
 
 func normalizePathTitleCandidate(value string) (string, string, bool) {

@@ -593,7 +593,7 @@ func (s *Service) metadataFallbackCandidate(ctx context.Context, candidate pgind
 	}
 	categoryHint := metadataCategoryHint(query)
 	from, to := metadataWindow(query)
-	entries, err := s.repo.ListPredbEntriesForWindow(ctx, from, to, categoryHint, 300)
+	entries, err := s.repo.ListPredbEntriesForWindow(ctx, from, to, categoryHint, 1000)
 	if err != nil {
 		return false, fmt.Errorf("list local predb entries: %w", err)
 	}
@@ -603,32 +603,28 @@ func (s *Service) metadataFallbackCandidate(ctx context.Context, candidate pgind
 	if len(entries) == 0 {
 		return false, nil
 	}
-	match, ok := bestMetadataFallbackMatch(query, entries)
-	if !ok || match.Confidence < 0.90 {
+	matches := rankedMetadataFallbackMatches(query, entries, 5)
+	if len(matches) == 0 {
 		if s.log != nil {
-			s.log.Debug("enrich_predb metadata-only-fallback: skip release_id=%s reason=low_confidence confidence=%.3f", candidate.ReleaseID, match.Confidence)
+			s.log.Debug("enrich_predb metadata-only-fallback: skip release_id=%s reason=no_scored_candidates", candidate.ReleaseID)
 		}
 		return false, nil
 	}
-	rows := []pgindex.ReleasePredbMatchRecord{{
-		ReleaseID:       candidate.ReleaseID,
-		ExternalID:      match.Entry.ExternalID,
-		NormalizedTitle: match.Entry.NormalizedTitle,
-		Title:           match.Entry.Title,
-		Category:        match.Entry.Category,
-		Source:          match.Entry.Source,
-		Team:            match.Entry.Team,
-		Genre:           match.Entry.Genre,
-		URL:             match.Entry.URL,
-		SizeKB:          match.Entry.SizeKB,
-		FileCount:       match.Entry.FileCount,
-		PostedAt:        match.Entry.PostedAt,
-		Confidence:      match.Confidence,
-		Chosen:          true,
-		Payload:         match.Entry.Payload,
-	}}
+	match := matches[0]
+	autoApply := metadataFallbackAutoApplyAllowed(query, match)
+	rows := metadataFallbackMatchRecords(candidate.ReleaseID, matches, autoApply)
 	if err := s.repo.ReplaceReleasePredbMatches(ctx, candidate.ReleaseID, rows); err != nil {
 		return false, fmt.Errorf("replace predb metadata fallback matches: %w", err)
+	}
+	if !autoApply {
+		if s.log != nil {
+			if delta, ok := metadataPostedDelta(query, match.Entry); ok {
+				s.log.Debug("enrich_predb metadata-only-fallback: skip release_id=%s reason=not_auto_apply confidence=%.3f posted_delta_minutes=%.1f title=%q", candidate.ReleaseID, match.Confidence, delta.Minutes(), match.Entry.Title)
+			} else {
+				s.log.Debug("enrich_predb metadata-only-fallback: skip release_id=%s reason=not_auto_apply confidence=%.3f title=%q", candidate.ReleaseID, match.Confidence, match.Entry.Title)
+			}
+		}
+		return false, nil
 	}
 	update := pgindex.ReleasePredbUpdate{
 		ReleaseID:               candidate.ReleaseID,
@@ -648,6 +644,30 @@ func (s *Service) metadataFallbackCandidate(ctx context.Context, candidate pgind
 		s.log.Debug("enrich_predb metadata-only-fallback: applied release_id=%s title=%q confidence=%.3f", candidate.ReleaseID, update.Title, update.TitleConfidence)
 	}
 	return true, nil
+}
+
+func metadataFallbackMatchRecords(releaseID string, matches []MetadataFallbackMatch, autoApply bool) []pgindex.ReleasePredbMatchRecord {
+	rows := make([]pgindex.ReleasePredbMatchRecord, 0, len(matches))
+	for i, match := range matches {
+		rows = append(rows, pgindex.ReleasePredbMatchRecord{
+			ReleaseID:       releaseID,
+			ExternalID:      match.Entry.ExternalID,
+			NormalizedTitle: match.Entry.NormalizedTitle,
+			Title:           match.Entry.Title,
+			Category:        match.Entry.Category,
+			Source:          match.Entry.Source,
+			Team:            match.Entry.Team,
+			Genre:           match.Entry.Genre,
+			URL:             match.Entry.URL,
+			SizeKB:          match.Entry.SizeKB,
+			FileCount:       match.Entry.FileCount,
+			PostedAt:        match.Entry.PostedAt,
+			Confidence:      match.Confidence,
+			Chosen:          autoApply && i == 0,
+			Payload:         match.Entry.Payload,
+		})
+	}
+	return rows
 }
 
 func toPredbRecords(releaseID string, matches []Match, haveBest bool) []pgindex.ReleasePredbMatchRecord {
@@ -693,7 +713,7 @@ func shouldApplyPredbTitle(candidate pgindex.ReleaseEnrichmentCandidate, best Ma
 	if strings.TrimSpace(best.Title) == "" {
 		return false
 	}
-	if candidate.TitleSource != "" && candidate.TitleSource != "source" {
+	if candidate.TitleSource != "" && candidate.TitleSource != "source" && candidate.TitleSource != "source_obfuscated" {
 		return false
 	}
 	return true

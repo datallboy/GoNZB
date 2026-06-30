@@ -283,7 +283,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		archiveResolver,
 		appCtx.IndexerArchiveStore,
 		appCtx.Logger,
-		releasearchive.Options{BatchSize: runtimeCfg.ReleaseArchiveNZBStage.BatchSize},
+		releasearchive.Options{BatchSize: runtimeCfg.ReleaseArchiveNZBStage.BatchSize, Policy: runtimeCfg.ReleaseReadyPolicy},
 	)
 	releaseGenerateSvc := releasegenerate.NewService(
 		appCtx.PGIndexStore,
@@ -899,6 +899,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			MinIdentityStatus:                    indexingCfg.Release.PublicMinIdentityStatus,
 			RequireInspection:                    indexingCfg.Release.PublicRequireInspection,
 			RequireEnrichment:                    indexingCfg.Release.PublicRequireEnrichment,
+			RequireClearTitle:                    indexingCfg.Release.PublicRequireClearTitle,
 			RequirePayloadComplete:               indexingCfg.Release.PublicRequirePayloadComplete,
 			RequireExpectedFileCountComplete:     indexingCfg.Release.PublicRequireExpectedFileCountComplete,
 			RequirePAR2:                          indexingCfg.Release.PublicRequirePAR2,

@@ -19,7 +19,7 @@ type logger interface {
 }
 
 type repository interface {
-	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
+	ClaimReleaseArchiveCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseArchiveCandidate, error)
 	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
 	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
 }
@@ -34,6 +34,7 @@ type blobStore interface {
 
 type Options struct {
 	BatchSize int
+	Policy    pgindex.ReleaseReadyPolicy
 }
 
 type Service struct {
@@ -48,6 +49,11 @@ func NewService(repo repository, resolver nzbResolver, store blobStore, log logg
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 100
 	}
+	if opts.Policy == (pgindex.ReleaseReadyPolicy{}) {
+		opts.Policy = pgindex.DefaultReleaseReadyPolicy()
+	} else {
+		opts.Policy = pgindex.NormalizeReleaseReadyPolicy(opts.Policy)
+	}
 	return &Service{repo: repo, resolver: resolver, store: store, log: log, opts: opts}
 }
 
@@ -61,7 +67,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return nil, fmt.Errorf("archive service dependencies are required")
 	}
 
-	candidates, err := s.repo.ClaimReleaseArchiveCandidates(ctx, s.opts.BatchSize)
+	candidates, err := s.repo.ClaimReleaseArchiveCandidates(ctx, s.opts.BatchSize, s.opts.Policy)
 	if err != nil {
 		return nil, err
 	}

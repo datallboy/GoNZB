@@ -3,6 +3,7 @@ package predb
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ type MetadataFallbackQuery struct {
 	Season         int
 	Episode        int
 	PostedAt       *time.Time
+	SizeBytes      int64
+	PayloadSize    int64
 	RuntimeSeconds int
 	Resolution     string
 	VideoCodec     string
@@ -35,6 +38,8 @@ type MetadataFallbackMatch struct {
 	Entry      pgindex.PredbEntrySummary
 	Confidence float64
 }
+
+const metadataFallbackAutoApplyWindow = 30 * time.Minute
 
 func deriveQuery(candidate pgindex.ReleaseEnrichmentCandidate) (Query, bool) {
 	var base string
@@ -321,6 +326,29 @@ func absInt(v int) int {
 	return v
 }
 
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func deriveMetadataFallbackQuery(candidate pgindex.ReleaseEnrichmentCandidate) (MetadataFallbackQuery, bool) {
 	q := MetadataFallbackQuery{
 		IsTV:           strings.TrimSpace(candidate.ExternalMediaType) == "tv" || (candidate.SeasonNumber > 0 && candidate.EpisodeNumber > 0),
@@ -328,12 +356,14 @@ func deriveMetadataFallbackQuery(candidate pgindex.ReleaseEnrichmentCandidate) (
 		Season:         candidate.SeasonNumber,
 		Episode:        candidate.EpisodeNumber,
 		PostedAt:       candidate.PostedAt,
+		SizeBytes:      candidate.SizeBytes,
+		PayloadSize:    firstNonZeroInt64(candidate.PayloadSizeBytes, candidate.SizeBytes),
 		RuntimeSeconds: candidate.RuntimeSeconds,
 		Resolution:     strings.TrimSpace(candidate.PrimaryResolution),
 		VideoCodec:     strings.TrimSpace(candidate.PrimaryVideoCodec),
 		AudioCodec:     strings.TrimSpace(candidate.PrimaryAudioCodec),
 	}
-	if q.PostedAt == nil && q.Year == 0 && q.Season == 0 && q.Episode == 0 && q.Resolution == "" && q.VideoCodec == "" && q.AudioCodec == "" {
+	if q.PostedAt == nil && q.Year == 0 && q.Season == 0 && q.Episode == 0 && q.PayloadSize <= 0 && q.Resolution == "" && q.VideoCodec == "" && q.AudioCodec == "" {
 		return MetadataFallbackQuery{}, false
 	}
 	return q, true
@@ -343,7 +373,7 @@ func metadataCategoryHint(query MetadataFallbackQuery) string {
 	if query.IsTV {
 		return "TV"
 	}
-	if query.Year > 0 || query.RuntimeSeconds > 0 {
+	if query.Year > 0 {
 		return "MOVIE"
 	}
 	return ""
@@ -359,20 +389,64 @@ func metadataWindow(query MetadataFallbackQuery) (*time.Time, *time.Time) {
 }
 
 func bestMetadataFallbackMatch(query MetadataFallbackQuery, entries []pgindex.PredbEntrySummary) (MetadataFallbackMatch, bool) {
-	best := MetadataFallbackMatch{}
-	for _, entry := range entries {
-		score := scoreMetadataFallback(query, entry)
-		if score > best.Confidence {
-			best = MetadataFallbackMatch{
-				Entry:      entry,
-				Confidence: score,
-			}
-		}
-	}
-	if best.Confidence <= 0 {
+	matches := rankedMetadataFallbackMatches(query, entries, 1)
+	if len(matches) == 0 {
 		return MetadataFallbackMatch{}, false
 	}
-	return best, true
+	return matches[0], true
+}
+
+func rankedMetadataFallbackMatches(query MetadataFallbackQuery, entries []pgindex.PredbEntrySummary, limit int) []MetadataFallbackMatch {
+	if limit <= 0 {
+		limit = len(entries)
+	}
+	out := make([]MetadataFallbackMatch, 0, len(entries))
+	for _, entry := range entries {
+		score := scoreMetadataFallback(query, entry)
+		if score <= 0 {
+			continue
+		}
+		out = append(out, MetadataFallbackMatch{Entry: entry, Confidence: score})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Confidence != out[j].Confidence {
+			return out[i].Confidence > out[j].Confidence
+		}
+		di, iok := metadataPostedDelta(query, out[i].Entry)
+		dj, jok := metadataPostedDelta(query, out[j].Entry)
+		if iok && jok && di != dj {
+			return di < dj
+		}
+		if iok != jok {
+			return iok
+		}
+		return out[i].Entry.Title < out[j].Entry.Title
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func metadataFallbackAutoApplyAllowed(query MetadataFallbackQuery, match MetadataFallbackMatch) bool {
+	if match.Confidence < 0.90 {
+		return false
+	}
+	if delta, ok := metadataPostedDelta(query, match.Entry); ok {
+		return delta <= metadataFallbackAutoApplyWindow
+	}
+	return false
+}
+
+func metadataPostedDelta(query MetadataFallbackQuery, entry pgindex.PredbEntrySummary) (time.Duration, bool) {
+	if query.PostedAt == nil || entry.PostedAt == nil {
+		return 0, false
+	}
+	diff := query.PostedAt.Sub(*entry.PostedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff, true
 }
 
 func scoreMetadataFallback(query MetadataFallbackQuery, entry pgindex.PredbEntrySummary) float64 {
@@ -404,13 +478,27 @@ func scoreMetadataFallback(query MetadataFallbackQuery, entry pgindex.PredbEntry
 		}
 	}
 	if query.Resolution != "" && strings.Contains(strings.ToLower(entry.Title+" "+entry.Category), strings.ToLower(query.Resolution)) {
-		score += 0.08
+		score += 0.10
 	}
 	if query.VideoCodec != "" && strings.Contains(strings.ToLower(entry.Title), strings.ToLower(query.VideoCodec)) {
-		score += 0.05
+		score += 0.06
 	}
 	if query.AudioCodec != "" && strings.Contains(strings.ToLower(entry.Title), strings.ToLower(query.AudioCodec)) {
-		score += 0.03
+		score += 0.04
+	}
+	if query.PayloadSize > 0 && entry.SizeKB > 0 {
+		if ratio, ok := bestPredbSizeRatio(query.PayloadSize, entry.SizeKB); ok {
+			switch {
+			case ratio <= 0.08:
+				score += 0.55
+			case ratio <= 0.15:
+				score += 0.35
+			case ratio <= 0.25:
+				score += 0.18
+			case ratio > 0.50:
+				score -= 0.10
+			}
+		}
 	}
 	if query.PostedAt != nil && entry.PostedAt != nil {
 		diff := query.PostedAt.Sub(*entry.PostedAt)
@@ -419,9 +507,9 @@ func scoreMetadataFallback(query MetadataFallbackQuery, entry pgindex.PredbEntry
 		}
 		switch {
 		case diff <= 24*time.Hour:
-			score += 0.18
+			score += 0.22
 		case diff <= 72*time.Hour:
-			score += 0.12
+			score += 0.15
 		case diff <= 10*24*time.Hour:
 			score += 0.06
 		default:
@@ -435,4 +523,27 @@ func scoreMetadataFallback(query MetadataFallbackQuery, entry pgindex.PredbEntry
 		score = 1
 	}
 	return score
+}
+
+func bestPredbSizeRatio(payloadBytes int64, storedSizeKB float64) (float64, bool) {
+	if payloadBytes <= 0 || storedSizeKB <= 0 {
+		return 0, false
+	}
+	candidates := []int64{
+		int64(storedSizeKB * 1024),
+		int64(storedSizeKB * 1024 * 1024),
+	}
+	best := 0.0
+	seen := false
+	for _, entryBytes := range candidates {
+		if entryBytes <= 0 {
+			continue
+		}
+		ratio := float64(absInt64(payloadBytes-entryBytes)) / float64(maxInt64(payloadBytes, entryBytes))
+		if !seen || ratio < best {
+			best = ratio
+			seen = true
+		}
+	}
+	return best, seen
 }

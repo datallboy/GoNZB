@@ -729,20 +729,6 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 		}, nil
 	}
 
-	if candidate.ExpectedFileCount > 0 && candidate.ExpectedFileCoveragePct < s.opts.ReleaseMinExpectedFileCoveragePct {
-		start := time.Now()
-		if err := s.repo.DeleteStaleReleasesForSourceKey(ctx, candidate.ProviderID, candidate.KeyKind, familyKey, nil); err != nil {
-			return candidateOutcome{}, fmt.Errorf("delete low-coverage stale releases: %w", err)
-		}
-		if timings != nil {
-			timings.deleteStale += time.Since(start)
-		}
-		return candidateOutcome{
-			cooledDownLowCoverage: 1,
-			deferredAck:           buildDeferredReleaseAck(candidate, familyKey),
-		}, nil
-	}
-
 	start := time.Now()
 	binaries, err := s.repo.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, familyKey)
 	if timings != nil {
@@ -836,7 +822,9 @@ func (s *Service) formCandidate(ctx context.Context, candidate pgindex.ReleaseCa
 			record.CompletionPct < s.opts.ReleaseMinExpectedFileCoveragePct &&
 			!allowsIncompleteReleaseFormation(candidate, cluster, record) {
 			outcome.skippedCompletion++
-			preserveExistingOnSkippedLowCoverage = true
+			if !clusterHasSplitArchivePayload(cluster.Binaries) {
+				preserveExistingOnSkippedLowCoverage = true
+			}
 			continue
 		}
 		if record.MatchConfidence < s.opts.ReleaseMinConfidence {
@@ -1031,10 +1019,16 @@ func shouldPersistCluster(candidate pgindex.ReleaseCandidate, cluster releaseClu
 	if mainPayloadCount == 0 {
 		return false, fragmentReasonNoMainPayload
 	}
+	if countCompleteMainPayloadBinaries(cluster.Binaries) == 0 {
+		return false, fragmentReasonNoMainPayload
+	}
 	expectedFiles := clusterExpectedFileCount(cluster.Binaries)
 	expectedArchiveFiles := clusterExpectedArchiveFileCount(cluster.Binaries)
 	recoveredFileSet := candidate.KeyKind == pgindex.ReleaseCandidateKeyKindRecoveredFileSet
-	if (expectedFiles > 1 || expectedArchiveFiles > 1) && mainPayloadCount < 2 {
+	if (expectedFiles > 1 || expectedArchiveFiles > 1) &&
+		mainPayloadCount < 2 &&
+		!recordHasStrongTitleEvidence(record) &&
+		!clusterHasUsableFileIdentity(cluster.Binaries, record) {
 		return false, fragmentReasonMultiFileSingleMainPayload
 	}
 	if !recoveredFileSet &&
@@ -1059,16 +1053,22 @@ func shouldPersistCluster(candidate pgindex.ReleaseCandidate, cluster releaseClu
 		(looksWeakGeneratedReleaseTitle(record.Title) || looksWeakGeneratedReleaseTitle(record.SourceTitle)) {
 		return false, fragmentReasonContextualWeak
 	}
-	if mainPayloadCount == 1 && !allowsStandaloneBinaryRelease(cluster.Binaries, record) {
+	if mainPayloadCount == 1 &&
+		!allowsStandaloneBinaryRelease(cluster.Binaries, record) &&
+		!recordHasStrongTitleEvidence(record) &&
+		!allowsSingleCompletePayloadWithAuxiliaryEvidence(cluster.Binaries) {
 		return false, fragmentReasonSingleMainPayload
 	}
 	return true, ""
 }
 
 func allowsIncompleteReleaseFormation(candidate pgindex.ReleaseCandidate, cluster releaseCluster, record pgindex.ReleaseRecord) bool {
+	if clusterHasSplitArchivePayload(cluster.Binaries) {
+		return false
+	}
 	return candidate.KeyKind == pgindex.ReleaseCandidateKeyKindRecoveredFileSet ||
 		recordHasStrongTitleEvidence(record) ||
-		clusterHasUsableFileIdentity(cluster.Binaries, record)
+		allowsSingleCompletePayloadWithAuxiliaryEvidence(cluster.Binaries)
 }
 
 func clusterHasSplitArchiveParts(binaries []pgindex.BinarySummary) bool {
@@ -1094,6 +1094,9 @@ func recordHasStrongTitleEvidence(record pgindex.ReleaseRecord) bool {
 func releaseTitleNeedsMoreEvidence(record pgindex.ReleaseRecord) bool {
 	title := firstNonBlank(record.DeobfuscatedTitle, record.MatchedMediaTitle, record.Title, record.SourceTitle)
 	if title == "" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(title), "unknown-release") {
 		return true
 	}
 	return looksWeakGeneratedReleaseTitle(title) || looksObfuscatedReleaseTitle(title) || !looksReadableReleaseTitle(title)
