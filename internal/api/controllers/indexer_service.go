@@ -43,6 +43,7 @@ type indexerService interface {
 	DryRunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
 	RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
 	UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error)
+	ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
@@ -1194,6 +1195,13 @@ func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, params pg
 	}
 	params.Query = strings.TrimSpace(params.Query)
 	return s.store.ListIndexerReleases(ctx, params)
+}
+
+func (s *runtimeIndexerService) ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerAdminAttention(ctx, params)
 }
 
 func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {

@@ -180,6 +180,10 @@ func (s *stubIndexerService) ListReleases(ctx context.Context, params pgindex.Pu
 	return s.releases, s.releaseTotal, nil
 }
 
+func (s *stubIndexerService) ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error) {
+	return nil, 0, nil
+}
+
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
 }
