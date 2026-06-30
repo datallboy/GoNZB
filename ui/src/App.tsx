@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
+import { AdminAttentionPage } from './modules/admin/AdminAttentionPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
 import { AdminBinaryDetailPage } from './modules/admin/AdminBinaryDetailPage'
 import { AdminBinariesPage } from './modules/admin/AdminBinariesPage'
@@ -71,6 +72,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminDashboardPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/attention"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminAttentionPage />
               </RequireAuth>
             }
           />

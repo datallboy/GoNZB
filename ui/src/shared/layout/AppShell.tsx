@@ -119,6 +119,7 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/stages">Stages</NavLink>
               <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
               <NavLink to="/admin/indexer/runs">Runs</NavLink>
+              <NavLink to="/admin/indexer/attention">Attention</NavLink>
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
               <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
             </>

@@ -10,6 +10,8 @@ import type {
   IndexerRecoveryCapacity,
   IndexerStorageStatus,
   IndexerStageThroughput,
+  AdminAttentionListParams,
+  AdminAttentionListResponse,
   AdminReleaseDetailResponse,
   AdminBinaryListParams,
   AdminBinaryListResponse,
@@ -290,6 +292,19 @@ export function getAdminReleases(params: AdminReleaseListParams) {
   }
   return apiRequest<AdminReleaseListResponse>(
     `/api/v1/admin/indexer/releases?${query.toString()}`,
+  )
+}
+
+export function getAdminAttention(params: AdminAttentionListParams) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  return apiRequest<AdminAttentionListResponse>(
+    `/api/v1/admin/indexer/attention?${query.toString()}`,
   )
 }
 

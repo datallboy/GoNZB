@@ -160,6 +160,36 @@ type IndexerReleaseSummary struct {
 	PayloadCompletionState   string     `json:"payload_completion_state"`
 }
 
+type IndexerAdminAttentionItem struct {
+	ReleaseID              string     `json:"release_id"`
+	Title                  string     `json:"title"`
+	GroupName              string     `json:"group_name"`
+	Category               string     `json:"category"`
+	Classification         string     `json:"classification"`
+	IdentityStatus         string     `json:"identity_status"`
+	TitleSource            string     `json:"title_source"`
+	PayloadCompletionState string     `json:"payload_completion_state"`
+	SizeBytes              int64      `json:"size_bytes"`
+	PostedAt               *time.Time `json:"posted_at,omitempty"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	PublicVisible          bool       `json:"public_visible"`
+	HasSFV                 bool       `json:"has_sfv"`
+	HasPAR2                bool       `json:"has_par2"`
+	HasNFO                 bool       `json:"has_nfo"`
+	PredbCandidateCount    int        `json:"predb_candidate_count"`
+	UnchosenPredbCount     int        `json:"unchosen_predb_count"`
+	InspectionFailureCount int        `json:"inspection_failure_count"`
+	LatestInspectionError  string     `json:"latest_inspection_error"`
+	Priority               int        `json:"priority"`
+	Reasons                []string   `json:"reasons"`
+}
+
+type IndexerAdminAttentionParams struct {
+	Reason string
+	Limit  int
+	Offset int
+}
+
 type AdminIndexerReleaseListParams struct {
 	Query                    string
 	Newsgroup                string
@@ -2115,6 +2145,220 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	}
 
 	return strings.Join(clauses, "\n  AND "), args
+}
+
+func (s *Store) ListIndexerAdminAttention(ctx context.Context, params IndexerAdminAttentionParams) ([]IndexerAdminAttentionItem, int, error) {
+	params.Reason = strings.TrimSpace(params.Reason)
+	if params.Limit <= 0 {
+		params.Limit = 100
+	}
+	if params.Limit > 500 {
+		params.Limit = 500
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	reasonFilter := "TRUE"
+	args := []any{}
+	if params.Reason != "" && params.Reason != "all" {
+		reasonFilter = "$1 = ANY(reason_keys)"
+		args = append(args, params.Reason)
+	}
+
+	baseSQL := `
+		WITH attention AS (
+			SELECT
+				r.release_id,
+				r.title,
+				r.group_name,
+				r.category,
+				r.classification,
+				r.identity_status,
+				r.title_source,
+				r.size_bytes,
+				r.posted_at,
+				r.updated_at,
+				` + adminReleasePayloadCompletionStateSQL("r") + ` AS payload_completion_state,
+				CASE WHEN ` + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ` THEN TRUE ELSE FALSE END AS public_visible,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.sfv'
+				) AS has_sfv,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.par2'
+				) AS has_par2,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.nfo'
+				) AS has_nfo,
+				(
+					SELECT COUNT(*)
+					FROM release_predb_matches rpm
+					WHERE rpm.release_id = r.release_id
+				)::integer AS predb_candidate_count,
+				(
+					SELECT COUNT(*)
+					FROM release_predb_matches rpm
+					WHERE rpm.release_id = r.release_id
+					  AND COALESCE(rpm.chosen, FALSE) = FALSE
+				)::integer AS unchosen_predb_count,
+				(
+					SELECT COUNT(*)
+					FROM binary_inspections bi
+					WHERE bi.release_id = r.release_id
+					  AND bi.status IN ('failed', 'error')
+				)::integer AS inspection_failure_count,
+				COALESCE((
+					SELECT bi.stage_name || ': ' || COALESCE(NULLIF(bi.error_text, ''), bi.status)
+					FROM binary_inspections bi
+					WHERE bi.release_id = r.release_id
+					  AND bi.status IN ('failed', 'error')
+					ORDER BY bi.updated_at DESC
+					LIMIT 1
+				), '') AS latest_inspection_error,
+				LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) IN ('', 'unknown-release', 'vip only')
+				  OR COALESCE(r.title_source, '') = 'source_obfuscated'
+				  OR LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) ~ '^[a-z0-9]{20,}(\.[a-z0-9]{2,5})?$'
+				  OR LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) ~ '^[a-z]{6,}[[:space:]]+[0-9]{6,}[[:space:]]+[0-9]{10,}$'
+				  AS weak_title
+			FROM releases r
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		),
+		reasons AS (
+			SELECT
+				attention.*,
+				array_remove(ARRAY[
+					CASE WHEN weak_title THEN 'manual_title_needed' END,
+					CASE WHEN predb_candidate_count > 0 AND identity_status <> 'identified' THEN 'predb_review' END,
+					CASE WHEN (
+						(matched_media_probe.release_id IS NOT NULL OR classification IN ('video', 'video_archive', 'tv', 'movie'))
+						AND (COALESCE(identity_status, '') <> 'identified' OR weak_title)
+					) THEN 'external_metadata_review' END,
+					CASE WHEN has_sfv AND (weak_title OR identity_status <> 'identified') THEN 'sfv_sidecar_review' END,
+					CASE WHEN inspection_failure_count > 0 THEN 'inspection_failed' END,
+					CASE WHEN payload_completion_state = 'complete' AND public_visible = FALSE AND weak_title THEN 'public_blocked_title' END
+				], NULL) AS reason_keys
+			FROM attention
+			LEFT JOIN LATERAL (
+				SELECT attention.release_id
+				WHERE attention.classification IN ('video', 'video_archive', 'tv', 'movie')
+				   OR EXISTS (
+				     SELECT 1
+				     FROM binary_inspections bi
+				     WHERE bi.release_id = attention.release_id
+				       AND bi.stage_name IN ('inspect_media', 'inspect_archive', 'inspect_par2')
+				       AND bi.status = 'complete'
+				   )
+			) matched_media_probe ON TRUE
+		)`
+
+	countArgs := append([]any(nil), args...)
+	var total int
+	if err := s.db.QueryRowContext(ctx, baseSQL+`
+		SELECT COUNT(*)
+		FROM reasons
+		WHERE cardinality(reason_keys) > 0
+		  AND `+reasonFilter, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count indexer admin attention: %w", err)
+	}
+
+	queryArgs := append([]any(nil), args...)
+	queryArgs = append(queryArgs, params.Limit, params.Offset)
+	limitPos := len(queryArgs) - 1
+	offsetPos := len(queryArgs)
+	rows, err := s.db.QueryContext(ctx, baseSQL+fmt.Sprintf(`
+		SELECT
+			release_id,
+			title,
+			group_name,
+			category,
+			classification,
+			identity_status,
+			title_source,
+			payload_completion_state,
+			size_bytes,
+			posted_at,
+			updated_at,
+			public_visible,
+			has_sfv,
+			has_par2,
+			has_nfo,
+			predb_candidate_count,
+			unchosen_predb_count,
+			inspection_failure_count,
+			latest_inspection_error,
+			(
+				CASE WHEN 'inspection_failed' = ANY(reason_keys) THEN 100 ELSE 0 END
+				+ CASE WHEN 'manual_title_needed' = ANY(reason_keys) THEN 80 ELSE 0 END
+				+ CASE WHEN 'predb_review' = ANY(reason_keys) THEN 60 ELSE 0 END
+				+ CASE WHEN 'external_metadata_review' = ANY(reason_keys) THEN 40 ELSE 0 END
+				+ CASE WHEN 'sfv_sidecar_review' = ANY(reason_keys) THEN 20 ELSE 0 END
+			)::integer AS priority,
+			array_to_string(reason_keys, '|') AS reasons
+		FROM reasons
+		WHERE cardinality(reason_keys) > 0
+		  AND %s
+		ORDER BY priority DESC, updated_at DESC
+		LIMIT $%d OFFSET $%d`, reasonFilter, limitPos, offsetPos), queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list indexer admin attention: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerAdminAttentionItem, 0, params.Limit)
+	for rows.Next() {
+		var (
+			item      IndexerAdminAttentionItem
+			postedAt  sql.NullTime
+			reasonStr string
+		)
+		if err := rows.Scan(
+			&item.ReleaseID,
+			&item.Title,
+			&item.GroupName,
+			&item.Category,
+			&item.Classification,
+			&item.IdentityStatus,
+			&item.TitleSource,
+			&item.PayloadCompletionState,
+			&item.SizeBytes,
+			&postedAt,
+			&item.UpdatedAt,
+			&item.PublicVisible,
+			&item.HasSFV,
+			&item.HasPAR2,
+			&item.HasNFO,
+			&item.PredbCandidateCount,
+			&item.UnchosenPredbCount,
+			&item.InspectionFailureCount,
+			&item.LatestInspectionError,
+			&item.Priority,
+			&reasonStr,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan indexer admin attention: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		item.UpdatedAt = item.UpdatedAt.UTC()
+		if reasonStr != "" {
+			item.Reasons = strings.Split(reasonStr, "|")
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate indexer admin attention: %w", err)
+	}
+	return out, total, nil
 }
 
 func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerReleaseListParams) ([]IndexerReleaseSummary, int, error) {

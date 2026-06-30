@@ -186,6 +186,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/stages/:stage", indexerAdminCtrl.GetStage)
 		v1AdminIndexer.GET("/maintenance/storage-audit", indexerAdminCtrl.GetStorageAudit)
 		v1AdminIndexer.GET("/maintenance/tasks", indexerAdminCtrl.ListMaintenanceTasks)
+		v1AdminIndexer.GET("/attention", indexerAdminCtrl.ListAttention)
 		v1AdminIndexer.GET("/releases", indexerAdminCtrl.ListReleases)
 		v1AdminIndexer.GET("/releases/:id", indexerAdminCtrl.GetRelease)
 		v1AdminIndexer.GET("/binaries", indexerAdminCtrl.ListBinaries)

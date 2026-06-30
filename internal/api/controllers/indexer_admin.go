@@ -424,6 +424,34 @@ func (ctrl *IndexerAdminController) GetRun(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"run": run})
 }
 
+func (ctrl *IndexerAdminController) ListAttention(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total, err := ctrl.Service.ListAdminAttention(c.Request().Context(), pgindex.IndexerAdminAttentionParams{
+		Reason: queryParamTrimmed(c, "reason"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(items) < total,
+	})
+}
+
 func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

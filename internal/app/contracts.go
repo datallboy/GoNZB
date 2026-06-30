@@ -202,6 +202,7 @@ type UsenetIndexStore interface {
 	ListIndexerProviderGroupInventoryCandidates(ctx context.Context, query string, patternHints []string) ([]pgindex.IndexerProviderGroupInventoryItem, error)
 	ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int, sortKey, direction string) (pgindex.IndexerProviderGroupInventoryPage, error)
 	GetIndexerStageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
+	ListIndexerAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)

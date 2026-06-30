@@ -604,6 +604,45 @@ export type AdminReleaseListResponse = {
   has_more: boolean
 }
 
+export type AdminAttentionItem = {
+  release_id: string
+  title: string
+  group_name: string
+  category: string
+  classification: string
+  identity_status: string
+  title_source: string
+  payload_completion_state: string
+  size_bytes: number
+  posted_at?: string
+  updated_at: string
+  public_visible: boolean
+  has_sfv: boolean
+  has_par2: boolean
+  has_nfo: boolean
+  predb_candidate_count: number
+  unchosen_predb_count: number
+  inspection_failure_count: number
+  latest_inspection_error: string
+  priority: number
+  reasons: string[]
+}
+
+export type AdminAttentionListParams = {
+  reason?: string
+  limit?: number
+  offset?: number
+}
+
+export type AdminAttentionListResponse = {
+  items: AdminAttentionItem[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
 export type AdminReleaseListParams = {
   q?: string
   newsgroup?: string
