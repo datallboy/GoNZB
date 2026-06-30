@@ -196,6 +196,10 @@ func (s *stubIndexerService) UpdateReleaseOverride(ctx context.Context, releaseI
 	return &pgindex.ReleaseOverrideRecord{ReleaseID: releaseID}, nil
 }
 
+func (s *stubIndexerService) IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error) {
+	return &pgindex.IndexerReleaseDetail{Release: pgindex.IndexerReleaseSummary{ReleaseID: releaseID}}, nil
+}
+
 func (s *stubIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
 	s.reinspectID = releaseID
 	return nil

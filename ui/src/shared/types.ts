@@ -707,6 +707,17 @@ export type AdminPredbMatch = {
   posted_at?: string
   confidence: number
   chosen: boolean
+  payload_size_bytes: number
+  payload_size_source: string
+  predb_size_bytes: number
+  size_delta_bytes: number
+  size_delta_pct: number
+  posted_delta_minutes?: number
+  resolution_match: boolean
+  video_codec_match: boolean
+  audio_codec_match: boolean
+  auto_apply_eligible: boolean
+  auto_apply_skip_reason: string
   payload_json?: unknown
 }
 

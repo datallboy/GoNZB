@@ -538,6 +538,22 @@ func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"override": override})
 }
 
+func (ctrl *IndexerAdminController) IdentifyRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	var patch indexerReleaseIdentityPatch
+	if err := decodeJSONBody(c, &patch); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	release, err := ctrl.Service.IdentifyRelease(c.Request().Context(), pathParamTrimmed(c, "id"), patch)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"release": release})
+}
+
 func (ctrl *IndexerAdminController) HideRelease(c *echo.Context) error {
 	v := true
 	override, err := ctrl.Service.UpdateReleaseOverride(c.Request().Context(), pathParamTrimmed(c, "id"), indexerReleaseOverridePatch{Hidden: &v})
