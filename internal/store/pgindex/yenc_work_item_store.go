@@ -52,6 +52,16 @@ const yencRecoveryWorkItemPriorityRankSQL = `
 					ELSE 2
 				END`
 
+func isStatementTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "statement timeout") ||
+		strings.Contains(msg, "sqlstate 57014") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
 func (s *Store) ensureYEncRecoveryWorkItemsSeed(ctx context.Context, limit int) error {
 	if limit <= 0 {
 		limit = yencRecoveryWorkItemSeedLimit
@@ -63,6 +73,9 @@ func (s *Store) ensureYEncRecoveryWorkItemsSeed(ctx context.Context, limit int) 
 func configureYEncRecoveryWorkItemQueryTx(ctx context.Context, tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("yenc recovery work item tx is required")
+	}
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '5s'`); err != nil {
+		return fmt.Errorf("set yenc recovery work item statement timeout: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `SET LOCAL max_parallel_workers_per_gather = 0`); err != nil {
 		return fmt.Errorf("disable parallel gather for yenc recovery work items: %w", err)
@@ -89,6 +102,9 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 
 	binaryIDs, err := s.selectYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit)
 	if err != nil {
+		if isStatementTimeoutError(err) {
+			return 0, 0, nil
+		}
 		return 0, 0, err
 	}
 	if len(binaryIDs) == 0 {
@@ -128,6 +144,9 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 	}
 	binaryIDs, err := selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit, bucketSeconds)
 	if err != nil {
+		if isStatementTimeoutError(err) {
+			return 0, 0, nil
+		}
 		return 0, 0, err
 	}
 	if len(binaryIDs) == 0 {
@@ -626,7 +645,12 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			SELECT COUNT(*)
 			FROM yenc_recovery_work_items
 			WHERE status IN ('ready', 'running')
-			  AND priority_rank = 0`).Scan(&priority0Open); err != nil {
+			  AND priority_rank = 0
+			  AND BTRIM(COALESCE(message_id, '')) <> ''
+			  AND (
+			    (status = 'ready' AND ready_at <= NOW())
+			    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > NOW()))
+			  )`).Scan(&priority0Open); err != nil {
 			return 0, 0, fmt.Errorf("count open priority0 yenc recovery work items: %w", err)
 		}
 		remainingToHard = overflowCap - priority0Open

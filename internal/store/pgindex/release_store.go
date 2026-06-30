@@ -449,6 +449,10 @@ func (s *Store) listExistingReleaseCandidates(ctx context.Context, limit, offset
 		FROM candidate_binaries b
 		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR (
+			COUNT(*) FILTER (WHERE b.is_main_payload) >= 1
+			AND COUNT(*) FILTER (WHERE b.is_auxiliary) >= 1
+		    )
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, limit, offset, minReformAgeSeconds)
 	if err != nil {
@@ -588,6 +592,10 @@ func (s *Store) ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, 
 		FROM candidate_binaries b
 		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR (
+			COUNT(*) FILTER (WHERE b.is_main_payload) >= 1
+			AND COUNT(*) FILTER (WHERE b.is_auxiliary) >= 1
+		    )
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, ids)
 	if err != nil {
@@ -991,7 +999,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 				c.newsgroup_id,
 				c.key_kind,
 				c.family_key,
-				c.updated_at,
+				MAX(c.updated_at),
 				NOW()
 			FROM release_ready_candidates c
 			JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
@@ -999,6 +1007,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			 AND c.newsgroup_id = v.newsgroup_id
 			 AND c.key_kind = v.key_kind
 			 AND c.family_key = v.family_key
+			GROUP BY c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
 				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET processed_at = GREATEST(release_ready_candidate_acks.processed_at, EXCLUDED.processed_at),
 			    updated_at = NOW()`,
@@ -1287,7 +1296,10 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		    	ELSE releases.media_quality_tier
 		    END,
 		    identity_confidence_score = GREATEST(releases.identity_confidence_score, EXCLUDED.identity_confidence_score),
-		    runtime_seconds = EXCLUDED.runtime_seconds,
+		    runtime_seconds = CASE
+		        WHEN EXCLUDED.runtime_seconds > 0 THEN EXCLUDED.runtime_seconds
+		        ELSE releases.runtime_seconds
+		    END,
 		    primary_resolution = CASE
 		    	WHEN EXCLUDED.primary_resolution <> '' THEN EXCLUDED.primary_resolution
 		    	ELSE releases.primary_resolution

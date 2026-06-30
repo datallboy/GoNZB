@@ -335,19 +335,30 @@ type IndexerReleaseDetail struct {
 }
 
 type IndexerPredbMatchSummary struct {
-	EntryID    int64           `json:"entry_id"`
-	Title      string          `json:"title"`
-	Category   string          `json:"category"`
-	Source     string          `json:"source"`
-	Team       string          `json:"team"`
-	Genre      string          `json:"genre"`
-	URL        string          `json:"url"`
-	SizeKB     float64         `json:"size_kb"`
-	FileCount  int             `json:"file_count"`
-	PostedAt   *time.Time      `json:"posted_at,omitempty"`
-	Confidence float64         `json:"confidence"`
-	Chosen     bool            `json:"chosen"`
-	Payload    json.RawMessage `json:"payload_json"`
+	EntryID             int64           `json:"entry_id"`
+	Title               string          `json:"title"`
+	Category            string          `json:"category"`
+	Source              string          `json:"source"`
+	Team                string          `json:"team"`
+	Genre               string          `json:"genre"`
+	URL                 string          `json:"url"`
+	SizeKB              float64         `json:"size_kb"`
+	FileCount           int             `json:"file_count"`
+	PostedAt            *time.Time      `json:"posted_at,omitempty"`
+	Confidence          float64         `json:"confidence"`
+	Chosen              bool            `json:"chosen"`
+	PayloadSizeBytes    int64           `json:"payload_size_bytes"`
+	PayloadSizeSource   string          `json:"payload_size_source"`
+	PredbSizeBytes      int64           `json:"predb_size_bytes"`
+	SizeDeltaBytes      int64           `json:"size_delta_bytes"`
+	SizeDeltaPct        float64         `json:"size_delta_pct"`
+	PostedDeltaMinutes  *float64        `json:"posted_delta_minutes,omitempty"`
+	ResolutionMatch     bool            `json:"resolution_match"`
+	VideoCodecMatch     bool            `json:"video_codec_match"`
+	AudioCodecMatch     bool            `json:"audio_codec_match"`
+	AutoApplyEligible   bool            `json:"auto_apply_eligible"`
+	AutoApplySkipReason string          `json:"auto_apply_skip_reason"`
+	Payload             json.RawMessage `json:"payload_json"`
 }
 
 type IndexerExternalMatchSummary struct {
@@ -1777,6 +1788,14 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 			b.updated_at > bi.updated_at OR
 			` + errorRerunPredicate + `
 			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'probe_skip_reason', '') = 'ffprobe_failed'
+			)
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'media_title_extractor_version', '') <> 'v2'
+			)
+			OR (
 				abi.updated_at IS NOT NULL AND (
 					bi.id IS NULL OR
 					abi.updated_at > bi.updated_at
@@ -1875,15 +1894,51 @@ func adminReleaseSortClause(sort string) string {
 }
 
 func adminReleasePayloadCompletionStateSQL(alias string) string {
+	payloadFilePredicate := adminReleasePayloadFilePredicateSQL("cf")
 	return fmt.Sprintf(`CASE
 		WHEN %[1]s.archive_count > 0 AND %[1]s.expected_archive_file_count <= 0 THEN 'unknown'
 		WHEN %[1]s.expected_archive_file_count > 0
 		 AND GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= %[1]s.expected_archive_file_count THEN 'complete'
-		WHEN %[1]s.expected_archive_file_count <= 0
-		 AND %[1]s.archive_count <= 0
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			     AND cf.total_parts <= 0
+			 ) THEN 'unknown'
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			 )
+			 AND NOT EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			     AND (cf.total_parts <= 0 OR cf.observed_parts < cf.total_parts)
+			 ) THEN 'complete'
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND NOT EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			 )
 		 AND %[1]s.completion_pct >= 100 THEN 'complete'
 		ELSE 'incomplete'
-	END`, alias)
+	END`, alias, payloadFilePredicate)
+}
+
+func adminReleasePayloadFilePredicateSQL(alias string) string {
+	return fmt.Sprintf(`%[1]s.is_pars = FALSE
+		AND lower(%[1]s.file_name) !~ '\.(nfo|sfv|srr|srs|nzb)$'`, alias)
 }
 
 func parseAdminFilterValues(raw string, allowed ...string) []string {
@@ -2350,7 +2405,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 	if err != nil {
 		return nil, err
 	}
-	predbMatches, err := s.listIndexerPredbMatches(ctx, releaseID)
+	predbMatches, err := s.listIndexerPredbMatches(ctx, release, releaseID)
 	if err != nil {
 		return nil, err
 	}
@@ -2406,7 +2461,9 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 				bos.observed_parts,
 				bos.total_bytes,
 				bos.first_article_number,
-				bos.last_article_number
+				bos.last_article_number,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
 			FROM binary_core bc
 			JOIN binary_identity_current bic
 			  ON bic.source_posted_at = bc.source_posted_at
@@ -2479,7 +2536,8 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			LEFT JOIN article_header_ingest_payloads aip
 			  ON aip.source_posted_at = ah.source_posted_at
 			 AND aip.article_header_id = ah.id
-			WHERE bp.source_posted_at = b.source_posted_at
+			WHERE bp.source_posted_at >= COALESCE(b.part_source_posted_at_min, b.source_posted_at - INTERVAL '1 day')
+			  AND bp.source_posted_at <= COALESCE(b.part_source_posted_at_max, b.source_posted_at + INTERVAL '1 day')
 			  AND bp.binary_id = b.id
 			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
@@ -3043,7 +3101,9 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 				bic.grouping_summary_status,
 				bic.grouping_summary_fallback_used,
 				bos.total_parts,
-				bos.observed_parts
+				bos.observed_parts,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
 			FROM binary_core bc
 			JOIN binary_identity_current bic
 			  ON bic.source_posted_at = bc.source_posted_at
@@ -3111,7 +3171,8 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 			LEFT JOIN article_header_ingest_payloads aip
 			  ON aip.source_posted_at = ah.source_posted_at
 			 AND aip.article_header_id = ah.id
-			WHERE bp.source_posted_at = b.source_posted_at
+			WHERE bp.source_posted_at >= COALESCE(b.part_source_posted_at_min, b.source_posted_at - INTERVAL '1 day')
+			  AND bp.source_posted_at <= COALESCE(b.part_source_posted_at_max, b.source_posted_at + INTERVAL '1 day')
 			  AND bp.binary_id = rf.binary_id
 			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
 			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))

@@ -234,6 +234,16 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 		}
 
 		if err := appendRows(`
+			SELECT binary_id, summary_json->>'media_title'
+			FROM binary_inspections
+			WHERE stage_name = 'inspect_media'
+			  AND binary_id IN (`+filter+`)
+			  AND COALESCE(summary_json->>'media_title', '') <> ''`,
+			"media_title", 0.96); err != nil {
+			return nil, fmt.Errorf("list inspect_media media title candidates: %w", err)
+		}
+
+		if err := appendRows(`
 			SELECT binary_id, summary_json->>'archive_entry'
 			FROM binary_inspections
 			WHERE stage_name = 'inspect_media'
@@ -254,6 +264,16 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 			  )`,
 			"archive_entry", 0.92); err != nil {
 			return nil, fmt.Errorf("list archive entry title candidates: %w", err)
+		}
+
+		if err := appendRows(`
+			SELECT binary_id, entry_name
+			FROM binary_archive_entries
+			WHERE binary_id IN (`+filter+`)
+			  AND is_dir = FALSE
+			  AND lower(entry_name) ~ '\.(exe|msi|msix|appx|dmg|pkg|deb|rpm)$'`,
+			"archive_software_entry", 0.80); err != nil {
+			return nil, fmt.Errorf("list archive software evidence candidates: %w", err)
 		}
 
 		if err := appendRows(`
@@ -392,7 +412,7 @@ func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseI
 	return out, nil
 }
 
-func (s *Store) listIndexerPredbMatches(ctx context.Context, releaseID string) ([]IndexerPredbMatchSummary, error) {
+func (s *Store) listIndexerPredbMatches(ctx context.Context, release IndexerReleaseSummary, releaseID string) ([]IndexerPredbMatchSummary, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return nil, fmt.Errorf("release id is required")
@@ -452,7 +472,184 @@ func (s *Store) listIndexerPredbMatches(ctx context.Context, releaseID string) (
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate predb matches for %s: %w", releaseID, err)
 	}
+	sizeEvidence, err := s.releaseDecodedPayloadSizeEvidence(ctx, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	annotateIndexerPredbMatches(release, sizeEvidence, out)
 	return out, nil
+}
+
+type releaseDecodedPayloadSizeEvidence struct {
+	SizeBytes int64
+	Source    string
+}
+
+func (s *Store) releaseDecodedPayloadSizeEvidence(ctx context.Context, releaseID string) (releaseDecodedPayloadSizeEvidence, error) {
+	var out releaseDecodedPayloadSizeEvidence
+	err := s.db.QueryRowContext(ctx, `
+		WITH payload_files AS (
+			SELECT
+				rf.binary_id,
+				rf.file_name,
+				rf.size_bytes,
+				LOWER(COALESCE(rf.file_name, '')) AS lower_name
+			FROM release_files rf
+			WHERE rf.release_id = $1
+			  AND COALESCE(rf.is_pars, FALSE) = FALSE
+			  AND LOWER(COALESCE(rf.file_name, '')) !~ '\.(nfo|sfv|srr|srs|nzb|par2|vol[0-9]+\+[0-9]+\.par2)$'
+		),
+		file_sizes AS (
+			SELECT
+				pf.file_name,
+				pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.(7z|zip)\.0*[0-9]+)$' AS is_split_archive,
+				pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.(7z|zip)(\.[0-9]+)?)$' AS is_archive_payload,
+				COALESCE(par2_size.size_bytes, yenc_size.size_bytes, NULLIF(pf.size_bytes, 0), observed_size.size_bytes, 0) AS size_bytes,
+				CASE
+					WHEN COALESCE(par2_size.size_bytes, 0) > 0 THEN 'par2_target'
+					WHEN COALESCE(yenc_size.size_bytes, 0) > 0 THEN 'yenc_or_subject_size'
+					WHEN COALESCE(pf.size_bytes, 0) > 0 THEN 'release_file_observed'
+					WHEN COALESCE(observed_size.size_bytes, 0) > 0 THEN 'observed_encoded_or_unknown'
+					ELSE ''
+				END AS size_source
+			FROM payload_files pf
+			LEFT JOIN LATERAL (
+				SELECT MAX(bpt.file_size) AS size_bytes
+				FROM binary_par2_targets bpt
+				WHERE bpt.release_id = $1
+				  AND LOWER(BTRIM(bpt.file_name)) = LOWER(BTRIM(pf.file_name))
+				  AND COALESCE(bpt.file_size, 0) > 0
+			) par2_size ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT MAX(p.yenc_file_size) AS size_bytes
+				FROM binary_parts bp
+				JOIN article_header_ingest_payloads p
+				  ON p.source_posted_at = bp.source_posted_at
+				 AND p.article_header_id = bp.article_header_id
+				WHERE bp.binary_id = pf.binary_id
+				  AND COALESCE(p.yenc_file_size, 0) > 0
+			) yenc_size ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT MAX(cf.size_bytes) AS size_bytes
+				FROM release_catalog_files cf
+				WHERE cf.release_id = $1
+				  AND LOWER(BTRIM(cf.file_name)) = LOWER(BTRIM(pf.file_name))
+				  AND COALESCE(cf.is_pars, FALSE) = FALSE
+				  AND COALESCE(cf.size_bytes, 0) > 0
+			) observed_size ON TRUE
+		),
+		size_summary AS (
+			SELECT
+				COALESCE(SUM(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS sum_size_bytes,
+				COALESCE(MAX(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS max_size_bytes,
+				COUNT(*) FILTER (WHERE is_archive_payload) AS archive_file_count,
+				COUNT(*) FILTER (WHERE is_split_archive) AS split_archive_file_count,
+				COUNT(*) FILTER (WHERE size_bytes > 0) AS sized_file_count,
+				COUNT(*) FILTER (WHERE size_source = 'par2_target') AS par2_file_count,
+				COUNT(*) FILTER (WHERE size_source = 'yenc_or_subject_size') AS yenc_file_count,
+				COUNT(*) FILTER (WHERE size_source IN ('release_file_observed', 'observed_encoded_or_unknown')) AS observed_file_count
+			FROM file_sizes
+		),
+		top_file AS (
+			SELECT size_source
+			FROM file_sizes
+			WHERE size_bytes > 0
+			ORDER BY size_bytes DESC, file_name
+			LIMIT 1
+		)
+		SELECT
+			CASE
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				THEN size_summary.sum_size_bytes
+				ELSE size_summary.max_size_bytes
+			END AS size_bytes,
+			CASE
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.observed_file_count > 0 THEN 'decoded_payload_sum_with_observed_fallback'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.par2_file_count = size_summary.sized_file_count THEN 'par2_target_sum'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.yenc_file_count = size_summary.sized_file_count THEN 'yenc_or_subject_size_sum'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0 THEN 'decoded_payload_sum'
+				ELSE COALESCE(top_file.size_source, '')
+			END AS size_source
+		FROM size_summary
+		LEFT JOIN top_file ON TRUE`, releaseID,
+	).Scan(&out.SizeBytes, &out.Source)
+	if err != nil {
+		return out, fmt.Errorf("load release decoded payload size evidence %s: %w", releaseID, err)
+	}
+	return out, nil
+}
+
+func annotateIndexerPredbMatches(release IndexerReleaseSummary, sizeEvidence releaseDecodedPayloadSizeEvidence, rows []IndexerPredbMatchSummary) {
+	for idx := range rows {
+		row := &rows[idx]
+		row.PayloadSizeBytes = sizeEvidence.SizeBytes
+		row.PayloadSizeSource = sizeEvidence.Source
+		if row.PayloadSizeSource == "" && row.PayloadSizeBytes <= 0 {
+			row.PayloadSizeBytes = release.SizeBytes
+			if row.PayloadSizeBytes > 0 {
+				row.PayloadSizeSource = "release_total"
+			}
+		}
+		row.PredbSizeBytes, row.SizeDeltaBytes, row.SizeDeltaPct = closestPredbSizeEvidence(row.PayloadSizeBytes, row.SizeKB)
+		if release.PostedAt != nil && row.PostedAt != nil {
+			delta := release.PostedAt.Sub(*row.PostedAt)
+			if delta < 0 {
+				delta = -delta
+			}
+			minutes := delta.Minutes()
+			row.PostedDeltaMinutes = &minutes
+		}
+		title := strings.ToLower(row.Title)
+		row.ResolutionMatch = release.PrimaryResolution != "" && strings.Contains(title, strings.ToLower(release.PrimaryResolution))
+		row.VideoCodecMatch = release.PrimaryVideoCodec != "" && strings.Contains(title, strings.ToLower(release.PrimaryVideoCodec))
+		row.AudioCodecMatch = release.PrimaryAudioCodec != "" && strings.Contains(title, strings.ToLower(release.PrimaryAudioCodec))
+		row.AutoApplyEligible = row.Confidence >= 0.90 && row.PostedDeltaMinutes != nil && *row.PostedDeltaMinutes <= 30
+		switch {
+		case row.Chosen:
+			row.AutoApplySkipReason = "chosen"
+		case row.AutoApplyEligible:
+			row.AutoApplySkipReason = ""
+		case row.Confidence < 0.90:
+			row.AutoApplySkipReason = "confidence below 0.90"
+		case row.PostedDeltaMinutes == nil:
+			row.AutoApplySkipReason = "posted time unavailable"
+		default:
+			row.AutoApplySkipReason = "posted delta exceeds 30 minutes"
+		}
+	}
+}
+
+func closestPredbSizeEvidence(payloadBytes int64, sizeKB float64) (int64, int64, float64) {
+	if payloadBytes <= 0 || sizeKB <= 0 {
+		return 0, 0, 0
+	}
+	kbBytes := int64(sizeKB * 1024)
+	mbBytes := int64(sizeKB * 1024 * 1024)
+	best := kbBytes
+	if absInt64PGIndex(payloadBytes-mbBytes) < absInt64PGIndex(payloadBytes-kbBytes) {
+		best = mbBytes
+	}
+	delta := absInt64PGIndex(payloadBytes - best)
+	return best, delta, float64(delta) / float64(payloadBytes)
+}
+
+func absInt64PGIndex(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (s *Store) listIndexerInspectionSummaries(ctx context.Context, whereClause string, args ...any) ([]IndexerInspectionSummary, error) {
@@ -776,6 +973,14 @@ func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]Inde
 }
 
 func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]IndexerBinaryPartSummary, error) {
+	span, err := s.loadBinaryPartSourceSpan(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	if span == nil {
+		return []IndexerBinaryPartSummary{}, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			bp.article_header_id,
@@ -802,25 +1007,32 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 			COALESCE(brc.recovered_kind, ''),
 			COALESCE(brc.recovered_source, ''),
 			COALESCE(brc.recovered_file_name, '')
-		FROM binary_core bc
-		JOIN binary_parts bp
-		  ON bp.source_posted_at = bc.source_posted_at
-		 AND bp.binary_id = bc.binary_id
+		FROM binary_parts bp
 		LEFT JOIN article_headers ah
 		  ON ah.source_posted_at = bp.source_posted_at
 		 AND ah.id = bp.article_header_id
+		 AND ah.source_posted_at >= $1
+		 AND ah.source_posted_at <= $2
 		LEFT JOIN newsgroups ng ON ng.id = ah.newsgroup_id
 		LEFT JOIN article_header_ingest_payloads p
 		  ON p.source_posted_at = bp.source_posted_at
 		 AND p.article_header_id = bp.article_header_id
+		 AND p.source_posted_at >= $1
+		 AND p.source_posted_at <= $2
 		LEFT JOIN yenc_recovery_work_items wi
 		  ON wi.source_posted_at = bp.source_posted_at
 		 AND wi.article_header_id = bp.article_header_id
+		 AND wi.source_posted_at >= $1
+		 AND wi.source_posted_at <= $2
 		LEFT JOIN binary_recovery_current brc
 		  ON brc.source_posted_at = bp.source_posted_at
 		 AND brc.binary_id = bp.binary_id
-		WHERE bc.binary_id = $1
-		ORDER BY bp.part_number, bp.id`, binaryID)
+		 AND brc.source_posted_at >= $1
+		 AND brc.source_posted_at <= $2
+		WHERE bp.source_posted_at >= $1
+		  AND bp.source_posted_at <= $2
+		  AND bp.binary_id = $3
+		ORDER BY bp.part_number, bp.id`, span.Min, span.Max, span.BinaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
 	}
@@ -1112,6 +1324,14 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			` + errorRerunPredicate
 	if stageName == "inspect_media" {
 		rerunPredicate += `
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'probe_skip_reason', '') = 'ffprobe_failed'
+			)
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'media_title_extractor_version', '') <> 'v2'
+			)
 			OR (
 				abi.updated_at IS NOT NULL AND (
 					bi.id IS NULL OR

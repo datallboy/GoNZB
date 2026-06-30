@@ -26,6 +26,8 @@ const (
 	releaseFamilySummaryRefreshColdCap       = 10000
 	releaseFamilySummaryRefreshQueryBatchCap = 5000
 	releaseFamilySummaryMergeRowsMax         = 2000
+	releaseRecoveredFileSetSyncCap           = 128
+	releaseRecoveredFileSetSyncChunkSize     = 32
 )
 
 type releaseSummaryRefreshMode int
@@ -2239,6 +2241,8 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 				  AND brc.binary_id = bic.binary_id
 				  AND brc.recovered_source = 'yenc_header'
 			)
+			ORDER BY bic.provider_id, bic.file_set_key
+			LIMIT %d
 		),
 		base_stem_matches AS MATERIALIZED (
 			SELECT DISTINCT bic.provider_id, bic.file_set_key
@@ -2267,11 +2271,13 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 				  AND brc.binary_id = bic.binary_id
 				  AND brc.recovered_source = 'yenc_header'
 			)
+			ORDER BY bic.provider_id, bic.file_set_key
+			LIMIT %d
 		)
 		SELECT provider_id, file_set_key FROM release_family_matches
 		UNION
 		SELECT provider_id, file_set_key FROM base_stem_matches`,
-		values), args...)
+		values, releaseRecoveredFileSetSyncCap, releaseRecoveredFileSetSyncCap), args...)
 	if err != nil {
 		return fmt.Errorf("list impacted recovered file sets for summary key batch count=%d: %w", len(keys), err)
 	}
@@ -2295,13 +2301,28 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close impacted recovered file set rows for summary key batch count=%d: %w", len(keys), err)
 	}
+	sort.Slice(fileSetKeys, func(i, j int) bool {
+		if fileSetKeys[i].ProviderID != fileSetKeys[j].ProviderID {
+			return fileSetKeys[i].ProviderID < fileSetKeys[j].ProviderID
+		}
+		return fileSetKeys[i].FileSetKey < fileSetKeys[j].FileSetKey
+	})
+	if len(fileSetKeys) > releaseRecoveredFileSetSyncCap {
+		fileSetKeys = fileSetKeys[:releaseRecoveredFileSetSyncCap]
+	}
 	byProvider := make(map[int64][]string, 1)
 	for _, item := range fileSetKeys {
 		byProvider[item.ProviderID] = append(byProvider[item.ProviderID], item.FileSetKey)
 	}
 	for providerID, providerFileSetKeys := range byProvider {
-		if err := refreshRecoveredFileSetCandidatesBatch(ctx, runner, providerID, providerFileSetKeys); err != nil {
-			return err
+		for start := 0; start < len(providerFileSetKeys); start += releaseRecoveredFileSetSyncChunkSize {
+			end := start + releaseRecoveredFileSetSyncChunkSize
+			if end > len(providerFileSetKeys) {
+				end = len(providerFileSetKeys)
+			}
+			if err := refreshRecoveredFileSetCandidatesBatch(ctx, runner, providerID, providerFileSetKeys[start:end]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3063,13 +3084,15 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 	_, err := s.db.ExecContext(ctx, `
 		WITH requested AS (
 			SELECT
+				s.source_posted_at,
 				s.provider_id,
 				s.newsgroup_id,
 				s.key_kind,
 				s.family_key
 			FROM release_family_readiness_summaries s
 			LEFT JOIN release_ready_candidates c
-			  ON c.provider_id = s.provider_id
+			  ON c.source_posted_at = s.source_posted_at
+			 AND c.provider_id = s.provider_id
 			 AND c.newsgroup_id = s.newsgroup_id
 			 AND c.key_kind = s.key_kind
 			 AND c.family_key = s.family_key
@@ -3135,7 +3158,8 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			s.updated_at
 		FROM requested r
 		JOIN release_family_readiness_summaries s
-		  ON s.provider_id = r.provider_id
+		  ON s.source_posted_at = r.source_posted_at
+		 AND s.provider_id = r.provider_id
 		 AND s.newsgroup_id = r.newsgroup_id
 		 AND s.key_kind = r.key_kind
 		 AND s.family_key = r.family_key

@@ -231,12 +231,25 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 		),
 		open_queue AS (
 			SELECT
-				COUNT(*) FILTER (WHERE status = 'ready') AS open_ready,
-				COUNT(*) FILTER (WHERE status = 'running') AS open_running,
-				MIN(ready_at) FILTER (WHERE status = 'ready') AS oldest_ready_at,
-				MAX(ready_at) FILTER (WHERE status = 'ready') AS newest_ready_at
+				COUNT(*) FILTER (
+					WHERE status = 'ready'
+					  AND ready_at <= NOW()
+				) AS open_ready,
+				COUNT(*) FILTER (
+					WHERE status = 'running'
+					  AND (lease_expires_at IS NULL OR lease_expires_at > NOW())
+				) AS open_running,
+				MIN(ready_at) FILTER (
+					WHERE status = 'ready'
+					  AND ready_at <= NOW()
+				) AS oldest_ready_at,
+				MAX(ready_at) FILTER (
+					WHERE status = 'ready'
+					  AND ready_at <= NOW()
+				) AS newest_ready_at
 			FROM yenc_recovery_work_items
 			WHERE status IN ('ready', 'running')
+			  AND BTRIM(COALESCE(message_id, '')) <> ''
 		),
 		calc AS (
 			SELECT

@@ -27,6 +27,7 @@ const (
 	assemblePriorityHeaderMinScan          = 500
 	assemblePriorityHeaderMaxScan          = 2000
 	assembleClaimStatementTimeout          = 15 * time.Second
+	assembleClaimMinQueueAge               = 15 * time.Second
 	assembleDefaultLaneATimeWindowMinutes  = 15
 	refreshBinaryStatsBatchSize            = 8000
 	binaryCompletionKeySyncChunkSize       = 8000
@@ -298,12 +299,12 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 			ah.article_number,
 			ah.message_id,
 			p.subject,
-			COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
+			p.poster,
 			ah.date_utc,
 			ah.bytes,
 			ah.lines,
 			p.xref,
-			COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
+			COALESCE(p.poster_id, 0) AS poster_id,
 			COALESCE(p.subject_file_name, '') AS subject_file_name,
 			COALESCE(p.subject_file_index, 0) AS subject_file_index,
 			COALESCE(p.subject_file_total, 0) AS subject_file_total,
@@ -421,6 +422,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				0 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
@@ -430,6 +432,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 		int64(req.LeaseDuration / time.Second),
 		req.Owner,
 		claimToken,
+		int64(assembleClaimMinQueueAge / time.Second),
 	}
 	switch lane {
 	case AssemblyClaimLaneA:
@@ -442,6 +445,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				0 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND q.queue_kind = 'structured'
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			ORDER BY q.article_header_id DESC
@@ -458,6 +462,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				1 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND (
 			    q.queue_kind <> 'structured'
 			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
@@ -480,9 +485,10 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				0 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND q.queue_kind = 'structured'
 			ORDER BY q.article_header_id DESC
-			LIMIT $5
+			LIMIT $6
 			FOR UPDATE SKIP LOCKED
 		),
 		lane_b AS MATERIALIZED (
@@ -493,6 +499,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				1 AS lane_rank
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND q.queue_kind <> 'structured'
 			  AND NOT EXISTS (
 				SELECT 1
@@ -524,8 +531,9 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			    updated_at = NOW()
 			FROM selected_targets s
 			WHERE q.source_posted_at = s.source_posted_at
-			  AND q.article_header_id = s.article_header_id
-			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+		  AND q.article_header_id = s.article_header_id
+		  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+		  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			RETURNING q.source_posted_at, q.article_header_id, s.structured_identity_binary_matched, s.lane_rank
 		)
 		SELECT
@@ -1164,12 +1172,12 @@ func hydrateAssemblyCandidatesChunk(ctx context.Context, q assemblyQueryer, requ
 			ah.article_number,
 			ah.message_id,
 			p.subject,
-			COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
+			p.poster,
 			ah.date_utc,
 			ah.bytes,
 			ah.lines,
 			p.xref,
-			COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
+			COALESCE(p.poster_id, 0) AS poster_id,
 			COALESCE(p.subject_file_name, '') AS subject_file_name,
 			COALESCE(p.subject_file_index, 0) AS subject_file_index,
 			COALESCE(p.subject_file_total, 0) AS subject_file_total,
@@ -1181,33 +1189,17 @@ func hydrateAssemblyCandidatesChunk(ctx context.Context, q assemblyQueryer, requ
 			requested.structured_identity_binary_matched,
 			'' AS raw_overview
 		FROM requested
-		JOIN LATERAL (
-			SELECT ah.*
-			FROM article_headers ah
-			WHERE ah.source_posted_at = requested.source_posted_at
-			  AND ah.id = requested.id
-			  AND ah.source_posted_at >= $5
-			  AND ah.source_posted_at < $6
-		) ah ON TRUE
-		JOIN LATERAL (
-			SELECT p.*
-			FROM article_header_ingest_payloads p
-			WHERE p.source_posted_at = ah.source_posted_at
-			  AND p.article_header_id = ah.id
-			  AND p.source_posted_at >= $5
-			  AND p.source_posted_at < $6
-		) p ON TRUE
+		JOIN article_headers ah
+		  ON ah.source_posted_at = requested.source_posted_at
+		 AND ah.id = requested.id
+		 AND ah.source_posted_at >= $5
+		 AND ah.source_posted_at < $6
+		JOIN article_header_ingest_payloads p
+		  ON p.source_posted_at = ah.source_posted_at
+		 AND p.article_header_id = ah.id
+		 AND p.source_posted_at >= $5
+		 AND p.source_posted_at < $6
 		JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-		LEFT JOIN LATERAL (
-			SELECT apr.poster_id, apr.poster_name
-			FROM article_header_poster_refs apr
-			WHERE apr.source_posted_at = p.source_posted_at
-			  AND apr.article_header_id = p.article_header_id
-			  AND apr.source_posted_at >= $5
-			  AND apr.source_posted_at < $6
-			LIMIT 1
-		) apr ON TRUE
-		LEFT JOIN posters po ON po.id = apr.poster_id
 		ORDER BY requested.ord ASC`, sourcePostedAts, ids, ords, structuredMatches, day, day.Add(24*time.Hour))
 	if err != nil {
 		return fmt.Errorf("hydrate assembly candidates: %w", err)
@@ -1783,6 +1775,8 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			total_bytes,
 			first_article_number,
 			last_article_number,
+			part_source_posted_at_min,
+			part_source_posted_at_max,
 			posted_at,
 			source_posted_at,
 			refreshed_at,
@@ -1797,6 +1791,8 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			0,
 			0,
 			0,
+			NULL,
+			NULL,
 			r.posted_at,
 			e.source_posted_at,
 			NOW(),
@@ -2344,6 +2340,11 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 		ON tmp_existing_binaries (ordinal)`); err != nil {
 		return fmt.Errorf("index existing binary upsert rows: %w", err)
 	}
+	if _, err := runner.ExecContext(ctx, `
+		CREATE INDEX tmp_existing_binaries_key_idx
+		ON tmp_existing_binaries (source_posted_at, binary_id)`); err != nil {
+		return fmt.Errorf("index existing binary upsert keys: %w", err)
+	}
 	return nil
 }
 
@@ -2373,11 +2374,11 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 			updated_at
 		)
 		SELECT
-			bic.binary_id,
-			bic.source_posted_at,
+			e.binary_id,
+			e.source_posted_at,
 			bic.provider_id,
 			bic.newsgroup_id,
-			lower(btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, '')))),
+			bic.normalized_file_name,
 			bic.is_main_payload,
 			bos.observed_parts,
 			bos.total_parts,
@@ -2388,15 +2389,30 @@ func syncBinaryCompletionKeysForStagedBinaries(ctx context.Context, runner sqlEx
 			bos.posted_at,
 			NOW()
 		FROM tmp_existing_binaries e
-		JOIN binary_identity_current bic
-		  ON bic.binary_id = e.binary_id
-		 AND bic.source_posted_at = e.source_posted_at
-		JOIN binary_observation_stats bos
-		  ON bos.binary_id = e.binary_id
-		 AND bos.source_posted_at = e.source_posted_at
-		WHERE bos.total_parts > 0
-		  AND bos.observed_parts < bos.total_parts
-		  AND btrim(coalesce(nullif(bic.file_name, ''), nullif(bic.binary_name, ''))) <> ''
+		JOIN LATERAL (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				lower(btrim(coalesce(nullif(file_name, ''), nullif(binary_name, '')))) AS normalized_file_name,
+				is_main_payload
+			FROM binary_identity_current bic
+			WHERE bic.source_posted_at = e.source_posted_at
+			  AND bic.binary_id = e.binary_id
+			  AND btrim(coalesce(nullif(file_name, ''), nullif(binary_name, ''))) <> ''
+			LIMIT 1
+		) bic ON true
+		JOIN LATERAL (
+			SELECT
+				observed_parts,
+				total_parts,
+				posted_at
+			FROM binary_observation_stats bos
+			WHERE bos.source_posted_at = e.source_posted_at
+			  AND bos.binary_id = e.binary_id
+			  AND bos.total_parts > 0
+			  AND bos.observed_parts < bos.total_parts
+			LIMIT 1
+		) bos ON true
 		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
@@ -3322,6 +3338,12 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 	}
 
 	hasWindow := !dayStart.IsZero() && !dayEnd.IsZero()
+	partWindowStart := dayStart
+	partWindowEnd := dayEnd
+	if hasWindow {
+		partWindowStart = dayStart.Add(-24 * time.Hour)
+		partWindowEnd = dayEnd.Add(24 * time.Hour)
+	}
 	rows, err := tx.QueryContext(ctx, `
 		WITH requested_ids(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
@@ -3340,7 +3362,9 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				bos.provider_id,
 				bos.newsgroup_id,
 				bos.total_parts,
-				bos.posted_at AS existing_posted_at
+				bos.posted_at AS existing_posted_at,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
 			FROM binary_observation_stats bos
 			JOIN requested r
 			  ON r.source_posted_at = bos.source_posted_at
@@ -3358,22 +3382,32 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 					bp.source_posted_at
 				FROM locked_binaries lb
 				JOIN binary_parts bp
-				  ON bp.source_posted_at = lb.source_posted_at
+				  ON bp.source_posted_at >= CASE
+						WHEN $4::boolean THEN $5
+						WHEN lb.part_source_posted_at_min IS NOT NULL THEN lb.part_source_posted_at_min
+						ELSE lb.source_posted_at - INTERVAL '1 day'
+					END
+				 AND bp.source_posted_at <= CASE
+						WHEN $4::boolean THEN $6
+						WHEN lb.part_source_posted_at_max IS NOT NULL THEN lb.part_source_posted_at_max
+						ELSE lb.source_posted_at + INTERVAL '1 day'
+					END
 				 AND bp.binary_id = lb.binary_id
-				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $2 AND bp.source_posted_at < $3))
+				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $5 AND bp.source_posted_at < $6))
 		),
 		part_rows_with_headers AS MATERIALIZED (
 			SELECT
 					p.binary_id,
 					p.stats_source_posted_at,
 					p.segment_bytes,
+					p.source_posted_at,
 					ah.article_number,
 				ah.date_utc
 			FROM part_rows p
 			JOIN article_headers ah
 			  ON ah.source_posted_at = p.source_posted_at
 			 AND ah.id = p.article_header_id
-			WHERE ($4::boolean = FALSE OR (ah.source_posted_at >= $2 AND ah.source_posted_at < $3))
+			WHERE ($4::boolean = FALSE OR (ah.source_posted_at >= $5 AND ah.source_posted_at < $6))
 		),
 		agg AS (
 			SELECT
@@ -3383,6 +3417,8 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				COALESCE(SUM(p.segment_bytes), 0)::BIGINT AS total_bytes,
 				COALESCE(MIN(p.article_number), 0)::BIGINT AS first_article_number,
 				COALESCE(MAX(p.article_number), 0)::BIGINT AS last_article_number,
+				MIN(p.source_posted_at) AS part_source_posted_at_min,
+				MAX(p.source_posted_at) AS part_source_posted_at_max,
 				MIN(p.date_utc) AS posted_at
 			FROM part_rows_with_headers p
 			GROUP BY p.binary_id, p.stats_source_posted_at
@@ -3397,6 +3433,8 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				total_bytes,
 				first_article_number,
 				last_article_number,
+				part_source_posted_at_min,
+				part_source_posted_at_max,
 				posted_at,
 				source_posted_at,
 				refreshed_at,
@@ -3411,6 +3449,8 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				agg.total_bytes,
 				agg.first_article_number,
 				agg.last_article_number,
+				agg.part_source_posted_at_min,
+				agg.part_source_posted_at_max,
 				COALESCE(agg.posted_at, lb.existing_posted_at),
 				agg.source_posted_at,
 				NOW(),
@@ -3424,6 +3464,8 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 			    total_bytes = EXCLUDED.total_bytes,
 			    first_article_number = EXCLUDED.first_article_number,
 			    last_article_number = EXCLUDED.last_article_number,
+			    part_source_posted_at_min = EXCLUDED.part_source_posted_at_min,
+			    part_source_posted_at_max = EXCLUDED.part_source_posted_at_max,
 			    posted_at = COALESCE(EXCLUDED.posted_at, binary_observation_stats.posted_at),
 			    refreshed_at = NOW(),
 			    updated_at = NOW()
@@ -3457,6 +3499,8 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 		dayStart,
 		dayEnd,
 		hasWindow,
+		partWindowStart,
+		partWindowEnd,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh binary stats batch: %w", err)
