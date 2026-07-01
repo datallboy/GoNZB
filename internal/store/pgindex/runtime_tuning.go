@@ -87,32 +87,42 @@ func skipYEncRecoveryWorkItemRetireFromContext(ctx context.Context) bool {
 }
 
 type BinaryUpsertTelemetry struct {
-	mu                            sync.Mutex
-	ChunkCount                    int
-	ChunkRows                     int
-	ChunkRetries                  int
-	ChunkRetryDeadlocks           int
-	ChunkRetrySerialization       int
-	ChunkDurationMs               float64
-	ChunkDurationMaxMs            float64
-	LockDurationMs                float64
-	LockDurationMaxMs             float64
-	StageDurationMs               float64
-	StageDurationMaxMs            float64
-	ExistingSnapshotDurationMs    float64
-	ExistingSnapshotDurationMaxMs float64
-	UpdateDurationMs              float64
-	UpdateDurationMaxMs           float64
-	InsertDurationMs              float64
-	InsertDurationMaxMs           float64
-	ReadbackDurationMs            float64
-	ReadbackDurationMaxMs         float64
-	UpsertQueryDurationMs         float64
-	UpsertQueryDurationMaxMs      float64
-	EvidenceDurationMs            float64
-	EvidenceDurationMaxMs         float64
-	DeferredSummaryRefreshChunks  int
-	DeferredSummaryKeyCount       int
+	mu                             sync.Mutex
+	ChunkCount                     int
+	ChunkRows                      int
+	ChunkRetries                   int
+	ChunkRetryDeadlocks            int
+	ChunkRetrySerialization        int
+	ChunkDurationMs                float64
+	ChunkDurationMaxMs             float64
+	LockDurationMs                 float64
+	LockDurationMaxMs              float64
+	StageDurationMs                float64
+	StageDurationMaxMs             float64
+	ExistingSnapshotDurationMs     float64
+	ExistingSnapshotDurationMaxMs  float64
+	UpdateDurationMs               float64
+	UpdateDurationMaxMs            float64
+	InsertDurationMs               float64
+	InsertDurationMaxMs            float64
+	ObservationStatsDurationMs     float64
+	ObservationStatsDurationMaxMs  float64
+	IdentityDurationMs             float64
+	IdentityDurationMaxMs          float64
+	RecoverySeedDurationMs         float64
+	RecoverySeedDurationMaxMs      float64
+	LifecycleSeedDurationMs        float64
+	LifecycleSeedDurationMaxMs     float64
+	CompletionKeySyncDurationMs    float64
+	CompletionKeySyncDurationMaxMs float64
+	ReadbackDurationMs             float64
+	ReadbackDurationMaxMs          float64
+	UpsertQueryDurationMs          float64
+	UpsertQueryDurationMaxMs       float64
+	EvidenceDurationMs             float64
+	EvidenceDurationMaxMs          float64
+	DeferredSummaryRefreshChunks   int
+	DeferredSummaryKeyCount        int
 }
 
 func (t *BinaryUpsertTelemetry) recordChunk(rows, retries int, elapsed time.Duration) {
@@ -163,31 +173,41 @@ func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return BinaryUpsertTelemetry{
-		ChunkCount:                    t.ChunkCount,
-		ChunkRows:                     t.ChunkRows,
-		ChunkRetries:                  t.ChunkRetries,
-		ChunkRetryDeadlocks:           t.ChunkRetryDeadlocks,
-		ChunkRetrySerialization:       t.ChunkRetrySerialization,
-		ChunkDurationMs:               t.ChunkDurationMs,
-		ChunkDurationMaxMs:            t.ChunkDurationMaxMs,
-		LockDurationMs:                t.LockDurationMs,
-		LockDurationMaxMs:             t.LockDurationMaxMs,
-		StageDurationMs:               t.StageDurationMs,
-		StageDurationMaxMs:            t.StageDurationMaxMs,
-		ExistingSnapshotDurationMs:    t.ExistingSnapshotDurationMs,
-		ExistingSnapshotDurationMaxMs: t.ExistingSnapshotDurationMaxMs,
-		UpdateDurationMs:              t.UpdateDurationMs,
-		UpdateDurationMaxMs:           t.UpdateDurationMaxMs,
-		InsertDurationMs:              t.InsertDurationMs,
-		InsertDurationMaxMs:           t.InsertDurationMaxMs,
-		ReadbackDurationMs:            t.ReadbackDurationMs,
-		ReadbackDurationMaxMs:         t.ReadbackDurationMaxMs,
-		UpsertQueryDurationMs:         t.UpsertQueryDurationMs,
-		UpsertQueryDurationMaxMs:      t.UpsertQueryDurationMaxMs,
-		EvidenceDurationMs:            t.EvidenceDurationMs,
-		EvidenceDurationMaxMs:         t.EvidenceDurationMaxMs,
-		DeferredSummaryRefreshChunks:  t.DeferredSummaryRefreshChunks,
-		DeferredSummaryKeyCount:       t.DeferredSummaryKeyCount,
+		ChunkCount:                     t.ChunkCount,
+		ChunkRows:                      t.ChunkRows,
+		ChunkRetries:                   t.ChunkRetries,
+		ChunkRetryDeadlocks:            t.ChunkRetryDeadlocks,
+		ChunkRetrySerialization:        t.ChunkRetrySerialization,
+		ChunkDurationMs:                t.ChunkDurationMs,
+		ChunkDurationMaxMs:             t.ChunkDurationMaxMs,
+		LockDurationMs:                 t.LockDurationMs,
+		LockDurationMaxMs:              t.LockDurationMaxMs,
+		StageDurationMs:                t.StageDurationMs,
+		StageDurationMaxMs:             t.StageDurationMaxMs,
+		ExistingSnapshotDurationMs:     t.ExistingSnapshotDurationMs,
+		ExistingSnapshotDurationMaxMs:  t.ExistingSnapshotDurationMaxMs,
+		UpdateDurationMs:               t.UpdateDurationMs,
+		UpdateDurationMaxMs:            t.UpdateDurationMaxMs,
+		InsertDurationMs:               t.InsertDurationMs,
+		InsertDurationMaxMs:            t.InsertDurationMaxMs,
+		ObservationStatsDurationMs:     t.ObservationStatsDurationMs,
+		ObservationStatsDurationMaxMs:  t.ObservationStatsDurationMaxMs,
+		IdentityDurationMs:             t.IdentityDurationMs,
+		IdentityDurationMaxMs:          t.IdentityDurationMaxMs,
+		RecoverySeedDurationMs:         t.RecoverySeedDurationMs,
+		RecoverySeedDurationMaxMs:      t.RecoverySeedDurationMaxMs,
+		LifecycleSeedDurationMs:        t.LifecycleSeedDurationMs,
+		LifecycleSeedDurationMaxMs:     t.LifecycleSeedDurationMaxMs,
+		CompletionKeySyncDurationMs:    t.CompletionKeySyncDurationMs,
+		CompletionKeySyncDurationMaxMs: t.CompletionKeySyncDurationMaxMs,
+		ReadbackDurationMs:             t.ReadbackDurationMs,
+		ReadbackDurationMaxMs:          t.ReadbackDurationMaxMs,
+		UpsertQueryDurationMs:          t.UpsertQueryDurationMs,
+		UpsertQueryDurationMaxMs:       t.UpsertQueryDurationMaxMs,
+		EvidenceDurationMs:             t.EvidenceDurationMs,
+		EvidenceDurationMaxMs:          t.EvidenceDurationMaxMs,
+		DeferredSummaryRefreshChunks:   t.DeferredSummaryRefreshChunks,
+		DeferredSummaryKeyCount:        t.DeferredSummaryKeyCount,
 	}
 }
 
@@ -253,6 +273,71 @@ func (t *BinaryUpsertTelemetry) recordInsertDuration(elapsed time.Duration) {
 	t.InsertDurationMs += durationMs
 	if durationMs > t.InsertDurationMaxMs {
 		t.InsertDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordObservationStatsDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ObservationStatsDurationMs += durationMs
+	if durationMs > t.ObservationStatsDurationMaxMs {
+		t.ObservationStatsDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordIdentityDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.IdentityDurationMs += durationMs
+	if durationMs > t.IdentityDurationMaxMs {
+		t.IdentityDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordRecoverySeedDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RecoverySeedDurationMs += durationMs
+	if durationMs > t.RecoverySeedDurationMaxMs {
+		t.RecoverySeedDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordLifecycleSeedDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.LifecycleSeedDurationMs += durationMs
+	if durationMs > t.LifecycleSeedDurationMaxMs {
+		t.LifecycleSeedDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordCompletionKeySyncDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.CompletionKeySyncDurationMs += durationMs
+	if durationMs > t.CompletionKeySyncDurationMaxMs {
+		t.CompletionKeySyncDurationMaxMs = durationMs
 	}
 }
 

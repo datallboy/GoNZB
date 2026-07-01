@@ -171,12 +171,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	started := time.Now()
-	cleanupStarted := time.Now()
-	staleDeleted, err := s.repo.CleanupStaleAssemblyQueueRows(ctx, s.opts.BatchSize)
-	if err != nil {
-		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
-	}
-	cleanupDuration := time.Since(cleanupStarted)
+	staleDeleted := 0
+	cleanupDuration := time.Duration(0)
 	headers, claimStats, err := s.claimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
 		Limit:                  s.opts.BatchSize,
 		Owner:                  s.opts.ClaimOwner,
@@ -352,12 +348,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 
 	started := time.Now()
-	cleanupStarted := time.Now()
-	staleDeleted, err := s.repo.CleanupStaleAssemblyQueueRows(ctx, batchSize)
-	if err != nil {
-		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
-	}
-	cleanupDuration := time.Since(cleanupStarted)
+	staleDeleted := 0
+	cleanupDuration := time.Duration(0)
 	headers, claimStats, err := s.claimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
 		Limit:                  batchSize,
 		Owner:                  claimOwner,
@@ -693,7 +685,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	addAssembleTimingMetrics(metrics, started, work.headerMatchDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f queue_cleanup_ms=%.2f assembly_claim_ms=%.2f assembly_hydration_ms=%.2f assembly_claimed_headers=%d assembly_hydrated_headers=%d header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f binary_refresh_yenc_admission_ms=%.2f binary_refresh_yenc_priority_open_ms=%.2f binary_refresh_yenc_sync_chunks=%d binary_refresh_yenc_sync_chunk_binaries=%d binary_refresh_yenc_sync_upserted=%d binary_refresh_yenc_sync_retired=%d binary_refresh_yenc_sync_upsert_ms=%.2f binary_refresh_yenc_sync_retire_ms=%.2f binary_refresh_yenc_promotion_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f queue_cleanup_ms=%.2f assembly_claim_ms=%.2f assembly_hydration_ms=%.2f assembly_claimed_headers=%d assembly_hydrated_headers=%d header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_observation_ms=%.2f binary_upsert_observation_max_ms=%.2f binary_upsert_identity_ms=%.2f binary_upsert_identity_max_ms=%.2f binary_upsert_recovery_seed_ms=%.2f binary_upsert_recovery_seed_max_ms=%.2f binary_upsert_lifecycle_seed_ms=%.2f binary_upsert_lifecycle_seed_max_ms=%.2f binary_upsert_completion_key_sync_ms=%.2f binary_upsert_completion_key_sync_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f binary_refresh_yenc_admission_ms=%.2f binary_refresh_yenc_priority_open_ms=%.2f binary_refresh_yenc_sync_chunks=%d binary_refresh_yenc_sync_chunk_binaries=%d binary_refresh_yenc_sync_upserted=%d binary_refresh_yenc_sync_retired=%d binary_refresh_yenc_sync_upsert_ms=%.2f binary_refresh_yenc_sync_retire_ms=%.2f binary_refresh_yenc_promotion_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		work.laneASelected,
 		work.laneBSelected,
@@ -729,6 +721,16 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		metrics["binary_upsert_update_max_ms"],
 		metrics["binary_upsert_insert_ms"],
 		metrics["binary_upsert_insert_max_ms"],
+		metrics["binary_upsert_observation_ms"],
+		metrics["binary_upsert_observation_max_ms"],
+		metrics["binary_upsert_identity_ms"],
+		metrics["binary_upsert_identity_max_ms"],
+		metrics["binary_upsert_recovery_seed_ms"],
+		metrics["binary_upsert_recovery_seed_max_ms"],
+		metrics["binary_upsert_lifecycle_seed_ms"],
+		metrics["binary_upsert_lifecycle_seed_max_ms"],
+		metrics["binary_upsert_completion_key_sync_ms"],
+		metrics["binary_upsert_completion_key_sync_max_ms"],
 		metrics["binary_upsert_readback_ms"],
 		metrics["binary_upsert_readback_max_ms"],
 		metrics["binary_upsert_query_ms"],
@@ -890,6 +892,16 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_update_max_ms"] = telemetry.UpdateDurationMaxMs
 	metrics["binary_upsert_insert_ms"] = telemetry.InsertDurationMs
 	metrics["binary_upsert_insert_max_ms"] = telemetry.InsertDurationMaxMs
+	metrics["binary_upsert_observation_ms"] = telemetry.ObservationStatsDurationMs
+	metrics["binary_upsert_observation_max_ms"] = telemetry.ObservationStatsDurationMaxMs
+	metrics["binary_upsert_identity_ms"] = telemetry.IdentityDurationMs
+	metrics["binary_upsert_identity_max_ms"] = telemetry.IdentityDurationMaxMs
+	metrics["binary_upsert_recovery_seed_ms"] = telemetry.RecoverySeedDurationMs
+	metrics["binary_upsert_recovery_seed_max_ms"] = telemetry.RecoverySeedDurationMaxMs
+	metrics["binary_upsert_lifecycle_seed_ms"] = telemetry.LifecycleSeedDurationMs
+	metrics["binary_upsert_lifecycle_seed_max_ms"] = telemetry.LifecycleSeedDurationMaxMs
+	metrics["binary_upsert_completion_key_sync_ms"] = telemetry.CompletionKeySyncDurationMs
+	metrics["binary_upsert_completion_key_sync_max_ms"] = telemetry.CompletionKeySyncDurationMaxMs
 	metrics["binary_upsert_readback_ms"] = telemetry.ReadbackDurationMs
 	metrics["binary_upsert_readback_max_ms"] = telemetry.ReadbackDurationMaxMs
 	metrics["binary_upsert_query_ms"] = telemetry.UpsertQueryDurationMs
