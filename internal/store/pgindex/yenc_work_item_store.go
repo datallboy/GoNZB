@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -639,9 +640,14 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 	}
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 
+	telemetry := binaryStatsRefreshTelemetryFromContext(ctx)
+	admissionStarted := time.Now()
 	admission, err := s.RefreshYEncRecoveryAdmissionSnapshot(ctx)
 	if err != nil {
 		return 0, 0, err
+	}
+	if telemetry != nil {
+		telemetry.recordYEncAdmissionDuration(time.Since(admissionStarted))
 	}
 	remainingToHard := admission.RemainingToHard
 	overSoftCap := admission.OpenTotal >= admission.SoftCap
@@ -652,6 +658,7 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		if err != nil {
 			return 0, 0, err
 		}
+		priorityOpenStarted := time.Now()
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM yenc_recovery_work_items
@@ -663,6 +670,9 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > NOW()))
 			  )`).Scan(&priority0Open); err != nil {
 			return 0, 0, fmt.Errorf("count open priority0 yenc recovery work items: %w", err)
+		}
+		if telemetry != nil {
+			telemetry.recordYEncPriorityOpenDuration(time.Since(priorityOpenStarted))
 		}
 		remainingToHard = overflowCap - priority0Open
 		if remainingToHard < 0 {
@@ -680,9 +690,12 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		if end > len(unique) {
 			end = len(unique)
 		}
-		upserted, retired, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end], remainingToHard, overSoftCap, overHardCap)
+		upserted, retired, upsertDuration, retireDuration, err := s.syncYEncRecoveryWorkItemsChunkInTx(ctx, tx, unique[start:end], remainingToHard, overSoftCap, overHardCap)
 		if err != nil {
 			return 0, 0, err
+		}
+		if telemetry != nil {
+			telemetry.recordYEncSyncChunk(end-start, upserted, retired, upsertDuration, retireDuration)
 		}
 		totalUpserted += upserted
 		totalRetired += retired
@@ -718,11 +731,18 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			if promoteLimit > yencRecoveryWorkItemSeedLimit {
 				promoteLimit = yencRecoveryWorkItemSeedLimit
 			}
+			promotionStarted := time.Now()
 			if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, promoteLimit, bucketSeconds); err != nil {
+				if telemetry != nil {
+					telemetry.recordYEncPromotionDuration(time.Since(promotionStarted))
+				}
 				if isStatementTimeoutError(err) {
 					return totalUpserted, totalRetired, nil
 				}
 				return 0, 0, err
+			}
+			if telemetry != nil {
+				telemetry.recordYEncPromotionDuration(time.Since(promotionStarted))
 			}
 		}
 	}
@@ -817,8 +837,9 @@ func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, lim
 	return nil
 }
 
-func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64, remainingToHard int64, overSoftCap bool, overHardCap bool) (int64, int64, error) {
+func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.Tx, unique []int64, remainingToHard int64, overSoftCap bool, overHardCap bool) (int64, int64, time.Duration, time.Duration, error) {
 	var upserted int64
+	upsertStarted := time.Now()
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
@@ -1055,13 +1076,15 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 		overHardCap,
 		overSoftCap,
 	).Scan(&upserted); err != nil {
-		return 0, 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
+		return 0, 0, time.Since(upsertStarted), 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
 	}
+	upsertDuration := time.Since(upsertStarted)
 	if skipYEncRecoveryWorkItemRetireFromContext(ctx) {
-		return upserted, 0, nil
+		return upserted, 0, upsertDuration, 0, nil
 	}
 
 	var retired int64
+	retireStarted := time.Now()
 	if err := tx.QueryRowContext(ctx, `
 		WITH requested(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
@@ -1131,8 +1154,9 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 		SELECT COUNT(*) FROM retired`,
 		unique,
 	).Scan(&retired); err != nil {
-		return 0, 0, fmt.Errorf("retire yenc recovery work items: %w", err)
+		return 0, 0, upsertDuration, time.Since(retireStarted), fmt.Errorf("retire yenc recovery work items: %w", err)
 	}
+	retireDuration := time.Since(retireStarted)
 
-	return upserted, retired, nil
+	return upserted, retired, upsertDuration, retireDuration, nil
 }

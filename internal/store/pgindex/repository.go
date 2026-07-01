@@ -197,6 +197,9 @@ type YEncRecoveryCandidate struct {
 	CurrentBaseStem                 string
 	CurrentReadinessBucket          string
 	StructuredIdentityBinaryMatched bool
+	PriorityRank                    int
+	AdmissionReason                 string
+	GroupTier                       string
 	RecoveryLane                    string
 	FairnessBucketStart             *time.Time
 	FairnessBucketEnd               *time.Time

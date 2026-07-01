@@ -693,7 +693,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	addAssembleTimingMetrics(metrics, started, work.headerMatchDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f queue_cleanup_ms=%.2f assembly_claim_ms=%.2f assembly_hydration_ms=%.2f assembly_claimed_headers=%d assembly_hydrated_headers=%d header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f queue_cleanup_ms=%.2f assembly_claim_ms=%.2f assembly_hydration_ms=%.2f assembly_claimed_headers=%d assembly_hydrated_headers=%d header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f binary_refresh_yenc_admission_ms=%.2f binary_refresh_yenc_priority_open_ms=%.2f binary_refresh_yenc_sync_chunks=%d binary_refresh_yenc_sync_chunk_binaries=%d binary_refresh_yenc_sync_upserted=%d binary_refresh_yenc_sync_retired=%d binary_refresh_yenc_sync_upsert_ms=%.2f binary_refresh_yenc_sync_retire_ms=%.2f binary_refresh_yenc_promotion_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		work.laneASelected,
 		work.laneBSelected,
@@ -749,6 +749,15 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		metrics["binary_refresh_summary_mark_max_ms"],
 		metrics["binary_refresh_yenc_sync_ms"],
 		metrics["binary_refresh_yenc_sync_max_ms"],
+		metrics["binary_refresh_yenc_admission_ms"],
+		metrics["binary_refresh_yenc_priority_open_ms"],
+		metrics["binary_refresh_yenc_sync_chunk_count"],
+		metrics["binary_refresh_yenc_sync_chunk_binary_count"],
+		metrics["binary_refresh_yenc_sync_upserted"],
+		metrics["binary_refresh_yenc_sync_retired"],
+		metrics["binary_refresh_yenc_sync_upsert_ms"],
+		metrics["binary_refresh_yenc_sync_retire_ms"],
+		metrics["binary_refresh_yenc_promotion_ms"],
 		metrics["unique_binary_upserts"],
 		metrics["binary_upsert_cache_hits"],
 		work.recovery.attempts,
@@ -804,7 +813,12 @@ func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
 			"binary_upsert_evidence_max_ms",
 			"binary_refresh_stats_update_max_ms",
 			"binary_refresh_summary_mark_max_ms",
-			"binary_refresh_yenc_sync_max_ms":
+			"binary_refresh_yenc_sync_max_ms",
+			"binary_refresh_yenc_admission_max_ms",
+			"binary_refresh_yenc_priority_open_max_ms",
+			"binary_refresh_yenc_sync_upsert_max_ms",
+			"binary_refresh_yenc_sync_retire_max_ms",
+			"binary_refresh_yenc_promotion_max_ms":
 			if current := numericMetricFloat64(dst, key); numericMetricFloat64(src, key) > current {
 				dst[key] = numericMetricFloat64(src, key)
 			}
@@ -899,6 +913,20 @@ func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgi
 	metrics["binary_refresh_summary_mark_max_ms"] = telemetry.SummaryMarkDurationMaxMs
 	metrics["binary_refresh_yenc_sync_ms"] = telemetry.YEncSyncDurationMs
 	metrics["binary_refresh_yenc_sync_max_ms"] = telemetry.YEncSyncDurationMaxMs
+	metrics["binary_refresh_yenc_admission_ms"] = telemetry.YEncAdmissionDurationMs
+	metrics["binary_refresh_yenc_admission_max_ms"] = telemetry.YEncAdmissionDurationMaxMs
+	metrics["binary_refresh_yenc_priority_open_ms"] = telemetry.YEncPriorityOpenDurationMs
+	metrics["binary_refresh_yenc_priority_open_max_ms"] = telemetry.YEncPriorityOpenDurationMaxMs
+	metrics["binary_refresh_yenc_sync_chunk_count"] = telemetry.YEncSyncChunkCount
+	metrics["binary_refresh_yenc_sync_chunk_binary_count"] = telemetry.YEncSyncChunkBinaryCount
+	metrics["binary_refresh_yenc_sync_upserted"] = telemetry.YEncSyncUpserted
+	metrics["binary_refresh_yenc_sync_retired"] = telemetry.YEncSyncRetired
+	metrics["binary_refresh_yenc_sync_upsert_ms"] = telemetry.YEncSyncUpsertDurationMs
+	metrics["binary_refresh_yenc_sync_upsert_max_ms"] = telemetry.YEncSyncUpsertDurationMaxMs
+	metrics["binary_refresh_yenc_sync_retire_ms"] = telemetry.YEncSyncRetireDurationMs
+	metrics["binary_refresh_yenc_sync_retire_max_ms"] = telemetry.YEncSyncRetireDurationMaxMs
+	metrics["binary_refresh_yenc_promotion_ms"] = telemetry.YEncPromotionDurationMs
+	metrics["binary_refresh_yenc_promotion_max_ms"] = telemetry.YEncPromotionDurationMaxMs
 }
 
 func laneMetricName(lane string) string {

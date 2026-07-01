@@ -365,6 +365,20 @@ type BinaryStatsRefreshTelemetry struct {
 	SummaryMarkDurationMaxMs      float64
 	YEncSyncDurationMs            float64
 	YEncSyncDurationMaxMs         float64
+	YEncAdmissionDurationMs       float64
+	YEncAdmissionDurationMaxMs    float64
+	YEncPriorityOpenDurationMs    float64
+	YEncPriorityOpenDurationMaxMs float64
+	YEncSyncChunkCount            int
+	YEncSyncChunkBinaryCount      int
+	YEncSyncUpserted              int64
+	YEncSyncRetired               int64
+	YEncSyncUpsertDurationMs      float64
+	YEncSyncUpsertDurationMaxMs   float64
+	YEncSyncRetireDurationMs      float64
+	YEncSyncRetireDurationMaxMs   float64
+	YEncPromotionDurationMs       float64
+	YEncPromotionDurationMaxMs    float64
 }
 
 func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, deferred bool, statsUpdateDuration, summaryMarkDuration, yencSyncDuration time.Duration) {
@@ -398,6 +412,49 @@ func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, 
 	}
 }
 
+func (t *BinaryStatsRefreshTelemetry) recordYEncAdmissionDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncAdmissionDurationMs, &t.YEncAdmissionDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncPriorityOpenDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncPriorityOpenDurationMs, &t.YEncPriorityOpenDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncPromotionDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncPromotionDurationMs, &t.YEncPromotionDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncSyncChunk(binaryCount int, upserted, retired int64, upsertDuration, retireDuration time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.YEncSyncChunkCount++
+	t.YEncSyncChunkBinaryCount += binaryCount
+	t.YEncSyncUpserted += upserted
+	t.YEncSyncRetired += retired
+	recordTelemetryDurationLocked(&t.YEncSyncUpsertDurationMs, &t.YEncSyncUpsertDurationMaxMs, upsertDuration)
+	recordTelemetryDurationLocked(&t.YEncSyncRetireDurationMs, &t.YEncSyncRetireDurationMaxMs, retireDuration)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncDuration(total *float64, max *float64, d time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	recordTelemetryDurationLocked(total, max, d)
+}
+
+func recordTelemetryDurationLocked(total *float64, max *float64, d time.Duration) {
+	ms := float64(d.Microseconds()) / 1000.0
+	*total += ms
+	if ms > *max {
+		*max = ms
+	}
+}
+
 func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
 	if t == nil {
 		return BinaryStatsRefreshTelemetry{}
@@ -417,6 +474,20 @@ func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
 		SummaryMarkDurationMaxMs:      t.SummaryMarkDurationMaxMs,
 		YEncSyncDurationMs:            t.YEncSyncDurationMs,
 		YEncSyncDurationMaxMs:         t.YEncSyncDurationMaxMs,
+		YEncAdmissionDurationMs:       t.YEncAdmissionDurationMs,
+		YEncAdmissionDurationMaxMs:    t.YEncAdmissionDurationMaxMs,
+		YEncPriorityOpenDurationMs:    t.YEncPriorityOpenDurationMs,
+		YEncPriorityOpenDurationMaxMs: t.YEncPriorityOpenDurationMaxMs,
+		YEncSyncChunkCount:            t.YEncSyncChunkCount,
+		YEncSyncChunkBinaryCount:      t.YEncSyncChunkBinaryCount,
+		YEncSyncUpserted:              t.YEncSyncUpserted,
+		YEncSyncRetired:               t.YEncSyncRetired,
+		YEncSyncUpsertDurationMs:      t.YEncSyncUpsertDurationMs,
+		YEncSyncUpsertDurationMaxMs:   t.YEncSyncUpsertDurationMaxMs,
+		YEncSyncRetireDurationMs:      t.YEncSyncRetireDurationMs,
+		YEncSyncRetireDurationMaxMs:   t.YEncSyncRetireDurationMaxMs,
+		YEncPromotionDurationMs:       t.YEncPromotionDurationMs,
+		YEncPromotionDurationMaxMs:    t.YEncPromotionDurationMaxMs,
 	}
 }
 

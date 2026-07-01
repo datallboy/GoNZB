@@ -76,38 +76,57 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	}
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TEMP TABLE tmp_subject_multipart_regroup_candidate_binaries ON COMMIT DROP AS
+		WITH candidate_keys AS MATERIALIZED (
+			SELECT
+				bic.binary_id,
+				bic.source_posted_at AS binary_source_posted_at,
+				bic.provider_id,
+				bic.newsgroup_id,
+				COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, '')) AS release_family_key,
+				bic.file_name AS identity_file_name,
+				lower(btrim(bic.file_name)) AS normalized_lookup_file_name,
+				bic.expected_file_count,
+				bos.total_parts,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
+			FROM binary_identity_current bic
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			WHERE bic.source_posted_at >= NOW() - INTERVAL '7 days'
+			  AND bic.family_kind = 'contextual_obfuscated'
+			  AND bic.identity_reason = 'contextual_fallback'
+			  AND NOT EXISTS (
+			    SELECT 1
+			    FROM binary_lifecycle bl
+			    WHERE bl.source_posted_at = bic.source_posted_at
+			      AND bl.binary_id = bic.binary_id
+			      AND bl.lifecycle_status = 'superseded'
+			  )
+			  AND btrim(COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, ''))) <> ''
+			  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
+			  AND btrim(COALESCE(bic.file_name, '')) <> ''
+			ORDER BY bic.source_posted_at DESC, bic.binary_id DESC
+			LIMIT $1
+		)
 		SELECT
-			bc.binary_id,
-			bc.source_posted_at AS binary_source_posted_at,
-			bc.provider_id,
-			bc.newsgroup_id,
+			ck.binary_id,
+			ck.binary_source_posted_at,
+			ck.provider_id,
+			ck.newsgroup_id,
 			bc.binary_key,
-			COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, '')) AS release_family_key,
-			bic.file_name AS identity_file_name,
-			lower(btrim(bic.file_name)) AS normalized_lookup_file_name,
-			bic.expected_file_count,
-			bos.total_parts,
-			bos.part_source_posted_at_min,
-			bos.part_source_posted_at_max
-		FROM binary_identity_current bic
-		JOIN binary_observation_stats bos
-		  ON bos.source_posted_at = bic.source_posted_at
-		 AND bos.binary_id = bic.binary_id
+			ck.release_family_key,
+			ck.identity_file_name,
+			ck.normalized_lookup_file_name,
+			ck.expected_file_count,
+			ck.total_parts,
+			ck.part_source_posted_at_min,
+			ck.part_source_posted_at_max
+		FROM candidate_keys ck
 		JOIN binary_core bc
-		  ON bc.source_posted_at = bic.source_posted_at
-		 AND bc.binary_id = bic.binary_id
-		LEFT JOIN binary_lifecycle bl
-		  ON bl.binary_id = bic.binary_id
-		 AND bl.source_posted_at = bic.source_posted_at
-		WHERE bic.source_posted_at >= NOW() - INTERVAL '7 days'
-		  AND bic.family_kind = 'contextual_obfuscated'
-		  AND bic.identity_reason = 'contextual_fallback'
-		  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-		  AND btrim(COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, ''))) <> ''
-		  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
-		  AND btrim(COALESCE(bic.file_name, '')) <> ''
-		ORDER BY bic.source_posted_at DESC, bic.binary_id DESC
-		LIMIT $1`, candidateLimit); err != nil {
+		  ON bc.source_posted_at = ck.binary_source_posted_at
+		 AND bc.binary_id = ck.binary_id
+		ORDER BY ck.binary_source_posted_at DESC, ck.binary_id DESC`, candidateLimit); err != nil {
 		return nil, fmt.Errorf("stage subject multipart regroup candidate binaries: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
