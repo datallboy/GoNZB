@@ -135,6 +135,8 @@ type IndexingScrapeTierRuntimeSettings struct {
 	WarmWindowMinutes         int  `json:"warm_window_minutes,omitempty"`
 	ColdSampleHeaders         int  `json:"cold_sample_headers,omitempty"`
 	MaxArticlesPerGroupWindow int  `json:"max_articles_per_group_window,omitempty"`
+	AssembleBacklogHighWater  int  `json:"assemble_backlog_high_water,omitempty"`
+	AssembleBacklogLowWater   int  `json:"assemble_backlog_low_water,omitempty"`
 	AllowGlobalDailyGate      bool `json:"allow_global_daily_gate,omitempty"`
 }
 

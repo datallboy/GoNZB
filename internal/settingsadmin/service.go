@@ -392,6 +392,17 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes > 24*60 {
 		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be less than or equal to 1440")
 	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_high_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogLowWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater >= indexing.ScrapeTiers.AssembleBacklogHighWater {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be less than indexing.scrape_tiers.assemble_backlog_high_water")
+	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
 		clean = strings.ReplaceAll(clean, "0X", "")
