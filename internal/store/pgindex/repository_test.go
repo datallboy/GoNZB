@@ -4619,6 +4619,129 @@ func TestListYEncRecoveryCandidatesSeedsWhenWorkTableIsNonEmpty(t *testing.T) {
 	}
 }
 
+func TestListYEncRecoveryCandidatesRefillsPriorityOpaqueCohortsWhenGenericReadyExists(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.priority-cohort.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var genericBinaryID int64
+	var genericArticleID int64
+	for i := 0; i < yencRecoveryOpaqueCohortMin+1; i++ {
+		name := fmt.Sprintf("opaque-priority-%02d-%d.bin", i, time.Now().UnixNano())
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: name,
+			FileFamilyKey:    name + "::part",
+			IdentityStrength: "provisional",
+			IdentityReason:   "opaque_subject_set",
+			FamilyKind:       "opaque_set",
+			BaseStem:         name,
+			IsMainPayload:    true,
+			ReleaseKey:       name,
+			ReleaseName:      name,
+			BinaryKey:        name + "::binary",
+			BinaryName:       name,
+			FileName:         name,
+			TotalParts:       1,
+			PostedAt:         &now,
+			MatchConfidence:  0.50,
+			MatchStatus:      "provisional",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+		messageID := fmt.Sprintf("<opaque-priority-%02d-%d@test>", i, time.Now().UnixNano())
+		if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: int64(2000 + i),
+			MessageID:     messageID,
+			Subject:       name,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		}}); err != nil {
+			t.Fatalf("insert article header %d: %v", i, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			newsgroupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %d: %v", i, err)
+		}
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleID,
+			MessageID:       messageID,
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    111,
+			FileName:        name,
+		}}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", i, err)
+		}
+		if i == 0 {
+			genericBinaryID = binaryID
+			genericArticleID = articleID
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES (
+			$1, $2, 1, $3, '<generic-ready@test>', 'ready', NOW(), 1, 0,
+			'generic-ready::binary', 'generic-ready', 'generic-ready',
+			'weak_single_binary', false, NOW()
+		)`,
+		genericBinaryID, genericArticleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed generic ready yenc work item: %v", err)
+	}
+
+	if _, err := store.ListYEncRecoveryCandidates(ctx, 10); err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+
+	var priorityCohortCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE newsgroup_id = $1
+		  AND priority_rank = 0
+		  AND admission_reason = 'opaque_near_time_cohort'
+		  AND status IN ('ready', 'running')`,
+		newsgroupID,
+	).Scan(&priorityCohortCount); err != nil {
+		t.Fatalf("count priority opaque cohort work items: %v", err)
+	}
+	if priorityCohortCount == 0 {
+		t.Fatalf("expected priority opaque cohort work to be seeded despite existing generic ready work")
+	}
+}
+
 func TestListYEncRecoveryCandidatesRoundRobinsAcrossGroups(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

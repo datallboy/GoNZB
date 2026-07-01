@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,10 @@ type repositoryWithSelectionOptions interface {
 
 type repositoryWithBatchHeaderRecovery interface {
 	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
+}
+
+type repositoryWithPrioritySiblingAdmission interface {
+	BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error)
 }
 
 type repositoryWithBatchRecoveryBackoff interface {
@@ -160,6 +165,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"write_apply_stats_refresh_ms":      float64(0),
 		"write_apply_summary_dirty_ms":      float64(0),
 		"write_apply_commit_ms":             float64(0),
+		"sibling_admission_ms":              float64(0),
+		"sibling_admission_attempts":        0,
+		"sibling_admission_upserted":        0,
+		"sibling_admission_failures":        0,
 		"not_found_write_ms":                float64(0),
 		"recovered":                         0,
 		"merged":                            0,
@@ -536,6 +545,34 @@ func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositor
 			return
 		}
 		rows := len(batch)
+		if siblingRepo, ok := repo.(repositoryWithPrioritySiblingAdmission); ok {
+			binaryIDs := make([]int64, 0, rows)
+			seen := make(map[int64]struct{}, rows)
+			for _, record := range batch {
+				if record.BinaryID <= 0 {
+					continue
+				}
+				if _, ok := seen[record.BinaryID]; ok {
+					continue
+				}
+				seen[record.BinaryID] = struct{}{}
+				binaryIDs = append(binaryIDs, record.BinaryID)
+			}
+			if len(binaryIDs) > 0 {
+				sort.Slice(binaryIDs, func(i, j int) bool { return binaryIDs[i] < binaryIDs[j] })
+				started := time.Now()
+				upserted, _, err := siblingRepo.BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx, binaryIDs)
+				elapsed := time.Since(started)
+				mu.Lock()
+				addYEncDurationMetric(metrics, "sibling_admission_ms", elapsed)
+				metrics["sibling_admission_attempts"] = metrics["sibling_admission_attempts"].(int) + 1
+				metrics["sibling_admission_upserted"] = metrics["sibling_admission_upserted"].(int) + int(upserted)
+				if err != nil {
+					metrics["sibling_admission_failures"] = metrics["sibling_admission_failures"].(int) + 1
+				}
+				mu.Unlock()
+			}
+		}
 		started := time.Now()
 		results, err := repo.ApplyYEncHeaderRecoveries(ctx, batch)
 		elapsed := time.Since(started)

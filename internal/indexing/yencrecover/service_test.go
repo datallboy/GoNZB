@@ -375,6 +375,52 @@ func TestRunOnceStreamsRecoveredRecordsInFlushBatches(t *testing.T) {
 	}
 }
 
+func TestRunOnceAdmitsPrioritySiblingsForRecoveredStreamBatches(t *testing.T) {
+	candidates := []pgindex.YEncRecoveryCandidate{{
+		BinaryID:        10,
+		ArticleHeaderID: 100,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-1@test",
+		Subject:         `opaque-one`,
+	}, {
+		BinaryID:        11,
+		ArticleHeaderID: 101,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-2@test",
+		Subject:         `opaque-two`,
+	}, {
+		BinaryID:        10,
+		ArticleHeaderID: 102,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-3@test",
+		Subject:         `opaque-three`,
+	}}
+	repo := &fakeBatchRepo{
+		fakeRepo:                 &fakeRepo{candidates: candidates},
+		siblingAdmissionUpserted: 42,
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=732 line=128 size=524288000 name=burst.part04.rar\r\n=ypart begin=1 end=716800\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: len(candidates), MaxHeaderBytes: 256, Concurrency: 2})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["sibling_admission_attempts"] != 1 || metrics["sibling_admission_upserted"] != 42 {
+		t.Fatalf("expected sibling admission metrics, got metrics=%v", metrics)
+	}
+	if len(repo.siblingAdmissionBatches) != 1 {
+		t.Fatalf("expected one sibling admission batch, got %+v", repo.siblingAdmissionBatches)
+	}
+	got := repo.siblingAdmissionBatches[0]
+	if len(got) != 2 || got[0] != 10 || got[1] != 11 {
+		t.Fatalf("expected de-duplicated recovered binary ids [10 11], got %+v", got)
+	}
+	if len(repo.batchSizes) != 1 || repo.batchSizes[0] != len(candidates) {
+		t.Fatalf("expected recovery records to still be applied, got batch sizes %+v", repo.batchSizes)
+	}
+}
+
 func TestRunOncePassesTargetWindowSelectionOptions(t *testing.T) {
 	repo := &fakeRepo{}
 	fetcher := &fakePrefixFetcher{}
@@ -488,8 +534,11 @@ type fakeRepo struct {
 
 type fakeBatchRepo struct {
 	*fakeRepo
-	mu         sync.Mutex
-	batchSizes []int
+	mu                       sync.Mutex
+	batchSizes               []int
+	siblingAdmissionBatches  [][]int64
+	siblingAdmissionUpserted int64
+	siblingAdmissionErr      error
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
@@ -523,6 +572,17 @@ func (f *fakeBatchRepo) ApplyYEncHeaderRecoveries(_ context.Context, in []pginde
 		results = append(results, pgindex.YEncHeaderRecoveryResult{BinaryID: record.BinaryID, TargetBinaryID: record.BinaryID})
 	}
 	return results, nil
+}
+
+func (f *fakeBatchRepo) BackfillPriorityYEncRecoveryWorkItemsForBinaries(_ context.Context, binaryIDs []int64) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copied := append([]int64(nil), binaryIDs...)
+	f.siblingAdmissionBatches = append(f.siblingAdmissionBatches, copied)
+	if f.siblingAdmissionErr != nil {
+		return 0, 0, f.siblingAdmissionErr
+	}
+	return f.siblingAdmissionUpserted, 0, nil
 }
 
 func (f *fakeRepo) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {
