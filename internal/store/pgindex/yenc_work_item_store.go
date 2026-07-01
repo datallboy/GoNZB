@@ -10,7 +10,7 @@ import (
 
 const (
 	yencRecoveryWorkItemSeedLimit          = 5000
-	yencRecoveryWorkItemSyncChunk          = 10000
+	yencRecoveryWorkItemSyncChunk          = 2000
 	yencRecoveryOpaqueCohortMin            = 20
 	yencRecoveryPrioritySeedMax            = 512
 	yencRecoveryOpaqueCohortAdmissionScore = 100
@@ -74,7 +74,7 @@ func configureYEncRecoveryWorkItemQueryTx(ctx context.Context, tx *sql.Tx) error
 	if tx == nil {
 		return fmt.Errorf("yenc recovery work item tx is required")
 	}
-	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '5s'`); err != nil {
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '15s'`); err != nil {
 		return fmt.Errorf("set yenc recovery work item statement timeout: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `SET LOCAL max_parallel_workers_per_gather = 0`); err != nil {
@@ -680,12 +680,19 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			remainingToHard = 0
 		}
 	}
-	if remainingToHard > 0 || totalUpserted > 0 {
+	if totalUpserted > 0 && remainingToHard > 0 {
 		bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, yencRecoveryWorkItemSeedLimit, bucketSeconds); err != nil {
+		promoteLimit := int(totalUpserted * 2)
+		if promoteLimit < yencRecoveryOpaqueCohortMin {
+			promoteLimit = yencRecoveryOpaqueCohortMin
+		}
+		if promoteLimit > yencRecoveryWorkItemSeedLimit {
+			promoteLimit = yencRecoveryWorkItemSeedLimit
+		}
+		if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, promoteLimit, bucketSeconds); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -700,7 +707,21 @@ func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, lim
 		limit = yencRecoveryWorkItemSeedLimit
 	}
 	_, err := tx.ExecContext(ctx, `
-		WITH recent_work AS MATERIALIZED (
+		WITH recent_ready AS MATERIALIZED (
+			SELECT
+				wi.binary_id,
+				wi.source_posted_at,
+				wi.provider_id,
+				wi.newsgroup_id,
+				wi.date_utc,
+				wi.updated_at
+			FROM yenc_recovery_work_items wi
+			WHERE wi.status = 'ready'
+			  AND wi.priority_rank > 0
+			ORDER BY wi.updated_at DESC, wi.binary_id DESC
+			LIMIT ($1::integer * 50)
+		),
+		recent_work AS MATERIALIZED (
 			SELECT
 				wi.binary_id,
 				wi.source_posted_at,
@@ -709,7 +730,7 @@ func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, lim
 				FLOOR(EXTRACT(EPOCH FROM COALESCE(bos.posted_at, wi.date_utc)) / $2::double precision)::bigint AS posted_bucket,
 				COALESCE(bos.posted_at, wi.date_utc) AS posted_at,
 				wi.updated_at
-			FROM yenc_recovery_work_items wi
+			FROM recent_ready wi
 			JOIN binary_identity_current bic
 			  ON bic.source_posted_at = wi.source_posted_at
 			 AND bic.binary_id = wi.binary_id
@@ -722,9 +743,7 @@ func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, lim
 			LEFT JOIN binary_lifecycle bl
 			  ON bl.source_posted_at = wi.source_posted_at
 			 AND bl.binary_id = wi.binary_id
-			WHERE wi.status = 'ready'
-			  AND wi.priority_rank > 0
-			  AND bic.family_kind = 'opaque_set'
+			WHERE bic.family_kind = 'opaque_set'
 			  AND bic.identity_reason = 'opaque_subject_set'
 			  AND bic.is_main_payload = TRUE
 			  AND LOWER(BTRIM(COALESCE(bic.identity_strength, ''))) IN ('weak', 'provisional')
@@ -734,7 +753,6 @@ func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, lim
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
 			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
 			ORDER BY wi.updated_at DESC, wi.binary_id DESC
-			LIMIT ($1::integer * 50)
 		),
 		cohorts AS MATERIALIZED (
 			SELECT provider_id, newsgroup_id, posted_bucket
@@ -835,7 +853,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			JOIN LATERAL (
 				SELECT bp.source_posted_at, bp.article_header_id
 				FROM binary_parts bp
-				WHERE bp.binary_id = bc.binary_id
+				WHERE bp.source_posted_at = bc.source_posted_at
+				  AND bp.binary_id = bc.binary_id
 				ORDER BY bp.part_number, bp.id
 				LIMIT 1
 			) bp ON true
@@ -1008,6 +1027,9 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 	).Scan(&upserted); err != nil {
 		return 0, 0, fmt.Errorf("upsert yenc recovery work items: %w", err)
 	}
+	if skipYEncRecoveryWorkItemRetireFromContext(ctx) {
+		return upserted, 0, nil
+	}
 
 	var retired int64
 	if err := tx.QueryRowContext(ctx, `
@@ -1035,7 +1057,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			JOIN LATERAL (
 				SELECT bp.source_posted_at, bp.article_header_id
 				FROM binary_parts bp
-				WHERE bp.binary_id = bc.binary_id
+				WHERE bp.source_posted_at = bc.source_posted_at
+				  AND bp.binary_id = bc.binary_id
 				ORDER BY bp.part_number, bp.id
 				LIMIT 1
 			) bp ON true

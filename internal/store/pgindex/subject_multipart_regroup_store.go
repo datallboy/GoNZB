@@ -100,6 +100,8 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		  ON bl.binary_id = bic.binary_id
 		 AND bl.source_posted_at = bic.source_posted_at
 		WHERE bic.source_posted_at >= NOW() - INTERVAL '7 days'
+		  AND bic.family_kind = 'contextual_obfuscated'
+		  AND bic.identity_reason = 'contextual_fallback'
 		  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
 		  AND btrim(COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), NULLIF(bic.source_release_key, ''))) <> ''
 		  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
@@ -838,6 +840,8 @@ func refreshStaleSubjectMultipartObservationStats(ctx context.Context, tx *sql.T
 			FROM tmp_subject_multipart_stale_stats stale
 			JOIN binary_parts bp
 			  ON bp.binary_id = stale.binary_id
+			 AND bp.source_posted_at >= stale.source_posted_at - INTERVAL '1 day'
+			 AND bp.source_posted_at < stale.source_posted_at + INTERVAL '1 day'
 			GROUP BY stale.binary_id, stale.source_posted_at
 		)
 		UPDATE binary_observation_stats bos
