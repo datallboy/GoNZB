@@ -14,6 +14,7 @@ const (
 	yencRecoveryOpaqueCohortMin            = 20
 	yencRecoveryPrioritySeedMax            = 512
 	yencRecoveryOpaqueCohortAdmissionScore = 100
+	yencRecoveryPriority0PromoteWatermark  = yencRecoveryWorkItemSeedLimit
 )
 const yencRecoverySubjectFileNamePredicate = `
 			  AND (
@@ -635,12 +636,12 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 	remainingToHard := admission.RemainingToHard
 	overSoftCap := admission.OpenTotal >= admission.SoftCap
 	overHardCap := admission.OpenTotal >= admission.HardCap
+	var priority0Open int64
 	if overHardCap {
 		overflowCap, err := s.yEncPriority0OverflowCap(ctx, tx)
 		if err != nil {
 			return 0, 0, err
 		}
-		var priority0Open int64
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM yenc_recovery_work_items
@@ -680,20 +681,39 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 			remainingToHard = 0
 		}
 	}
-	if totalUpserted > 0 && remainingToHard > 0 {
-		bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
-		if err != nil {
-			return 0, 0, err
+	if totalUpserted > 0 && remainingToHard > 0 && admission.OpenTotal+totalUpserted < yencRecoveryPriority0PromoteWatermark {
+		if !overHardCap {
+			if err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*)
+				FROM yenc_recovery_work_items
+				WHERE status IN ('ready', 'running')
+				  AND priority_rank = 0
+				  AND BTRIM(COALESCE(message_id, '')) <> ''
+				  AND (
+				    (status = 'ready' AND ready_at <= NOW())
+				    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > NOW()))
+				  )`).Scan(&priority0Open); err != nil {
+				return 0, 0, fmt.Errorf("count open priority0 yenc recovery work items: %w", err)
+			}
 		}
-		promoteLimit := int(totalUpserted * 2)
-		if promoteLimit < yencRecoveryOpaqueCohortMin {
-			promoteLimit = yencRecoveryOpaqueCohortMin
-		}
-		if promoteLimit > yencRecoveryWorkItemSeedLimit {
-			promoteLimit = yencRecoveryWorkItemSeedLimit
-		}
-		if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, promoteLimit, bucketSeconds); err != nil {
-			return 0, 0, err
+		if priority0Open < yencRecoveryPriority0PromoteWatermark {
+			bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+			if err != nil {
+				return 0, 0, err
+			}
+			promoteLimit := int(totalUpserted * 2)
+			if promoteLimit < yencRecoveryOpaqueCohortMin {
+				promoteLimit = yencRecoveryOpaqueCohortMin
+			}
+			if promoteLimit > yencRecoveryWorkItemSeedLimit {
+				promoteLimit = yencRecoveryWorkItemSeedLimit
+			}
+			if err := promoteOpaqueNearTimeYEncWorkItemsInTx(ctx, tx, promoteLimit, bucketSeconds); err != nil {
+				if isStatementTimeoutError(err) {
+					return totalUpserted, totalRetired, nil
+				}
+				return 0, 0, err
+			}
 		}
 	}
 	return totalUpserted, totalRetired, nil

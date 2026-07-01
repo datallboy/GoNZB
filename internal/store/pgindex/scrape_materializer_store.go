@@ -186,7 +186,7 @@ func (s *Store) MaterializeArticleHeaderPosters(ctx context.Context, limit int) 
 func claimPosterMaterializationRows(ctx context.Context, tx *sql.Tx, limit int) ([]claimedPosterMaterializationRow, error) {
 	rows, err := tx.QueryContext(ctx, `
 		WITH next_rows AS (
-			SELECT article_header_id
+			SELECT source_posted_at, article_header_id
 			FROM poster_materialization_queue
 			WHERE status IN ('pending', 'failed')
 			  AND ready_at <= NOW()
@@ -203,7 +203,8 @@ func claimPosterMaterializationRows(ctx context.Context, tx *sql.Tx, limit int) 
 			    attempt_count = q.attempt_count + 1,
 			    updated_at = NOW()
 			FROM next_rows n
-			WHERE q.article_header_id = n.article_header_id
+			WHERE q.source_posted_at = n.source_posted_at
+			  AND q.article_header_id = n.article_header_id
 			RETURNING q.article_header_id, q.poster_name, q.poster_key, q.source_posted_at
 		)
 		SELECT article_header_id, poster_name, poster_key, source_posted_at

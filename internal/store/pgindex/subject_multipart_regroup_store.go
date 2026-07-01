@@ -32,7 +32,7 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 		return nil, fmt.Errorf("begin subject multipart regroup tx: %w", err)
 	}
 	defer rollbackTx(tx)
-	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '5s'`); err != nil {
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '15s'`); err != nil {
 		return nil, fmt.Errorf("set subject multipart regroup statement timeout: %w", err)
 	}
 
@@ -822,6 +822,7 @@ func refreshStaleSubjectMultipartObservationStats(ctx context.Context, tx *sql.T
 		  ON bos.source_posted_at = bic.source_posted_at
 		 AND bos.binary_id = bic.binary_id
 		WHERE bic.identity_reason = 'subject_multipart_obfuscated'
+		  AND bic.source_posted_at >= NOW() - INTERVAL '7 days'
 		  AND bos.observed_parts < GREATEST(COALESCE(bos.total_parts, 0), 2)
 		ORDER BY bic.source_posted_at DESC, bic.binary_id
 		LIMIT $1`, limit); err != nil {
