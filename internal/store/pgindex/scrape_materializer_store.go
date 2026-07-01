@@ -398,6 +398,29 @@ func (s *Store) RefreshCrosspostPopularity(ctx context.Context, limit int) (*Ind
 		limit = 1000
 	}
 	out := &IndexerCrosspostPopularityRefreshResult{}
+	var claims []crosspostPopularityClaim
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		claimed, err := claimCrosspostPopularityGroups(ctx, tx, limit)
+		if err != nil {
+			return err
+		}
+		claims = claimed
+		out.Claimed = int64(len(claims))
+		return tx.Commit()
+	}); err != nil {
+		return nil, err
+	}
+	if len(claims) == 0 {
+		return out, nil
+	}
+
+	groups := crosspostPopularityClaimGroups(claims)
 	err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -405,14 +428,6 @@ func (s *Store) RefreshCrosspostPopularity(ctx context.Context, limit int) (*Ind
 		}
 		defer tx.Rollback()
 
-		groups, err := claimCrosspostPopularityGroups(ctx, tx, limit)
-		if err != nil {
-			return err
-		}
-		out.Claimed = int64(len(groups))
-		if len(groups) == 0 {
-			return tx.Commit()
-		}
 		refreshed, messages, sources, err := refreshCrosspostPopularityGroups(ctx, tx, groups)
 		if err != nil {
 			return err
@@ -420,18 +435,45 @@ func (s *Store) RefreshCrosspostPopularity(ctx context.Context, limit int) (*Ind
 		out.GroupsRefreshed = refreshed
 		out.DistinctMessagesObserved = messages
 		out.DistinctSourcesObserved = sources
-		if err := finishCrosspostPopularityGroups(ctx, tx, groups); err != nil {
-			return err
-		}
 		return tx.Commit()
 	})
 	if err != nil {
+		_ = failCrosspostPopularityGroups(ctx, s.db, claims, err)
+		return nil, err
+	}
+
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := finishCrosspostPopularityGroups(ctx, tx, claims); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func claimCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, limit int) ([]string, error) {
+type crosspostPopularityClaim struct {
+	GroupName string
+	ClaimedAt time.Time
+}
+
+func crosspostPopularityClaimGroups(claims []crosspostPopularityClaim) []string {
+	out := make([]string, 0, len(claims))
+	for _, claim := range claims {
+		if claim.GroupName != "" {
+			out = append(out, claim.GroupName)
+		}
+	}
+	return out
+}
+
+func claimCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, limit int) ([]crosspostPopularityClaim, error) {
 	rows, err := tx.QueryContext(ctx, `
 		WITH next_rows AS (
 			SELECT observed_group_name
@@ -452,9 +494,9 @@ func claimCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, limit int) 
 			    updated_at = NOW()
 			FROM next_rows n
 			WHERE q.observed_group_name = n.observed_group_name
-			RETURNING q.observed_group_name
+			RETURNING q.observed_group_name, q.updated_at
 		)
-		SELECT observed_group_name
+		SELECT observed_group_name, updated_at
 		FROM claimed
 		ORDER BY observed_group_name`, limit)
 	if err != nil {
@@ -462,13 +504,13 @@ func claimCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, limit int) 
 	}
 	defer rows.Close()
 
-	out := make([]string, 0, limit)
+	out := make([]crosspostPopularityClaim, 0, limit)
 	for rows.Next() {
-		var groupName string
-		if err := rows.Scan(&groupName); err != nil {
+		var claim crosspostPopularityClaim
+		if err := rows.Scan(&claim.GroupName, &claim.ClaimedAt); err != nil {
 			return nil, fmt.Errorf("scan claimed crosspost popularity group: %w", err)
 		}
-		out = append(out, groupName)
+		out = append(out, claim)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate claimed crosspost popularity groups: %w", err)
@@ -572,23 +614,76 @@ func refreshCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []
 	return refreshed, messages, sources, nil
 }
 
-func finishCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, groups []string) error {
-	if len(groups) == 0 {
+func finishCrosspostPopularityGroups(ctx context.Context, tx *sql.Tx, claims []crosspostPopularityClaim) error {
+	if len(claims) == 0 {
 		return nil
 	}
-	args := make([]any, 0, len(groups))
+	args := make([]any, 0, len(claims)*2)
 	var query strings.Builder
-	query.WriteString("UPDATE crosspost_popularity_refresh_queue SET status = 'done', lease_owner = '', lease_expires_at = NULL, last_error = '', updated_at = NOW() WHERE observed_group_name IN (")
-	for idx, group := range groups {
+	query.WriteString(`
+		WITH claimed(observed_group_name, claimed_at) AS (
+			VALUES `)
+	for idx, claim := range claims {
+		if idx > 0 {
+			query.WriteString(",")
+		}
+		fmt.Fprintf(&query, "($%d::text,$%d::timestamptz)", len(args)+1, len(args)+2)
+		args = append(args, claim.GroupName, claim.ClaimedAt)
+	}
+	query.WriteString(`
+		)
+		UPDATE crosspost_popularity_refresh_queue q
+		SET status = CASE
+			    WHEN q.updated_at > c.claimed_at THEN 'pending'
+			    ELSE 'done'
+		    END,
+		    ready_at = CASE
+			    WHEN q.updated_at > c.claimed_at THEN NOW()
+			    ELSE q.ready_at
+		    END,
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    last_error = '',
+		    updated_at = NOW()
+		FROM claimed c
+		WHERE q.observed_group_name = c.observed_group_name
+		  AND q.status = 'processing'`)
+	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+		return fmt.Errorf("finish crosspost popularity groups: %w", err)
+	}
+	return nil
+}
+
+func failCrosspostPopularityGroups(ctx context.Context, db *sql.DB, claims []crosspostPopularityClaim, cause error) error {
+	if len(claims) == 0 || db == nil {
+		return nil
+	}
+	args := make([]any, 0, len(claims)+1)
+	var query strings.Builder
+	query.WriteString(`
+		UPDATE crosspost_popularity_refresh_queue
+		SET status = 'failed',
+		    ready_at = NOW() + INTERVAL '1 minute',
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    last_error = $1,
+		    updated_at = NOW()
+		WHERE observed_group_name IN (`)
+	causeText := fmt.Sprint(cause)
+	if len(causeText) > 1000 {
+		causeText = causeText[:1000]
+	}
+	args = append(args, causeText)
+	for idx, claim := range claims {
 		if idx > 0 {
 			query.WriteString(",")
 		}
 		fmt.Fprintf(&query, "$%d::text", len(args)+1)
-		args = append(args, group)
+		args = append(args, claim.GroupName)
 	}
 	query.WriteString(")")
-	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
-		return fmt.Errorf("finish crosspost popularity groups: %w", err)
+	if _, err := db.ExecContext(ctx, query.String(), args...); err != nil {
+		return fmt.Errorf("fail crosspost popularity groups: %w", err)
 	}
 	return nil
 }
@@ -644,7 +739,7 @@ func queueCrosspostPopularityRefreshRows(ctx context.Context, tx *sql.Tx, groups
 			    ELSE LEAST(crosspost_popularity_refresh_queue.ready_at, NOW())
 		    END,
 		    updated_at = CASE
-			    WHEN crosspost_popularity_refresh_queue.status = 'processing' THEN crosspost_popularity_refresh_queue.updated_at
+			    WHEN crosspost_popularity_refresh_queue.status = 'processing' THEN NOW()
 			    ELSE NOW()
 		    END`)
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
