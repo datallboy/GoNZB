@@ -26,7 +26,7 @@ const (
 	assemblePriorityHeaderWindowMultiplier = 2
 	assemblePriorityHeaderMinScan          = 500
 	assemblePriorityHeaderMaxScan          = 2000
-	assembleClaimStatementTimeout          = 15 * time.Second
+	assembleClaimStatementTimeout          = 30 * time.Second
 	assembleClaimMinQueueAge               = 15 * time.Second
 	assembleDefaultLaneATimeWindowMinutes  = 15
 	refreshBinaryStatsBatchSize            = 8000
@@ -487,6 +487,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND q.queue_kind = 'structured'
+			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			ORDER BY q.article_header_id DESC
 			LIMIT $6
 			FOR UPDATE SKIP LOCKED
@@ -500,7 +501,6 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
-			  AND q.queue_kind <> 'structured'
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM lane_a a
@@ -1101,7 +1101,7 @@ func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer
 		return nil, nil
 	}
 
-	const hydrateAssemblyCandidatesChunkSize = 2500
+	const hydrateAssemblyCandidatesChunkSize = 10000
 	byDay := make(map[time.Time][]assemblyHydrateRequest)
 	for idx, item := range selected {
 		day := item.SourcePostedAt.UTC().Truncate(24 * time.Hour)
@@ -2754,10 +2754,6 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 	if len(records) == 0 {
 		return nil
 	}
-	records = dedupeBinaryPartRecords(records)
-	if len(records) == 0 {
-		return nil
-	}
 
 	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -2794,43 +2790,51 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		}
 		return dedupedRecords[i].ArticleHeaderID < dedupedRecords[j].ArticleHeaderID
 	})
-	headerIDs := uniqueSortedArticleHeaderIDs(records)
 	existingBinaryIDs, err := existingBinaryIDsForPartRecords(ctx, tx, dedupedRecords)
 	if err != nil {
 		return err
 	}
 	validRecords := make([]BinaryPartRecord, 0, len(dedupedRecords))
-	validHeaderIDs := make([]int64, 0, len(headerIDs))
-	retryKeys := make([]assemblyRetryKey, 0, 8)
-	retrySeen := make(map[int64]struct{}, 8)
 	for _, record := range dedupedRecords {
 		if _, ok := existingBinaryIDs[record.BinaryID]; ok {
 			validRecords = append(validRecords, record)
-			continue
-		}
-		if record.ArticleHeaderID > 0 {
-			if _, seen := retrySeen[record.ArticleHeaderID]; !seen {
-				retrySeen[record.ArticleHeaderID] = struct{}{}
-				retryKeys = append(retryKeys, assemblyRetryKey{
-					sourcePostedAt:  record.SourcePostedAt,
-					articleHeaderID: record.ArticleHeaderID,
-				})
-			}
 		}
 	}
-	for _, articleHeaderID := range headerIDs {
-		if _, retry := retrySeen[articleHeaderID]; !retry {
-			validHeaderIDs = append(validHeaderIDs, articleHeaderID)
+
+	completedKeys := make([]assemblyRetryKey, 0, len(records))
+	completedSeen := make(map[assemblyRetryKey]struct{}, len(records))
+	retryKeys := make([]assemblyRetryKey, 0, 8)
+	retrySeen := make(map[assemblyRetryKey]struct{}, 8)
+	for _, record := range records {
+		key := assemblyRetryKey{
+			sourcePostedAt:  record.SourcePostedAt,
+			articleHeaderID: record.ArticleHeaderID,
+		}
+		if key.sourcePostedAt.IsZero() || key.articleHeaderID <= 0 {
+			continue
+		}
+		if _, ok := existingBinaryIDs[record.BinaryID]; ok {
+			if _, seen := completedSeen[key]; !seen {
+				completedSeen[key] = struct{}{}
+				completedKeys = append(completedKeys, key)
+			}
+			continue
+		}
+		if _, seen := retrySeen[key]; !seen {
+			retrySeen[key] = struct{}{}
+			retryKeys = append(retryKeys, key)
 		}
 	}
 	dedupedRecords = validRecords
-	headerIDs = validHeaderIDs
 	if len(retryKeys) > 0 {
 		if err := releaseAssemblyClaims(ctx, tx, retryKeys); err != nil {
 			return err
 		}
 	}
 	if len(dedupedRecords) == 0 {
+		return nil
+	}
+	if len(completedKeys) == 0 {
 		return nil
 	}
 
@@ -2849,6 +2853,16 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 	}
 	if _, err := tx.ExecContext(ctx, `TRUNCATE tmp_binary_parts`); err != nil {
 		return fmt.Errorf("truncate binary parts temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS tmp_completed_assembly_headers (
+			source_posted_at timestamptz NOT NULL,
+			article_header_id bigint NOT NULL
+		) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create completed assembly headers temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `TRUNCATE tmp_completed_assembly_headers`); err != nil {
+		return fmt.Errorf("truncate completed assembly headers temp table: %w", err)
 	}
 
 	binaryIDs := make([]int64, 0, len(dedupedRecords))
@@ -2914,6 +2928,25 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		return fmt.Errorf("stage %d binary parts: %w", len(dedupedRecords), err)
 	}
 
+	completedSourcePostedAts := make([]time.Time, 0, len(completedKeys))
+	completedArticleHeaderIDs := make([]int64, 0, len(completedKeys))
+	for _, key := range completedKeys {
+		completedSourcePostedAts = append(completedSourcePostedAts, key.sourcePostedAt)
+		completedArticleHeaderIDs = append(completedArticleHeaderIDs, key.articleHeaderID)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_completed_assembly_headers (
+			source_posted_at,
+			article_header_id
+		)
+		SELECT DISTINCT *
+		FROM UNNEST($1::timestamptz[], $2::bigint[])`,
+		completedSourcePostedAts,
+		completedArticleHeaderIDs,
+	); err != nil {
+		return fmt.Errorf("stage %d completed assembly headers: %w", len(completedKeys), err)
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_parts (
 			binary_id,
@@ -2952,11 +2985,11 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		DELETE FROM article_header_assembly_queue q
 		USING (
 			SELECT DISTINCT source_posted_at, article_header_id
-			FROM tmp_binary_parts
+			FROM tmp_completed_assembly_headers
 		) completed
 		WHERE q.source_posted_at = completed.source_posted_at
 		  AND q.article_header_id = completed.article_header_id`); err != nil {
-		return fmt.Errorf("complete %d article header assembly queue rows: %w", len(headerIDs), err)
+		return fmt.Errorf("complete %d article header assembly queue rows: %w", len(completedKeys), err)
 	}
 
 	return nil

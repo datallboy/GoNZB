@@ -277,7 +277,7 @@ func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int6
 	var retired int64
 	if err := s.db.QueryRowContext(ctx, `
 		WITH stale AS (
-			SELECT wi.binary_id
+			SELECT wi.binary_id, wi.source_posted_at
 			FROM yenc_recovery_work_items wi
 			WHERE wi.status IN ('ready', 'running')
 			  AND BTRIM(COALESCE(wi.message_id, '')) = ''
@@ -288,8 +288,9 @@ func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int6
 			UPDATE yenc_recovery_work_items wi
 			SET status = 'stale',
 			    updated_at = NOW()
-			FROM stale s
-			WHERE wi.binary_id = s.binary_id
+		FROM stale s
+		WHERE wi.source_posted_at = s.source_posted_at
+		  AND wi.binary_id = s.binary_id
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM retired`,
@@ -786,6 +787,7 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 		WITH locked_window AS (
 			SELECT
 				wi.binary_id,
+				wi.source_posted_at,
 				wi.article_header_id,
 				wi.provider_id,
 				wi.newsgroup_id,
@@ -864,7 +866,8 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 			    lease_expires_at = NOW() + INTERVAL '30 minutes',
 			    updated_at = NOW()
 			FROM selected s
-			WHERE wi.binary_id = s.binary_id
+			WHERE wi.source_posted_at = s.source_posted_at
+			  AND wi.binary_id = s.binary_id
 			RETURNING
 				s.binary_id,
 				s.article_header_id,

@@ -663,7 +663,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
 		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
-		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemSync(refreshCtx)
+		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemRetire(refreshCtx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {
