@@ -2212,8 +2212,34 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	values, args := releaseFamilySummaryBatchValues(keys)
 
 	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
+		WITH requested_input(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
+		),
+		requested AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				s.source_posted_at AS source_hint
+			FROM requested_input r
+			JOIN LATERAL (
+				SELECT
+					COALESCE(summary.earliest_posted_at, summary.source_posted_at) AS source_posted_at,
+					summary.binary_count,
+					summary.complete_main_payload_binary_count,
+					summary.recover_pending
+				FROM release_family_readiness_summaries summary
+				WHERE summary.provider_id = r.provider_id
+				  AND summary.newsgroup_id = r.newsgroup_id
+				  AND summary.key_kind = r.key_kind
+				  AND summary.family_key = r.family_key
+				ORDER BY summary.updated_at DESC, summary.source_posted_at DESC
+				LIMIT 1
+			) s ON true
+			WHERE s.binary_count > 1
+			   OR s.complete_main_payload_binary_count > 0
+			   OR s.recover_pending = TRUE
 		),
 		release_family_matches AS MATERIALIZED (
 			SELECT DISTINCT bic.provider_id, bic.file_set_key
@@ -2226,6 +2252,8 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 				  AND bic.release_family_key = r.family_key
 				  AND BTRIM(bic.release_family_key) <> ''
 				  AND BTRIM(bic.file_set_key) <> ''
+				  AND bic.source_posted_at >= r.source_hint - INTERVAL '1 day'
+				  AND bic.source_posted_at < r.source_hint + INTERVAL '1 day'
 			) bic ON r.key_kind = 'release_family'
 			WHERE EXISTS (
 				SELECT 1
@@ -2256,6 +2284,8 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 				  AND BTRIM(bic.base_stem) <> ''
 				  AND LOWER(BTRIM(bic.base_stem)) = r.family_key
 				  AND BTRIM(bic.file_set_key) <> ''
+				  AND bic.source_posted_at >= r.source_hint - INTERVAL '1 day'
+				  AND bic.source_posted_at < r.source_hint + INTERVAL '1 day'
 			) bic ON r.key_kind = 'base_stem'
 			WHERE EXISTS (
 				SELECT 1
@@ -2382,6 +2412,17 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		WITH requested(file_set_key) AS (
 			VALUES %s
 		),
+		requested_hints AS MATERIALIZED (
+			SELECT
+				r.file_set_key,
+				MIN(c.source_posted_at) AS min_source_posted_at,
+				MAX(c.source_posted_at) AS max_source_posted_at
+			FROM requested r
+			JOIN release_recovered_file_set_candidates c
+			  ON c.provider_id = $1
+			 AND c.file_set_key = r.file_set_key
+			GROUP BY r.file_set_key
+		),
 		aggregates AS MATERIALIZED (
 			SELECT
 				$1::BIGINT AS provider_id,
@@ -2412,10 +2453,19 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 					WHERE bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE
 				)::INTEGER AS main_payload_binary_count
 			FROM requested r
+			LEFT JOIN requested_hints h
+			  ON h.file_set_key = r.file_set_key
 			JOIN binary_identity_current bic
 			  ON bic.provider_id = $1
 			 AND bic.file_set_key = r.file_set_key
 			 AND BTRIM(bic.file_set_key) <> ''
+			 AND (
+				h.file_set_key IS NULL OR
+				(
+					bic.source_posted_at >= h.min_source_posted_at - INTERVAL '1 day' AND
+					bic.source_posted_at < h.max_source_posted_at + INTERVAL '1 day'
+				)
+			 )
 			 AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl

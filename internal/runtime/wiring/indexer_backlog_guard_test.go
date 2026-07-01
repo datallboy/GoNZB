@@ -85,7 +85,7 @@ func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 120000},
+		repo: fakeUnassembledBacklogReader{count: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -104,7 +104,7 @@ func TestScrapeBacklogGuardBlocksLatestAndBackfillDuringAssembleCatchup(t *testi
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 200000},
 	}
 
 	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
@@ -132,7 +132,7 @@ func TestScrapeBacklogGuardUsesScrapeTierThresholds(t *testing.T) {
 				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{MaxArticlesPerGroupWindow: 60000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 121000},
+		repo: fakeUnassembledBacklogReader{count: 121000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -158,7 +158,7 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 				},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 90000},
+		repo: fakeUnassembledBacklogReader{count: 90000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -181,7 +181,7 @@ func TestScrapeBacklogGuardUsesExplicitAssembleBacklogThresholds(t *testing.T) {
 				},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 54249},
+		repo: fakeUnassembledBacklogReader{count: 54249},
 	}
 
 	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
@@ -205,7 +205,7 @@ func TestScrapeBacklogGuardPausesBackfillOnYEncSoftCap(t *testing.T) {
 				SourceWindow: app.IndexingSourceWindowRuntimeSettings{Enabled: true, MaxOpenHeaders: 75000, ResumeOpenHeaders: 25000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
+		repo: fakeUnassembledBacklogReader{count: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
 			SoftCap:   100000,
 			HardCap:   200000,
 			OpenReady: 125000,
@@ -242,7 +242,7 @@ func TestScrapeBacklogGuardBlocksAllScrapeOnYEncHardCap(t *testing.T) {
 				SourceWindow: app.IndexingSourceWindowRuntimeSettings{Enabled: true, MaxOpenHeaders: 75000, ResumeOpenHeaders: 25000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
+		repo: fakeUnassembledBacklogReader{count: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
 			SoftCap:   100000,
 			HardCap:   200000,
 			OpenReady: 200000,
@@ -269,7 +269,7 @@ func TestScrapeBacklogGuardAllowsManualScrapeOverride(t *testing.T) {
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 120000},
+		repo: fakeUnassembledBacklogReader{count: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "manual")
@@ -288,7 +288,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 200000},
 	}
 
 	stage := supervisor.Stage{Name: supervisor.StageScrapeBackfill}
@@ -301,7 +301,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 75000}
+	guard.repo = fakeUnassembledBacklogReader{count: 75000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {
@@ -312,7 +312,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 25000}
+	guard.repo = fakeUnassembledBacklogReader{count: 25000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {
