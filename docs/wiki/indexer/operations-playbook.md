@@ -39,6 +39,6 @@ ORDER BY parent::text;
 
 ## Runtime Checks
 
-Use the admin API for runtime settings and maintenance tasks. Prefer `gonzb run
+Use the admin API for runtime settings and maintenance tasks. Prefer `gonzb
 serve` for supervisor testing. Use one-shot commands only for explicit
 maintenance or cleanup tasks.

@@ -1003,6 +1003,68 @@ Known open signoff items:
     logs showed scrape gated by yEnc hard cap, assemble draining, yEnc
     recovering, and release refresh processing newly dirtied summaries.
 
+- Assemble/yEnc observation pass at `2026-07-01 13:19-13:26`:
+  - current queue state before serve sampling:
+    `article_header_assembly_queue=38,872`, with `30,847` general rows and
+    `8,025` structured rows; active queue rows were mostly `2026-07-01`, with
+    small spillover on `2026-06-30` and `2026-07-02`;
+  - current yEnc work state before serve sampling:
+    `ready priority0 opaque_near_time_cohort=5,548`,
+    `ready priority0 near_complete_or_multipart=309`,
+    `ready priority1 bounded_admission=240,836`,
+    `running priority1 bounded_admission=4,250`, and prior completed work of
+    `274,130` priority-0 opaque cohort rows plus `388,897` bounded-admission
+    rows;
+  - read-only Lane A/combined claim EXPLAIN completed in about `718 ms` while
+    idle, but still used a broad `Parallel Hash Semi Join` over
+    `binary_completion_keys`, read `22,428` buffers, and spilled temp data.
+    The root shape is still risky: `assemblyClaimCompletionKeyExistsSQL()`
+    probes `binary_completion_keys` within `q.source_posted_at +/- 1 day` per
+    queue row, so partition pruning is weak and the planner can scan/hash much
+    more completion-key data than the small structured queue slice requires;
+  - exact fixed-day hydration remained fast in isolation in earlier EXPLAIN
+    work, while live hydration still cost seconds under concurrent scrape and
+    refresh pressure. Treat hydration spikes as contention/IO symptoms unless a
+    new EXPLAIN proves a bad partition-key shape;
+  - current yEnc ready claim selection is not the bottleneck: selecting 10,000
+    ready rows ordered by priority/date took about `33 ms`;
+  - yEnc opaque near-time admission/refill is the heavier recovery path:
+    read-only EXPLAIN of the 50,000-row recent scan took about `2.85 s`, did
+    about `1.0M` buffer hits and `19,425` reads, and performed many
+    partitioned point lookups into binary projection tables. This is acceptable
+    as bounded recovery refill work, but it is too expensive to run inside
+    assemble's hot binary stats refresh for every large assemble batch;
+  - live serve sample recovered a full 5,000-item yEnc batch at concurrency
+    `100` with `recovered=5,000` and `merged=4,950`, confirming yEnc BODY work
+    is productive when priority cohorts are selected;
+  - live assemble sample processed `20,000` headers in about `67.5 s`
+    (`headers_per_second=296.40`). Time was spread across several stages:
+    `binary_upsert_ms=25,452`, `binary_refresh_ms=20,461`,
+    `binary_refresh_yenc_sync_ms=13,948`, `candidate_selection_ms=12,097`,
+    `header_match_ms=10,405`, `assembly_hydration_ms=6,506`,
+    `binary_part_upsert_ms=6,715`, and `assembly_claim_ms=4,844`;
+  - the live sample proves the slow assemble stage is not a single missing
+    index. The high-confidence fix order is:
+    1. stop doing expensive yEnc work-item admission sync inside assemble's
+       binary stats refresh when recovery is already over hard cap, or move
+       that sync entirely to recovery/maintenance ownership;
+    2. replace Lane A's broad partitioned completion-key existence check with a
+       compact assemble-owned lookup/projection keyed by
+       `(provider_id, newsgroup_id, normalized_file_name)` plus partition-aware
+       target metadata, or otherwise make the queue-first lookup bounded before
+       it touches `binary_completion_keys`;
+    3. add yEnc selection metrics by `priority_rank`, `admission_reason`,
+       `group_tier`, and lane, plus merge-yield metrics by admission reason;
+    4. continue watching queue partition bloat. Empty historical
+       `article_header_assembly_queue` child partitions previously retained
+       large on-disk sizes after deletes, so retention drops/vacuum pressure
+       still matters even when live rows are low;
+  - documentation added:
+    `docs/wiki/indexer/yenc-recovery-queueing.md` now records how
+    `recover_yenc` work is admitted, sorted, grouped, filtered, capped, and
+    selected. It explicitly states recovery selection is priority/time-bucket
+    based rather than FIFO.
+
 ## Acceptance Criteria
 
 - This file is the only active sprint plan.

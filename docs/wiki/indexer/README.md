@@ -16,6 +16,8 @@ Prefer these focused pages over the older root-level indexer documents.
   candidate contracts.
 - [Binary Grouping Evidence](./binary-grouping-evidence.md): evidence
   priority for subject-derived, yEnc-derived, and weak binary grouping.
+- [yEnc Recovery Queueing](./yenc-recovery-queueing.md): how recovery work is
+  admitted, prioritized, selected, grouped, and capped.
 - [Operations Playbook](./operations-playbook.md): practical checks and common
   commands.
 

@@ -56,6 +56,9 @@ Header-time/message-id/article-number cohorts may be used to prioritize probes
 only after measured evidence supports the signal; exact release grouping still
 requires recovered yEnc or other strong identity evidence.
 
+The current recovery queueing contract is documented in
+[yEnc Recovery Queueing](./yenc-recovery-queueing.md).
+
 ## Release Refresh And Formation
 
 Release summary refresh aggregates binary projection rows into release-family

@@ -188,8 +188,9 @@ it is random and conflicts with a complete, stable Subject identity.
 
 `recover_yenc` is not FIFO. Candidate selection reads from
 `yenc_recovery_work_items` and uses `priority_rank`, posted-time fairness
-buckets, and a newest-work lane. Admission into that work table must therefore
-preserve the evidence priority:
+buckets, and a newest-work lane. The detailed queueing contract is in
+[yEnc Recovery Queueing](./yenc-recovery-queueing.md). Admission into that work
+table must therefore preserve the evidence priority:
 
 - `priority_rank = 0`: work likely to unlock binary grouping or release
   formation. This includes incomplete multipart binaries, indexed multi-file
