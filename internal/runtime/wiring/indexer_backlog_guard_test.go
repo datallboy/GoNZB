@@ -152,10 +152,9 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:           true,
-					MaxOpenHeaders:    75000,
-					ResumeOpenHeaders: 25000,
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{
+					AssembleBacklogHighWater: 100000,
+					AssembleBacklogLowWater:  50000,
 				},
 			},
 		}},
@@ -168,6 +167,32 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 	}
 	if !backfill.Allowed {
 		t.Fatalf("expected scrape_backfill to stay allowed below high-water, got %+v", backfill)
+	}
+}
+
+func TestScrapeBacklogGuardUsesExplicitAssembleBacklogThresholds(t *testing.T) {
+	guard := &cachedScrapeBacklogGuard{
+		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
+			Indexing: &app.IndexingRuntimeSettings{
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 20000},
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{
+					AssembleBacklogHighWater: 50000,
+					AssembleBacklogLowWater:  10000,
+				},
+			},
+		}},
+		repo: fakeUnassembledBacklogReader{estimate: 54249},
+	}
+
+	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
+	if err != nil {
+		t.Fatalf("allow latest returned error: %v", err)
+	}
+	if latest.Allowed {
+		t.Fatalf("expected scrape_latest to be blocked by explicit high-water, got %+v", latest)
+	}
+	if want := "high_water=50000"; !strings.Contains(latest.Reason, want) {
+		t.Fatalf("expected reason to include %q, got %q", want, latest.Reason)
 	}
 }
 

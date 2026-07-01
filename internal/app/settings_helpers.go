@@ -180,6 +180,8 @@ func defaultScrapeTierSettings() IndexingScrapeTierRuntimeSettings {
 		WarmWindowMinutes:         120,
 		ColdSampleHeaders:         2000,
 		MaxArticlesPerGroupWindow: 50000,
+		AssembleBacklogHighWater:  50000,
+		AssembleBacklogLowWater:   10000,
 		AllowGlobalDailyGate:      false,
 	}
 }
@@ -1288,6 +1290,12 @@ func mergeScrapeTierRuntimeSettings(base, override IndexingScrapeTierRuntimeSett
 	}
 	if override.MaxArticlesPerGroupWindow > 0 {
 		base.MaxArticlesPerGroupWindow = override.MaxArticlesPerGroupWindow
+	}
+	if override.AssembleBacklogHighWater > 0 {
+		base.AssembleBacklogHighWater = override.AssembleBacklogHighWater
+	}
+	if override.AssembleBacklogLowWater > 0 {
+		base.AssembleBacklogLowWater = override.AssembleBacklogLowWater
 	}
 	base.AllowGlobalDailyGate = override.AllowGlobalDailyGate
 	return base
