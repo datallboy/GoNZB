@@ -110,6 +110,9 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 			MessageID:           "fairness@test",
 			Subject:             `2cf281e3e9fa4a1f82d5c320fa444010`,
 			RecoveryLane:        "time_cohort_fairness",
+			PriorityRank:        0,
+			AdmissionReason:     "opaque_near_time_cohort",
+			GroupTier:           "hot",
 			FairnessBucketStart: &bucketStart,
 			FairnessBucketEnd:   &bucketEnd,
 		}, {
@@ -119,6 +122,9 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 			MessageID:       "newest@test",
 			Subject:         `3cf281e3e9fa4a1f82d5c320fa444011`,
 			RecoveryLane:    "newest",
+			PriorityRank:    1,
+			AdmissionReason: "bounded_admission",
+			GroupTier:       "warm",
 		}},
 	}
 	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.rar\r\n=ypart begin=1 end=1024\r\n")}
@@ -133,6 +139,15 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 	}
 	if metrics["fairness_bucket_start"] != bucketStart.Format(time.RFC3339) || metrics["fairness_bucket_end"] != bucketEnd.Format(time.RFC3339) {
 		t.Fatalf("expected fairness bucket metrics, got metrics=%v", metrics)
+	}
+	if metrics["selected_priority_0"] != 1 || metrics["selected_priority_1"] != 1 {
+		t.Fatalf("expected selected priority metrics, got metrics=%v", metrics)
+	}
+	if metrics["selected_admission_opaque_near_time_cohort"] != 1 || metrics["selected_admission_bounded_admission"] != 1 {
+		t.Fatalf("expected selected admission metrics, got metrics=%v", metrics)
+	}
+	if metrics["recovered_tier_hot"] != 1 || metrics["recovered_tier_warm"] != 1 {
+		t.Fatalf("expected recovered tier metrics, got metrics=%v", metrics)
 	}
 }
 
@@ -149,6 +164,10 @@ func TestRunOnceReportsSelectionFillMetrics(t *testing.T) {
 		selectionStats: pgindex.YEncRecoverySelectionStats{
 			BatchRequested:    4,
 			BatchSelected:     1,
+			ReadyCount:        12,
+			Priority0Ready:    3,
+			PrioritySeedLimit: 2,
+			PrioritySeeded:    1,
 			WindowedRequested: 4,
 			NewestRequested:   0,
 			SelectedWindowed:  1,
@@ -175,6 +194,9 @@ func TestRunOnceReportsSelectionFillMetrics(t *testing.T) {
 	}
 	if metrics["selection_windowed_requested"] != 4 || metrics["selection_newest_requested"] != 0 {
 		t.Fatalf("expected selection lane request metrics, got metrics=%v", metrics)
+	}
+	if metrics["selection_ready_count"] != 12 || metrics["selection_priority0_ready"] != 3 || metrics["selection_priority_seeded"] != int64(1) {
+		t.Fatalf("expected selection queue pressure metrics, got metrics=%v", metrics)
 	}
 }
 

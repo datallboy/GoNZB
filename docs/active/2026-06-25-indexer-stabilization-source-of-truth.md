@@ -1064,6 +1064,74 @@ Known open signoff items:
     `recover_yenc` work is admitted, sorted, grouped, filtered, capped, and
     selected. It explicitly states recovery selection is priority/time-bucket
     based rather than FIFO.
+- Assemble/yEnc query-shape follow-up at `2026-07-01 13:35-14:00`:
+  - do not fix assemble by moving binary stats refresh to a separate stage
+    unless the underlying query shape is already proven sound. The observed
+    slow run was a stack of several costs, and moving a bad query would only
+    hide where the time is spent;
+  - current Lane A does not need an arbitrary candidate bound to improve. It
+    needs a lookup order that matches the query. The existing
+    `binary_completion_keys` indexes were all `source_posted_at` first, while
+    Lane A asks for `(provider_id, newsgroup_id, normalized_file_name)` plus a
+    relative source-posted window. Read-only EXPLAIN before the fix scanned and
+    hashed about `1.47M` completion-key rows and took about `720 ms` idle;
+  - adding `idx_binary_completion_keys_filename_lookup` on
+    `(provider_id, newsgroup_id, normalized_file_name, source_posted_at,
+    binary_id) INCLUDE (is_main_payload, observed_parts, completion_ratio,
+    posted_at)` changed the same read-only plan to nested index-only lookups
+    and reduced execution to about `120 ms` idle. This keeps the same semantic
+    `source_posted_at +/- 1 day` join and does not cap Lane A arbitrarily;
+  - migration added:
+    `internal/store/pgindex/migrations/043_binary_completion_key_filename_lookup.up.sql`;
+  - yEnc queue schema already had the fields needed for runtime visibility:
+    `priority_rank`, `admission_reason`, and `group_tier`. No new yEnc queue
+    table was required for the metrics pass;
+  - yEnc recovery now carries those fields through claimed candidates and stage
+    metrics. New useful metrics include:
+    `selection_ready_count`, `selection_priority0_ready`,
+    `selection_priority_seeded`, `selection_generic_seeded`,
+    `selected_priority_0`, `selected_priority_1`,
+    `selected_admission_opaque_near_time_cohort`,
+    `selected_admission_bounded_admission`, `body_matched_admission_*`,
+    `recovered_admission_*`, `merged_admission_*`, and tier/lane variants;
+  - application batching review: yEnc BODY fetch/parse stays concurrent,
+    recovered records still stream to batched apply flushes, and the new
+    metrics map recovered/merged write results back to the selected candidate's
+    priority/admission/tier where possible. This should show whether low merge
+    yield is caused by selection/admission choice, BODY fetch failures, parse
+    failures, noops, or write/merge behavior;
+  - follow-up live serve at `2026-07-01 13:44-13:46` still showed assemble as
+    the scrape gate. The observed line had `candidate_selection_ms=29649.49`,
+    but the sub-metrics showed this was not one undifferentiated selector:
+    `queue_cleanup_ms=21335.54`, `assembly_claim_ms=1883.22`,
+    `assembly_hydration_ms=6430.73`, `binary_upsert_query_ms=26406.39`, and
+    `binary_refresh_yenc_sync_ms=10842.06`;
+  - read-only cleanup EXPLAIN for stale queue rows was about `144 ms` after the
+    run and returned zero rows, so the earlier `queue_cleanup_ms` spike is not
+    currently explained by the steady-state cleanup lookup shape. Continue to
+    watch it under write load before changing schema;
+  - subject multipart regroup candidate staging was a real query-shape issue.
+    The old query joined `binary_core` before reducing the candidate set,
+    causing roughly `181k` binary-core lookups and about `2.1 s` read-only
+    runtime on the current database. The rewritten query filters and limits the
+    partitioned projection candidates first, anti-joins superseded lifecycle
+    rows, then joins `binary_core` for the kept candidates. Read-only EXPLAIN
+    of the equivalent rewrite was about `0.85 s` while preserving the existing
+    7-day candidate policy and not adding an arbitrary assemble cap;
+  - yEnc work-item sync inside binary stats refresh now emits sub-metrics:
+    `binary_refresh_yenc_admission_ms`,
+    `binary_refresh_yenc_priority_open_ms`,
+    `binary_refresh_yenc_sync_chunk_count`,
+    `binary_refresh_yenc_sync_chunk_binary_count`,
+    `binary_refresh_yenc_sync_upserted`,
+    `binary_refresh_yenc_sync_retired`,
+    `binary_refresh_yenc_sync_upsert_ms`,
+    `binary_refresh_yenc_sync_retire_ms`, and
+    `binary_refresh_yenc_promotion_ms`. These are intended to show whether
+    the yEnc queue-sync cost is admission snapshot, priority-open counting,
+    work-item upsert, stale retirement, or opaque-cohort promotion;
+  - validation:
+    `go test ./internal/indexing/assemble ./internal/indexing/yencrecover ./internal/store/pgindex`.
 
 ## Acceptance Criteria
 

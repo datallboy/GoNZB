@@ -52,6 +52,15 @@ type YEncRecoverySelectionOptions struct {
 type YEncRecoverySelectionStats struct {
 	BatchRequested    int
 	BatchSelected     int
+	ReadyCount        int
+	Priority0Ready    int
+	PrioritySeedLimit int
+	PrioritySeeded    int64
+	PriorityRetired   int64
+	GenericSeedLimit  int
+	GenericSeeded     int64
+	GenericRetired    int64
+	SeedDuration      time.Duration
 	WindowedRequested int
 	NewestRequested   int
 	SelectedWindowed  int
@@ -122,6 +131,7 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if limit <= 0 {
 		limit = 100
 	}
+	stats := YEncRecoverySelectionStats{BatchRequested: limit}
 
 	if _, err := s.retireStaleReadyYEncRecoveryWorkItems(ctx); err != nil {
 		return nil, err
@@ -131,6 +141,7 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if err != nil {
 		return nil, err
 	}
+	stats.ReadyCount = readyCount
 	if readyCount > yencRecoverySeedScanLowYieldThreshold {
 		s.clearYEncRecoverySeedScanBackoff()
 	}
@@ -138,6 +149,7 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if err != nil {
 		return nil, err
 	}
+	stats.Priority0Ready = priority0Ready
 	if priority0Ready < limit && !s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
 		seedLimit := limit - priority0Ready
 		if seedLimit < limit/2 {
@@ -149,7 +161,12 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		if seedLimit > yencRecoveryWorkItemSeedLimit {
 			seedLimit = yencRecoveryWorkItemSeedLimit
 		}
-		upserted, _, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		stats.PrioritySeedLimit = seedLimit
+		seedStarted := time.Now()
+		upserted, retired, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		stats.SeedDuration += time.Since(seedStarted)
+		stats.PrioritySeeded = upserted
+		stats.PriorityRetired = retired
 		if seedErr != nil {
 			return nil, seedErr
 		}
@@ -159,12 +176,18 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		}
 	}
 	if readyCount == 0 {
-		if _, _, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit); seedErr != nil {
+		seedStarted := time.Now()
+		upserted, retired, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit)
+		stats.SeedDuration += time.Since(seedStarted)
+		stats.GenericSeedLimit = limit
+		stats.GenericSeeded = upserted
+		stats.GenericRetired = retired
+		if seedErr != nil {
 			return nil, seedErr
 		}
 	}
 
-	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts)
+	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts, stats)
 }
 
 func (s *Store) LastYEncRecoverySelectionStats() YEncRecoverySelectionStats {
@@ -352,9 +375,11 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 	return count, nil
 }
 
-func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions) ([]YEncRecoveryCandidate, error) {
+func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions, stats YEncRecoverySelectionStats) ([]YEncRecoveryCandidate, error) {
 	var out []YEncRecoveryCandidate
-	stats := YEncRecoverySelectionStats{BatchRequested: limit}
+	if stats.BatchRequested <= 0 {
+		stats.BatchRequested = limit
+	}
 	defer func() {
 		stats.BatchSelected = len(out)
 		s.setYEncRecoverySelectionStats(stats)
@@ -838,6 +863,8 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 				wi.current_readiness_bucket,
 				wi.structured_identity_binary_matched,
 				wi.priority_rank,
+				wi.admission_reason,
+				wi.group_tier,
 				wi.updated_at
 			FROM yenc_recovery_work_items wi
 			` + readyWindowClause + `
@@ -921,6 +948,8 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 				s.structured_identity_binary_matched,
 				s.group_rank,
 				s.priority_rank,
+				s.admission_reason,
+				s.group_tier,
 				s.updated_at
 		)
 		SELECT
@@ -950,7 +979,10 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 			current_base_stem,
 			current_readiness_bucket,
 			structured_identity_binary_matched,
-			group_rank
+			group_rank,
+			priority_rank,
+			admission_reason,
+			group_tier
 		FROM claimed
 		ORDER BY
 			priority_rank,
@@ -1091,6 +1123,7 @@ func scanYEncRecoveryCandidateDest(scanner interface{ Scan(dest ...any) error },
 	if groupRank != nil {
 		dest = append(dest, groupRank)
 	}
+	dest = append(dest, &item.PriorityRank, &item.AdmissionReason, &item.GroupTier)
 	if err := scanner.Scan(dest...); err != nil {
 		return YEncRecoveryCandidate{}, fmt.Errorf("scan yenc recovery candidate: %w", err)
 	}
