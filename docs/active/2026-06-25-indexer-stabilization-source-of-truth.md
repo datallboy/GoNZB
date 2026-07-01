@@ -220,6 +220,124 @@ rows that would make the drop incomplete.
   `name=` must not override a stronger complete Subject identity when the BODY
   name is random.
 
+### 2026-07-01 Opaque Burst Audit And Remediation
+
+Live DB audit on July 1 showed the retained database had grown to roughly
+58 GB while only 218 releases existed. Storage was dominated by source rows and
+binary projections, not release catalog rows:
+
+- `article_headers`: 11,769,815 rows;
+- `binary_core` / `binary_identity_current`: 9,510,152 rows;
+- `binary_parts`: 11,594,487 rows;
+- `release_family_readiness_summaries`: 508,185 rows;
+- `releases`: 218 rows.
+
+The root bottleneck was upstream of release formation:
+
+- 8,869,420 binaries were `opaque_set` / `opaque_subject_set` /
+  `provisional` one-part singletons;
+- 8,151,526 of those opaque singletons had no `yenc_recovery_work_items` row;
+- 479,355 known-total binaries were incomplete, and 455,938 of those had only
+  one observed part;
+- median observed coverage for incomplete known-total binaries was 0.07%;
+- release summary refresh was drained, so release formation was not waiting on
+  summary backlog.
+
+Representative proof from `alt.binaries.big`, minute
+`2026-07-01 05:56-04`, showed 3,834 unqueued opaque singletons in one minute.
+`articleprobe` on article `4779862558` found:
+
+```text
+=ybegin part=176 total=732 line=128 size=524288000 name=4PFvyhnKCjkkVMQ9b.part04.rar
+=ypart begin=125440001 end=126156800
+```
+
+Adjacent sampled articles in the same burst had the same yEnc `name=` and
+`total=732` with different `part=` values. This proves the burst was a real
+multi-part archive file stranded as thousands of single-binary families. It
+also proves near-time/article-number hints are admission evidence only: sampled
+parts were not monotonic enough to assemble without BODY authority.
+
+Root causes identified:
+
+1. Priority opaque cohort admission only scanned a small `updated_at`-ordered
+   window from `binary_observation_stats`. Older or high-volume posted-time
+   bursts could be missed even when they were dense and recoverable.
+2. yEnc work seeding only ran when the generic ready queue was empty. A large
+   priority-1 backlog prevented new priority-0 suspicious cohorts from being
+   admitted.
+3. Opportunistic promotion was gated by a 5,000 open-item watermark, so it was
+   effectively disabled while normal recovery backlog was healthy.
+4. After a BODY probe proved a burst had authoritative yEnc identity, the
+   system did not immediately admit sibling opaque singletons from that same
+   near-time cohort.
+
+Required fixes for signoff:
+
+- [x] keep the policy that complete Subject multipart posts do not need yEnc for
+  initial grouping;
+- [x] refill priority-0 yEnc work from suspicious opaque near-time cohorts even
+  when lower-priority ready backlog is nonzero;
+- [x] select opaque cohort admission by posted-time/source-time evidence instead
+  of only latest `updated_at`;
+- [x] when yEnc recovery succeeds for an opaque singleton, admit same-cohort
+  siblings as priority-0 work so the pipeline follows proven bursts instead of
+  sampling unrelated singletons;
+- [x] preserve hard caps: priority-0 may use the configured overflow cap, but
+  generic priority-1/2 admission must still stop at normal hard cap;
+- [x] continue requiring yEnc BODY evidence before promoting fully randomized
+  bursts into real file-level binaries.
+
+Implementation notes:
+
+- migration `042_yenc_opaque_cohort_posted_admission_index` adds a posted-time
+  partial index for one-part observation rows used by opaque cohort admission;
+- priority-0 cohort refill now runs whenever ready priority-0 work is below
+  the recovery batch target, independent of lower-priority ready backlog;
+- the refill scan uses posted/source time ordering and a larger bounded scan
+  window so dense upload bursts are visible;
+- successful streaming yEnc recovery writes now best-effort admit sibling
+  opaque singletons from the same near-time cohort before applying the BODY
+  evidence batch;
+- a store regression test asserts priority opaque cohort work is seeded even
+  when generic yEnc ready work already exists.
+
+Live validation after implementation:
+
+- database size was `59 GB`;
+- `8,151,526` opaque one-part singleton binaries still had no yEnc work item
+  before priority refill caught up;
+- the largest unqueued one-minute singleton cohorts observed were
+  `alt.binaries.multimedia` with `12,348` and `10,146` singles,
+  `alt.binaries.bloaf` with `9,845`, and several `alt.binaries.big` /
+  `alt.binaries.cores` cohorts above `6,000`;
+- `EXPLAIN (ANALYZE, BUFFERS)` for a 5,000-row priority refill over a
+  250,000-row posted-time scan completed in `10.898 s`, under the local
+  15-second statement timeout, using the posted-time observation index for the
+  candidate slice;
+- live serve run refilled priority-0 opaque cohort work while priority-1 work
+  remained ready: `5,548` ready `opaque_near_time_cohort` rows were present
+  alongside `237,846` ready `bounded_admission` rows;
+- first observed full recovery batch after the change recovered `5,000/5,000`
+  and merged `3,188`;
+- next observed full batch recovered `4,999/5,000` and merged `3,261`;
+- release summary refresh consumed the resulting dirty-family backlog in
+  small batches, and release formation began seeing candidates again.
+
+Remaining follow-up:
+
+- the priority refill query is acceptable but not cheap; if it becomes a top
+  CPU/IO cost, reduce the join fanout by materializing an assemble-owned
+  `opaque_singleton_cohort_queue` keyed by provider, newsgroup, posted bucket,
+  and source partition;
+- scrape is now correctly gated by the yEnc hard cap, but assemble still shows
+  periodic 20-30 second runs when scrape fills the assembly queue. Keep the
+  existing assemble query-shape investigation open separately from this yEnc
+  admission fix;
+- inspect_par2 repeatedly reports prefix samples starting after offset `0` for
+  some volume files. That is an inspect candidate/mode issue, not the opaque
+  yEnc admission bottleneck fixed here.
+
 ## Binary Grouping Evidence Tasks
 
 Canonical reference:

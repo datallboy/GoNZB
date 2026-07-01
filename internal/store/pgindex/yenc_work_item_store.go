@@ -12,6 +12,8 @@ const (
 	yencRecoveryWorkItemSeedLimit          = 5000
 	yencRecoveryWorkItemSyncChunk          = 2000
 	yencRecoveryOpaqueCohortMin            = 20
+	yencRecoveryOpaqueCohortScanMultiplier = 200
+	yencRecoveryOpaqueCohortScanMax        = 250000
 	yencRecoveryPrioritySeedMax            = 512
 	yencRecoveryOpaqueCohortAdmissionScore = 100
 	yencRecoveryPriority0PromoteWatermark  = yencRecoveryWorkItemSeedLimit
@@ -185,8 +187,8 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Con
 	if siblingLimit < yencRecoveryWorkItemSeedLimit {
 		siblingLimit = yencRecoveryWorkItemSeedLimit
 	}
-	if siblingLimit > yencRecoveryWorkItemSyncChunk {
-		siblingLimit = yencRecoveryWorkItemSyncChunk
+	if siblingLimit > yencRecoveryWorkItemSeedLimit {
+		siblingLimit = yencRecoveryWorkItemSeedLimit
 	}
 	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
 	if err != nil {
@@ -366,6 +368,13 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 	if limit <= 0 {
 		return nil, nil
 	}
+	scanLimit := limit * yencRecoveryOpaqueCohortScanMultiplier
+	if scanLimit < limit {
+		scanLimit = limit
+	}
+	if scanLimit > yencRecoveryOpaqueCohortScanMax {
+		scanLimit = yencRecoveryOpaqueCohortScanMax
+	}
 	rows, err := tx.QueryContext(ctx, `
 		WITH recent_bos AS MATERIALIZED (
 			SELECT
@@ -380,8 +389,8 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
 			  AND posted_at IS NOT NULL
-			ORDER BY updated_at DESC, binary_id DESC
-			LIMIT LEAST($1::integer * 20, 20000)
+			ORDER BY posted_at DESC, source_posted_at DESC, binary_id DESC
+			LIMIT $3
 		),
 		recent AS MATERIALIZED (
 			SELECT
@@ -418,8 +427,8 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 				  AND wi.binary_id = bc.binary_id
 			  	  AND wi.status IN ('ready', 'running', 'done')
 			  )
-			ORDER BY rb.updated_at DESC, bc.binary_id DESC
-			LIMIT LEAST($1::integer * 20, 20000)
+			ORDER BY rb.posted_at DESC, rb.total_bytes DESC, bc.binary_id DESC
+			LIMIT $3
 		),
 		cohorts AS MATERIALIZED (
 			SELECT provider_id, newsgroup_id, posted_bucket, MAX(posted_at) AS latest_posted_at, COUNT(*) AS cohort_size
@@ -439,6 +448,7 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 		LIMIT $1`,
 		limit,
 		bucketSeconds,
+		scanLimit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("select opaque near-time yenc recovery work item backfill binaries: %w", err)

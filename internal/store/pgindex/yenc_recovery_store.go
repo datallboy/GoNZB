@@ -134,6 +134,30 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if readyCount > yencRecoverySeedScanLowYieldThreshold {
 		s.clearYEncRecoverySeedScanBackoff()
 	}
+	priority0Ready, err := s.countReadyYEncRecoveryPriority0Candidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if priority0Ready < limit && !s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
+		seedLimit := limit - priority0Ready
+		if seedLimit < limit/2 {
+			seedLimit = limit / 2
+		}
+		if seedLimit <= 0 {
+			seedLimit = limit
+		}
+		if seedLimit > yencRecoveryWorkItemSeedLimit {
+			seedLimit = yencRecoveryWorkItemSeedLimit
+		}
+		upserted, _, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		if seedErr != nil {
+			return nil, seedErr
+		}
+		s.recordYEncRecoverySeedScanResult(time.Now(), priority0Ready, upserted)
+		if upserted > 0 {
+			s.clearYEncRecoverySeedScanBackoff()
+		}
+	}
 	if readyCount == 0 {
 		if _, _, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit); seedErr != nil {
 			return nil, seedErr

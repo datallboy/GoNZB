@@ -218,6 +218,21 @@ cohort to a real binary by itself. It only tells `recover_yenc` to spend BODY
 probes there before generic weak backlog because the timeframe suggests the
 current singleton identities may be incomplete.
 
+Priority-0 suspicious cohort admission must not wait for the generic yEnc
+ready queue to drain. A large priority-1 backlog is expected on heavily
+obfuscated groups; it must not prevent new high-pressure bursts from entering
+the priority-0 lane. Admission should refill priority-0 cohorts whenever the
+ready priority-0 pool is below the current recovery batch target, subject to
+the configured hard cap and priority-0 overflow cap.
+
+When a BODY probe inside an opaque near-time cohort succeeds and exposes a
+multi-part yEnc identity, that success is proof that the surrounding burst is
+worth more probes. The recovery stage should immediately admit sibling
+singletons from the same provider/newsgroup/near-time bucket as priority-0
+work. This still does not trust the cohort as a binary; it only follows proven
+BODY evidence so the remaining articles for that file can be recovered and
+merged.
+
 Do not rely on article number order or near-time bucketing to probe only a
 handful of articles in this class. Article number order and near-time
 clustering are scheduling and diagnostic hints only. Until a separate
