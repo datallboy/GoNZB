@@ -390,8 +390,18 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
+		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit)
+		if err != nil {
+			return err
+		}
+		out = append(out, priority...)
+		if len(out) >= limit {
+			return nil
+		}
+
 		if opts.HasTargetWindow() {
-			targetLimit := yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			remainingLimit := limit - len(out)
+			targetLimit := yencRecoveryPercentLimit(remainingLimit, opts.TargetWindowPercent)
 			stats.WindowedRequested = targetLimit
 			if targetLimit > 0 {
 				targeted, scanned, empty, err := claimYEncRecoveryPostedWindowsBackward(ctx, tx, targetLimit, *opts.TargetWindowStart, *opts.TargetWindowEnd, "target_window")
@@ -403,7 +413,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 				stats.SelectedWindowed += len(targeted)
 				out = append(out, targeted...)
 			}
-			newestLimit := yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			newestLimit := yencRecoveryPercentLimit(remainingLimit, opts.NewestPercent)
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
 			}
@@ -423,9 +433,10 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		fixedSplit := opts.HasValidSplit()
-		fairnessLimit := yencRecoveryFairnessLimit(ctx, tx, limit)
+		remainingLimit := limit - len(out)
+		fairnessLimit := yencRecoveryFairnessLimit(ctx, tx, remainingLimit)
 		if fixedSplit {
-			fairnessLimit = yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			fairnessLimit = yencRecoveryPercentLimit(remainingLimit, opts.TargetWindowPercent)
 		}
 		stats.WindowedRequested = fairnessLimit
 		if fairnessLimit > 0 {
@@ -441,7 +452,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 
 		newestLimit := limit - len(out)
 		if fixedSplit {
-			newestLimit = yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			newestLimit = yencRecoveryPercentLimit(remainingLimit, opts.NewestPercent)
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
 			}
@@ -461,6 +472,23 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
 	return out, nil
+}
+
+func claimPriority0YEncRecoveryCandidates(ctx context.Context, tx *sql.Tx, limit int) ([]YEncRecoveryCandidate, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, claimYEncRecoveryCandidatesSQL(`
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND wi.priority_rank = 0
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		ORDER BY wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+		LIMIT $2`), limit, yencRecoveryReadyWindowLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return scanClaimedYEncRecoveryCandidates(rows, "priority0", nil, nil)
 }
 
 func claimYEncRecoveryPostedWindowsBackward(ctx context.Context, tx *sql.Tx, limit int, start, end time.Time, lane string) ([]YEncRecoveryCandidate, int, int, error) {

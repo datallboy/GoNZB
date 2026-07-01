@@ -1457,7 +1457,8 @@ func (s *Store) CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (i
 		WITH stale AS (
 			SELECT q.source_posted_at, q.article_header_id
 			FROM article_header_assembly_queue q
-			WHERE EXISTS (
+			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND EXISTS (
 				SELECT 1
 				FROM binary_parts bp
 				WHERE bp.source_posted_at = q.source_posted_at
@@ -1465,6 +1466,7 @@ func (s *Store) CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (i
 			)
 			ORDER BY q.article_header_id
 			LIMIT $1
+			FOR UPDATE SKIP LOCKED
 		),
 		deleted AS (
 			DELETE FROM article_header_assembly_queue q
@@ -1765,6 +1767,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	if err := stageExistingBinaryChunk(ctx, runner); err != nil {
 		return nil, nil, err
 	}
+	observationStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binary_observation_stats (
 			binary_id,
@@ -1805,6 +1808,10 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_observation_stats batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordObservationStatsDuration(time.Since(observationStarted))
+	}
+	identityStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binary_identity_current (
 			binary_id,
@@ -1899,6 +1906,10 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    updated_at = NOW()`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordIdentityDuration(time.Since(identityStarted))
+	}
+	recoverySeedStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binary_recovery_current (
 			binary_id,
@@ -1918,6 +1929,10 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		ON CONFLICT (source_posted_at, binary_id) DO NOTHING`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_recovery_current seed batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordRecoverySeedDuration(time.Since(recoverySeedStarted))
+	}
+	lifecycleSeedStarted := time.Now()
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO binary_lifecycle (
 			binary_id,
@@ -1939,8 +1954,15 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		ON CONFLICT (source_posted_at, binary_id) DO NOTHING`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_lifecycle seed batch: %w", err)
 	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordLifecycleSeedDuration(time.Since(lifecycleSeedStarted))
+	}
+	completionKeyStarted := time.Now()
 	if err := syncBinaryCompletionKeysForStagedBinaries(ctx, runner); err != nil {
 		return nil, nil, err
+	}
+	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
+		telemetry.recordCompletionKeySyncDuration(time.Since(completionKeyStarted))
 	}
 	readbackStarted := time.Now()
 	rows, err := runner.QueryContext(ctx, `
@@ -2945,6 +2967,18 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		completedArticleHeaderIDs,
 	); err != nil {
 		return fmt.Errorf("stage %d completed assembly headers: %w", len(completedKeys), err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_parts bp
+		USING tmp_binary_parts tbp
+		WHERE bp.source_posted_at = tbp.source_posted_at
+		  AND bp.article_header_id = tbp.article_header_id
+		  AND (
+		      bp.binary_id <> tbp.binary_id
+		   OR bp.part_number <> tbp.part_number
+		  )`); err != nil {
+		return fmt.Errorf("delete conflicting binary part article owners: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `

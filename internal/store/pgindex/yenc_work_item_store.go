@@ -844,6 +844,23 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 		WITH requested(binary_id) AS (
 			SELECT DISTINCT unnest($1::bigint[])
 		),
+		open_candidates AS MATERIALIZED (
+			SELECT
+				bc.binary_id,
+				bc.provider_id,
+				bc.newsgroup_id,
+				bc.binary_key,
+				bc.source_posted_at
+			FROM requested r
+			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM yenc_recovery_work_items wi
+				WHERE wi.source_posted_at = bc.source_posted_at
+				  AND wi.binary_id = bc.binary_id
+				  AND wi.status IN ('ready', 'running', 'done')
+			)
+		),
 		eligible AS (
 			SELECT
 				bc.binary_id,
@@ -882,8 +899,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				COALESCE(s.readiness_bucket, '') AS readiness_bucket,
 				COALESCE(bic.grouping_summary_fallback_used, false) AS structured_identity_binary_matched,
 				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS group_tier
-			FROM requested r
-			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			FROM open_candidates bc
 			JOIN binary_identity_current bic
 			  ON bic.source_posted_at = bc.source_posted_at
 			 AND bic.binary_id = bc.binary_id
