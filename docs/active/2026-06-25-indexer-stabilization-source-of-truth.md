@@ -1267,3 +1267,36 @@ Known open signoff items:
   - recover_yenc consumed full `5,000` item batches and release summary refresh
     continued processing queued families while scrape remained gated by
     assemble backlog.
+
+### 2026-07-02 Cohort Priority Soak Follow-Up
+
+- [x] Fixed subject-complete cohort scheduling to count existing open
+  `article_cohort_assembly_queue` rows before scanning and to skip rows already
+  queued/done in the scheduler projection.
+- [x] Fixed assemble claim locking to use `FOR UPDATE OF q SKIP LOCKED`, so the
+  claim path locks only `article_header_assembly_queue` source rows and does
+  not lock scheduler projection rows.
+- [x] Fixed combined/Lane B assemble selection to use a cohort-only claim path
+  whenever `article_cohort_assembly_queue` has claimable rows. This prevents
+  broad Lane A/Lane B fallback CTEs from consuming the claim timeout before
+  scheduler-ranked priority rows are claimed.
+- [x] Fixed opaque yEnc cohort scheduling to scale scans by remaining queue
+  capacity instead of forcing a full scheduler batch scan when the yEnc cohort
+  reservoir is nearly full.
+- [x] Live serve evidence after restart:
+  - subject-complete cohort assembly drained first:
+    `article_cohort_assembly_queue` reached `84,884` done and `0` ready during
+    the soak;
+  - assemble completed priority cohort passes before broad fallback, including
+    `20,000` subject/cohort headers collapsed into `35` binaries, then later
+    smaller post-scrape cohort passes such as `9,059` headers into `90`
+    binaries and `1,114` headers into `59` binaries;
+  - broad fallback still processes opaque singleton/general work and feeds yEnc,
+    but no patched assemble claim timeout occurred after restart;
+  - scrape resumed automatically when the source assembly queue fell below the
+    resume threshold, then paused again once latest/backfill refilled the
+    assemble bucket;
+  - recover_yenc continued full `5,000` candidate batches, mostly priority-0
+    `opaque_near_time_cohort` work, with high recovered/merged counts;
+  - after the opaque scan fix, `article_cohort_schedule` completed in sub-second
+    to low-single-digit seconds in the observed post-restart runs.

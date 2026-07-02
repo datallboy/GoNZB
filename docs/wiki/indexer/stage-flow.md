@@ -51,6 +51,12 @@ Assemble first claims scheduler-ranked rows from
 `(source_posted_at, article_header_id)` source facts, writes binary rows, then
 deletes completed source assembly queue rows.
 
+When scheduler-ranked cohort rows are claimable, assemble uses a cohort-only
+claim path and does not evaluate broad Lane A/Lane B fallback selectors in the
+same claim. This keeps complete Subject multipart cohorts ahead of expensive
+general opaque work and avoids consuming the claim timeout before priority work
+is locked.
+
 Lane A extends incomplete binaries using `binary_completion_keys`. Lane B
 creates or updates general binary records, with scheduler-ranked cohorts ahead
 of raw newest unstructured rows.

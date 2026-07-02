@@ -351,6 +351,35 @@ func (s *Store) ClaimUnassembledArticleHeaders(ctx context.Context, req Assembly
 	return s.ClaimAssemblyQueueBatch(ctx, req)
 }
 
+func hasClaimableArticleCohortAssemblyRows(ctx context.Context, q assemblyQueryer) (bool, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM article_cohort_assembly_queue cq
+			JOIN article_header_assembly_queue ahq
+			  ON ahq.source_posted_at = cq.source_posted_at
+			 AND ahq.article_header_id = cq.article_header_id
+			WHERE cq.status = 'ready'
+			  AND (ahq.claim_until IS NULL OR ahq.claim_until < NOW())
+			  AND ahq.queued_at <= NOW() - ($1::bigint * INTERVAL '1 second')
+			LIMIT 1
+		)`, int64(assembleClaimMinQueueAge/time.Second))
+	if err != nil {
+		return false, fmt.Errorf("check claimable article cohort assembly rows: %w", err)
+	}
+	defer rows.Close()
+	var exists bool
+	if rows.Next() {
+		if err := rows.Scan(&exists); err != nil {
+			return false, fmt.Errorf("scan claimable article cohort assembly rows: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate claimable article cohort assembly rows: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *Store) ClaimAssemblyQueueBatch(ctx context.Context, req AssemblyClaimRequest) ([]AssemblyCandidate, error) {
 	out, _, err := s.ClaimAssemblyQueueBatchWithStats(ctx, req)
 	return out, err
@@ -413,6 +442,15 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 	claimToken := uuid.NewString()
 	lane := strings.TrimSpace(strings.ToLower(req.Lane))
 
+	cohortOnly := false
+	if lane == AssemblyClaimLaneCombined || lane == AssemblyClaimLaneB {
+		available, err := hasClaimableArticleCohortAssemblyRows(ctx, tx)
+		if err != nil {
+			return nil, stats, err
+		}
+		cohortOnly = available
+	}
+
 	selectionSQL := `
 		WITH selected_targets AS MATERIALIZED (
 			SELECT
@@ -425,7 +463,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),`
 	queryArgs := []any{
 		limit,
@@ -434,8 +472,27 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 		claimToken,
 		int64(assembleClaimMinQueueAge / time.Second),
 	}
-	switch lane {
-	case AssemblyClaimLaneA:
+	switch {
+	case cohortOnly:
+		selectionSQL = `
+		WITH selected_targets AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				TRUE AS structured_identity_binary_matched,
+				-1 AS lane_rank
+			FROM article_cohort_assembly_queue cq
+			JOIN article_header_assembly_queue q
+			  ON q.source_posted_at = cq.source_posted_at
+			 AND q.article_header_id = cq.article_header_id
+			WHERE cq.status = 'ready'
+			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE OF q SKIP LOCKED
+		),`
+	case lane == AssemblyClaimLaneA:
 		selectionSQL = `
 		WITH selected_targets AS MATERIALIZED (
 			SELECT
@@ -450,9 +507,9 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),`
-	case AssemblyClaimLaneB:
+	case lane == AssemblyClaimLaneB:
 		selectionSQL = `
 		WITH cohort_lane AS MATERIALIZED (
 			SELECT
@@ -469,7 +526,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		fallback_lane AS MATERIALIZED (
 			SELECT
@@ -492,7 +549,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		selected_targets AS MATERIALIZED (
 			SELECT * FROM cohort_lane
@@ -501,7 +558,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			ORDER BY lane_rank ASC, article_header_id DESC
 			LIMIT $1
 		),`
-	case AssemblyClaimLaneCombined:
+	case lane == AssemblyClaimLaneCombined:
 		laneALimit := (limit * req.LaneATargetPct) / 100
 		if laneALimit < 1 && limit > 1 {
 			laneALimit = 1
@@ -522,7 +579,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		lane_a AS MATERIALIZED (
 			SELECT
@@ -543,7 +600,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $6
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		lane_b AS MATERIALIZED (
 			SELECT
@@ -568,7 +625,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		selected_targets AS MATERIALIZED (
 			SELECT * FROM cohort_lane
@@ -1539,7 +1596,7 @@ func (s *Store) CleanupStaleAssemblyQueueRows(ctx context.Context, limit int) (i
 			)
 			ORDER BY q.article_header_id
 			LIMIT $1
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF q SKIP LOCKED
 		),
 		deleted AS (
 			DELETE FROM article_header_assembly_queue q
