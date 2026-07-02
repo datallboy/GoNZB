@@ -1029,9 +1029,17 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				bc.provider_id,
 				bc.newsgroup_id,
 				bc.binary_key,
-				bc.source_posted_at
+				bc.source_posted_at,
+				(cyq.binary_id IS NOT NULL) AS scheduler_backed,
+				COALESCE(cyq.priority_rank, 999) AS scheduler_priority_rank,
+				COALESCE(cyq.admission_reason, '') AS scheduler_admission_reason,
+				COALESCE(cyq.score, 0) AS scheduler_admission_score
 			FROM requested r
 			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			LEFT JOIN article_cohort_yenc_queue cyq
+			  ON cyq.source_posted_at = bc.source_posted_at
+			 AND cyq.binary_id = bc.binary_id
+			 AND cyq.status IN ('ready', 'admitted')
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM yenc_recovery_work_items wi
@@ -1069,7 +1077,10 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
 				GREATEST(COALESCE(p.yenc_total_parts, 0), COALESCE(bos.total_parts, 0)) AS yenc_total_parts,
 				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-`+yencRecoveryWorkItemPriorityRankSQL+` AS priority_rank,
+				CASE
+					WHEN bc.scheduler_backed THEN LEAST(bc.scheduler_priority_rank, `+yencRecoveryWorkItemPriorityRankSQL+`)
+					ELSE `+yencRecoveryWorkItemPriorityRankSQL+`
+				END AS priority_rank,
 				NOW() AS ready_at,
 				0 AS missing_count,
 				bc.binary_key,
@@ -1077,7 +1088,28 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				bic.base_stem,
 				COALESCE(s.readiness_bucket, '') AS readiness_bucket,
 				COALESCE(bic.grouping_summary_fallback_used, false) AS structured_identity_binary_matched,
-				COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') AS group_tier
+				CASE
+					WHEN bc.scheduler_backed THEN 'hot'
+					ELSE COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm')
+				END AS group_tier,
+				CASE
+					WHEN bc.scheduler_backed AND BTRIM(bc.scheduler_admission_reason) <> '' THEN bc.scheduler_admission_reason
+					WHEN `+yencRecoveryWorkItemPriorityRankSQL+` = 0 THEN 'near_complete_or_multipart'
+					ELSE 'bounded_admission'
+				END AS admission_reason,
+				CASE
+					WHEN bc.scheduler_backed THEN GREATEST(100, bc.scheduler_admission_score)
+					WHEN COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'hot' THEN 100
+					WHEN COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'warm' THEN 50
+					WHEN COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'cold' THEN 10
+					ELSE 0
+				END + GREATEST(
+					0,
+					10 - CASE
+						WHEN bc.scheduler_backed THEN LEAST(bc.scheduler_priority_rank, `+yencRecoveryWorkItemPriorityRankSQL+`)
+						ELSE `+yencRecoveryWorkItemPriorityRankSQL+`
+					END
+				) AS admission_score
 			FROM open_candidates bc
 			JOIN binary_identity_current bic
 			  ON bic.source_posted_at = bc.source_posted_at
@@ -1111,19 +1143,26 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 			  ON p.source_posted_at = ah.source_posted_at
 			 AND p.article_header_id = ah.id
 			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			WHERE bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
-			  AND bic.is_main_payload = TRUE
+			WHERE bic.is_main_payload = TRUE
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
+			  AND (
+			    bc.scheduler_backed
+			    OR (
+			      bic.family_kind IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set')
 `+yencRecoveryWeakFamilyEligibilityPredicate+`
 `+yencRecoverySubjectFileNamePredicate+`
-			  AND (
-			  	$3::boolean = FALSE
-			  	OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
+			    )
 			  )
 			  AND (
-			  	$4::boolean = FALSE
-			  	OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
-			  	OR COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'hot'
+			    $3::boolean = FALSE
+			    OR bc.scheduler_backed
+			    OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
+			  )
+			  AND (
+			    $4::boolean = FALSE
+			    OR bc.scheduler_backed
+			    OR `+yencRecoveryWorkItemPriorityRankSQL+` = 0
+			    OR COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm') = 'hot'
 			  )
 			  AND NOT EXISTS (
 			    SELECT 1
@@ -1206,16 +1245,8 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				e.readiness_bucket,
 				e.structured_identity_binary_matched,
 				e.group_tier,
-				CASE
-					WHEN e.priority_rank = 0 THEN 'near_complete_or_multipart'
-					ELSE 'bounded_admission'
-				END,
-				CASE
-					WHEN e.group_tier = 'hot' THEN 100
-					WHEN e.group_tier = 'warm' THEN 50
-					WHEN e.group_tier = 'cold' THEN 10
-					ELSE 0
-				END + GREATEST(0, 10 - e.priority_rank),
+				e.admission_reason,
+				e.admission_score,
 				COALESCE(e.date_utc, NOW()),
 				COALESCE(e.date_utc, NOW())::date,
 				NOW()
