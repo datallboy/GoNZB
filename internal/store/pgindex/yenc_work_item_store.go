@@ -142,6 +142,28 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, err
 	}
 
+	if err := promoteAdmittedArticleCohortYEncWorkItemsInTx(ctx, tx, limit); err != nil {
+		return 0, 0, err
+	}
+
+	scheduledBinaryIDs, err := selectArticleCohortYEncQueueBinaryIDsInTx(ctx, tx, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(scheduledBinaryIDs) > 0 {
+		upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, scheduledBinaryIDs)
+		if err != nil {
+			return 0, 0, err
+		}
+		if err := markArticleCohortYEncQueueAdmittedInTx(ctx, tx, scheduledBinaryIDs); err != nil {
+			return 0, 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("commit scheduled priority yenc recovery work item backfill tx: %w", err)
+		}
+		return upserted, retired, nil
+	}
+
 	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
 	if err != nil {
 		return 0, 0, err
@@ -168,6 +190,163 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, fmt.Errorf("commit priority yenc recovery work item backfill tx: %w", err)
 	}
 	return upserted, retired, nil
+}
+
+func promoteAdmittedArticleCohortYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) error {
+	if tx == nil {
+		return fmt.Errorf("article cohort yenc queue tx is required")
+	}
+	if limit <= 0 {
+		limit = yencRecoveryWorkItemSeedLimit
+	}
+	_, err := tx.ExecContext(ctx, `
+		WITH selected AS MATERIALIZED (
+			SELECT cyq.source_posted_at, cyq.binary_id, cyq.status
+			FROM article_cohort_yenc_queue cyq
+			JOIN yenc_recovery_work_items wi
+			  ON wi.source_posted_at = cyq.source_posted_at
+			 AND wi.binary_id = cyq.binary_id
+			WHERE cyq.status IN ('ready', 'admitted')
+			  AND wi.status IN ('ready', 'running')
+			  AND (
+				cyq.status <> 'admitted'
+				OR
+				wi.priority_rank > cyq.priority_rank
+				OR wi.admission_reason IS DISTINCT FROM cyq.admission_reason
+				OR wi.group_tier <> 'hot'
+			  )
+			ORDER BY cyq.priority_rank ASC, cyq.score DESC, cyq.source_posted_at DESC, cyq.binary_id
+			LIMIT $1
+			FOR UPDATE OF cyq, wi SKIP LOCKED
+		),
+		promoted AS (
+			UPDATE yenc_recovery_work_items wi
+			SET priority_rank = LEAST(wi.priority_rank, cyq.priority_rank),
+			    admission_reason = CASE
+			        WHEN BTRIM(COALESCE(cyq.admission_reason, '')) <> '' THEN cyq.admission_reason
+			        ELSE wi.admission_reason
+			    END,
+			    admission_score = GREATEST(wi.admission_score, cyq.score),
+			    group_tier = 'hot',
+			    updated_at = NOW()
+			FROM article_cohort_yenc_queue cyq
+			JOIN selected s
+			  ON s.source_posted_at = cyq.source_posted_at
+			 AND s.binary_id = cyq.binary_id
+			WHERE wi.source_posted_at = cyq.source_posted_at
+			  AND wi.binary_id = cyq.binary_id
+			RETURNING wi.source_posted_at, wi.binary_id
+		)
+		UPDATE article_cohort_yenc_queue cyq
+		SET priority_rank = LEAST(wi.priority_rank, cyq.priority_rank),
+		    status = 'admitted',
+		    admitted_at = COALESCE(cyq.admitted_at, NOW()),
+		    updated_at = NOW()
+		FROM yenc_recovery_work_items wi
+		JOIN promoted p
+		  ON p.source_posted_at = wi.source_posted_at
+		 AND p.binary_id = wi.binary_id
+		WHERE cyq.source_posted_at = wi.source_posted_at
+		  AND cyq.binary_id = wi.binary_id`,
+		limit,
+	)
+	if err != nil {
+		return fmt.Errorf("promote admitted article cohort yenc work items: %w", err)
+	}
+	return nil
+}
+
+func selectArticleCohortYEncQueueBinaryIDsInTx(ctx context.Context, tx *sql.Tx, limit int) ([]int64, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("article cohort yenc queue tx is required")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		WITH selected AS MATERIALIZED (
+			SELECT cyq.source_posted_at, cyq.binary_id
+			FROM article_cohort_yenc_queue cyq
+			WHERE cyq.status = 'ready'
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM yenc_recovery_work_items wi
+				WHERE wi.source_posted_at = cyq.source_posted_at
+				  AND wi.binary_id = cyq.binary_id
+				  AND wi.status IN ('ready', 'running', 'done')
+			  )
+			ORDER BY cyq.priority_rank ASC, cyq.score DESC, cyq.source_posted_at DESC, cyq.binary_id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		SELECT binary_id
+		FROM selected
+		ORDER BY binary_id`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("select article cohort yenc queue binaries: %w", err)
+	}
+	defer rows.Close()
+	binaryIDs := make([]int64, 0, limit)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			return nil, fmt.Errorf("scan article cohort yenc queue binary: %w", err)
+		}
+		if binaryID > 0 {
+			binaryIDs = append(binaryIDs, binaryID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate article cohort yenc queue binaries: %w", err)
+	}
+	return binaryIDs, nil
+}
+
+func markArticleCohortYEncQueueAdmittedInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
+	if tx == nil {
+		return fmt.Errorf("article cohort yenc queue tx is required")
+	}
+	if len(binaryIDs) == 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		WITH requested(binary_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		),
+		promoted AS (
+			UPDATE yenc_recovery_work_items wi
+			SET priority_rank = LEAST(wi.priority_rank, cyq.priority_rank),
+			    admission_reason = CASE
+			        WHEN BTRIM(COALESCE(cyq.admission_reason, '')) <> '' THEN cyq.admission_reason
+			        ELSE wi.admission_reason
+			    END,
+			    admission_score = GREATEST(wi.admission_score, cyq.score),
+			    group_tier = 'hot',
+			    updated_at = NOW()
+			FROM article_cohort_yenc_queue cyq
+			JOIN requested r ON r.binary_id = cyq.binary_id
+			WHERE wi.source_posted_at = cyq.source_posted_at
+			  AND wi.binary_id = cyq.binary_id
+			  AND wi.status IN ('ready', 'running')
+			RETURNING wi.source_posted_at, wi.binary_id
+		)
+		UPDATE article_cohort_yenc_queue cyq
+		SET status = 'admitted',
+		    admitted_at = NOW(),
+		    updated_at = NOW()
+		FROM requested r
+		WHERE cyq.binary_id = r.binary_id
+		  AND cyq.status = 'ready'
+		  AND EXISTS (
+			SELECT 1
+			FROM promoted p
+			WHERE p.source_posted_at = cyq.source_posted_at
+			  AND p.binary_id = cyq.binary_id
+		  )`, binaryIDs)
+	if err != nil {
+		return fmt.Errorf("mark article cohort yenc queue admitted: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error) {

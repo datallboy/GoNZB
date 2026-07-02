@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -167,6 +168,31 @@ func (ctrl *IndexerAdminController) ListDailyBucketStats(c *echo.Context) error 
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *IndexerAdminController) ListArticleCohorts(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset := parseIntDefault(queryParamTrimmed(c, "offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+	items, total, err := ctrl.Service.ListArticleCohorts(c.Request().Context(), pgindex.IndexerArticleCohortParams{
+		Kind:   strings.TrimSpace(c.QueryParam("kind")),
+		Status: strings.TrimSpace(c.QueryParam("status")),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items), "total": total})
 }
 
 func (ctrl *IndexerAdminController) GetStageThroughput(c *echo.Context) error {

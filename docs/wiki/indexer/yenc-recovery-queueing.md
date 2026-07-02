@@ -23,6 +23,7 @@ markers.
 
 Work can enter the table from these paths:
 
+- scheduler-backed priority admission from `article_cohort_yenc_queue`;
 - generic bounded admission from weak or incomplete binary projections;
 - priority admission for near-complete or multipart candidates;
 - priority admission for opaque near-time singleton cohorts;
@@ -86,9 +87,16 @@ sampled.
 Candidate selection is not FIFO.
 
 Before selecting rows, stale ready items are retired and expired running leases
-are returned to the pool. If priority-0 ready rows are below the recovery batch
-target, the selector tries to refill priority-0 opaque cohorts. Generic
-bounded seeding runs only when the ready queue is empty.
+are returned to the pool. If priority-0 ready rows are below the configured
+reservoir target, the selector tries to refill priority-0 work. The default
+reservoir is five recovery batches:
+`indexing.recovery_admission.priority0_reservoir_batches = 5`.
+
+Refill order is:
+
+1. consume scheduler materialized rows from `article_cohort_yenc_queue`;
+2. fall back to the bounded opaque near-time projection scan;
+3. run generic bounded seeding only when the ready queue is empty.
 
 The selector then claims ready rows in two lanes:
 
@@ -113,6 +121,23 @@ Inside each claim window, rows are ordered by:
 
 The poster/message-id/minute ordering is a batch locality hint. It is not
 binary grouping proof.
+
+## Cohort Outcome Feedback
+
+Scheduler-backed priority work records recovery yield back into
+`article_cohort_candidates`.
+
+- Successful yEnc recovery marks matching `article_cohort_yenc_queue` rows
+  `done`, increments `yenc_done_count` and `yenc_recovered_count`, clears any
+  cooldown, and raises the cohort score.
+- `not_found` and no-op outcomes keep the normal yEnc work-item retry/backoff
+  behavior, but increment `yenc_no_identity_count`.
+- A zero-recovered cohort that reaches the no-identity threshold is moved to
+  cooldown. While the cooldown is active, the scheduler does not enqueue more
+  rows for that cohort.
+
+This feedback loop keeps productive opaque cohorts hot while stopping random or
+low-yield cohorts from repeatedly filling priority-0 capacity.
 
 ## Current Audit Notes
 

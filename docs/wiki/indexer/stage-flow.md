@@ -27,12 +27,33 @@ and cold work, while preserving latest hot-group freshness where possible.
 
 ## Assemble
 
-Assemble claims queue rows from `article_header_assembly_queue`, hydrates exact
+## Article Cohort Schedule
+
+`article_cohort_schedule` is the durable ranking layer between scrape and the
+binary/recovery consumers. It reads source facts and binary projections, then
+writes scheduler-owned queues:
+
+- `article_cohort_candidates`
+- `article_cohort_assembly_queue`
+- `article_cohort_yenc_queue`
+
+The scheduler does not mutate `article_headers`, ingest payload rows, or binary
+projection ownership. It promotes complete Subject multipart posts directly to
+assemble priority work and promotes suspicious opaque singleton bursts to yEnc
+priority work. Weak near-time cohorts are scheduling evidence only; they do not
+become binary identity proof without HEAD-complete or recovered BODY evidence.
+
+## Assemble
+
+Assemble first claims scheduler-ranked rows from
+`article_cohort_assembly_queue`, then falls back to
+`article_header_assembly_queue`. It hydrates exact
 `(source_posted_at, article_header_id)` source facts, writes binary rows, then
-deletes completed queue rows.
+deletes completed source assembly queue rows.
 
 Lane A extends incomplete binaries using `binary_completion_keys`. Lane B
-creates or updates general binary records from recent queue rows.
+creates or updates general binary records, with scheduler-ranked cohorts ahead
+of raw newest unstructured rows.
 
 Binary grouping evidence priority is documented in
 [Binary Grouping Evidence](./binary-grouping-evidence.md). In short, complete
@@ -44,7 +65,9 @@ poster/message-id context and can be stronger than a randomized recovered yEnc
 
 yEnc recovery claims `yenc_recovery_work_items`, fetches missing article
 payload details, and writes recovered identity data to recovery-owned binary
-projection rows. Retry and backoff state stays in the recovery work table.
+projection rows. Priority admission first consumes
+`article_cohort_yenc_queue`; retry and backoff state stays in the recovery
+work table.
 
 Subject-complete posts do not need yEnc recovery for initial binary assembly.
 Recovery should be admitted when HEAD evidence is incomplete, ambiguous, or

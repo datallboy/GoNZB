@@ -184,6 +184,10 @@ func (s *stubIndexerService) ListAdminAttention(ctx context.Context, params pgin
 	return nil, 0, nil
 }
 
+func (s *stubIndexerService) ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error) {
+	return nil, 0, nil
+}
+
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
 }

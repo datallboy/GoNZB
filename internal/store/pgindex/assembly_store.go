@@ -454,7 +454,24 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 		),`
 	case AssemblyClaimLaneB:
 		selectionSQL = `
-		WITH selected_targets AS MATERIALIZED (
+		WITH cohort_lane AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				FALSE AS structured_identity_binary_matched,
+				0 AS lane_rank
+			FROM article_cohort_assembly_queue cq
+			JOIN article_header_assembly_queue q
+			  ON q.source_posted_at = cq.source_posted_at
+			 AND q.article_header_id = cq.article_header_id
+			WHERE cq.status = 'ready'
+			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),
+		fallback_lane AS MATERIALIZED (
 			SELECT
 				q.source_posted_at,
 				q.article_header_id,
@@ -467,9 +484,22 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			    q.queue_kind <> 'structured'
 			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
 			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM cohort_lane c
+				WHERE c.source_posted_at = q.source_posted_at
+				  AND c.article_header_id = q.article_header_id
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
+		),
+		selected_targets AS MATERIALIZED (
+			SELECT * FROM cohort_lane
+			UNION ALL
+			SELECT * FROM fallback_lane
+			ORDER BY lane_rank ASC, article_header_id DESC
+			LIMIT $1
 		),`
 	case AssemblyClaimLaneCombined:
 		laneALimit := (limit * req.LaneATargetPct) / 100
@@ -477,7 +507,24 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			laneALimit = 1
 		}
 		selectionSQL = `
-		WITH lane_a AS MATERIALIZED (
+		WITH cohort_lane AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				TRUE AS structured_identity_binary_matched,
+				-1 AS lane_rank
+			FROM article_cohort_assembly_queue cq
+			JOIN article_header_assembly_queue q
+			  ON q.source_posted_at = cq.source_posted_at
+			 AND q.article_header_id = cq.article_header_id
+			WHERE cq.status = 'ready'
+			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		),
+		lane_a AS MATERIALIZED (
 			SELECT
 				q.source_posted_at,
 				q.article_header_id,
@@ -488,6 +535,12 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
 			  AND q.queue_kind = 'structured'
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM cohort_lane c
+				WHERE c.source_posted_at = q.source_posted_at
+				  AND c.article_header_id = q.article_header_id
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $6
 			FOR UPDATE SKIP LOCKED
@@ -507,11 +560,19 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 				WHERE a.source_posted_at = q.source_posted_at
 				  AND a.article_header_id = q.article_header_id
 			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM cohort_lane c
+				WHERE c.source_posted_at = q.source_posted_at
+				  AND c.article_header_id = q.article_header_id
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		),
 		selected_targets AS MATERIALIZED (
+			SELECT * FROM cohort_lane
+			UNION ALL
 			SELECT * FROM lane_a
 			UNION ALL
 			SELECT * FROM lane_b
@@ -1334,6 +1395,9 @@ func (s *Store) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID 
 	if err != nil {
 		return fmt.Errorf("record yenc recovery not found for article header %d: %w", articleHeaderID, err)
 	}
+	if err := s.recordArticleCohortYEncNoIdentity(ctx, []int64{articleHeaderID}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1364,6 +1428,9 @@ func (s *Store) RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHead
 	); err != nil {
 		return fmt.Errorf("record yenc recovery not found batch count=%d: %w", len(articleHeaderIDs), err)
 	}
+	if err := s.recordArticleCohortYEncNoIdentity(ctx, articleHeaderIDs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1388,6 +1455,9 @@ func (s *Store) RecordYEncRecoveryNoop(ctx context.Context, articleHeaderID int6
 		WHERE article_header_id = $1`, articleHeaderID)
 	if err != nil {
 		return fmt.Errorf("record yenc recovery noop for article header %d: %w", articleHeaderID, err)
+	}
+	if err := s.recordArticleCohortYEncNoIdentity(ctx, []int64{articleHeaderID}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1418,6 +1488,9 @@ func (s *Store) RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderID
 		articleHeaderIDs,
 	); err != nil {
 		return fmt.Errorf("record yenc recovery noop batch count=%d: %w", len(articleHeaderIDs), err)
+	}
+	if err := s.recordArticleCohortYEncNoIdentity(ctx, articleHeaderIDs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -3024,6 +3097,20 @@ func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPar
 		WHERE q.source_posted_at = completed.source_posted_at
 		  AND q.article_header_id = completed.article_header_id`); err != nil {
 		return fmt.Errorf("complete %d article header assembly queue rows: %w", len(completedKeys), err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE article_cohort_assembly_queue q
+		SET status = 'done',
+		    updated_at = NOW()
+		FROM (
+			SELECT DISTINCT source_posted_at, article_header_id
+			FROM tmp_completed_assembly_headers
+		) completed
+		WHERE q.source_posted_at = completed.source_posted_at
+		  AND q.article_header_id = completed.article_header_id
+		  AND q.status <> 'done'`); err != nil {
+		return fmt.Errorf("complete %d article cohort assembly queue rows: %w", len(completedKeys), err)
 	}
 
 	return nil

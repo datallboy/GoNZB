@@ -257,6 +257,25 @@ filename/token, part number, total parts, and file size or an equivalent
 release-specific identity. Weak confidence must not be upgraded because of
 poster-only or message-id-only similarity.
 
+## Cohort Scheduler Policy
+
+`article_cohort_schedule` may group article or binary projections into
+candidate cohorts for scheduling. These cohorts are not grouping proof unless
+they already contain complete Subject multipart coordinates or recovered yEnc
+BODY identity.
+
+Scheduler behavior:
+
+- complete Subject multipart cohorts go to assemble priority work and do not
+  need yEnc for initial binary formation;
+- opaque near-time singleton cohorts go to yEnc priority-0 admission because
+  they are likely to unlock stronger BODY evidence;
+- sampled or sibling yEnc success increases priority for nearby cohort members,
+  but unprobed siblings remain weak until their own HEAD or BODY evidence is
+  sufficient;
+- low-yield or conflicting cohorts should cool down rather than repeatedly
+  consume priority-0 capacity.
+
 ## Implementation Notes
 
 - The assemble matcher should recognize complete Subject multipart coordinates

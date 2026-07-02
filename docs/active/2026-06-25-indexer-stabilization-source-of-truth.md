@@ -1219,3 +1219,51 @@ Known open signoff items:
   selected PreDB rows chosen, and keeps automatic enrichment from overwriting
   operator-confirmed identity. Admin release details show PreDB candidate
   evidence and actions.
+
+## 2026-07-02 Follow-Up: Article Cohort Scheduler
+
+- [x] Add a real scheduler stage, `article_cohort_schedule`, between
+  crosspost materialization and assemble. The stage writes scheduler-owned
+  partitioned tables and does not mutate upstream article/source facts.
+- [x] Add native daily partition parents for:
+  `article_cohort_candidates`, `article_cohort_assembly_queue`, and
+  `article_cohort_yenc_queue`. Partition creation and retention drop include
+  these tables.
+- [x] Materialize complete Subject multipart cohorts into
+  `article_cohort_assembly_queue` so assemble consumes HEAD-complete work
+  before broad Lane B fallback. These rows do not need yEnc BODY recovery for
+  initial binary formation.
+- [x] Materialize suspicious opaque singleton cohorts into
+  `article_cohort_yenc_queue` so recover_yenc priority admission drains likely
+  high-yield cohorts before generic bounded weak backlog.
+- [x] Add runtime setting
+  `indexing.recovery_admission.priority0_reservoir_batches`, default `5`, so
+  recover_yenc refills priority-0 toward a multi-batch reservoir instead of
+  only one batch.
+- [x] Add admin cohort visibility:
+  `GET /api/v1/admin/indexer/work/cohorts` and the
+  `/admin/indexer/cohorts` diagnostics page show cohort kind, bucket,
+  provider/newsgroup, queue counts, yEnc counts, score, and status.
+- [x] Keep weak/sampled yEnc evidence as priority evidence only. The scheduler
+  does not form speculative binaries from unprobed opaque siblings.
+- [x] Record cohort yield counters from recover_yenc outcomes back into
+  `article_cohort_candidates`: successful yEnc recovery marks scheduler yEnc
+  rows done and increments recovered/done counts; repeated no-identity outcomes
+  increment no-identity counts and move zero-yield cohorts to cooldown.
+- [x] Update wiki docs:
+  - `docs/wiki/indexer/stage-flow.md`
+  - `docs/wiki/indexer/yenc-recovery-queueing.md`
+  - `docs/wiki/indexer/binary-grouping-evidence.md`
+- [x] Validation: `go test ./...`, `npm run build` from `ui/`, and
+  `git diff --check` pass.
+- [x] Live serve signoff on 2026-07-02:
+  - `article_cohort_schedule` is enabled in the supervisor stage set.
+  - Recent scheduler runs completed without timeout after the open-queue guard;
+    saturated yEnc queue runs finished in roughly `0.22-0.28s`.
+  - Stale cohort assembly queue projections were self-healed: ready rows went
+    from `31,880` stale/open `0` to ready/open `0`, with `39,483` done.
+  - yEnc feedback counters reached `87,996` done/recovered and `0`
+    no-identity cooldowns during the soak.
+  - recover_yenc consumed full `5,000` item batches and release summary refresh
+    continued processing queued families while scrape remained gated by
+    assemble backlog.

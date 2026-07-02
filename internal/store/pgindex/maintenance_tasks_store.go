@@ -483,6 +483,9 @@ func nativeSourceWorkPartitionTables() []string {
 		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
+		"article_cohort_candidates",
+		"article_cohort_assembly_queue",
+		"article_cohort_yenc_queue",
 		"binary_inspection_ready_queue",
 		"binary_inspections",
 		"binary_inspection_artifacts",
@@ -513,6 +516,9 @@ func nativeSourceWorkPartitionDropOrder() []string {
 		"binary_par2_sets",
 		"binary_inspections",
 		"yenc_recovery_work_items",
+		"article_cohort_yenc_queue",
+		"article_cohort_assembly_queue",
+		"article_cohort_candidates",
 		"binary_projection_events",
 		"binary_superseded_sources",
 		"binary_grouping_evidence",
@@ -631,6 +637,15 @@ func (s *Store) partitionRetentionDayBlockers(ctx context.Context, day time.Time
 		{
 			label: "ready/running yEnc work still exists",
 			query: `SELECT COUNT(*) FROM yenc_recovery_work_items WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'running')`,
+		},
+		{
+			label: "active article cohort scheduler work still exists",
+			query: `
+				SELECT (
+					(SELECT COUNT(*) FROM article_cohort_assembly_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'running')) +
+					(SELECT COUNT(*) FROM article_cohort_yenc_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status = 'ready') +
+					(SELECT COUNT(*) FROM article_cohort_candidates WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'active'))
+				)`,
 		},
 		{
 			label: "running inspect ready queue rows still exist",

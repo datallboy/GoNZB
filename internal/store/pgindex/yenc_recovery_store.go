@@ -150,8 +150,12 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		return nil, err
 	}
 	stats.Priority0Ready = priority0Ready
-	if priority0Ready < limit && !s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
-		seedLimit := limit - priority0Ready
+	priority0Target := limit * s.yEncPriority0ReservoirBatches(ctx)
+	if priority0Target < limit {
+		priority0Target = limit
+	}
+	if priority0Ready < priority0Target && !s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
+		seedLimit := priority0Target - priority0Ready
 		if seedLimit < limit/2 {
 			seedLimit = limit / 2
 		}
@@ -1191,6 +1195,9 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		if err != nil {
 			return err
 		}
+		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, []int64{in.ArticleHeaderID}); err != nil {
+			return err
+		}
 		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {
 			return err
 		}
@@ -1304,6 +1311,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		targetIDs := make([]int64, 0, len(orderedRowIDs))
 		summaryKeys := make([]releaseFamilySummaryKey, 0, len(orderedRowIDs)*4)
 		chunkResults := make([]YEncHeaderRecoveryResult, 0, len(orderedRowIDs))
+		recoveredArticleIDs := make([]int64, 0, len(orderedRowIDs))
 		targetUpdates := make(map[int64]struct{}, len(orderedRowIDs))
 		supersededSources := make([]yencRecoverySupersededSource, 0, len(orderedRowIDs))
 		for _, rowID := range orderedRowIDs {
@@ -1322,8 +1330,16 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 				return err
 			}
 			chunkResults = append(chunkResults, *result)
+			recoveredArticleIDs = append(recoveredArticleIDs, records[rowID].ArticleHeaderID)
 			targetIDs = append(targetIDs, targetID)
 			summaryKeys = append(summaryKeys, keys...)
+		}
+		started = time.Now()
+		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, recoveredArticleIDs); err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
 		}
 		started = time.Now()
 		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {

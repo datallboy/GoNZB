@@ -14,6 +14,7 @@ const (
 	defaultYEncAdmissionBootstrapProbesPerHour = 25000
 	defaultYEncAdmissionEWMAWindow             = 30 * time.Minute
 	defaultYEncAdmissionPriority0OverflowCap   = 25000
+	defaultYEncAdmissionPriority0Reservoir     = 5
 	defaultYEncAdmissionNearTimeBucketMinutes  = 5
 )
 
@@ -24,6 +25,7 @@ type YEncRecoveryAdmissionConfig struct {
 	BootstrapProbesPerHour      float64
 	EWMAWindowMinutes           int
 	Priority0OverflowCap        int64
+	Priority0ReservoirBatches   int
 	NearTimeCohortBucketMinutes int
 }
 
@@ -54,10 +56,11 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 			bootstrap_probes_per_hour,
 			ewma_window_minutes,
 			priority0_overflow_cap,
+			priority0_reservoir_batches,
 			near_time_cohort_bucket_minutes,
 			config_updated_at
 		)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, NOW())
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (id) DO UPDATE
 		SET soft_queue_hours = EXCLUDED.soft_queue_hours,
 		    hard_queue_multiplier = EXCLUDED.hard_queue_multiplier,
@@ -65,6 +68,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		    bootstrap_probes_per_hour = EXCLUDED.bootstrap_probes_per_hour,
 		    ewma_window_minutes = EXCLUDED.ewma_window_minutes,
 		    priority0_overflow_cap = EXCLUDED.priority0_overflow_cap,
+		    priority0_reservoir_batches = EXCLUDED.priority0_reservoir_batches,
 		    near_time_cohort_bucket_minutes = EXCLUDED.near_time_cohort_bucket_minutes,
 		    config_updated_at = NOW()`,
 		cfg.SoftQueueHours,
@@ -73,6 +77,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		cfg.BootstrapProbesPerHour,
 		cfg.EWMAWindowMinutes,
 		cfg.Priority0OverflowCap,
+		cfg.Priority0ReservoirBatches,
 		cfg.NearTimeCohortBucketMinutes,
 	); err != nil {
 		return fmt.Errorf("configure yenc recovery admission: %w", err)
@@ -99,10 +104,32 @@ func normalizeYEncAdmissionConfig(cfg YEncRecoveryAdmissionConfig) YEncRecoveryA
 	if cfg.Priority0OverflowCap <= 0 {
 		cfg.Priority0OverflowCap = defaultYEncAdmissionPriority0OverflowCap
 	}
+	if cfg.Priority0ReservoirBatches <= 0 {
+		cfg.Priority0ReservoirBatches = defaultYEncAdmissionPriority0Reservoir
+	}
 	if cfg.NearTimeCohortBucketMinutes <= 0 {
 		cfg.NearTimeCohortBucketMinutes = defaultYEncAdmissionNearTimeBucketMinutes
 	}
 	return cfg
+}
+
+func (s *Store) yEncPriority0ReservoirBatches(ctx context.Context) int {
+	if s == nil || s.db == nil {
+		return defaultYEncAdmissionPriority0Reservoir
+	}
+	var batches int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT GREATEST(1, COALESCE(priority0_reservoir_batches, $1::integer))
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`,
+		defaultYEncAdmissionPriority0Reservoir,
+	).Scan(&batches); err != nil {
+		return defaultYEncAdmissionPriority0Reservoir
+	}
+	if batches > 20 {
+		return 20
+	}
+	return batches
 }
 
 func (s *Store) yEncPriority0OverflowCap(ctx context.Context, tx *sql.Tx) (int64, error) {

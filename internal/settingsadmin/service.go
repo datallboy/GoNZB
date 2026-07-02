@@ -392,6 +392,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes > 24*60 {
 		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be less than or equal to 1440")
 	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches < 0 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches > 20 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be less than or equal to 20")
+	}
 	if indexing.ScrapeTiers.AssembleBacklogHighWater < 0 {
 		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_high_water must be greater than or equal to 0")
 	}
@@ -460,6 +466,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
+		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
 		{name: "release_summary_refresh", config: indexing.ReleaseSummaryRefresh},

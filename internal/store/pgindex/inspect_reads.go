@@ -190,6 +190,49 @@ type IndexerAdminAttentionParams struct {
 	Offset int
 }
 
+type IndexerArticleCohortParams struct {
+	Kind   string
+	Status string
+	Limit  int
+	Offset int
+}
+
+type IndexerArticleCohortItem struct {
+	SourcePostedAt        time.Time  `json:"source_posted_at"`
+	CohortKey             string     `json:"cohort_key"`
+	ProviderID            int64      `json:"provider_id"`
+	NewsgroupID           int64      `json:"newsgroup_id"`
+	NewsgroupName         string     `json:"newsgroup_name"`
+	CohortKind            string     `json:"cohort_kind"`
+	PriorityRank          int        `json:"priority_rank"`
+	AdmissionReason       string     `json:"admission_reason"`
+	Score                 float64    `json:"score"`
+	Status                string     `json:"status"`
+	BucketStart           time.Time  `json:"bucket_start"`
+	BucketEnd             time.Time  `json:"bucket_end"`
+	ArticleCount          int        `json:"article_count"`
+	UnassembledCount      int        `json:"unassembled_count"`
+	SingletonCount        int        `json:"singleton_count"`
+	YEncReadyCount        int        `json:"yenc_ready_count"`
+	YEncRunningCount      int        `json:"yenc_running_count"`
+	YEncDoneCount         int        `json:"yenc_done_count"`
+	YEncRecoveredCount    int        `json:"yenc_recovered_count"`
+	YEncNoIdentityCount   int        `json:"yenc_no_identity_count"`
+	AssemblyQueueReady    int        `json:"assembly_queue_ready"`
+	RecoveryQueueReady    int        `json:"recovery_queue_ready"`
+	RecoveryQueueAdmitted int        `json:"recovery_queue_admitted"`
+	SubjectFileName       string     `json:"subject_file_name"`
+	SubjectFileIndex      int        `json:"subject_file_index"`
+	SubjectFileTotal      int        `json:"subject_file_total"`
+	YEncTotalParts        int        `json:"yenc_total_parts"`
+	YEncFileSize          int64      `json:"yenc_file_size"`
+	FirstArticleNumber    int64      `json:"first_article_number"`
+	LastArticleNumber     int64      `json:"last_article_number"`
+	LastScheduledAt       *time.Time `json:"last_scheduled_at,omitempty"`
+	CooldownUntil         *time.Time `json:"cooldown_until,omitempty"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
 type AdminIndexerReleaseListParams struct {
 	Query                    string
 	Newsgroup                string
@@ -851,6 +894,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
 	{StageName: "poster_materialize", Label: "Poster Materialize", ItemLabel: "headers"},
 	{StageName: "crosspost_popularity_refresh", Label: "Crosspost Popularity", ItemLabel: "groups"},
+	{StageName: "article_cohort_schedule", Label: "Article Cohort Schedule", ItemLabel: "cohorts"},
 	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
@@ -2359,6 +2403,155 @@ func (s *Store) ListIndexerAdminAttention(ctx context.Context, params IndexerAdm
 		return nil, 0, fmt.Errorf("iterate indexer admin attention: %w", err)
 	}
 	return out, total, nil
+}
+
+func (s *Store) ListIndexerArticleCohorts(ctx context.Context, params IndexerArticleCohortParams) ([]IndexerArticleCohortItem, int, error) {
+	if s == nil || s.db == nil {
+		return nil, 0, fmt.Errorf("pgindex store is not initialized")
+	}
+	if params.Limit <= 0 || params.Limit > 500 {
+		params.Limit = 100
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	args := []any{}
+	where := strings.Builder{}
+	where.WriteString("WHERE 1=1")
+	if kind := strings.TrimSpace(params.Kind); kind != "" {
+		args = append(args, kind)
+		fmt.Fprintf(&where, " AND c.cohort_kind = $%d", len(args))
+	}
+	if status := strings.TrimSpace(params.Status); status != "" {
+		args = append(args, status)
+		fmt.Fprintf(&where, " AND c.status = $%d", len(args))
+	}
+	countSQL := `
+		SELECT COUNT(*)
+		FROM article_cohort_candidates c
+		` + where.String()
+	var total int
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count article cohorts: %w", err)
+	}
+
+	args = append(args, params.Limit, params.Offset)
+	limitArg := len(args) - 1
+	offsetArg := len(args)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			c.source_posted_at,
+			c.cohort_key,
+			c.provider_id,
+			c.newsgroup_id,
+			COALESCE(ng.name, '') AS newsgroup_name,
+			c.cohort_kind,
+			c.priority_rank,
+			c.admission_reason,
+			c.score,
+			c.status,
+			c.bucket_start,
+			c.bucket_end,
+			c.article_count,
+			c.unassembled_count,
+			c.singleton_count,
+			c.yenc_ready_count,
+			c.yenc_running_count,
+			c.yenc_done_count,
+			c.yenc_recovered_count,
+			c.yenc_no_identity_count,
+			COALESCE(aq.ready_count, 0) AS assembly_queue_ready,
+			COALESCE(yq.ready_count, 0) AS recovery_queue_ready,
+			COALESCE(yq.admitted_count, 0) AS recovery_queue_admitted,
+			c.subject_file_name,
+			c.subject_file_index,
+			c.subject_file_total,
+			c.yenc_total_parts,
+			c.yenc_file_size,
+			c.first_article_number,
+			c.last_article_number,
+			c.last_scheduled_at,
+			c.cooldown_until,
+			c.updated_at
+		FROM article_cohort_candidates c
+		LEFT JOIN newsgroups ng ON ng.id = c.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) FILTER (WHERE status = 'ready')::integer AS ready_count
+			FROM article_cohort_assembly_queue aq
+			WHERE aq.cohort_key = c.cohort_key
+		) aq ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) FILTER (WHERE status = 'ready')::integer AS ready_count,
+				COUNT(*) FILTER (WHERE status = 'admitted')::integer AS admitted_count
+			FROM article_cohort_yenc_queue yq
+			WHERE yq.cohort_key = c.cohort_key
+		) yq ON TRUE
+		`+where.String()+`
+		ORDER BY c.priority_rank ASC, c.score DESC, c.updated_at DESC, c.source_posted_at DESC, c.cohort_key
+		LIMIT $`+fmt.Sprint(limitArg)+` OFFSET $`+fmt.Sprint(offsetArg),
+		args...,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list article cohorts: %w", err)
+	}
+	defer rows.Close()
+	items := make([]IndexerArticleCohortItem, 0, params.Limit)
+	for rows.Next() {
+		var item IndexerArticleCohortItem
+		var lastScheduled sql.NullTime
+		var cooldown sql.NullTime
+		if err := rows.Scan(
+			&item.SourcePostedAt,
+			&item.CohortKey,
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.NewsgroupName,
+			&item.CohortKind,
+			&item.PriorityRank,
+			&item.AdmissionReason,
+			&item.Score,
+			&item.Status,
+			&item.BucketStart,
+			&item.BucketEnd,
+			&item.ArticleCount,
+			&item.UnassembledCount,
+			&item.SingletonCount,
+			&item.YEncReadyCount,
+			&item.YEncRunningCount,
+			&item.YEncDoneCount,
+			&item.YEncRecoveredCount,
+			&item.YEncNoIdentityCount,
+			&item.AssemblyQueueReady,
+			&item.RecoveryQueueReady,
+			&item.RecoveryQueueAdmitted,
+			&item.SubjectFileName,
+			&item.SubjectFileIndex,
+			&item.SubjectFileTotal,
+			&item.YEncTotalParts,
+			&item.YEncFileSize,
+			&item.FirstArticleNumber,
+			&item.LastArticleNumber,
+			&lastScheduled,
+			&cooldown,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan article cohort: %w", err)
+		}
+		if lastScheduled.Valid {
+			ts := lastScheduled.Time.UTC()
+			item.LastScheduledAt = &ts
+		}
+		if cooldown.Valid {
+			ts := cooldown.Time.UTC()
+			item.CooldownUntil = &ts
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate article cohorts: %w", err)
+	}
+	return items, total, nil
 }
 
 func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerReleaseListParams) ([]IndexerReleaseSummary, int, error) {
