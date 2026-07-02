@@ -44,6 +44,7 @@ type indexerService interface {
 	RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
 	UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error)
 	ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
+	ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
@@ -1204,6 +1205,13 @@ func (s *runtimeIndexerService) ListAdminAttention(ctx context.Context, params p
 	return s.store.ListIndexerAdminAttention(ctx, params)
 }
 
+func (s *runtimeIndexerService) ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerArticleCohorts(ctx, params)
+}
+
 func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
@@ -1480,6 +1488,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.PosterMaterialize, true
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		return runtime.Indexing.CrosspostPopularityRefresh, true
+	case string(supervisor.StageArticleCohortSchedule):
+		return runtime.Indexing.ArticleCohortSchedule, true
 	case string(supervisor.StageAssemble):
 		return runtime.Indexing.Assemble, true
 	case string(supervisor.StageRecoverYEnc):
@@ -1550,6 +1560,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageScrapeBackfill),
 	string(supervisor.StagePosterMaterialize),
 	string(supervisor.StageCrosspostPopularityRefresh),
+	string(supervisor.StageArticleCohortSchedule),
 	string(supervisor.StageAssemble),
 	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageReleaseSummaryRefresh),
@@ -1729,6 +1740,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.PosterMaterialize, patch)
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		applyStagePatch(&indexing.CrosspostPopularityRefresh, patch)
+	case string(supervisor.StageArticleCohortSchedule):
+		applyStagePatch(&indexing.ArticleCohortSchedule, patch)
 	case string(supervisor.StageAssemble):
 		applyStagePatch(&indexing.Assemble, patch)
 	case string(supervisor.StageRecoverYEnc):

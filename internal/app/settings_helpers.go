@@ -32,6 +32,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeBackfill:               defaultScrapeStage(false),
 			PosterMaterialize:            defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:   defaultStage(false, 2, 1000, 0),
+			ArticleCohortSchedule:        defaultStage(true, 0.25, 50000, 0),
 			Assemble:                     defaultAssembleStage(false, 2, 5000, 1),
 			RecoverYEnc:                  defaultRecoverYEncStage(false),
 			SourceWindow:                 defaultSourceWindowSettings(),
@@ -170,6 +171,7 @@ func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings
 		EWMAWindowMinutes:           30,
 		BootstrapProbesPerHour:      25000,
 		Priority0OverflowCap:        25000,
+		Priority0ReservoirBatches:   5,
 		NearTimeCohortBucketMinutes: 5,
 	}
 }
@@ -297,6 +299,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
+	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
 	out.Assemble = mergeStageRuntimeSettings(
 		defaultAssembleStage(false, 2, 5000, 1),
 		indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, false, 2, 5000),
@@ -784,6 +787,7 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ScrapeBackfill.Enabled ||
 		in.PosterMaterialize.Enabled ||
 		in.CrosspostPopularityRefresh.Enabled ||
+		in.ArticleCohortSchedule.Enabled ||
 		in.Assemble.Enabled ||
 		in.RecoverYEnc.Enabled ||
 		in.ReleaseSummaryRefresh.Enabled ||
@@ -921,6 +925,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBackfill:               in.ScrapeBackfill,
 		PosterMaterialize:            mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:   mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
+		ArticleCohortSchedule:        mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
 		Assemble:                     mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
 		RecoverYEnc:                  mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		SourceWindow:                 normalizeSourceWindowRuntimeSettings(in.SourceWindow),
@@ -1271,6 +1276,9 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.Priority0OverflowCap > 0 {
 		base.Priority0OverflowCap = override.Priority0OverflowCap
+	}
+	if override.Priority0ReservoirBatches > 0 {
+		base.Priority0ReservoirBatches = override.Priority0ReservoirBatches
 	}
 	if override.NearTimeCohortBucketMinutes > 0 {
 		base.NearTimeCohortBucketMinutes = override.NearTimeCohortBucketMinutes

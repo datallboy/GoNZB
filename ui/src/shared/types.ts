@@ -643,6 +643,48 @@ export type AdminAttentionListResponse = {
   has_more: boolean
 }
 
+export type AdminArticleCohort = {
+  source_posted_at: string
+  cohort_key: string
+  provider_id: number
+  newsgroup_id: number
+  newsgroup_name: string
+  cohort_kind: string
+  priority_rank: number
+  admission_reason: string
+  score: number
+  status: string
+  bucket_start: string
+  bucket_end: string
+  article_count: number
+  unassembled_count: number
+  singleton_count: number
+  yenc_ready_count: number
+  yenc_running_count: number
+  yenc_done_count: number
+  yenc_recovered_count: number
+  yenc_no_identity_count: number
+  assembly_queue_ready: number
+  recovery_queue_ready: number
+  recovery_queue_admitted: number
+  subject_file_name: string
+  subject_file_index: number
+  subject_file_total: number
+  yenc_total_parts: number
+  yenc_file_size: number
+  first_article_number: number
+  last_article_number: number
+  last_scheduled_at?: string
+  cooldown_until?: string
+  updated_at: string
+}
+
+export type AdminArticleCohortListResponse = {
+  items: AdminArticleCohort[]
+  count: number
+  total: number
+}
+
 export type AdminReleaseListParams = {
   q?: string
   newsgroup?: string

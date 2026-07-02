@@ -61,6 +61,7 @@ type usenetIndexerConfig struct {
 	ScrapeBackfill                                  indexerStageConfig
 	PosterMaterialize                               indexerStageConfig
 	CrosspostPopularityRefresh                      indexerStageConfig
+	ArticleCohortSchedule                           indexerStageConfig
 	Assemble                                        indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
 	ReleaseSummaryRefreshStage                      indexerStageConfig
@@ -360,6 +361,29 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.CrosspostPopularityRefresh.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(crosspostPopularitySvc.RunCrosspostPopularityOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageArticleCohortSchedule,
+			Interval:    runtimeCfg.ArticleCohortSchedule.Interval,
+			Enabled:     runtimeCfg.ArticleCohortSchedule.Enabled,
+			BatchSize:   runtimeCfg.ArticleCohortSchedule.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ArticleCohortSchedule.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				result, err := appCtx.PGIndexStore.RunArticleCohortScheduler(ctx, pgindex.ArticleCohortSchedulerRequest{
+					BatchSize: runtimeCfg.ArticleCohortSchedule.BatchSize,
+				})
+				if result == nil {
+					return marshalStageMetrics(map[string]any{}, err)
+				}
+				return marshalStageMetrics(map[string]any{
+					"subject_cohorts_upserted": result.SubjectCohortsUpserted,
+					"opaque_cohorts_upserted":  result.OpaqueCohortsUpserted,
+					"assembly_queued":          result.AssemblyQueued,
+					"yenc_queued":              result.YEncQueued,
+					"duration_ms":              float64(result.Duration.Microseconds()) / 1000,
+				}, err)
 			}),
 		},
 		{
@@ -877,6 +901,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
 		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
 		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),
+		ArticleCohortSchedule:      newIndexerStageConfig(indexingCfg.ArticleCohortSchedule),
 		Assemble:                   newIndexerStageConfig(indexingCfg.Assemble),
 		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),
 		ReleaseSummaryRefreshStage: newIndexerStageConfig(indexingCfg.ReleaseSummaryRefresh),

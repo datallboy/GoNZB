@@ -127,6 +127,7 @@ type IndexingRecoveryAdmissionRuntimeSettings struct {
 	EWMAWindowMinutes           int `json:"ewma_window_minutes,omitempty"`
 	BootstrapProbesPerHour      int `json:"bootstrap_probes_per_hour,omitempty"`
 	Priority0OverflowCap        int `json:"priority0_overflow_cap,omitempty"`
+	Priority0ReservoirBatches   int `json:"priority0_reservoir_batches,omitempty"`
 	NearTimeCohortBucketMinutes int `json:"near_time_cohort_bucket_minutes,omitempty"`
 }
 
@@ -283,6 +284,7 @@ type IndexingRuntimeSettings struct {
 	ScrapeBackfill               IndexingStageRuntimeSettings                      `json:"scrape_backfill,omitempty"`
 	PosterMaterialize            IndexingStageRuntimeSettings                      `json:"poster_materialize,omitempty"`
 	CrosspostPopularityRefresh   IndexingStageRuntimeSettings                      `json:"crosspost_popularity_refresh,omitempty"`
+	ArticleCohortSchedule        IndexingStageRuntimeSettings                      `json:"article_cohort_schedule,omitempty"`
 	Assemble                     IndexingStageRuntimeSettings                      `json:"assemble,omitempty"`
 	RecoverYEnc                  IndexingStageRuntimeSettings                      `json:"recover_yenc,omitempty"`
 	SourceWindow                 IndexingSourceWindowRuntimeSettings               `json:"source_window,omitempty"`

@@ -177,6 +177,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/work/group-profiles", indexerAdminCtrl.ListGroupProfiles)
 		v1AdminIndexer.GET("/work/deferred-ranges", indexerAdminCtrl.ListDeferredArticleRanges)
 		v1AdminIndexer.GET("/work/daily-buckets", indexerAdminCtrl.ListDailyBucketStats)
+		v1AdminIndexer.GET("/work/cohorts", indexerAdminCtrl.ListArticleCohorts)
 		v1AdminIndexer.GET("/overview/throughput", indexerAdminCtrl.GetStageThroughput)
 		v1AdminIndexer.GET("/overview/nntp", indexerAdminCtrl.GetNNTPStats)
 		v1AdminIndexer.GET("/overview/backlog", indexerAdminCtrl.GetDashboardStats)

@@ -12,6 +12,7 @@ import type {
   IndexerStageThroughput,
   AdminAttentionListParams,
   AdminAttentionListResponse,
+  AdminArticleCohortListResponse,
   AdminReleaseDetailResponse,
   AdminBinaryListParams,
   AdminBinaryListResponse,
@@ -74,6 +75,19 @@ export function getAdminDeferredRanges(limit = 50, state = "queued") {
     query.set("state", state)
   }
   return apiRequest<IndexerDeferredArticleRangeResponse>(`/api/v1/admin/indexer/work/deferred-ranges?${query.toString()}`)
+}
+
+export function getAdminArticleCohorts(params: { kind?: string; status?: string; limit?: number; offset?: number } = {}) {
+  const query = new URLSearchParams()
+  query.set("limit", String(params.limit ?? 100))
+  query.set("offset", String(params.offset ?? 0))
+  if (params.kind) {
+    query.set("kind", params.kind)
+  }
+  if (params.status) {
+    query.set("status", params.status)
+  }
+  return apiRequest<AdminArticleCohortListResponse>(`/api/v1/admin/indexer/work/cohorts?${query.toString()}`)
 }
 
 export function getAdminStageThroughput() {
