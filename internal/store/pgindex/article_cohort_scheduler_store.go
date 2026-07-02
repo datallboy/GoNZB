@@ -104,7 +104,29 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 	if err := cleanupStaleArticleCohortAssemblyQueueInTx(ctx, tx, queueLimit); err != nil {
 		return 0, 0, err
 	}
-	scanLimit := batchSize * articleCohortSubjectScanMultiplier
+	var openQueued int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_cohort_assembly_queue cq
+		JOIN article_header_assembly_queue q
+		  ON q.source_posted_at = cq.source_posted_at
+		 AND q.article_header_id = cq.article_header_id
+		WHERE cq.status IN ('ready', 'running')`).Scan(&openQueued); err != nil {
+		return 0, 0, fmt.Errorf("count open subject-complete cohort assembly queue rows: %w", err)
+	}
+	if openQueued >= queueLimit {
+		return 0, 0, nil
+	}
+	queueLimit -= openQueued
+
+	scanLimit := queueLimit * articleCohortSubjectScanMultiplier
+	if scanLimit < queueLimit {
+		scanLimit = queueLimit
+	}
+	maxScanLimit := batchSize * articleCohortSubjectScanMultiplier
+	if scanLimit > maxScanLimit {
+		scanLimit = maxScanLimit
+	}
 	var cohorts int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH recent AS MATERIALIZED (
@@ -131,6 +153,13 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			  AND COALESCE(p.subject_file_total, 0) > 0
 			  AND COALESCE(p.yenc_part_number, 0) > 0
 			  AND COALESCE(p.yenc_total_parts, 0) > 1
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM article_cohort_assembly_queue cq
+				WHERE cq.source_posted_at = q.source_posted_at
+				  AND cq.article_header_id = q.article_header_id
+				  AND cq.status IN ('ready', 'running', 'done')
+			  )
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 		),
@@ -183,21 +212,6 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 		return 0, 0, fmt.Errorf("upsert subject-complete article cohorts: %w", err)
 	}
 
-	var openQueued int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM article_cohort_assembly_queue cq
-		JOIN article_header_assembly_queue q
-		  ON q.source_posted_at = cq.source_posted_at
-		 AND q.article_header_id = cq.article_header_id
-		WHERE cq.status IN ('ready', 'running')`).Scan(&openQueued); err != nil {
-		return 0, 0, fmt.Errorf("count open subject-complete cohort assembly queue rows: %w", err)
-	}
-	if openQueued >= queueLimit {
-		return cohorts, 0, nil
-	}
-	queueLimit -= openQueued
-
 	var queued int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH candidates AS MATERIALIZED (
@@ -235,6 +249,13 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 				  AND COALESCE(p.subject_file_total, 0) > 0
 				  AND COALESCE(p.yenc_part_number, 0) > 0
 				  AND COALESCE(p.yenc_total_parts, 0) > 1
+				  AND NOT EXISTS (
+					SELECT 1
+					FROM article_cohort_assembly_queue cq
+					WHERE cq.source_posted_at = q.source_posted_at
+					  AND cq.article_header_id = q.article_header_id
+					  AND cq.status IN ('ready', 'running', 'done')
+				  )
 				ORDER BY q.article_header_id DESC
 				LIMIT $1
 			) r
@@ -319,11 +340,18 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 	queueLimit -= openQueued
 
 	scanLimit := queueLimit * articleCohortOpaqueScanMultiplier
-	if scanLimit < batchSize {
-		scanLimit = batchSize
+	if scanLimit < queueLimit {
+		scanLimit = queueLimit
 	}
-	if scanLimit > articleCohortOpaqueScanMax {
-		scanLimit = articleCohortOpaqueScanMax
+	maxScanLimit := batchSize * articleCohortOpaqueScanMultiplier
+	if maxScanLimit > articleCohortOpaqueScanMax {
+		maxScanLimit = articleCohortOpaqueScanMax
+	}
+	if scanLimit > maxScanLimit {
+		scanLimit = maxScanLimit
+	}
+	if scanLimit <= 0 {
+		return 0, 0, nil
 	}
 
 	var cohorts int64
