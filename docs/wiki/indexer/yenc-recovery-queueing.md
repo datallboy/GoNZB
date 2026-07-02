@@ -32,6 +32,12 @@ Work can enter the table from these paths:
 - refresh/maintenance paths that resync recovery work for changed binary
   projections.
 
+Scheduler-backed rows are already ranked by the cohort scheduler and may bypass
+the generic weak-family filename filters when creating
+`yenc_recovery_work_items`. They still must resolve to a main-payload binary
+without existing recovered yEnc authority, and they still respect recovery hard
+caps and priority-0 overflow caps.
+
 Subject-complete posts are not admitted simply because the visible title is
 obfuscated. If HEAD has stable filename, file index/total, article part/total,
 and file size, assemble should use that evidence first. yEnc may validate later

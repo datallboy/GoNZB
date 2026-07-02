@@ -1300,3 +1300,13 @@ Known open signoff items:
     `opaque_near_time_cohort` work, with high recovered/merged counts;
   - after the opaque scan fix, `article_cohort_schedule` completed in sub-second
     to low-single-digit seconds in the observed post-restart runs.
+- [x] Fixed yEnc scheduler admission bridge so
+  `article_cohort_yenc_queue` rows create priority-0 work items without being
+  rejected by the generic weak-family/filename predicates. Scheduler-backed
+  admission still requires a main payload without existing recovered yEnc
+  authority and still respects recovery hard caps/priority-0 overflow caps.
+- [x] Live hard-cap observation: once `open_yenc` reached the configured
+  `250,000` hard cap, scrape paused for `recover_yenc hard cap` as expected.
+  Priority scheduler rows continued to be admitted within overflow capacity,
+  but the selector may still mix priority-1 work while older priority-0 leases
+  from interrupted runs remain open until expiry.
