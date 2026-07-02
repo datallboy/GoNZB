@@ -2132,6 +2132,17 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	in.BinaryKey = strings.TrimSpace(in.BinaryKey)
 	in.BinaryName = strings.TrimSpace(in.BinaryName)
 	in.FileName = strings.TrimSpace(in.FileName)
+	if strings.TrimSpace(in.FileName) != "" {
+		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)) == "" {
+			in.SourceReleaseKey = fallbackFamily
+			in.ReleaseFamilyKey = fallbackFamily
+			in.FileSetKey = fallbackFamily
+			in.ReleaseKey = fallbackFamily
+			if in.BaseStem == "" {
+				in.BaseStem = fallbackFamily
+			}
+		}
+	}
 	if recoveredKey := recoveredYEncBinaryKey(in); recoveredKey != "" {
 		in.BinaryKey = recoveredKey
 		if in.FileSetKey != "" {
@@ -2149,6 +2160,24 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	if in.GroupingEvidence == nil {
 		in.GroupingEvidence = map[string]any{}
 	}
+}
+
+func recoveredYEncFallbackFamilyKey(in *YEncHeaderRecoveryRecord) string {
+	if in == nil {
+		return ""
+	}
+	fileKey := normalizeBinaryIdentityKey(firstNonBlank(in.FileName, in.BinaryName))
+	if fileKey == "" {
+		return ""
+	}
+	parts := []string{"yenc", fileKey}
+	if in.TotalParts > 0 {
+		parts = append(parts, fmt.Sprintf("parts%d", in.TotalParts))
+	}
+	if in.FileSize > 0 {
+		parts = append(parts, fmt.Sprintf("size%d", in.FileSize))
+	}
+	return normalizeBinaryIdentityKey(strings.Join(parts, " "))
 }
 
 func recoveredYEncBinaryKey(in *YEncHeaderRecoveryRecord) string {

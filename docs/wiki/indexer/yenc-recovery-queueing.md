@@ -44,6 +44,15 @@ and file size, assemble should use that evidence first. yEnc may validate later
 but must not override stronger complete Subject coordinates with a randomized
 BODY `name=`.
 
+For fully opaque posts where the existing HEAD-derived family is random or
+empty, recovered BODY identity becomes the first strong authority. If yEnc
+recovery yields a filename but no stable file-set/family key, the recovery write
+path derives a fallback family from recovered `name=`, `total=`, and `size=`.
+That fallback lets later recovered parts with the same yEnc coordinates merge
+into the same binary instead of preserving one random singleton family per
+article. This fallback must only be used when no stronger Subject/file-set
+family exists.
+
 ## Eligibility
 
 Generic yEnc admission is for main-payload binary projections where HEAD
