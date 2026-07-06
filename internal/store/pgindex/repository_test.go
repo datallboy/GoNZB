@@ -6116,6 +6116,22 @@ func TestApplyYEncHeaderRecoveryMergesRecoveredMultipartArticlesByYEncPart(t *te
 	}
 
 	recovery(binaryOne, articleOne, 1)
+	var ownPartNumber int
+	var ownTotalParts int
+	var ownFileName string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT part_number, total_parts, file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND article_header_id = $2`,
+		binaryOne,
+		articleOne,
+	).Scan(&ownPartNumber, &ownTotalParts, &ownFileName); err != nil {
+		t.Fatalf("load same-binary recovered part: %v", err)
+	}
+	if ownPartNumber != 1 || ownTotalParts != 732 || ownFileName != "5AzyRS4rfbOyP5fZH.part2.rar" {
+		t.Fatalf("expected same-binary recovery to strengthen part projection, got part=%d total=%d file=%q", ownPartNumber, ownTotalParts, ownFileName)
+	}
 	recovery(binaryTwo, articleTwo, 2)
 
 	var remainingSource int

@@ -378,9 +378,15 @@ type IndexerBinaryPartSummary struct {
 	FileName            string     `json:"file_name"`
 	ArticleBytes        int64      `json:"article_bytes"`
 	ArticleLines        int64      `json:"article_lines"`
+	SubjectFileName     string     `json:"subject_file_name"`
+	SubjectFileIndex    int        `json:"subject_file_index"`
+	SubjectFileTotal    int        `json:"subject_file_total"`
 	YEncPartNumber      int        `json:"yenc_part_number"`
 	YEncTotalParts      int        `json:"yenc_total_parts"`
 	YEncFileSize        int64      `json:"yenc_file_size"`
+	RecoveredPartNumber int        `json:"recovered_part_number"`
+	RecoveredTotalParts int        `json:"recovered_total_parts"`
+	RecoveredFileSize   int64      `json:"recovered_file_size"`
 	YEncRecoveryStatus  string     `json:"yenc_recovery_status"`
 	YEncRecoveryReadyAt *time.Time `json:"yenc_recovery_ready_at,omitempty"`
 	YEncRecoveryError   string     `json:"yenc_recovery_error,omitempty"`

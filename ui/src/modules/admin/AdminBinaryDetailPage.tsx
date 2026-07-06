@@ -34,6 +34,12 @@ function inspectionSummary(detail: AdminBinaryDetail) {
   ].join(' · ')
 }
 
+function partFraction(part?: number, total?: number) {
+  if (!part && !total) return '-'
+  if (total && total > 0) return `${part || '?'} / ${total}`
+  return `${part || '?'}`
+}
+
 export function AdminBinaryDetailPage() {
   const { id = '' } = useParams()
   const binaryID = Number(id)
@@ -112,49 +118,58 @@ export function AdminBinaryDetailPage() {
       <div className="page-card stack">
         <h2 className="section-title">Article Headers</h2>
         <p className="muted-copy">
-          Authoritative binary-owned source segments, including yEnc recovery evidence when present.
+          Binary-owned source segments. Projection is the current binary_parts row; HEAD/XOVER is parsed from the NNTP header; BODY yEnc is recovered from article body probes.
         </p>
         <div className="table-shell">
           <table className="data-table data-table--compact">
             <thead>
               <tr>
-                <th>Part</th>
+                <th>Projection</th>
                 <th>Article</th>
-                <th>Subject</th>
-                <th>yEnc</th>
-                <th>Recovery</th>
+                <th>NNTP HEAD / XOVER</th>
+                <th>BODY yEnc</th>
                 <th>Bytes</th>
               </tr>
             </thead>
             <tbody>
               {detail.parts.map((part) => (
                 <tr key={`${detail.binary_id}-${part.article_header_id}`}>
-                  <td>{part.part_number}{part.total_parts > 0 ? ` / ${part.total_parts}` : ''}</td>
+                  <td>
+                    <div>{partFraction(part.part_number, part.total_parts)}</div>
+                    <div className="muted-copy">{part.file_name || '-'}</div>
+                  </td>
                   <td>
                     <div className="mono-cell">{part.article_number || part.article_header_id}</div>
                     <div className="muted-copy">{part.message_id}</div>
                     <div className="muted-copy">{part.group_name}</div>
                   </td>
                   <td>
-                    <div>{part.file_name || '-'}</div>
-                    {part.subject ? <div className="muted-copy mono-cell">{part.subject}</div> : null}
+                    {part.subject ? <div className="mono-cell">{part.subject}</div> : <div>-</div>}
                     {part.poster ? <div className="muted-copy">{part.poster}</div> : null}
+                    {part.subject_file_name ? <div className="muted-copy">subject file: {part.subject_file_name}</div> : null}
+                    {(part.subject_file_index || part.subject_file_total) ? (
+                      <div className="muted-copy">file index: {partFraction(part.subject_file_index, part.subject_file_total)}</div>
+                    ) : null}
+                    {(part.yenc_part_number || part.yenc_total_parts) ? (
+                      <div className="muted-copy">subject yEnc: {partFraction(part.yenc_part_number, part.yenc_total_parts)}</div>
+                    ) : null}
+                    {part.yenc_file_size > 0 ? <div className="muted-copy">subject size: {formatBytes(part.yenc_file_size)}</div> : null}
                   </td>
                   <td>
-                    {part.yenc_total_parts > 0 ? `${part.yenc_part_number || part.part_number} / ${part.yenc_total_parts}` : '-'}
-                    {part.yenc_file_size > 0 ? <div className="muted-copy">{formatBytes(part.yenc_file_size)}</div> : null}
-                  </td>
-                  <td>
-                    {part.yenc_recovery_status || 'none'}
-                    {part.recovered_source ? <div className="muted-copy">{part.recovered_source}</div> : null}
+                    <div>{part.yenc_recovery_status || 'none'}</div>
+                    {(part.recovered_part_number || part.recovered_total_parts) ? (
+                      <div>{partFraction(part.recovered_part_number, part.recovered_total_parts)}</div>
+                    ) : null}
                     {part.recovered_file_name ? <div className="muted-copy">{part.recovered_file_name}</div> : null}
+                    {part.recovered_file_size > 0 ? <div className="muted-copy">{formatBytes(part.recovered_file_size)}</div> : null}
+                    {part.recovered_source ? <div className="muted-copy">{part.recovered_source}</div> : null}
                     {part.yenc_recovery_error ? <div className="muted-copy">{part.yenc_recovery_error}</div> : null}
                   </td>
                   <td>{formatBytes(part.segment_bytes || part.article_bytes)}</td>
                 </tr>
               ))}
               {detail.parts.length === 0 ? (
-                <tr><td colSpan={6}>No binary parts are recorded.</td></tr>
+                <tr><td colSpan={5}>No binary parts are recorded.</td></tr>
               ) : null}
             </tbody>
           </table>
