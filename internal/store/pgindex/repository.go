@@ -1058,12 +1058,51 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 }
 
 func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, batch []preparedArticleHeaderInsert) error {
-	// Do not create native partitions from the scrape insert path. CREATE TABLE
-	// PARTITION OF takes locks on partitioned parents and can deadlock with the
-	// assemble/yEnc/release write paths that are intentionally kept online during
-	// scrape. Missing day partitions are handled by default partitions, then moved
-	// by partition_default_rehome during a quiet maintenance window.
+	if s == nil || s.db == nil || len(batch) == 0 {
+		return nil
+	}
+	days := map[string]string{}
+	for _, item := range batch {
+		postedAt := time.Now()
+		if item.DateUTC != nil {
+			postedAt = *item.DateUTC
+		}
+		dayKey, childSuffix := nativePartitionDayKeys(postedAt)
+		days[dayKey] = childSuffix
+	}
+	for dayKey, childSuffix := range days {
+		missing := make([]string, 0)
+		for _, table := range nativeSourceWorkPartitionTables() {
+			ok, err := s.nativeDailyPartitionExists(ctx, table, childSuffix)
+			if err != nil {
+				return fmt.Errorf("check native partition table=%s day=%s: %w", table, dayKey, err)
+			}
+			if !ok {
+				missing = append(missing, table+"_"+childSuffix)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("missing native daily partitions for source day %s: %s; refusing to route scrape rows into default partitions", dayKey, strings.Join(missing, ", "))
+		}
+	}
 	return nil
+}
+
+func nativePartitionDayKeys(sourcePostedAt time.Time) (string, string) {
+	local := sourcePostedAt.In(time.Local)
+	return local.Format("2006-01-02"), local.Format("20060102")
+}
+
+func (s *Store) nativeDailyPartitionExists(ctx context.Context, table, childSuffix string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var exists bool
+	childName := fmt.Sprintf("public.%s_%s", table, childSuffix)
+	if err := s.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, childName).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *Store) defaultPartitionHasRowsForDay(ctx context.Context, parentTable, day string) (bool, error) {
