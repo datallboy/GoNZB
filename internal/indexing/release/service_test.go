@@ -1830,8 +1830,8 @@ func TestRunOnceBuildsReleaseSummaryState(t *testing.T) {
 	if got.Passworded || got.PasswordedKnown || got.PasswordedUnknown {
 		t.Fatalf("expected password flags to remain false, got %+v", got)
 	}
-	if got.PasswordState != "unknown" {
-		t.Fatalf("expected password_state unknown, got %q", got.PasswordState)
+	if got.PasswordState != "not_passworded" {
+		t.Fatalf("expected password_state not_passworded, got %q", got.PasswordState)
 	}
 	if got.PrimaryResolution != "1080p" {
 		t.Fatalf("expected primary resolution 1080p, got %q", got.PrimaryResolution)

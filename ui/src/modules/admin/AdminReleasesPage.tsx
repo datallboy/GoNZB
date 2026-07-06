@@ -65,6 +65,12 @@ const booleanOptions = [
   { value: 'false', label: 'no' },
 ]
 
+const passwordStateOptions = [
+  { value: 'not_passworded', label: 'Not passworded' },
+  { value: 'password_known', label: 'Password known' },
+  { value: 'password_unknown', label: 'Password unknown' },
+]
+
 type FilterOption = {
   value: string
   label: string
@@ -102,6 +108,25 @@ function formatNZBStatus(value: string) {
       return 'Archived, sources purged'
     default:
       return value || 'NZB pending'
+  }
+}
+
+function passwordStateLabel(value: string | undefined) {
+  switch ((value ?? '').trim()) {
+    case 'not_passworded':
+      return 'Not passworded'
+    case 'password_known':
+    case 'passworded_known':
+      return 'Password known'
+    case 'password_unknown':
+    case 'passworded_unknown':
+    case 'passworded':
+      return 'Password unknown'
+    case 'unknown':
+    case '':
+      return 'Not passworded'
+    default:
+      return value ?? 'Not passworded'
   }
 }
 
@@ -226,11 +251,12 @@ export function AdminReleasesPage() {
     setFilters((current) => ({ ...current, [field]: setCSVValue(String(current[field] ?? ''), value, enabled) }))
   }
 
-  function multiFilterLabel(raw: string | undefined) {
+  function multiFilterLabel(raw: string | undefined, options: FilterOption[]) {
     const count = csvCount(raw)
     if (count === 0) return 'Any'
     if (count === 1) {
-      return (raw ?? '').split(',').find(Boolean) ?? 'Any'
+      const selected = (raw ?? '').split(',').find(Boolean) ?? ''
+      return options.find((option) => option.value === selected)?.label ?? selected
     }
     return `${count} selected`
   }
@@ -243,7 +269,7 @@ export function AdminReleasesPage() {
         <span>{label}</span>
         <div className={isOpen ? 'multi-select open' : 'multi-select'} data-multi-select>
           <button className="multi-select__button" type="button" onClick={() => setOpenFilter(isOpen ? null : String(field))}>
-            {multiFilterLabel(raw)}
+            {multiFilterLabel(raw, options)}
           </button>
           {isOpen ? (
             <div className="multi-select__menu">
@@ -347,11 +373,7 @@ export function AdminReleasesPage() {
           <MultiChoiceFilter
             field="password_state"
             label="Password"
-            options={[
-              { value: 'not_passworded', label: 'not_passworded' },
-              { value: 'passworded_known', label: 'passworded_known' },
-              { value: 'passworded_unknown', label: 'passworded_unknown' },
-            ]}
+            options={passwordStateOptions}
           />
           <MultiChoiceFilter
             field="media_quality_tier"
@@ -487,7 +509,7 @@ export function AdminReleasesPage() {
                       <span>{item.has_par2 ? 'PAR2' : 'No PAR2'}</span>
                     </div>
                   </td>
-                  <td>{item.password_state || 'unknown'}</td>
+                  <td>{passwordStateLabel(item.password_state)}</td>
                   <td>{item.media_quality_tier || 'n/a'}</td>
                   <td>
                     <div>{item.hidden ? 'hidden' : item.public_visible ? 'public' : 'internal-only'}</div>

@@ -450,7 +450,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			archiveCount := 1
 			passworded := true
 			passwordedUnknown := true
-			passwordState := "passworded_unknown"
+			passwordState := "password_unknown"
 			tags := []string{"archive", "unresolved_password"}
 			if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 				ReleaseID:         candidate.ReleaseID,
@@ -481,7 +481,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	passwordState := "not_passworded"
 	tags := []string{"archive"}
 	if encrypted {
-		passwordState = "passworded_unknown"
+		passwordState = "password_unknown"
 		tags = append(tags, "unresolved_password")
 	}
 
