@@ -864,6 +864,11 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		return 0, 0, nil
 	}
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
+	if missingDays, err := missingYEncRecoveryPartitionsForBinariesInTx(ctx, tx, unique); err != nil {
+		return 0, 0, err
+	} else if len(missingDays) > 0 {
+		return 0, 0, fmt.Errorf("missing yenc recovery daily partitions for source days %s; refusing to route yenc work rows into default partition", strings.Join(missingDays, ", "))
+	}
 
 	telemetry := binaryStatsRefreshTelemetryFromContext(ctx)
 	admissionStarted := time.Now()
@@ -972,6 +977,45 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		}
 	}
 	return totalUpserted, totalRetired, nil
+}
+
+func missingYEncRecoveryPartitionsForBinariesInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) ([]string, error) {
+	if tx == nil || len(binaryIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		WITH requested(binary_id) AS (
+			SELECT DISTINCT unnest($1::bigint[])
+		),
+		source_days AS (
+			SELECT DISTINCT
+				(bc.source_posted_at)::date::text AS day_key,
+				to_char(bc.source_posted_at, 'YYYYMMDD') AS child_suffix
+			FROM requested r
+			JOIN binary_core bc ON bc.binary_id = r.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
+		)
+		SELECT day_key
+		FROM source_days
+		WHERE to_regclass('public.yenc_recovery_work_items_' || child_suffix) IS NULL
+		ORDER BY day_key
+		LIMIT 16`, binaryIDs)
+	if err != nil {
+		return nil, fmt.Errorf("check yenc recovery daily partitions: %w", err)
+	}
+	defer rows.Close()
+	missing := []string{}
+	for rows.Next() {
+		var day string
+		if err := rows.Scan(&day); err != nil {
+			return nil, fmt.Errorf("scan missing yenc recovery partition day: %w", err)
+		}
+		missing = append(missing, day)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate missing yenc recovery partition days: %w", err)
+	}
+	return missing, nil
 }
 
 func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) error {

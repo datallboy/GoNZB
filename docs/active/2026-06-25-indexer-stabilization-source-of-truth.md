@@ -616,17 +616,18 @@ Required work:
 
 - keep the narrow horizon until hot queries are partition-pruned by
   `source_posted_at`;
-- keep older source partition creation out of scrape hot paths; unexpected
-  older source dates should land in default partitions and be surfaced by
-  default-partition metrics until controlled maintenance handles them;
+- keep older source partition creation out of scrape hot paths, but do not let
+  high-volume scrape/yEnc work silently route to default partitions. A missing
+  dated child partition must block scrape or queue seeding with an explicit
+  error until partitions are prepared offline;
 - decide whether PostgreSQL lock memory tuning is needed before any broader
   horizon is restored;
 - record partition counts, default-partition row counts, and retention dry-run
   output after a fresh schema bootstrap.
 
 Signoff requires fresh migrations, older-gap scrape without runtime partition
-DDL/deadlock, retention dry-run, default-partition row counts, and no
-shared-memory failures during soak.
+DDL/deadlock, retention dry-run, default-partition row counts near zero for hot
+source/work tables, and no shared-memory or checksum failures during soak.
 
 ### Hot/Warm/Cold And Latest/Backfill Policy
 
@@ -1153,7 +1154,9 @@ Known open signoff items:
   shared-memory partition failures.
 - The 21-day-back/9-day-forward partition horizon remains intentionally
   documented until partition-pruned query shapes or PostgreSQL lock tuning
-  justify a wider horizon.
+  justify a wider horizon. Historical backfill outside that horizon must either
+  precreate native child partitions before scrape or block; default partitions
+  are not an acceptable active backlog target.
 - Speculative weak binary grouping remains investigation-only until sampled
   yEnc evidence is recorded and reviewed.
 - Focused Go tests and `git diff --check` pass before signoff.
