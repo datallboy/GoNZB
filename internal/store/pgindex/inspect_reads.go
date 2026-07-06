@@ -2444,7 +2444,7 @@ func (s *Store) ListIndexerArticleCohorts(ctx context.Context, params IndexerArt
 			c.cohort_key,
 			c.provider_id,
 			c.newsgroup_id,
-			COALESCE(ng.name, '') AS newsgroup_name,
+			COALESCE(ng.group_name, '') AS newsgroup_name,
 			c.cohort_kind,
 			c.priority_rank,
 			c.admission_reason,
