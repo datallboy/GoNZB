@@ -1461,7 +1461,7 @@ CREATE TABLE public.releases (
     passworded boolean DEFAULT false NOT NULL,
     passworded_known boolean DEFAULT false NOT NULL,
     passworded_unknown boolean DEFAULT false NOT NULL,
-    password_state text DEFAULT 'not_passworded'::text NOT NULL,
+    password_state text DEFAULT 'unknown'::text NOT NULL,
     preferred_password_id bigint,
     encrypted boolean DEFAULT false NOT NULL,
     has_par2 boolean DEFAULT false NOT NULL,

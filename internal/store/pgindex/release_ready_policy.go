@@ -111,7 +111,7 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 		)`, alias),
 		probableWeakTitleClause(alias),
 		opaqueTitleNeedsEvidenceClause(alias),
-		fmt.Sprintf("%s <> 'password_unknown'", releasePasswordStateSQL(alias)),
+		fmt.Sprintf("%s IN ('not_passworded', 'password_known')", releasePasswordStateSQL(alias)),
 		"COALESCE(ro.hidden, FALSE) = FALSE",
 	}
 
