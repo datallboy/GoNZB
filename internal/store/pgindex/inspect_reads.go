@@ -905,7 +905,6 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
 	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
 	{StageName: "maintenance.group_profile_refresh", Label: "Group Profile Refresh", ItemLabel: "groups"},
-	{StageName: "maintenance.daily_bucket_stats_refresh", Label: "Daily Bucket Stats Refresh", ItemLabel: "buckets"},
 	{StageName: "maintenance.partition_retention_drop", Label: "Partition Retention Drop", ItemLabel: "tables"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
@@ -1130,8 +1129,6 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"available_count", "stat_count"}
 	case "maintenance.group_profile_refresh":
 		return []string{"groups_scored"}
-	case "maintenance.daily_bucket_stats_refresh":
-		return []string{"daily_buckets_refreshed"}
 	case "maintenance.partition_retention_drop":
 		return []string{"native_partitioned_tables", "target_tables"}
 	case "release":

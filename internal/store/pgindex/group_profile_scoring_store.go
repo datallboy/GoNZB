@@ -15,12 +15,29 @@ func (s *Store) RefreshIndexerGroupProfiles(ctx context.Context) (int64, error) 
 			SELECT
 				provider_id,
 				newsgroup_id,
-				SUM(headers_staged) AS articles_scraped_1d,
-				SUM(binaries_complete) AS binaries_completed_1d,
-				SUM(releases_created) AS releases_created_1d
-			FROM indexer_daily_bucket_stats
-			WHERE bucket_day >= CURRENT_DATE - 1
+				COUNT(*) AS articles_scraped_1d
+			FROM article_headers
+			WHERE COALESCE(date_utc, scraped_at) >= NOW() - INTERVAL '1 day'
 			GROUP BY provider_id, newsgroup_id
+		),
+		binary_metrics AS (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				COUNT(*) FILTER (WHERE total_parts > 0 AND observed_parts >= total_parts) AS binaries_completed_1d
+			FROM binary_observation_stats
+			WHERE COALESCE(posted_at, updated_at) >= NOW() - INTERVAL '1 day'
+			GROUP BY provider_id, newsgroup_id
+		),
+		release_metrics AS (
+			SELECT
+				r.provider_id,
+				ng.id AS newsgroup_id,
+				COUNT(*) AS releases_created_1d
+			FROM releases r
+			JOIN newsgroups ng ON ng.group_name = r.group_name
+			WHERE COALESCE(r.posted_at, r.created_at) >= NOW() - INTERVAL '1 day'
+			GROUP BY r.provider_id, ng.id
 		),
 		recovery_metrics AS (
 			SELECT
@@ -43,12 +60,14 @@ func (s *Store) RefreshIndexerGroupProfiles(ctx context.Context) (int64, error) 
 				COALESCE(rm.recovery_queued_1d, 0) AS recovery_queued_1d,
 				COALESCE(rm.yenc_probes_attempted_1d, 0) AS yenc_probes_attempted_1d,
 				COALESCE(rm.yenc_probes_successful_1d, 0) AS yenc_probes_successful_1d,
-				COALESCE(bm.binaries_completed_1d, 0) AS binaries_completed_1d,
-				COALESCE(bm.releases_created_1d, 0) AS releases_created_1d,
+				COALESCE(bin.binaries_completed_1d, 0) AS binaries_completed_1d,
+				COALESCE(rel.releases_created_1d, 0) AS releases_created_1d,
 				COALESCE(rm.avg_recovery_lag_seconds, 0) AS avg_recovery_lag_seconds,
 				COALESCE(rm.max_recovery_lag_seconds, 0) AS max_recovery_lag_seconds
 			FROM indexer_group_profiles igp
 			LEFT JOIN bucket_metrics bm ON bm.provider_id = igp.provider_id AND bm.newsgroup_id = igp.newsgroup_id
+			LEFT JOIN binary_metrics bin ON bin.provider_id = igp.provider_id AND bin.newsgroup_id = igp.newsgroup_id
+			LEFT JOIN release_metrics rel ON rel.provider_id = igp.provider_id AND rel.newsgroup_id = igp.newsgroup_id
 			LEFT JOIN recovery_metrics rm ON rm.provider_id = igp.provider_id AND rm.newsgroup_id = igp.newsgroup_id
 		),
 		scored AS (

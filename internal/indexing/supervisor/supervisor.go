@@ -223,7 +223,6 @@ func maintenanceStageNames() []StageName {
 		StageName("maintenance.crosspost_group_raw_purge"),
 		StageName("maintenance.yenc_done_work_item_cleanup"),
 		StageName("maintenance.group_profile_refresh"),
-		StageName("maintenance.daily_bucket_stats_refresh"),
 		StageName("maintenance.raw_stage_retention"),
 		StageName("maintenance.partition_retention_drop"),
 		StageName("maintenance.stale_nonrelease_source_purge"),

@@ -2,7 +2,6 @@ import { apiRequest, apiURL } from "./http"
 import type {
   IndexerBackfillProgress,
   IndexerDashboardStats,
-  IndexerDailyBucketResponse,
   IndexerDeferredArticleRangeResponse,
   IndexerGroupProfileResponse,
   IndexerNNTPStats,
@@ -59,10 +58,6 @@ export function getAdminBackfillProgress() {
 
 export function getAdminRecoveryCapacity() {
   return apiRequest<IndexerRecoveryCapacity>("/api/v1/admin/indexer/work/recovery-capacity")
-}
-
-export function getAdminDailyBuckets(limit = 50) {
-  return apiRequest<IndexerDailyBucketResponse>(`/api/v1/admin/indexer/work/daily-buckets?limit=${limit}`)
 }
 
 export function getAdminGroupProfiles(limit = 50) {
