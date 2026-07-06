@@ -1310,3 +1310,39 @@ Known open signoff items:
   Priority scheduler rows continued to be admitted within overflow capacity,
   but the selector may still mix priority-1 work while older priority-0 leases
   from interrupted runs remain open until expiry.
+
+## 2026-07-06 Closeout Audit
+
+- [x] Full repository validation passes on the sprint branch:
+  `go test ./...`, `npm run build` from `ui/`, and `git diff --check`.
+- [x] Fresh PostgreSQL schema is at `module_schema_version` version `44`.
+- [x] Fresh schema has `31` native source/work/projection partition parents,
+  including the article cohort scheduler tables. Each target parent has the
+  expected rolling daily children from `CURRENT_DATE - 21` through
+  `CURRENT_DATE + 9`, plus one default partition.
+- [x] Default partitions are empty on the fresh database.
+- [x] `partition_retention_drop` dry-run reports `31` target tables,
+  `0` non-partitioned target tables, `0` default rows, and no blockers on the
+  fresh database.
+- [x] `raw_stage_retention` is now exposed through the one-shot CLI task
+  dispatcher, matching the existing API/supervisor implementation. Dry-run
+  reports tier-aware raw retention policy and zero eligible rows on the fresh
+  database.
+- [x] Provider inventory scan and cohort diagnostics endpoints were live
+  checked after the July 6 fixes: provider inventory scan persisted `448,753`
+  rows without invalid UTF-8 failure, and the cohorts endpoint returned HTTP
+  200 without the stale `ng.name` query error.
+
+Closeout status:
+
+- The branch is code-green and the fresh schema/retention surfaces are healthy.
+- A final meaningful 30-minute indexing soak still requires configured runtime
+  scrape groups in the current settings snapshot. The current structured
+  runtime settings row has enabled indexer stages but no explicit, wildcard, or
+  materialized scrape groups, so a supervisor soak would be mostly idle until
+  groups are configured through the admin API/UI.
+- The remaining decision is operational rather than architectural: either
+  restore/add a small hot/warm/cold group set and run the final live soak, or
+  close this refinement branch as code-complete and start the next branch on
+  the indexing/scraping path with fresh runtime group configuration as the
+  first task.
