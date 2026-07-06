@@ -617,18 +617,29 @@ func (s *Store) RegroupSubjectMultipartBinaries(ctx context.Context, limit int) 
 	result.PartsMoved = rowsAffected(moveResult)
 
 	if _, err := tx.ExecContext(ctx, `
-		WITH agg AS (
-			SELECT
-				g.target_binary_id,
-				g.target_source_posted_at,
-				COUNT(bp.*)::integer AS observed_parts,
-				COALESCE(SUM(bp.segment_bytes), 0)::bigint AS total_bytes,
-				0::bigint AS first_article_number,
-				0::bigint AS last_article_number,
-				MIN(bp.source_posted_at) AS posted_at
+		WITH logical_parts AS (
+			SELECT DISTINCT ON (bp.binary_id, bp.part_number)
+				bp.binary_id,
+				bp.part_number,
+				bp.segment_bytes,
+				bp.source_posted_at
 			FROM tmp_subject_multipart_regroup_groups g
 			JOIN binary_parts bp
 			  ON bp.binary_id = g.target_binary_id
+			ORDER BY bp.binary_id, bp.part_number, bp.source_posted_at, bp.id
+		),
+		agg AS (
+			SELECT
+				g.target_binary_id,
+				g.target_source_posted_at,
+				COUNT(lp.*)::integer AS observed_parts,
+				COALESCE(SUM(lp.segment_bytes), 0)::bigint AS total_bytes,
+				0::bigint AS first_article_number,
+				0::bigint AS last_article_number,
+				MIN(lp.source_posted_at) AS posted_at
+			FROM tmp_subject_multipart_regroup_groups g
+			JOIN logical_parts lp
+			  ON lp.binary_id = g.target_binary_id
 			GROUP BY g.target_binary_id, g.target_source_posted_at
 		)
 		UPDATE binary_observation_stats bos
@@ -848,20 +859,31 @@ func refreshStaleSubjectMultipartObservationStats(ctx context.Context, tx *sql.T
 		return 0, fmt.Errorf("stage stale subject multipart stats candidates: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `
-		WITH agg AS (
-			SELECT
-				stale.binary_id,
-				stale.source_posted_at,
-				COUNT(bp.*)::integer AS observed_parts,
-				COALESCE(SUM(bp.segment_bytes), 0)::bigint AS total_bytes,
-				0::bigint AS first_article_number,
-				0::bigint AS last_article_number,
-				MIN(bp.source_posted_at) AS posted_at
+		WITH logical_parts AS (
+			SELECT DISTINCT ON (bp.binary_id, bp.part_number)
+				bp.binary_id,
+				bp.part_number,
+				bp.segment_bytes,
+				bp.source_posted_at
 			FROM tmp_subject_multipart_stale_stats stale
 			JOIN binary_parts bp
 			  ON bp.binary_id = stale.binary_id
 			 AND bp.source_posted_at >= stale.source_posted_at - INTERVAL '1 day'
 			 AND bp.source_posted_at < stale.source_posted_at + INTERVAL '1 day'
+			ORDER BY bp.binary_id, bp.part_number, bp.source_posted_at, bp.id
+		),
+		agg AS (
+			SELECT
+				stale.binary_id,
+				stale.source_posted_at,
+				COUNT(lp.*)::integer AS observed_parts,
+				COALESCE(SUM(lp.segment_bytes), 0)::bigint AS total_bytes,
+				0::bigint AS first_article_number,
+				0::bigint AS last_article_number,
+				MIN(lp.source_posted_at) AS posted_at
+			FROM tmp_subject_multipart_stale_stats stale
+			JOIN logical_parts lp
+			  ON lp.binary_id = stale.binary_id
 			GROUP BY stale.binary_id, stale.source_posted_at
 		)
 		UPDATE binary_observation_stats bos

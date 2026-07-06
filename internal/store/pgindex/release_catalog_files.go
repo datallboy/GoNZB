@@ -59,10 +59,13 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 		 AND bos.binary_id = rf.binary_id
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*) AS article_count
-			FROM binary_parts bp
-			WHERE bp.binary_id = rf.binary_id
-			  AND bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
-			  AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
+			FROM (
+				SELECT DISTINCT bp.part_number
+				FROM binary_parts bp
+				WHERE bp.binary_id = rf.binary_id
+				  AND bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
+				  AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
+			) logical_parts
 		) part_stats ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT

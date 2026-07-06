@@ -3197,6 +3197,7 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 
 	groupA := fmt.Sprintf("alt.test.catalog.groupa.%d", time.Now().UnixNano())
 	groupB := fmt.Sprintf("alt.test.catalog.groupb.%d", time.Now().UnixNano())
+	groupC := fmt.Sprintf("alt.test.catalog.groupc.%d", time.Now().UnixNano())
 	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
 	if err != nil {
 		t.Fatalf("ensure group A: %v", err)
@@ -3204,6 +3205,9 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
 	if err != nil {
 		t.Fatalf("ensure group B: %v", err)
+	}
+	if _, err := store.EnsureNewsgroup(ctx, groupC); err != nil {
+		t.Fatalf("ensure group C: %v", err)
 	}
 
 	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
@@ -3257,6 +3261,7 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 		MessageID:     "<catalog-a@test>",
 		Subject:       `"movie.part01.rar" yEnc (1/2)`,
 		Poster:        "poster-a",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:1001 %s:3001", groupA, groupC),
 		DateUTC:       ptrTime(time.Now().UTC()),
 		Bytes:         111,
 	}}); err != nil {
@@ -3317,8 +3322,8 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	if err != nil {
 		t.Fatalf("list catalog release newsgroups: %v", err)
 	}
-	if len(groups) != 2 || groups[0] != groupA || groups[1] != groupB {
-		t.Fatalf("unexpected catalog release groups: got %v want [%s %s]", groups, groupA, groupB)
+	if len(groups) != 3 || groups[0] != groupA || groups[1] != groupB || groups[2] != groupC {
+		t.Fatalf("unexpected catalog release groups: got %v want [%s %s %s]", groups, groupA, groupB, groupC)
 	}
 
 	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
@@ -3418,6 +3423,7 @@ func TestCatalogReleaseFileArticlesUseBinaryPartSourceSpan(t *testing.T) {
 	headers := []ArticleHeader{
 		{ArticleNumber: 1001, MessageID: "<catalog-span-1@test>", Subject: `"span.mkv" yEnc (1/3)`, Poster: "poster-a", DateUTC: ptrTime(rootPostedAt.Add(-10 * time.Second)), Bytes: 111},
 		{ArticleNumber: 1002, MessageID: "<catalog-span-2@test>", Subject: `"span.mkv" yEnc (2/3)`, Poster: "poster-b", DateUTC: ptrTime(rootPostedAt), Bytes: 222},
+		{ArticleNumber: 1004, MessageID: "<catalog-span-2-copy@test>", Subject: `[1/1] "span.mkv" yEnc (2/3)`, Poster: "poster-copy", DateUTC: ptrTime(rootPostedAt.Add(2 * time.Second)), Bytes: 999},
 		{ArticleNumber: 1003, MessageID: "<catalog-span-3@test>", Subject: `"span.mkv" yEnc (3/3)`, Poster: "poster-c", DateUTC: ptrTime(rootPostedAt.Add(8 * time.Second)), Bytes: 333},
 	}
 	if _, err := store.InsertArticleHeaders(ctx, 1, groupID, headers); err != nil {
@@ -3433,9 +3439,13 @@ func TestCatalogReleaseFileArticlesUseBinaryPartSourceSpan(t *testing.T) {
 	}
 	parts := make([]partSeed, 0, len(headers))
 	for i, header := range headers {
+		partNumber := i + 1
+		if header.MessageID == "<catalog-span-2-copy@test>" {
+			partNumber = 2
+		}
 		part := partSeed{
 			messageID:  header.MessageID,
-			partNumber: i + 1,
+			partNumber: partNumber,
 			bytes:      header.Bytes,
 		}
 		if err := store.DB().QueryRowContext(ctx, `
@@ -3494,33 +3504,40 @@ func TestCatalogReleaseFileArticlesUseBinaryPartSourceSpan(t *testing.T) {
 		t.Fatalf("list catalog release file articles: %v", err)
 	}
 	if len(articles) != 3 {
-		t.Fatalf("expected all 3 cross-second article refs, got %d: %+v", len(articles), articles)
+		t.Fatalf("expected 3 logical cross-second article refs, got %d: %+v", len(articles), articles)
+	}
+	if articles[1].MessageID != "<catalog-span-2@test>" {
+		t.Fatalf("expected earliest article for duplicate part 2, got %+v", articles)
 	}
 
-	var articleCount int
+	var articleCount, observedParts int
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT article_count
+		SELECT article_count, observed_parts
 		FROM release_catalog_files
 		WHERE release_id = $1 AND file_name = 'span.mkv'`,
 		releaseID,
-	).Scan(&articleCount); err != nil {
+	).Scan(&articleCount, &observedParts); err != nil {
 		t.Fatalf("query release catalog article count: %v", err)
 	}
-	if articleCount != 3 {
-		t.Fatalf("expected release catalog article_count=3, got %d", articleCount)
+	if articleCount != 3 || observedParts != 3 {
+		t.Fatalf("expected release catalog logical counts=3/3, got article_count=%d observed_parts=%d", articleCount, observedParts)
 	}
 
+	var binaryObserved int
 	var spanMin, spanMax time.Time
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT part_source_posted_at_min, part_source_posted_at_max
+		SELECT observed_parts, part_source_posted_at_min, part_source_posted_at_max
 		FROM binary_observation_stats
 		WHERE binary_id = $1`,
 		binaryID,
-	).Scan(&spanMin, &spanMax); err != nil {
+	).Scan(&binaryObserved, &spanMin, &spanMax); err != nil {
 		t.Fatalf("query binary stats span: %v", err)
 	}
-	if !spanMin.Equal(parts[0].sourcePostedAt) || !spanMax.Equal(parts[2].sourcePostedAt) {
-		t.Fatalf("unexpected part source span: got %s - %s want %s - %s", spanMin, spanMax, parts[0].sourcePostedAt, parts[2].sourcePostedAt)
+	if binaryObserved != 3 {
+		t.Fatalf("expected binary observed parts to count logical parts, got %d", binaryObserved)
+	}
+	if !spanMin.Equal(parts[0].sourcePostedAt) || !spanMax.Equal(parts[3].sourcePostedAt) {
+		t.Fatalf("unexpected part source span: got %s - %s want %s - %s", spanMin, spanMax, parts[0].sourcePostedAt, parts[3].sourcePostedAt)
 	}
 }
 
