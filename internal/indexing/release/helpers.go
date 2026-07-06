@@ -1477,13 +1477,11 @@ func detectSubtitleLanguages(binaries []pgindex.BinarySummary) []string {
 func derivePasswordState(passworded, known, unknown bool) string {
 	switch {
 	case known:
-		return "passworded_known"
-	case unknown:
-		return "passworded_unknown"
-	case passworded:
-		return "passworded"
+		return "password_known"
+	case unknown || passworded:
+		return "password_unknown"
 	default:
-		return "unknown"
+		return "not_passworded"
 	}
 }
 

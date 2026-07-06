@@ -1274,9 +1274,9 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		    	ELSE releases.passworded_unknown OR EXCLUDED.passworded_unknown
 		    END,
 		    password_state = CASE
-		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'passworded_known'
-		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'passworded_unknown'
-		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'passworded'
+		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'password_known'
+		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'password_unknown'
+		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'password_unknown'
 		    	WHEN EXCLUDED.password_state <> '' AND EXCLUDED.password_state <> 'unknown' THEN EXCLUDED.password_state
 		    	ELSE releases.password_state
 		    END,

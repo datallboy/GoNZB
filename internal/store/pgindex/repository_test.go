@@ -518,7 +518,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Passworded:        &passworded,
 		PasswordedKnown:   &passwordedKnown,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_known",
+		PasswordState:     "password_known",
 	}); err != nil {
 		t.Fatalf("apply verified password state: %v", err)
 	}
@@ -545,8 +545,8 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 	if !release.Release.Passworded || !release.Release.PasswordedKnown || release.Release.PasswordedUnknown {
 		t.Fatalf("expected known password rollup to win, got %+v", release.Release)
 	}
-	if release.Release.PasswordState != "passworded_known" {
-		t.Fatalf("expected passworded_known state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_known" {
+		t.Fatalf("expected password_known state, got %q", release.Release.PasswordState)
 	}
 	if !release.Release.Encrypted {
 		t.Fatalf("expected encrypted flag to remain true, got %+v", release.Release)
@@ -600,7 +600,7 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -618,8 +618,8 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	if release.Release.AvailabilityScore >= release.Release.CompletionPct {
 		t.Fatalf("expected availability_score %.2f to drop below completion_pct %.2f", release.Release.AvailabilityScore, release.Release.CompletionPct)
 	}
-	if release.Release.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", release.Release.PasswordState)
 	}
 }
 
@@ -12028,7 +12028,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 
 	token := fmt.Sprintf("publicvisible%d", time.Now().UnixNano())
 	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
-		in.PasswordState = "passworded_known"
+		in.PasswordState = "password_known"
 	})
 
 	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
@@ -12059,7 +12059,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	if items[0].ReleaseID != releaseID {
 		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
 	}
-	if items[0].PasswordState != "passworded_known" {
+	if items[0].PasswordState != "password_known" {
 		t.Fatalf("expected stable password state, got %+v", items[0])
 	}
 
@@ -12092,7 +12092,7 @@ func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testin
 		in.PrimaryVideoCodec = "x265"
 		in.PrimaryAudioCodec = "dts"
 		in.SubtitleLanguages = []string{"en", "es"}
-		in.PasswordState = "passworded_known"
+		in.PasswordState = "password_known"
 	})
 
 	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
@@ -12171,7 +12171,7 @@ func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testin
 	if len(detail.Media.SubtitleLanguages) != 2 {
 		t.Fatalf("expected subtitle snapshot to survive purge, got %+v", detail.Media.SubtitleLanguages)
 	}
-	if detail.Release.PasswordState != "passworded_known" {
+	if detail.Release.PasswordState != "password_known" {
 		t.Fatalf("expected stable archived password state, got %+v", detail.Release)
 	}
 
@@ -12907,7 +12907,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		in.MatchConfidence = 0.96
 		in.Passworded = true
 		in.PasswordedUnknown = true
-		in.PasswordState = "passworded_unknown"
+		in.PasswordState = "password_unknown"
 		in.Encrypted = true
 	})
 
@@ -12916,7 +12916,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		t.Fatalf("list public passworded unknown releases: %v", err)
 	}
 	if total != 0 || len(items) != 0 {
-		t.Fatalf("expected passworded_unknown release to be hidden, got total=%d items=%d", total, len(items))
+		t.Fatalf("expected password_unknown release to be hidden, got total=%d items=%d", total, len(items))
 	}
 
 	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
@@ -12924,7 +12924,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		t.Fatalf("get public passworded unknown detail: %v", err)
 	}
 	if detail != nil {
-		t.Fatalf("expected passworded_unknown detail to be hidden, got %+v", detail)
+		t.Fatalf("expected password_unknown detail to be hidden, got %+v", detail)
 	}
 }
 

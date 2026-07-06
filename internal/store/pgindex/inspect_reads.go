@@ -2065,6 +2065,52 @@ func adminReleaseInClause(column string, start int, values []string) (string, []
 	return fmt.Sprintf("%s IN (%s)", column, adminReleaseStatePlaceholders(start, len(values))), anyStrings(values)
 }
 
+func normalizeReleasePasswordState(raw string, passworded, known, unknown bool) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "password_known", "passworded_known":
+		return "password_known"
+	case "password_unknown", "passworded_unknown", "passworded":
+		return "password_unknown"
+	case "not_passworded":
+		return "not_passworded"
+	}
+	switch {
+	case known:
+		return "password_known"
+	case unknown || passworded:
+		return "password_unknown"
+	default:
+		return "not_passworded"
+	}
+}
+
+func normalizeReleasePasswordStateValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeReleasePasswordState(value, false, false, false)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func releasePasswordStateSQL(alias string) string {
+	return fmt.Sprintf(`CASE
+		WHEN COALESCE(%[1]s.passworded_known, FALSE)
+		  OR COALESCE(%[1]s.password_state, '') IN ('password_known', 'passworded_known')
+		THEN 'password_known'
+		WHEN COALESCE(%[1]s.passworded_unknown, FALSE)
+		  OR COALESCE(%[1]s.passworded, FALSE)
+		  OR COALESCE(%[1]s.password_state, '') IN ('password_unknown', 'passworded_unknown', 'passworded')
+		THEN 'password_unknown'
+		ELSE 'not_passworded'
+	END`, alias)
+}
+
 func adminReleaseAnyPredicateClause(values []string, predicates map[string]string) string {
 	clauses := make([]string, 0, len(values))
 	for _, value := range values {
@@ -2115,8 +2161,9 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 		clause, values := adminReleaseInClause("r.identity_status", arg, values)
 		add(clause, values...)
 	}
-	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "passworded_known", "passworded_unknown"); len(values) > 0 {
-		clause, values := adminReleaseInClause("r.password_state", arg, values)
+	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "password_known", "password_unknown", "passworded_known", "passworded_unknown", "passworded", "unknown"); len(values) > 0 {
+		values = normalizeReleasePasswordStateValues(values)
+		clause, values := adminReleaseInClause(releasePasswordStateSQL("r"), arg, values)
 		add(clause, values...)
 	}
 	if values := parseAdminFilterValues(params.MediaQualityTier, "premium", "good", "fair", "unknown"); len(values) > 0 {
@@ -3788,6 +3835,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 	}
 	item.SubtitleLanguages = decodeJSONStringSlice(subtitleJSON)
 	item.MediaTags = decodeJSONStringSlice(mediaTagsJSON)
+	item.PasswordState = normalizeReleasePasswordState(item.PasswordState, item.Passworded, item.PasswordedKnown, item.PasswordedUnknown)
 
 	return item, nil
 }

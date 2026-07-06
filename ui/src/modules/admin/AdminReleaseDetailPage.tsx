@@ -54,6 +54,25 @@ function formatNZBStatus(value: string) {
   }
 }
 
+function passwordStateLabel(value: string | undefined) {
+  switch ((value ?? '').trim()) {
+    case 'not_passworded':
+      return 'Not passworded'
+    case 'password_known':
+    case 'passworded_known':
+      return 'Password known'
+    case 'password_unknown':
+    case 'passworded_unknown':
+    case 'passworded':
+      return 'Password unknown'
+    case 'unknown':
+    case '':
+      return 'Not passworded'
+    default:
+      return value ?? 'Not passworded'
+  }
+}
+
 function payloadCompletionLabel(diagnostics: AdminReleaseDetailResponse['release']['diagnostics']) {
   if (!diagnostics.payload_completeness_known) return 'Unknown'
   return formatPercent(diagnostics.payload_completion_pct)
@@ -245,7 +264,7 @@ export function AdminReleaseDetailPage() {
             </div>
             <div>
               <dt>Password</dt>
-              <dd>{release.password_state || 'unknown'}</dd>
+              <dd>{passwordStateLabel(release.password_state)}</dd>
             </div>
             <div>
               <dt>Availability</dt>

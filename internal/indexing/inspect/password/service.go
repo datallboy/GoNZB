@@ -200,9 +200,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	passworded := true
 	passwordedKnown := verified
 	passwordedUnknown := !verified
-	passwordState := "passworded_unknown"
+	passwordState := "password_unknown"
 	if verified {
-		passwordState = "passworded_known"
+		passwordState = "password_known"
 	}
 
 	summary := map[string]any{
