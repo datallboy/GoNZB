@@ -40,6 +40,12 @@ function partFraction(part?: number, total?: number) {
   return `${part || '?'}`
 }
 
+function valueOrNone(value?: string | number) {
+  if (value === undefined || value === null) return 'None'
+  const text = String(value)
+  return text.trim() ? text : 'None'
+}
+
 export function AdminBinaryDetailPage() {
   const { id = '' } = useParams()
   const binaryID = Number(id)
@@ -62,7 +68,7 @@ export function AdminBinaryDetailPage() {
     return <div className="banner error">{error}</div>
   }
   if (!detail) {
-    return <div className="banner">Loading binary detail...</div>
+    return <div className="banner"><span className="loading-dot" /> Loading binary detail...</div>
   }
 
   return (
@@ -85,6 +91,17 @@ export function AdminBinaryDetailPage() {
         </div>
       </div>
 
+      {detail.superseded_by_id ? (
+        <div className="banner">
+          This binary was merged into{' '}
+          <Link className="table-link" to={`/admin/indexer/binaries/${detail.superseded_by_id}`}>
+            binary {detail.superseded_by_id}
+          </Link>
+          {detail.superseded_reason ? ` by ${detail.superseded_reason}` : ''}
+          {detail.superseded_at ? ` at ${formatDateTime(detail.superseded_at)}` : ''}. Its article parts may now belong to the target binary.
+        </div>
+      ) : null}
+
       <div className="dashboard-grid">
         <div className="page-card stack">
           <h2 className="section-title">Binary Completion</h2>
@@ -105,12 +122,12 @@ export function AdminBinaryDetailPage() {
 
         <div className="page-card stack">
           <h2 className="section-title">Identity</h2>
-          <dl className="detail-grid">
-            <div><dt>Release Key</dt><dd>{detail.release_key || 'None'}</dd></div>
-            <div><dt>Release Name</dt><dd>{detail.release_name || 'None'}</dd></div>
-            <div><dt>Binary Key</dt><dd>{detail.binary_key || 'None'}</dd></div>
-            <div><dt>Binary Name</dt><dd>{detail.binary_name || 'None'}</dd></div>
-            <div><dt>File Name</dt><dd>{detail.file_name || 'None'}</dd></div>
+          <dl className="detail-grid detail-grid--wide-values">
+            <div><dt>Release</dt><dd className="breakable-value">{valueOrNone(detail.release_name)}</dd></div>
+            <div><dt>File</dt><dd className="breakable-value">{valueOrNone(detail.file_name)}</dd></div>
+            <div><dt>Binary</dt><dd className="breakable-value">{valueOrNone(detail.binary_name)}</dd></div>
+            <div><dt>Release Key</dt><dd className="breakable-value mono-cell">{valueOrNone(detail.release_key)}</dd></div>
+            <div><dt>Binary Key</dt><dd className="breakable-value mono-cell">{valueOrNone(detail.binary_key)}</dd></div>
           </dl>
         </div>
       </div>
@@ -118,13 +135,13 @@ export function AdminBinaryDetailPage() {
       <div className="page-card stack">
         <h2 className="section-title">Article Headers</h2>
         <p className="muted-copy">
-          Binary-owned source segments. Projection is the current binary_parts row; HEAD/XOVER is parsed from the NNTP header; BODY yEnc is recovered from article body probes.
+          Binary-owned source segments. Parts are the current binary_parts rows; HEAD/XOVER is parsed from the NNTP header; BODY yEnc is recovered from article body probes.
         </p>
         <div className="table-shell">
           <table className="data-table data-table--compact">
             <thead>
               <tr>
-                <th>Projection</th>
+                <th>Parts</th>
                 <th>Article</th>
                 <th>NNTP HEAD / XOVER</th>
                 <th>BODY yEnc</th>
@@ -161,7 +178,6 @@ export function AdminBinaryDetailPage() {
                       <div>{partFraction(part.recovered_part_number, part.recovered_total_parts)}</div>
                     ) : null}
                     {part.recovered_file_name ? <div className="muted-copy">{part.recovered_file_name}</div> : null}
-                    {part.recovered_file_size > 0 ? <div className="muted-copy">{formatBytes(part.recovered_file_size)}</div> : null}
                     {part.recovered_source ? <div className="muted-copy">{part.recovered_source}</div> : null}
                     {part.yenc_recovery_error ? <div className="muted-copy">{part.yenc_recovery_error}</div> : null}
                   </td>
@@ -169,7 +185,18 @@ export function AdminBinaryDetailPage() {
                 </tr>
               ))}
               {detail.parts.length === 0 ? (
-                <tr><td colSpan={5}>No binary parts are recorded.</td></tr>
+                <tr>
+                  <td colSpan={5}>
+                    {detail.superseded_by_id ? (
+                      <>
+                        No parts remain on this source binary. It was merged into{' '}
+                        <Link className="table-link" to={`/admin/indexer/binaries/${detail.superseded_by_id}`}>
+                          binary {detail.superseded_by_id}
+                        </Link>.
+                      </>
+                    ) : 'No binary parts are recorded.'}
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
