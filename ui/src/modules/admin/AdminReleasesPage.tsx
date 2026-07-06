@@ -66,6 +66,7 @@ const booleanOptions = [
 ]
 
 const passwordStateOptions = [
+  { value: 'unknown', label: 'Not inspected' },
   { value: 'not_passworded', label: 'Not passworded' },
   { value: 'password_known', label: 'Password known' },
   { value: 'password_unknown', label: 'Password unknown' },
@@ -124,9 +125,9 @@ function passwordStateLabel(value: string | undefined) {
       return 'Password unknown'
     case 'unknown':
     case '':
-      return 'Not passworded'
+      return 'Not inspected'
     default:
-      return value ?? 'Not passworded'
+      return value ?? 'Not inspected'
   }
 }
 

@@ -286,13 +286,13 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	primaryAudioCodec := detectPrimaryAudioCodec(cluster.Binaries)
 	availabilityScore := computeAvailabilityScore(cluster)
 	mediaQualityScore := computeMediaQualityScore(primaryResolution, primaryVideoCodec, cluster.Binaries)
-	passworded := false
-	passwordedKnown := false
-	passwordedUnknown := false
-	passwordState := derivePasswordState(passworded, passwordedKnown, passwordedUnknown)
 	releaseFileBinaries := selectReleaseFileBinaries(cluster.Binaries)
 	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(releaseFileBinaries)
 	classification := classifyCluster(releaseFileBinaries, archiveCount, videoCount, audioCount, inspectCandidates)
+	passworded := false
+	passwordedKnown := false
+	passwordedUnknown := false
+	passwordState := deriveInitialReleasePasswordState(classification, archiveCount)
 	subtitles := detectSubtitleLanguages(cluster.Binaries)
 	postedAt := earliestPostedAt(candidate.PostedAt, cluster.Binaries)
 	now := time.Now().UTC()
@@ -1481,8 +1481,19 @@ func derivePasswordState(passworded, known, unknown bool) string {
 	case unknown || passworded:
 		return "password_unknown"
 	default:
-		return "not_passworded"
+		return "unknown"
 	}
+}
+
+func deriveInitialReleasePasswordState(classification string, archiveCount int) string {
+	switch strings.TrimSpace(classification) {
+	case "archive", "video_archive":
+		return "unknown"
+	}
+	if archiveCount > 0 {
+		return "unknown"
+	}
+	return "not_passworded"
 }
 
 func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) resolvedReleaseTitle {

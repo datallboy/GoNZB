@@ -2073,6 +2073,8 @@ func normalizeReleasePasswordState(raw string, passworded, known, unknown bool) 
 		return "password_unknown"
 	case "not_passworded":
 		return "not_passworded"
+	case "unknown", "not_inspected":
+		return "unknown"
 	}
 	switch {
 	case known:
@@ -2080,7 +2082,7 @@ func normalizeReleasePasswordState(raw string, passworded, known, unknown bool) 
 	case unknown || passworded:
 		return "password_unknown"
 	default:
-		return "not_passworded"
+		return "unknown"
 	}
 }
 
@@ -2107,7 +2109,9 @@ func releasePasswordStateSQL(alias string) string {
 		  OR COALESCE(%[1]s.passworded, FALSE)
 		  OR COALESCE(%[1]s.password_state, '') IN ('password_unknown', 'passworded_unknown', 'passworded')
 		THEN 'password_unknown'
-		ELSE 'not_passworded'
+		WHEN COALESCE(%[1]s.password_state, '') = 'not_passworded'
+		THEN 'not_passworded'
+		ELSE 'unknown'
 	END`, alias)
 }
 
@@ -2161,7 +2165,7 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 		clause, values := adminReleaseInClause("r.identity_status", arg, values)
 		add(clause, values...)
 	}
-	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "password_known", "password_unknown", "passworded_known", "passworded_unknown", "passworded", "unknown"); len(values) > 0 {
+	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "password_known", "password_unknown", "passworded_known", "passworded_unknown", "passworded", "unknown", "not_inspected"); len(values) > 0 {
 		values = normalizeReleasePasswordStateValues(values)
 		clause, values := adminReleaseInClause(releasePasswordStateSQL("r"), arg, values)
 		add(clause, values...)
