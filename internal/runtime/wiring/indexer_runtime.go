@@ -602,6 +602,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			result, err := appCtx.PGIndexStore.RunPartitionRetentionTask(ctx, cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
 		}),
+		maintenanceTaskStage(runtimeCfg, "partition_default_rehome", supervisor.StageName("maintenance.partition_default_rehome"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.RunPartitionDefaultRehomeTask(ctx, cfg.BatchSize)
+			return maintenanceTaskMetrics(result), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "stale_nonrelease_source_purge", supervisor.StageName("maintenance.stale_nonrelease_source_purge"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunSimpleMaintenanceTask(ctx, "stale_nonrelease_source_purge", cfg.BatchSize)
 			return maintenanceTaskMetrics(result), err
@@ -831,14 +835,6 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			return usenetIndexerConfig{}, fmt.Errorf("parse indexing.backfill_until_date_by_group[%s]: %w", group, err)
 		}
 		backfillCutoffs[group] = parsed.UTC()
-	}
-	if indexingCfg.SourceWindow.Enabled && indexingCfg.SourceWindow.BackfillWindowDays > 0 {
-		sourceWindowCutoff := time.Now().UTC().AddDate(0, 0, -indexingCfg.SourceWindow.BackfillWindowDays)
-		for _, group := range indexingCfg.Newsgroups {
-			if _, exists := backfillCutoffs[group]; !exists {
-				backfillCutoffs[group] = sourceWindowCutoff
-			}
-		}
 	}
 
 	out := usenetIndexerConfig{

@@ -975,9 +975,9 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			end = len(prepared)
 		}
 		batch := prepared[start:end]
-		// Runtime partition DDL can deadlock with assemble/release readers on
-		// partition parents. Fresh migrations and maintenance create the normal
-		// horizon; unexpected older dates fall into default partitions instead.
+		if err := s.ensureSourceWorkPartitionsForPreparedHeaders(ctx, batch); err != nil {
+			return inserted, err
+		}
 
 		var batchInserted int64
 		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
@@ -1055,6 +1055,48 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 	}
 
 	return inserted, nil
+}
+
+func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, batch []preparedArticleHeaderInsert) error {
+	if s == nil || s.db == nil || len(batch) == 0 {
+		return nil
+	}
+	days := map[string]struct{}{}
+	for _, item := range batch {
+		postedAt := time.Now().UTC()
+		if item.DateUTC != nil {
+			postedAt = item.DateUTC.UTC()
+		}
+		day := time.Date(postedAt.Year(), postedAt.Month(), postedAt.Day(), 0, 0, 0, 0, time.UTC)
+		days[day.Format("2006-01-02")] = struct{}{}
+	}
+	for day := range days {
+		for _, table := range nativeSourceWorkPartitionTables() {
+			err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+				_, err := s.db.ExecContext(ctx, `SELECT public.pgindex_ensure_daily_partition($1, $2::date)`, table, day)
+				if isDefaultPartitionOverlapError(err) {
+					return nil
+				}
+				return err
+			})
+			if isRetryablePostgresTxError(err) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("ensure source work partition table=%s day=%s: %w", table, day, err)
+			}
+		}
+	}
+	return nil
+}
+
+func isDefaultPartitionOverlapError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "updated partition constraint for default partition") &&
+		strings.Contains(message, "would be violated by some row")
 }
 
 func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]articleHeaderResolution, error) {

@@ -909,6 +909,7 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
 	{StageName: "maintenance.group_profile_refresh", Label: "Group Profile Refresh", ItemLabel: "groups"},
 	{StageName: "maintenance.partition_retention_drop", Label: "Partition Retention Drop", ItemLabel: "tables"},
+	{StageName: "maintenance.partition_default_rehome", Label: "Partition Default Rehome", ItemLabel: "rows"},
 	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
@@ -1134,6 +1135,8 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"groups_scored"}
 	case "maintenance.partition_retention_drop":
 		return []string{"native_partitioned_tables", "target_tables"}
+	case "maintenance.partition_default_rehome":
+		return []string{"eligible_default_day_count"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
 	case "release_generate_nzb":

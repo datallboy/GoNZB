@@ -139,7 +139,7 @@ func defaultSourceWindowSettings() IndexingSourceWindowRuntimeSettings {
 	return IndexingSourceWindowRuntimeSettings{
 		Enabled:            true,
 		WindowMinutes:      15,
-		BackfillWindowDays: 7,
+		BackfillWindowDays: 0,
 		MaxOpenHeaders:     50000,
 		ResumeOpenHeaders:  10000,
 		MaxBlockingYEnc:    50000,
@@ -1191,9 +1191,6 @@ func normalizeSourceWindowRuntimeSettings(in IndexingSourceWindowRuntimeSettings
 	if out.WindowMinutes <= 0 {
 		out.WindowMinutes = defaults.WindowMinutes
 	}
-	if out.BackfillWindowDays <= 0 {
-		out.BackfillWindowDays = defaults.BackfillWindowDays
-	}
 	if out.MaxOpenHeaders <= 0 {
 		out.MaxOpenHeaders = defaults.MaxOpenHeaders
 	}
@@ -1401,6 +1398,7 @@ func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings
 		"group_profile_refresh":         {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
 		"raw_stage_retention":           {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"partition_retention_drop":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 7},
+		"partition_default_rehome":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1},
 		"inspect_workspace_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"stale_nonrelease_source_purge": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 10000},
 		"emergency_source_window_reset": {Enabled: true, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 10000},
