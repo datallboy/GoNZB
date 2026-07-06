@@ -1030,9 +1030,15 @@ export type AdminBinaryPart = {
   file_name: string
   article_bytes: number
   article_lines: number
+  subject_file_name: string
+  subject_file_index: number
+  subject_file_total: number
   yenc_part_number: number
   yenc_total_parts: number
   yenc_file_size: number
+  recovered_part_number: number
+  recovered_total_parts: number
+  recovered_file_size: number
   yenc_recovery_status: string
   yenc_recovery_ready_at?: string
   yenc_recovery_error: string

@@ -1431,6 +1431,9 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
 			return nil, 0, nil, err
 		}
+		if err := strengthenRecoveredBinaryPart(ctx, tx, in.BinaryID, in.ArticleHeaderID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
+			return nil, 0, nil, err
+		}
 		if stats != nil {
 			stats.TargetUpdateDuration += time.Since(started)
 		}
@@ -1999,6 +2002,94 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 	}
 	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, []int64{binaryID}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func strengthenRecoveredBinaryPart(ctx context.Context, tx *sql.Tx, binaryID, articleHeaderID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
+	if binaryID <= 0 || articleHeaderID <= 0 {
+		return nil
+	}
+	if recoveredPartNumber <= 0 && recoveredTotalParts <= 0 && strings.TrimSpace(fileName) == "" {
+		return nil
+	}
+
+	var sourcePostedAt time.Time
+	var partID int64
+	var currentPartNumber int
+	var currentTotalParts int
+	var segmentBytes int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at, id, part_number, total_parts, segment_bytes
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND article_header_id = $2
+		FOR UPDATE`,
+		binaryID,
+		articleHeaderID,
+	).Scan(&sourcePostedAt, &partID, &currentPartNumber, &currentTotalParts, &segmentBytes); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("lock recovered binary part binary=%d article=%d: %w", binaryID, articleHeaderID, err)
+	}
+
+	partNumber := currentPartNumber
+	if recoveredPartNumber > 0 {
+		partNumber = recoveredPartNumber
+	}
+	totalParts := currentTotalParts
+	if recoveredTotalParts > totalParts {
+		totalParts = recoveredTotalParts
+	}
+
+	if recoveredPartNumber > 0 && recoveredPartNumber != currentPartNumber {
+		var existingID int64
+		var existingBytes int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, segment_bytes
+			FROM binary_parts
+			WHERE binary_id = $1
+			  AND source_posted_at = $2
+			  AND part_number = $3
+			  AND id <> $4
+			FOR UPDATE`,
+			binaryID,
+			sourcePostedAt,
+			recoveredPartNumber,
+			partID,
+		).Scan(&existingID, &existingBytes)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("lock existing recovered part binary=%d part=%d: %w", binaryID, recoveredPartNumber, err)
+		}
+		if err == nil && existingBytes >= segmentBytes {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, sourcePostedAt, partID); err != nil {
+				return fmt.Errorf("delete weaker recovered duplicate part %d: %w", partID, err)
+			}
+			return nil
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, sourcePostedAt, existingID); err != nil {
+				return fmt.Errorf("delete existing weaker recovered part %d: %w", existingID, err)
+			}
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_parts
+		SET file_name = CASE WHEN BTRIM($3) <> '' THEN $3 ELSE file_name END,
+		    part_number = $4,
+		    total_parts = GREATEST(total_parts, $5),
+		    updated_at = NOW()
+		WHERE source_posted_at = $1
+		  AND id = $2`,
+		sourcePostedAt,
+		partID,
+		fileName,
+		partNumber,
+		totalParts,
+	); err != nil {
+		return fmt.Errorf("strengthen recovered binary part %d: %w", partID, err)
 	}
 	return nil
 }
