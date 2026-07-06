@@ -265,6 +265,14 @@ func (s *Store) RunPartitionRetentionTask(ctx context.Context, batchSize int) (*
 	return s.partitionRetentionReport(ctx, false, batchSize)
 }
 
+func (s *Store) DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionDefaultRehomeReport(ctx, true, batchSize)
+}
+
+func (s *Store) RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionDefaultRehomeReport(ctx, false, batchSize)
+}
+
 func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
@@ -555,6 +563,335 @@ func (s *Store) partitionDefaultRows(ctx context.Context, targetTables []string)
 		out[table] = count
 	}
 	return out, nil
+}
+
+type partitionDefaultDay struct {
+	DayKey string
+	Rows   int64
+}
+
+func (s *Store) partitionDefaultRehomeReport(ctx context.Context, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	if batchSize > 7 {
+		batchSize = 7
+	}
+	targetTables := nativeSourceWorkPartitionTables()
+	result := &MaintenanceTaskResult{
+		TaskKey:              "partition_default_rehome",
+		DryRun:               dryRun,
+		EstimatedRowsByTable: map[string]int64{},
+		Warnings: []string{
+			"moves rows out of default partitions into dated child partitions",
+			"batch size is interpreted as number of default-partition days to move, capped at 7",
+			"run manually or while scrape is quiet; default partitions are briefly detached in a transaction",
+		},
+	}
+	if !dryRun {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	days, err := s.partitionDefaultRehomeDays(ctx, targetTables, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	for _, day := range days {
+		result.EstimatedRowsByTable["default_day_"+day.DayKey] = day.Rows
+	}
+	result.EstimatedRowsByTable["eligible_default_day_count"] = int64(len(days))
+	if err := s.addPartitionDefaultRehomeBlockers(ctx, result); err != nil {
+		return nil, err
+	}
+	if len(result.Blockers) > 0 {
+		if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	if dryRun || len(days) == 0 {
+		if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	for _, day := range days {
+		moved, err := s.rehomeDefaultPartitionDay(ctx, day.DayKey, targetTables)
+		if err != nil {
+			return nil, err
+		}
+		for table, count := range moved {
+			result.DeletedRowsByTable[table+"_default_moved"] += count
+		}
+	}
+	if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Store) addPartitionDefaultRehomeBlockers(ctx context.Context, result *MaintenanceTaskResult) error {
+	exists, err := s.tableExists(ctx, "article_headers_default")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	var defaultRows int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM article_headers_default`).Scan(&defaultRows); err != nil {
+		return fmt.Errorf("count article_headers_default rows: %w", err)
+	}
+	if defaultRows == 0 {
+		return nil
+	}
+	var dependentFKs int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE contype = 'f'
+		  AND confrelid = 'article_headers_default'::regclass`).Scan(&dependentFKs); err != nil {
+		return fmt.Errorf("count article_headers_default dependent fks: %w", err)
+	}
+	if dependentFKs > 0 {
+		result.Blockers = append(result.Blockers, fmt.Sprintf("article_headers_default has %d rows and %d partition-specific foreign keys; online rehome would require dropping inherited FK constraints, so leave these rows for raw retention or perform an offline migration", defaultRows, dependentFKs))
+	}
+	return nil
+}
+
+func (s *Store) addPartitionDefaultRowEstimates(ctx context.Context, result *MaintenanceTaskResult, targetTables []string) error {
+	defaultRows, err := s.partitionDefaultRows(ctx, targetTables)
+	if err != nil {
+		return err
+	}
+	for table, count := range defaultRows {
+		result.EstimatedRowsByTable[table+"_default_rows"] = count
+	}
+	return nil
+}
+
+func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []string, limit int) ([]partitionDefaultDay, error) {
+	counts := map[string]int64{}
+	for _, table := range targetTables {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT (date_trunc('day', source_posted_at))::date::text AS day_key, COUNT(*)::bigint
+			FROM `+quoteIdentifier(defaultTable)+`
+			GROUP BY day_key
+			ORDER BY day_key`)
+		if err != nil {
+			return nil, fmt.Errorf("list default partition days for %s: %w", defaultTable, err)
+		}
+		for rows.Next() {
+			var dayKey string
+			var count int64
+			if err := rows.Scan(&dayKey, &count); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan default partition day for %s: %w", defaultTable, err)
+			}
+			counts[dayKey] += count
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate default partition days for %s: %w", defaultTable, err)
+		}
+		rows.Close()
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	out := make([]partitionDefaultDay, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, partitionDefaultDay{DayKey: key, Rows: counts[key]})
+	}
+	return out, nil
+}
+
+func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, targetTables []string) (map[string]int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin default partition rehome tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pgindex-partition-default-rehome'))`); err != nil {
+		return nil, fmt.Errorf("lock default partition rehome: %w", err)
+	}
+
+	detachOrder := orderedPartitionTables(targetTables, nativeSourceWorkPartitionDropOrder())
+	detached := make([]string, 0, len(detachOrder))
+	for _, table := range detachOrder {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s DETACH PARTITION %s`, quoteIdentifier(table), quoteIdentifier(defaultTable))); err != nil {
+			return nil, fmt.Errorf("detach default partition %s: %w", defaultTable, err)
+		}
+		detached = append(detached, table)
+		childTable := table + "_" + strings.ReplaceAll(dayKey, "-", "")
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::date::timestamptz) TO ((%s::date + 1)::timestamptz)`,
+			quoteIdentifier(childTable),
+			quoteIdentifier(table),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		)); err != nil {
+			return nil, fmt.Errorf("create dated partition %s: %w", childTable, err)
+		}
+	}
+
+	moved := map[string]int64{}
+	for _, table := range targetTables {
+		if !stringInSlice(table, detached) {
+			continue
+		}
+		defaultTable := table + "_default"
+		columns, err := s.tableInsertColumns(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		if len(columns) == 0 {
+			continue
+		}
+		columnSQL := quoteIdentifierList(columns)
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (%s)
+			SELECT %s
+			FROM %s
+			WHERE source_posted_at >= %s::date::timestamptz
+			  AND source_posted_at < (%s::date + 1)::timestamptz
+			ON CONFLICT DO NOTHING`,
+			quoteIdentifier(table),
+			columnSQL,
+			columnSQL,
+			quoteIdentifier(defaultTable),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		))
+		if err != nil {
+			return nil, fmt.Errorf("copy %s default rows for %s: %w", table, dayKey, err)
+		}
+		count, _ := res.RowsAffected()
+		moved[table] += count
+	}
+
+	dropOrder := orderedPartitionTables(detached, nativeSourceWorkPartitionDropOrder())
+	for _, table := range dropOrder {
+		if !stringInSlice(table, detached) {
+			continue
+		}
+		defaultTable := table + "_default"
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			DELETE FROM %s
+			WHERE source_posted_at >= %s::date::timestamptz
+			  AND source_posted_at < (%s::date + 1)::timestamptz`,
+			quoteIdentifier(defaultTable),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		)); err != nil {
+			return nil, fmt.Errorf("delete moved %s rows for %s: %w", defaultTable, dayKey, err)
+		}
+	}
+
+	for i := len(dropOrder) - 1; i >= 0; i-- {
+		table := dropOrder[i]
+		defaultTable := table + "_default"
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ATTACH PARTITION %s DEFAULT`, quoteIdentifier(table), quoteIdentifier(defaultTable))); err != nil {
+			return nil, fmt.Errorf("reattach default partition %s: %w", defaultTable, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit default partition rehome tx: %w", err)
+	}
+	return moved, nil
+}
+
+func orderedPartitionTables(tables []string, preferredOrder []string) []string {
+	remaining := make(map[string]struct{}, len(tables))
+	for _, table := range tables {
+		remaining[table] = struct{}{}
+	}
+	out := make([]string, 0, len(tables))
+	for _, table := range preferredOrder {
+		if _, ok := remaining[table]; !ok {
+			continue
+		}
+		out = append(out, table)
+		delete(remaining, table)
+	}
+	for _, table := range tables {
+		if _, ok := remaining[table]; !ok {
+			continue
+		}
+		out = append(out, table)
+		delete(remaining, table)
+	}
+	return out
+}
+
+func (s *Store) tableInsertColumns(ctx context.Context, table string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = $1
+		  AND is_generated = 'NEVER'
+		ORDER BY ordinal_position`, table)
+	if err != nil {
+		return nil, fmt.Errorf("list insert columns for %s: %w", table, err)
+	}
+	defer rows.Close()
+	columns := []string{}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, fmt.Errorf("scan insert column for %s: %w", table, err)
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
+}
+
+func quoteIdentifierList(values []string) string {
+	out := strings.Builder{}
+	for i, value := range values {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(quoteIdentifier(value))
+	}
+	return out.String()
+}
+
+func quoteLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {

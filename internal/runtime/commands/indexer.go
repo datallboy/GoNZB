@@ -687,6 +687,11 @@ func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStor
 			return store.DryRunPartitionRetentionTask(ctx, batchSize)
 		}
 		return store.RunPartitionRetentionTask(ctx, batchSize)
+	case "partition_default_rehome":
+		if dryRun {
+			return store.DryRunPartitionDefaultRehomeTask(ctx, batchSize)
+		}
+		return store.RunPartitionDefaultRehomeTask(ctx, batchSize)
 	case "raw_stage_retention":
 		if dryRun {
 			return store.DryRunRawStageRetentionTask(ctx, batchSize, rawPolicy)

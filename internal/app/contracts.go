@@ -283,6 +283,8 @@ type UsenetIndexStore interface {
 	RunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
 	DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	ListIndexerBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
 	BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*pgindex.IndexerCrosspostBackfillResult, error)

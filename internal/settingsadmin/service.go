@@ -545,7 +545,7 @@ func maintenanceTaskMinIntervalHours(taskKey string) int {
 	switch strings.TrimSpace(strings.ToLower(taskKey)) {
 	case "dashboard_stats_refresh", "group_profile_refresh":
 		return 1
-	case "raw_stage_retention", "stale_nonrelease_source_purge", "emergency_source_window_reset":
+	case "raw_stage_retention", "partition_default_rehome", "stale_nonrelease_source_purge", "emergency_source_window_reset":
 		return 24
 	default:
 		return 6

@@ -204,7 +204,7 @@ func TestDeriveUsenetIndexerConfigUsesExpandedRuntimeSettings(t *testing.T) {
 	}
 }
 
-func TestDeriveUsenetIndexerConfigAppliesSourceWindowBackfillCutoff(t *testing.T) {
+func TestDeriveUsenetIndexerConfigDoesNotInventSourceWindowBackfillCutoff(t *testing.T) {
 	cfg := &config.Config{
 		Modules: config.ModulesConfig{
 			UsenetIndexer: config.ModuleToggle{Enabled: true},
@@ -214,19 +214,12 @@ func TestDeriveUsenetIndexerConfigAppliesSourceWindowBackfillCutoff(t *testing.T
 		},
 	}
 
-	before := time.Now().UTC().AddDate(0, 0, -7).Add(-1 * time.Minute)
 	got, err := deriveUsenetIndexerConfig(cfg)
 	if err != nil {
 		t.Fatalf("derive config: %v", err)
 	}
-	after := time.Now().UTC().AddDate(0, 0, -7).Add(1 * time.Minute)
-
-	cutoff, ok := got.BackfillUntilDateByGroup["alt.binaries.test"]
-	if !ok {
-		t.Fatalf("expected source-window cutoff for group, got %+v", got.BackfillUntilDateByGroup)
-	}
-	if cutoff.Before(before) || cutoff.After(after) {
-		t.Fatalf("expected cutoff around 7 days ago, got %s outside %s - %s", cutoff, before, after)
+	if len(got.BackfillUntilDateByGroup) != 0 {
+		t.Fatalf("expected no implicit source-window cutoff, got %+v", got.BackfillUntilDateByGroup)
 	}
 }
 

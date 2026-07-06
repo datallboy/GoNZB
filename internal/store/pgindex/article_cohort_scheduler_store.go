@@ -519,10 +519,17 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			  	  AND wi.status IN ('ready', 'running', 'done')
 			  )
 			  AND NOT EXISTS (
-			  	SELECT 1
-			  	FROM article_cohort_yenc_queue cyq
+				SELECT 1
+				FROM article_cohort_yenc_queue cyq
 				WHERE cyq.source_posted_at = bos.source_posted_at
 				  AND cyq.binary_id = bos.binary_id
+				  AND cyq.status IN ('ready', 'admitted', 'done')
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM article_cohort_yenc_queue cyq
+				WHERE cyq.source_posted_at = bp.source_posted_at
+				  AND cyq.article_header_id = bp.article_header_id
 				  AND cyq.status IN ('ready', 'admitted', 'done')
 			  )
 			ORDER BY bos.posted_at DESC, bos.source_posted_at DESC, bos.binary_id DESC
@@ -540,24 +547,22 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			GROUP BY provider_id, newsgroup_id, posted_bucket
 			HAVING COUNT(*) >= $3
 		),
-		inserted AS (
-			INSERT INTO article_cohort_yenc_queue (
-				source_posted_at, binary_id, article_header_id, cohort_key, provider_id,
-				newsgroup_id, cohort_kind, priority_rank, admission_reason, score, status, updated_at
-			)
-			SELECT
+		queue_rows AS MATERIALIZED (
+			SELECT DISTINCT ON (r.source_posted_at, r.article_header_id)
 				r.source_posted_at,
 				r.binary_id,
 				r.article_header_id,
-				'opaque:' || r.provider_id || ':' || r.newsgroup_id || ':' || r.posted_bucket,
+				'opaque:' || r.provider_id || ':' || r.newsgroup_id || ':' || r.posted_bucket AS cohort_key,
 				r.provider_id,
 				r.newsgroup_id,
-				'opaque_near_time',
-				0,
-				'opaque_near_time_cohort',
-				(c.cohort_size::double precision * 1000) + LEAST(999::double precision, COALESCE(r.total_bytes, 0)::double precision / 1000000),
-				'ready',
-				NOW()
+				'opaque_near_time' AS cohort_kind,
+				0 AS priority_rank,
+				'opaque_near_time_cohort' AS admission_reason,
+				(c.cohort_size::double precision * 1000) + LEAST(999::double precision, COALESCE(r.total_bytes, 0)::double precision / 1000000) AS score,
+				'ready' AS status,
+				r.posted_at,
+				c.cohort_size,
+				r.total_bytes
 			FROM recent r
 			JOIN cohorts c
 			  ON c.provider_id = r.provider_id
@@ -567,7 +572,34 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			  ON cc.source_posted_at = c.cohort_source_posted_at
 			 AND cc.cohort_key = c.cohort_key
 			 AND NOT (cc.status = 'cooldown' AND cc.cooldown_until > NOW())
-			ORDER BY c.cohort_size DESC, r.posted_at DESC, r.total_bytes DESC, r.binary_id
+			ORDER BY r.source_posted_at, r.article_header_id, c.cohort_size DESC, r.posted_at DESC, r.total_bytes DESC, r.binary_id
+		),
+		queue_deduped AS MATERIALIZED (
+			SELECT DISTINCT ON (source_posted_at, binary_id)
+				*
+			FROM queue_rows
+			ORDER BY source_posted_at, binary_id, cohort_size DESC, posted_at DESC, total_bytes DESC, article_header_id
+		),
+		inserted AS (
+			INSERT INTO article_cohort_yenc_queue (
+				source_posted_at, binary_id, article_header_id, cohort_key, provider_id,
+				newsgroup_id, cohort_kind, priority_rank, admission_reason, score, status, updated_at
+			)
+			SELECT
+				q.source_posted_at,
+				q.binary_id,
+				q.article_header_id,
+				q.cohort_key,
+				q.provider_id,
+				q.newsgroup_id,
+				q.cohort_kind,
+				q.priority_rank,
+				q.admission_reason,
+				q.score,
+				q.status,
+				NOW()
+			FROM queue_deduped q
+			ORDER BY q.cohort_size DESC, q.posted_at DESC, q.total_bytes DESC, q.binary_id
 			LIMIT $4
 			ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 			SET priority_rank = LEAST(article_cohort_yenc_queue.priority_rank, EXCLUDED.priority_rank),
