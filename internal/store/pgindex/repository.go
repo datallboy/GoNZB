@@ -1061,36 +1061,20 @@ func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context
 	if s == nil || s.db == nil || len(batch) == 0 {
 		return nil
 	}
-	days := map[string]string{}
+	days := make([]time.Time, 0, len(batch))
 	for _, item := range batch {
 		postedAt := time.Now()
 		if item.DateUTC != nil {
 			postedAt = *item.DateUTC
 		}
-		dayKey, childSuffix := nativePartitionDayKeys(postedAt)
-		days[dayKey] = childSuffix
+		days = append(days, postedAt)
 	}
-	for dayKey, childSuffix := range days {
-		missing := make([]string, 0)
-		for _, table := range nativeSourceWorkPartitionTables() {
-			ok, err := s.nativeDailyPartitionExists(ctx, table, childSuffix)
-			if err != nil {
-				return fmt.Errorf("check native partition table=%s day=%s: %w", table, dayKey, err)
-			}
-			if !ok {
-				missing = append(missing, table+"_"+childSuffix)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("missing native daily partitions for source day %s: %s; refusing to route scrape rows into default partitions", dayKey, strings.Join(missing, ", "))
-		}
-	}
-	return nil
+	return s.ensureSourceWorkPartitionsForDays(ctx, days)
 }
 
 func nativePartitionDayKeys(sourcePostedAt time.Time) (string, string) {
-	local := sourcePostedAt.In(time.Local)
-	return local.Format("2006-01-02"), local.Format("20060102")
+	utc := sourcePostedAt.UTC()
+	return utc.Format("2006-01-02"), utc.Format("20060102")
 }
 
 func (s *Store) nativeDailyPartitionExists(ctx context.Context, table, childSuffix string) (bool, error) {
