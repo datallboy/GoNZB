@@ -3589,6 +3589,7 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 					bp.binary_id,
 					lb.source_posted_at AS stats_source_posted_at,
 					bp.segment_bytes,
+					bp.part_number,
 					bp.article_header_id,
 					bp.source_posted_at
 				FROM locked_binaries lb
@@ -3611,6 +3612,7 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 					p.binary_id,
 					p.stats_source_posted_at,
 					p.segment_bytes,
+					p.part_number,
 					p.source_posted_at,
 					ah.article_number,
 				ah.date_utc
@@ -3619,6 +3621,18 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 			  ON ah.source_posted_at = p.source_posted_at
 			 AND ah.id = p.article_header_id
 			WHERE ($4::boolean = FALSE OR (ah.source_posted_at >= $5 AND ah.source_posted_at < $6))
+		),
+		logical_parts AS MATERIALIZED (
+			SELECT DISTINCT ON (p.binary_id, p.stats_source_posted_at, p.part_number)
+				p.binary_id,
+				p.stats_source_posted_at,
+				p.segment_bytes,
+				p.part_number,
+				p.source_posted_at,
+				p.article_number,
+				p.date_utc
+			FROM part_rows_with_headers p
+			ORDER BY p.binary_id, p.stats_source_posted_at, p.part_number, p.source_posted_at, p.article_number
 		),
 		agg AS (
 			SELECT
@@ -3631,7 +3645,7 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				MIN(p.source_posted_at) AS part_source_posted_at_min,
 				MAX(p.source_posted_at) AS part_source_posted_at_max,
 				MIN(p.date_utc) AS posted_at
-			FROM part_rows_with_headers p
+			FROM logical_parts p
 			GROUP BY p.binary_id, p.stats_source_posted_at
 		),
 		upserted AS (

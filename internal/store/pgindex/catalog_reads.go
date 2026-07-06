@@ -424,20 +424,29 @@ func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) (
 
 func (s *Store) listCatalogArticlesForBinarySpan(ctx context.Context, span binaryPartSourceSpan) ([]CatalogArticleRef, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			ah.message_id,
-			ah.bytes,
-			bp.part_number
-		FROM binary_parts bp
-		JOIN article_headers ah
-		  ON ah.source_posted_at = bp.source_posted_at
-		 AND ah.id = bp.article_header_id
-		 AND ah.source_posted_at >= $1
-		 AND ah.source_posted_at <= $2
-		WHERE bp.source_posted_at >= $1
-		  AND bp.source_posted_at <= $2
-		  AND bp.binary_id = $3
-		ORDER BY bp.part_number, bp.id`, span.Min, span.Max, span.BinaryID)
+		WITH ranked_parts AS (
+			SELECT
+				ah.message_id,
+				ah.bytes,
+				bp.part_number,
+				ROW_NUMBER() OVER (
+					PARTITION BY bp.part_number
+					ORDER BY bp.source_posted_at, ah.article_number, bp.id
+				) AS keep_rank
+			FROM binary_parts bp
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			 AND ah.source_posted_at >= $1
+			 AND ah.source_posted_at <= $2
+			WHERE bp.source_posted_at >= $1
+			  AND bp.source_posted_at <= $2
+			  AND bp.binary_id = $3
+		)
+		SELECT message_id, bytes, part_number
+		FROM ranked_parts
+		WHERE keep_rank = 1
+		ORDER BY part_number`, span.Min, span.Max, span.BinaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog articles for binary %d span %s..%s: %w", span.BinaryID, span.Min, span.Max, err)
 	}
@@ -498,11 +507,37 @@ func (s *Store) ListCatalogReleaseNewsgroups(ctx context.Context, releaseID stri
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT ng.group_name
-		FROM release_newsgroups rng
-		JOIN newsgroups ng ON ng.id = rng.newsgroup_id
-		WHERE rng.release_id = $1
-		ORDER BY ng.group_name`, releaseID)
+		WITH release_groups AS (
+			SELECT ng.group_name
+			FROM release_newsgroups rng
+			JOIN newsgroups ng ON ng.id = rng.newsgroup_id
+			WHERE rng.release_id = $1
+		),
+		crosspost_groups AS (
+			SELECT DISTINCT ahcg.observed_group_name AS group_name
+			FROM release_files rf
+			JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = rf.binary_id
+			JOIN binary_parts bp
+			  ON bp.binary_id = rf.binary_id
+			 AND bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
+			 AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
+			JOIN article_header_crosspost_groups ahcg
+			  ON ahcg.source_posted_at = bp.source_posted_at
+			 AND ahcg.article_header_id = bp.article_header_id
+			WHERE rf.release_id = $1
+			  AND BTRIM(COALESCE(ahcg.observed_group_name, '')) <> ''
+		)
+		SELECT DISTINCT group_name
+		FROM (
+			SELECT group_name FROM release_groups
+			UNION ALL
+			SELECT group_name FROM crosspost_groups
+		) groups
+		WHERE BTRIM(COALESCE(group_name, '')) <> ''
+		ORDER BY group_name`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release newsgroups %s: %w", releaseID, err)
 	}

@@ -47,6 +47,36 @@ time strengthens confidence, but mismatched source time must not split a
 canonical binary by itself. The partition-key columns remain on
 source/projection rows so retention can prune correctly.
 
+## Cross-Posted Articles
+
+Usenet Message-IDs are globally unique within the provider view of the spool.
+A single posted article may advertise multiple newsgroups in its HEAD
+`Newsgroups:` header and in Xref metadata. NZB `<groups>` entries for a segment
+are therefore retrieval alternatives for the same Message-ID, not additional
+binary parts.
+
+Indexer behavior:
+
+- scrape stores the source group that produced the XOVER row and, when
+  available, Xref-derived crosspost groups in
+  `article_header_crosspost_groups`;
+- binary grouping must count logical article parts by Subject/yEnc
+  `part_number`, not by the number of source or crosspost group rows;
+- `binary_observation_stats.observed_parts`, release catalog
+  `article_count`, and generated NZB segments must not exceed the known
+  article `total_parts` merely because a part is present through multiple
+  groups or because duplicate copies of the same filename/part set were seen;
+- generated NZBs should include release-owned newsgroups plus observed
+  crosspost groups as fallback retrieval groups, while each segment should
+  appear once per logical part number.
+
+If two separate uploads use the same filename and the same `(part/total)`
+coordinates but different Message-IDs, they are duplicate physical copies of a
+logical file. The catalog/export path should choose one representative article
+per part number instead of emitting both copies. Keeping the raw duplicate rows
+in `binary_parts` is useful for audit and repair, but they must not inflate
+completion or NZB segment counts.
+
 `source_posted_at` may still be used to bound candidate scans. Any bounded scan
 must include a second evidence join against existing completion keys or binary
 identity rows so late/early parts can attach to an already-known binary outside
