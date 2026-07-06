@@ -359,6 +359,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
 		}
 		if stage.name == "recover_yenc" {
+			if stage.config.FetchTimeoutSeconds < 0 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be greater than or equal to 0")
+			}
+			if stage.config.FetchTimeoutSeconds > 120 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be less than or equal to 120")
+			}
 			issues = append(issues, validateYEncRecoveryTargetWindow(stage.config)...)
 		}
 	}

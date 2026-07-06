@@ -130,6 +130,7 @@ func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int
 
 func defaultRecoverYEncStage(enabled bool) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, 10, 25, 1)
+	stage.FetchTimeoutSeconds = 10
 	stage.TargetWindowPct = 60
 	stage.NewestPct = 40
 	return stage
@@ -1372,6 +1373,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if !override.TargetWindowEnabled && override.NewestPct > 0 {
 		base.NewestPct = override.NewestPct
 		base.TargetWindowPct = 100 - override.NewestPct
+	}
+	if override.FetchTimeoutSeconds > 0 {
+		base.FetchTimeoutSeconds = override.FetchTimeoutSeconds
 	}
 	if base.TargetWindowPct < 0 {
 		base.TargetWindowPct = 0

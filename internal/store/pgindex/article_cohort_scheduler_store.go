@@ -338,6 +338,14 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 		return 0, 0, nil
 	}
 	queueLimit -= openQueued
+	openRecovery, err := countOpenYEncRecoveryWorkItemsInTx(ctx, tx, queueLimit)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count open yenc recovery work items for opaque cohort schedule: %w", err)
+	}
+	if openRecovery >= queueLimit {
+		return 0, 0, nil
+	}
+	queueLimit -= openRecovery
 
 	scanLimit := queueLimit * articleCohortOpaqueScanMultiplier
 	if scanLimit < queueLimit {
@@ -351,6 +359,13 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 		scanLimit = maxScanLimit
 	}
 	if scanLimit <= 0 {
+		return 0, 0, nil
+	}
+	dayStart, dayEnd, ok, err := selectOpaqueCohortSourceDayInTx(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !ok {
 		return 0, 0, nil
 	}
 
@@ -370,6 +385,8 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
 			  AND posted_at IS NOT NULL
+			  AND source_posted_at >= $4
+			  AND source_posted_at < $5
 			ORDER BY posted_at DESC, source_posted_at DESC, binary_id DESC
 			LIMIT $1
 		),
@@ -452,7 +469,7 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			    updated_at = NOW()
 			RETURNING 1
 		)
-		SELECT COUNT(*) FROM upserted`, scanLimit, bucketSeconds, articleCohortOpaqueMinSingletons).Scan(&cohorts); err != nil {
+		SELECT COUNT(*) FROM upserted`, scanLimit, bucketSeconds, articleCohortOpaqueMinSingletons, dayStart, dayEnd).Scan(&cohorts); err != nil {
 		return 0, 0, fmt.Errorf("upsert opaque article cohorts: %w", err)
 	}
 
@@ -470,6 +487,8 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
 			  AND posted_at IS NOT NULL
+			  AND source_posted_at >= $5
+			  AND source_posted_at < $6
 			ORDER BY posted_at DESC, source_posted_at DESC, binary_id DESC
 			LIMIT $1
 		),
@@ -609,10 +628,64 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			    updated_at = NOW()
 			RETURNING 1
 		)
-		SELECT COUNT(*) FROM inserted`, scanLimit, bucketSeconds, articleCohortOpaqueMinSingletons, queueLimit).Scan(&queued); err != nil {
+		SELECT COUNT(*) FROM inserted`, scanLimit, bucketSeconds, articleCohortOpaqueMinSingletons, queueLimit, dayStart, dayEnd).Scan(&queued); err != nil {
 		return 0, 0, fmt.Errorf("queue opaque cohort yenc rows: %w", err)
 	}
 	return cohorts, queued, nil
+}
+
+func selectOpaqueCohortSourceDayInTx(ctx context.Context, tx *sql.Tx) (time.Time, time.Time, bool, error) {
+	if tx == nil {
+		return time.Time{}, time.Time{}, false, fmt.Errorf("article cohort source day tx is required")
+	}
+	var day sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		WITH active_recovery AS MATERIALIZED (
+			SELECT source_posted_at
+			FROM yenc_recovery_work_items
+			WHERE status IN ('ready', 'running')
+			  AND source_posted_at IS NOT NULL
+			ORDER BY priority_rank ASC, date_utc DESC NULLS LAST, source_posted_at DESC, binary_id
+			LIMIT 1
+		),
+		active_assembly AS MATERIALIZED (
+			SELECT source_posted_at
+			FROM article_header_assembly_queue
+			WHERE source_posted_at IS NOT NULL
+			ORDER BY source_posted_at DESC, article_header_id DESC
+			LIMIT 1
+		),
+		active_singletons AS MATERIALIZED (
+			SELECT source_posted_at
+			FROM binary_observation_stats
+			WHERE total_parts <= 1
+			  AND observed_parts <= 1
+			  AND posted_at IS NOT NULL
+			  AND source_posted_at IS NOT NULL
+			ORDER BY source_posted_at DESC, binary_id DESC
+			LIMIT 1
+		),
+		selected AS (
+			SELECT source_posted_at, 1 AS priority FROM active_recovery
+			UNION ALL
+			SELECT source_posted_at, 2 AS priority FROM active_assembly
+			UNION ALL
+			SELECT source_posted_at, 3 AS priority FROM active_singletons
+		)
+		SELECT date_trunc('day', source_posted_at)::timestamptz
+		FROM selected
+		ORDER BY priority, source_posted_at DESC
+		LIMIT 1`).Scan(&day); err != nil {
+		if err == sql.ErrNoRows {
+			return time.Time{}, time.Time{}, false, nil
+		}
+		return time.Time{}, time.Time{}, false, fmt.Errorf("select opaque cohort source day: %w", err)
+	}
+	if !day.Valid {
+		return time.Time{}, time.Time{}, false, nil
+	}
+	start := day.Time.UTC()
+	return start, start.Add(24 * time.Hour), true, nil
 }
 
 func recordArticleCohortYEncRecoveredInTx(ctx context.Context, tx *sql.Tx, articleHeaderIDs []int64) error {

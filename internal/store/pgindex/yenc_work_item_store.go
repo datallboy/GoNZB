@@ -164,6 +164,17 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return upserted, retired, nil
 	}
 
+	openWork, err := countOpenYEncRecoveryWorkItemsInTx(ctx, tx, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if openWork >= limit {
+		if err := tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("commit saturated priority yenc recovery work item backfill tx: %w", err)
+		}
+		return 0, 0, nil
+	}
+
 	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
 	if err != nil {
 		return 0, 0, err
@@ -190,6 +201,41 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, fmt.Errorf("commit priority yenc recovery work item backfill tx: %w", err)
 	}
 	return upserted, retired, nil
+}
+
+func countOpenYEncRecoveryWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) (int, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("yenc recovery work item tx is required")
+	}
+	if limit <= 0 {
+		limit = yencRecoveryWorkItemSeedLimit
+	}
+	var openSnapshot sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT LEAST($1::bigint, GREATEST(0::bigint, open_ready + open_running))
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`, limit).Scan(&openSnapshot); err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("count open yenc recovery work items: %w", err)
+	}
+	if openSnapshot.Valid {
+		if openSnapshot.Int64 >= int64(limit) {
+			return limit, nil
+		}
+		return int(openSnapshot.Int64), nil
+	}
+
+	var open int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT 1
+			FROM yenc_recovery_work_items
+			WHERE status IN ('ready', 'running')
+			LIMIT $1
+		) open_work`, limit).Scan(&open); err != nil {
+		return 0, fmt.Errorf("count open yenc recovery work items from partitions: %w", err)
+	}
+	return open, nil
 }
 
 func promoteAdmittedArticleCohortYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) error {

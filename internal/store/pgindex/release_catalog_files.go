@@ -41,9 +41,9 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 			rf.file_index,
 			rf.is_pars,
 			COALESCE(rf.subject, ''),
-			COALESCE(NULLIF(rf.poster, ''), raw_meta.poster, ''),
-			COALESCE(rf.posted_at, raw_meta.posted_at),
-			COALESCE(part_stats.article_count, 0)::integer AS article_count,
+			COALESCE(rf.poster, ''),
+			COALESCE(rf.posted_at, bos.posted_at),
+			COALESCE(MAX(bos.observed_parts), 0)::integer AS article_count,
 			COALESCE(MAX(bos.total_parts), 0)::integer,
 			COALESCE(MAX(bos.observed_parts), 0)::integer,
 			COALESCE(MAX(bic.match_confidence), 0),
@@ -57,39 +57,8 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 		LEFT JOIN binary_observation_stats bos
 		  ON bos.source_posted_at = bc.source_posted_at
 		 AND bos.binary_id = rf.binary_id
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*) AS article_count
-			FROM (
-				SELECT DISTINCT bp.part_number
-				FROM binary_parts bp
-				WHERE bp.binary_id = rf.binary_id
-				  AND bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
-				  AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
-			) logical_parts
-		) part_stats ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT
-				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
-				ah.date_utc AS posted_at
-			FROM binary_parts rbp
-			JOIN article_headers ah
-			  ON ah.source_posted_at = rbp.source_posted_at
-			 AND ah.id = rbp.article_header_id
-			LEFT JOIN article_header_poster_refs apr
-			  ON apr.source_posted_at = ah.source_posted_at
-			 AND apr.article_header_id = ah.id
-			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip
-			  ON aip.source_posted_at = ah.source_posted_at
-			 AND aip.article_header_id = ah.id
-			WHERE rbp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
-			  AND rbp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
-			  AND rbp.binary_id = rf.binary_id
-			ORDER BY rbp.source_posted_at, rbp.part_number, rbp.article_header_id
-			LIMIT 1
-		) raw_meta ON TRUE
 		WHERE rf.release_id = $1
-		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, part_stats.article_count, raw_meta.poster, raw_meta.posted_at`,
+		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, bos.posted_at`,
 		releaseID,
 	)
 	if err != nil {

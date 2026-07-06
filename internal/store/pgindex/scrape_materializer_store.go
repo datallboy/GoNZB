@@ -191,6 +191,7 @@ func claimPosterMaterializationRows(ctx context.Context, tx *sql.Tx, limit int) 
 			WHERE status IN ('pending', 'failed')
 			  AND ready_at <= NOW()
 			  AND BTRIM(COALESCE(poster_key, '')) <> ''
+			  AND source_posted_at >= NOW() - INTERVAL '7 days'
 			ORDER BY ready_at, article_header_id
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED

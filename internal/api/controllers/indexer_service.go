@@ -92,6 +92,7 @@ type indexerStageConfigPatch struct {
 	TargetWindowStart       *string  `json:"target_window_start,omitempty"`
 	TargetWindowEnd         *string  `json:"target_window_end,omitempty"`
 	TargetWindowPct         *int     `json:"target_window_pct,omitempty"`
+	FetchTimeoutSeconds     *int     `json:"fetch_timeout_seconds,omitempty"`
 	NewestPct               *int     `json:"newest_pct,omitempty"`
 }
 
@@ -1824,6 +1825,9 @@ func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageCo
 	}
 	if patch.TargetWindowPct != nil {
 		dst.TargetWindowPct = *patch.TargetWindowPct
+	}
+	if patch.FetchTimeoutSeconds != nil {
+		dst.FetchTimeoutSeconds = *patch.FetchTimeoutSeconds
 	}
 	if patch.NewestPct != nil {
 		dst.NewestPct = *patch.NewestPct
