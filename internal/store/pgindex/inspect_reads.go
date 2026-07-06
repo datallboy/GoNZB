@@ -454,6 +454,9 @@ type IndexerExternalMatchSummary struct {
 
 type IndexerBinaryDetail struct {
 	BinaryID           int64                                    `json:"binary_id"`
+	SupersededByID     int64                                    `json:"superseded_by_id,omitempty"`
+	SupersededReason   string                                   `json:"superseded_reason,omitempty"`
+	SupersededAt       *time.Time                               `json:"superseded_at,omitempty"`
 	ReleaseID          string                                   `json:"release_id"`
 	ReleaseTitle       string                                   `json:"release_title"`
 	GroupName          string                                   `json:"group_name"`
@@ -2953,11 +2956,17 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 				))
 			END,
 			COALESCE(r.encrypted, FALSE),
-			COALESCE(r.password_state, '')
+			COALESCE(r.password_state, ''),
+			COALESCE(sup.target_binary_id, 0),
+			COALESCE(sup.superseded_reason, ''),
+			sup.superseded_at
 		FROM binary_detail_state b
 		LEFT JOIN binary_grouping_evidence bge
 		  ON bge.source_posted_at = b.source_posted_at
 		 AND bge.binary_id = b.id
+		LEFT JOIN binary_superseded_sources sup
+		  ON sup.source_posted_at = b.source_posted_at
+		 AND sup.source_binary_id = b.id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
@@ -2987,6 +2996,7 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 
 	var item IndexerBinaryDetail
 	var postedAt sql.NullTime
+	var supersededAt sql.NullTime
 	var groupingJSON []byte
 	if err := row.Scan(
 		&item.BinaryID,
@@ -3015,6 +3025,9 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 		&groupingJSON,
 		&item.Encrypted,
 		&item.PasswordState,
+		&item.SupersededByID,
+		&item.SupersededReason,
+		&supersededAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -3024,6 +3037,10 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	if postedAt.Valid {
 		t := postedAt.Time.UTC()
 		item.PostedAt = &t
+	}
+	if supersededAt.Valid {
+		t := supersededAt.Time.UTC()
+		item.SupersededAt = &t
 	}
 	item.GroupingEvidence = cloneRawJSON(groupingJSON)
 

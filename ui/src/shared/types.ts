@@ -1016,6 +1016,9 @@ export type AdminBinaryPart = {
 
 export type AdminBinaryDetail = {
   binary_id: number
+  superseded_by_id?: number
+  superseded_reason?: string
+  superseded_at?: string
   release_id: string
   release_title: string
   group_name: string
