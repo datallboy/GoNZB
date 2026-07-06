@@ -1399,7 +1399,6 @@ func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings
 		"crosspost_group_raw_purge":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"yenc_done_work_item_cleanup":   {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"group_profile_refresh":         {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
-		"daily_bucket_stats_refresh":    {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 2},
 		"raw_stage_retention":           {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"partition_retention_drop":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 7},
 		"inspect_workspace_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},

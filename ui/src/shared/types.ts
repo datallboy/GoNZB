@@ -160,39 +160,6 @@ export type IndexerRecoveryCapacity = {
   calculated_at?: string
 }
 
-export type IndexerDailyBucket = {
-  provider_id: number
-  provider_key: string
-  newsgroup_id: number
-  group_name: string
-  bucket_day: string
-  tier: string
-  scrape_progress_known: boolean
-  scrape_progress_pct?: number
-  lower_boundary_crossed: boolean
-  upper_boundary_crossed: boolean
-  bucket_article_low?: number
-  bucket_article_high?: number
-  scrape_cursor_low?: number
-  scrape_cursor_high?: number
-  headers_staged: number
-  unassembled_headers: number
-  yenc_ready: number
-  yenc_running: number
-  yenc_done: number
-  binaries_total: number
-  binaries_complete: number
-  binaries_weak: number
-  releases_created: number
-  blocker_count: number
-  last_refreshed_at?: string
-}
-
-export type IndexerDailyBucketResponse = {
-  items: IndexerDailyBucket[]
-  count: number
-}
-
 export type IndexerGroupProfile = {
   provider_id: number
   provider_key: string

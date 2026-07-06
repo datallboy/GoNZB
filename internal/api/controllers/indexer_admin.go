@@ -153,23 +153,6 @@ func (ctrl *IndexerAdminController) ListDeferredArticleRanges(c *echo.Context) e
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
-func (ctrl *IndexerAdminController) ListDailyBucketStats(c *echo.Context) error {
-	if ctrl == nil || ctrl.Service == nil {
-		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
-	}
-	setIndexerContractScope(c, indexerContractScopeInternalDebug)
-
-	limit, _, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
-	if err != nil {
-		return jsonError(c, http.StatusBadRequest, err.Error())
-	}
-	items, err := ctrl.Service.DailyBucketStats(c.Request().Context(), limit)
-	if err != nil {
-		return jsonError(c, indexerErrorStatus(err), err.Error())
-	}
-	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
-}
-
 func (ctrl *IndexerAdminController) ListArticleCohorts(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

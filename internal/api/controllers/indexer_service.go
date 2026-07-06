@@ -28,7 +28,6 @@ type indexerService interface {
 	RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
-	DailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
@@ -342,13 +341,6 @@ func (s *runtimeIndexerService) DeferredArticleRanges(ctx context.Context, state
 		return nil, errIndexerUnavailable
 	}
 	return s.store.ListDeferredArticleRanges(ctx, state, limit)
-}
-
-func (s *runtimeIndexerService) DailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error) {
-	if s == nil || s.store == nil {
-		return nil, errIndexerUnavailable
-	}
-	return s.store.ListIndexerDailyBucketStats(ctx, limit)
 }
 
 func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
@@ -938,7 +930,6 @@ type maintenanceTaskStore interface {
 	DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
-	RefreshIndexerDailyBucketStats(ctx context.Context, days int) (int64, error)
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
@@ -1010,19 +1001,6 @@ func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, task
 			return nil, err
 		}
 		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: false, EstimatedRowsByTable: map[string]int64{"indexer_group_profiles_scored": updated}}, nil
-	case "daily_bucket_stats_refresh":
-		if dryRun {
-			items, err := s.store.ListIndexerDailyBucketStats(ctx, 500)
-			if err != nil {
-				return nil, err
-			}
-			return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{"indexer_daily_bucket_stats_cached": int64(len(items))}, Warnings: []string{"dry-run reports cached bucket rows without recomputing aggregate stats"}}, nil
-		}
-		refreshed, err := store.RefreshIndexerDailyBucketStats(ctx, cfg.BatchSize)
-		if err != nil {
-			return nil, err
-		}
-		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: false, EstimatedRowsByTable: map[string]int64{"indexer_daily_bucket_stats_refreshed": refreshed}}, nil
 	case "raw_stage_retention":
 		if dryRun {
 			return store.DryRunRawStageRetentionTask(ctx, cfg.BatchSize, rawStageRetentionPolicyFromRuntime(runtime))
@@ -1610,7 +1588,6 @@ var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
 	{TaskKey: "crosspost_group_raw_purge", Label: "Crosspost Raw Group Purge", Purpose: "Purges raw Xref crosspost observations after the popularity summary watermark has consumed them.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Crosspost popularity refresh keeps summary and queue state; historical raw Xref observations older than 72h are no longer available for recompute/debug.", DataEffect: "Deletes only article_header_crosspost_groups rows older than 72h whose group queue is done and whose article id is at or below the summary watermark.", ReleaseSafety: "Current release formation uses binary identity/release family evidence and persists release_newsgroups from binaries; this task does not delete source headers, binaries, releases, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because raw Xref forensic telemetry is removed after summary consumption"}},
 	{TaskKey: "yenc_done_work_item_cleanup", Label: "yEnc Done Work Item Cleanup", Purpose: "Purges completed recover_yenc work receipts after durable yEnc recovery projection exists.", Risk: "medium", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "recover_yenc keeps ready/running backlog intact; completed receipts older than 72h are no longer available for queue audit.", DataEffect: "Deletes only yenc_recovery_work_items rows with status done, older than 72h, backed by binary_recovery_current recovered_source yenc_header, and not referenced by release/archive/running inspect work.", ReleaseSafety: "Does not delete article headers, payloads, binary roots, recovery projections, release files, archive lineage, catalog data, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because completed yEnc queue audit receipts are removed after durable projection exists"}},
 	{TaskKey: "group_profile_refresh", Label: "Group Profile Refresh", Purpose: "Scores provider/newsgroup yield and refreshes automatic hot/warm/cold tiering when no manual tier override is set.", Risk: "low", SpaceEffect: "No storage reclaim; updates group profile metrics and tiers.", SupervisorEffect: "Scrape/yEnc admission uses refreshed tiers for capacity decisions.", DataEffect: "Updates indexer_group_profiles metrics, score, tier, and last_scored_at only.", ReleaseSafety: "No source, binary, release, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
-	{TaskKey: "daily_bucket_stats_refresh", Label: "Daily Bucket Stats Refresh", Purpose: "Refreshes cached provider/newsgroup/day work-bucket stats used by the admin work page.", Risk: "low", SpaceEffect: "No storage reclaim; rewrites compact cached reporting rows.", SupervisorEffect: "No pipeline work is enqueued; avoids expensive live admin-page aggregation.", DataEffect: "Upserts indexer_daily_bucket_stats rows for the recent runtime window.", ReleaseSafety: "No source, binary, release, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: true, MinIntervalHours: 1, Warnings: []string{"batch size is interpreted as number of recent days to refresh, capped at 7"}},
 	{TaskKey: "raw_stage_retention", Label: "Raw Stage Retention", Purpose: "Purges old terminal raw-stage residue using tier-aware hot/warm/cold source windows and conservative relationship guards.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Reduces stale raw source/yEnc audit backlog without touching ready/running work.", DataEffect: "Deletes terminal yEnc receipts and fully orphaned old article headers with associated payload/crosspost/poster rows.", ReleaseSafety: "Skips ready/running yEnc work, assembly queue rows, binary parts, release files, archive lineage, and running inspections.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first", "retention thresholds come from runtime indexer retention settings"}},
 	{TaskKey: "partition_retention_drop", Label: "Partition Retention Drop", Purpose: "Drops eligible old native daily source/work partitions after checking default partitions and active downstream blockers.", Risk: "high", SpaceEffect: "Drops whole partition tables, which returns those table files to PostgreSQL immediately without row-by-row deletes.", SupervisorEffect: "Removes old source/header/yEnc/binary-part work partitions; stages can no longer use dropped source rows.", DataEffect: "Drops eligible dated partitions for article headers, header support tables, assembly/poster queues, yEnc work items, and binary parts.", ReleaseSafety: "Blocks days with assembly queue work, ready/running yEnc, running inspections, or non-archived release files still referencing that day.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: dry-run first", "batch size is interpreted as retention-days horizon"}},
 	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Risk: "low", SpaceEffect: "Filesystem cleanup for stale inspect workspaces when scheduled maintenance runs it.", SupervisorEffect: "No DB queue population; stale workspaces may be recreated by future inspect jobs.", DataEffect: "Deletes stale temporary inspect workspaces, not release/catalog DB rows.", ReleaseSafety: "No source, binary, catalog, or NZB database rows are deleted.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},

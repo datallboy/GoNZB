@@ -21,7 +21,6 @@ type stubIndexerService struct {
 	capacity     *pgindex.YEncRecoveryAdmissionSnapshot
 	profiles     []pgindex.IndexerGroupProfileSummary
 	deferred     []pgindex.DeferredArticleRangeSummary
-	dailyBuckets []pgindex.IndexerDailyBucketSummary
 	throughput   *pgindex.IndexerStageThroughput
 	nntpStats    *app.NNTPRuntimeStats
 	stages       []indexerStageView
@@ -72,10 +71,6 @@ func (s *stubIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pg
 
 func (s *stubIndexerService) DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error) {
 	return s.deferred, nil
-}
-
-func (s *stubIndexerService) DailyBucketStats(ctx context.Context, limit int) ([]pgindex.IndexerDailyBucketSummary, error) {
-	return s.dailyBuckets, nil
 }
 
 func (s *stubIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
