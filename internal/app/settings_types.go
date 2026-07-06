@@ -93,6 +93,7 @@ type IndexingStageRuntimeSettings struct {
 	TargetWindowStart       string  `json:"target_window_start,omitempty"`
 	TargetWindowEnd         string  `json:"target_window_end,omitempty"`
 	TargetWindowPct         int     `json:"target_window_pct,omitempty"`
+	FetchTimeoutSeconds     int     `json:"fetch_timeout_seconds,omitempty"`
 	NewestPct               int     `json:"newest_pct"`
 }
 

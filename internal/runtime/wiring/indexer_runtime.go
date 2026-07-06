@@ -105,6 +105,7 @@ type indexerStageConfig struct {
 	TargetWindowStart       string
 	TargetWindowEnd         string
 	TargetWindowPct         int
+	FetchTimeoutSeconds     int
 	NewestPct               int
 }
 
@@ -252,7 +253,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		yencrecover.Options{
 			BatchSize:           runtimeCfg.RecoverYEnc.BatchSize,
 			MaxHeaderBytes:      8192,
-			FetchTimeout:        10 * time.Second,
+			FetchTimeout:        recoverYEncFetchTimeout(runtimeCfg.RecoverYEnc),
 			Concurrency:         runtimeCfg.RecoverYEnc.Concurrency,
 			TargetWindowEnabled: runtimeCfg.RecoverYEnc.TargetWindowEnabled,
 			TargetWindowStart:   runtimeCfg.RecoverYEnc.TargetWindowStart,
@@ -990,8 +991,23 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		TargetWindowStart:       in.TargetWindowStart,
 		TargetWindowEnd:         in.TargetWindowEnd,
 		TargetWindowPct:         in.TargetWindowPct,
+		FetchTimeoutSeconds:     in.FetchTimeoutSeconds,
 		NewestPct:               in.NewestPct,
 	}
+}
+
+func recoverYEncFetchTimeout(in indexerStageConfig) time.Duration {
+	seconds := in.FetchTimeoutSeconds
+	if seconds <= 0 {
+		seconds = 10
+	}
+	if seconds < 5 {
+		seconds = 5
+	}
+	if seconds > 120 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func withInspectBatch(in inspectpkg.Options, batchSize int) inspectpkg.Options {

@@ -217,47 +217,18 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 			COALESCE(ng.group_name, ''),
 			cf.file_name,
 			cf.subject,
-			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
-			COALESCE(cf.posted_at, raw_meta.posted_at),
+			COALESCE(cf.poster, ''),
+			cf.posted_at,
 			cf.size_bytes,
 			cf.is_pars,
 			cf.file_index
 		FROM release_catalog_files cf
-		LEFT JOIN LATERAL (
-			SELECT binary_id
-			FROM release_files rf
-			WHERE rf.release_id = cf.release_id
-			  AND rf.file_index = cf.file_index
-			  AND rf.file_name = cf.file_name
-			ORDER BY rf.id
-			LIMIT 1
-		) rf ON TRUE
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
 		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
-		LEFT JOIN binary_observation_stats bos
-		  ON bos.source_posted_at = bc.source_posted_at
-		 AND bos.binary_id = rf.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
-		LEFT JOIN LATERAL (
-			SELECT
-				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
-				ah.date_utc AS posted_at
-			FROM binary_parts bp
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr
-			  ON apr.source_posted_at = ah.source_posted_at
-			 AND apr.article_header_id = ah.id
-			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip
-			  ON aip.source_posted_at = ah.source_posted_at
-			 AND aip.article_header_id = ah.id
-			WHERE bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
-			  AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
-			  AND bp.binary_id = rf.binary_id
-			ORDER BY bp.source_posted_at, bp.part_number, bp.article_header_id
-			LIMIT 1
-		) raw_meta ON TRUE
 		WHERE cf.release_id = $1
 		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
@@ -316,8 +287,8 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 			COALESCE(ng.group_name, '') AS group_name,
 			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), bic.release_name) AS file_name,
 			COALESCE(NULLIF(bic.binary_name, ''), NULLIF(bic.file_name, ''), bic.release_name) AS subject,
-			COALESCE(NULLIF(p.poster_name, ''), raw_meta.poster, '') AS poster,
-			COALESCE(bos.posted_at, raw_meta.posted_at),
+			COALESCE(p.poster_name, '') AS poster,
+			bos.posted_at,
 			bos.total_bytes AS size_bytes,
 			LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
 			bic.file_index
@@ -330,27 +301,6 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 		 AND bos.binary_id = bc.binary_id
 		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
 		LEFT JOIN posters p ON p.id = bc.poster_id
-		LEFT JOIN LATERAL (
-			SELECT
-				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
-				ah.date_utc AS posted_at
-			FROM binary_parts bp
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
-			LEFT JOIN article_header_poster_refs apr
-			  ON apr.source_posted_at = ah.source_posted_at
-			 AND apr.article_header_id = ah.id
-			LEFT JOIN posters pp ON pp.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip
-			  ON aip.source_posted_at = ah.source_posted_at
-			 AND aip.article_header_id = ah.id
-			WHERE bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
-			  AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
-			  AND bp.binary_id = bc.binary_id
-			ORDER BY bp.source_posted_at, bp.part_number, bp.article_header_id
-			LIMIT 1
-		) raw_meta ON TRUE
 		WHERE bc.binary_id = $1`, binaryID)
 
 	var item CatalogReleaseFile

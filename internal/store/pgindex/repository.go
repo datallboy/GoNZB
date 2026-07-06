@@ -1058,36 +1058,40 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 }
 
 func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, batch []preparedArticleHeaderInsert) error {
-	if s == nil || s.db == nil || len(batch) == 0 {
-		return nil
-	}
-	days := map[string]struct{}{}
-	for _, item := range batch {
-		postedAt := time.Now().UTC()
-		if item.DateUTC != nil {
-			postedAt = item.DateUTC.UTC()
-		}
-		day := time.Date(postedAt.Year(), postedAt.Month(), postedAt.Day(), 0, 0, 0, 0, time.UTC)
-		days[day.Format("2006-01-02")] = struct{}{}
-	}
-	for day := range days {
-		for _, table := range nativeSourceWorkPartitionTables() {
-			err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
-				_, err := s.db.ExecContext(ctx, `SELECT public.pgindex_ensure_daily_partition($1, $2::date)`, table, day)
-				if isDefaultPartitionOverlapError(err) {
-					return nil
-				}
-				return err
-			})
-			if isRetryablePostgresTxError(err) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("ensure source work partition table=%s day=%s: %w", table, day, err)
-			}
-		}
-	}
+	// Do not create native partitions from the scrape insert path. CREATE TABLE
+	// PARTITION OF takes locks on partitioned parents and can deadlock with the
+	// assemble/yEnc/release write paths that are intentionally kept online during
+	// scrape. Missing day partitions are handled by default partitions, then moved
+	// by partition_default_rehome during a quiet maintenance window.
 	return nil
+}
+
+func (s *Store) defaultPartitionHasRowsForDay(ctx context.Context, parentTable, day string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	defaultTable := parentTable + "_default"
+	dayStart, err := time.ParseInLocation("2006-01-02", day, time.UTC)
+	if err != nil {
+		return false, err
+	}
+	dayEnd := dayStart.Add(24 * time.Hour)
+	var exists bool
+	query := fmt.Sprintf(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM %s
+			WHERE source_posted_at >= $1
+			  AND source_posted_at < $2
+			LIMIT 1
+		)`, quoteIdentifier(defaultTable))
+	if err := s.db.QueryRowContext(ctx, query, dayStart, dayEnd).Scan(&exists); err != nil {
+		if isUndefinedTableError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return exists, nil
 }
 
 func isDefaultPartitionOverlapError(err error) bool {
@@ -1097,6 +1101,15 @@ func isDefaultPartitionOverlapError(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "updated partition constraint for default partition") &&
 		strings.Contains(message, "would be violated by some row")
+}
+
+func isUndefinedTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlstate 42p01") ||
+		strings.Contains(message, "does not exist")
 }
 
 func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]articleHeaderResolution, error) {
