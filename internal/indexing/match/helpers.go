@@ -20,8 +20,9 @@ type structuredData struct {
 }
 
 type counterPair struct {
-	Part  int
-	Total int
+	Part      int
+	Total     int
+	Delimiter byte
 }
 
 type matchState struct {
@@ -47,7 +48,7 @@ type matchState struct {
 
 var (
 	quotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
-	partMarkerRE     = regexp.MustCompile(`(?i)(?:\(|\[)\s*(\d{1,5})\s*/\s*(\d{1,5})\s*(?:\)|\])`)
+	partMarkerRE     = regexp.MustCompile(`(?i)([\(\[])\s*(\d{1,5})\s*/\s*(\d{1,5})\s*[\)\]]`)
 	partLooseRE      = regexp.MustCompile(`(?i)\b(\d{1,5})\s*/\s*(\d{1,5})\b`)
 	yencTailRE       = regexp.MustCompile(`(?i)\s+yenc.*$`)
 	yencNameRE       = regexp.MustCompile(`(?i)\bname\s*[:=]\s*(?:"([^"]+)"|([^\s]+))`)
@@ -701,10 +702,18 @@ func subjectMultipartComplete(subject string, structured structuredData, fileInd
 	if extractQuotedFilename(subject) == "" && strings.TrimSpace(structured.Name) == "" {
 		return false
 	}
-	if fileIndex <= 0 || fileTotal <= 0 || partNumber <= 0 || totalParts <= 1 {
+	if fileIndex <= 0 || fileTotal <= 0 || partNumber <= 0 || totalParts <= 0 {
 		return false
 	}
-	return strings.Contains(strings.ToLower(subject), "yenc")
+	if strings.Contains(strings.ToLower(subject), "yenc") {
+		return true
+	}
+	return hasLeadingBracketFileCounter(subject) && bestParenthesizedCounterTotal(subject) > 0
+}
+
+func bestParenthesizedCounterTotal(subject string) int {
+	_, total := bestParenthesizedCounter(subject)
+	return total
 }
 
 func isOpaqueReleaseIdentityCandidate(values ...string) bool {
@@ -858,27 +867,50 @@ func parseCounterPairs(subject string) []counterPair {
 
 	seen := make(map[string]struct{})
 	out := make([]counterPair, 0, 4)
-	for _, re := range []*regexp.Regexp{partMarkerRE, partLooseRE} {
-		matches := re.FindAllStringSubmatch(subject, -1)
-		for _, m := range matches {
-			if len(m) != 3 {
-				continue
-			}
-			part, err1 := strconv.Atoi(m[1])
-			total, err2 := strconv.Atoi(m[2])
-			if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
-				continue
-			}
-			if part > total {
-				total = part
-			}
-			key := fmt.Sprintf("%d/%d", part, total)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, counterPair{Part: part, Total: total})
+	matches := partMarkerRE.FindAllStringSubmatch(subject, -1)
+	for _, m := range matches {
+		if len(m) != 4 {
+			continue
 		}
+		part, err1 := strconv.Atoi(m[2])
+		total, err2 := strconv.Atoi(m[3])
+		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+			continue
+		}
+		if part > total {
+			total = part
+		}
+		delimiter := byte(0)
+		if m[1] != "" {
+			delimiter = m[1][0]
+		}
+		key := fmt.Sprintf("%d/%d/%c", part, total, delimiter)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, counterPair{Part: part, Total: total, Delimiter: delimiter})
+	}
+
+	matches = partLooseRE.FindAllStringSubmatch(subject, -1)
+	for _, m := range matches {
+		if len(m) != 3 {
+			continue
+		}
+		part, err1 := strconv.Atoi(m[1])
+		total, err2 := strconv.Atoi(m[2])
+		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+			continue
+		}
+		if part > total {
+			total = part
+		}
+		key := fmt.Sprintf("%d/%d/%c", part, total, byte(0))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, counterPair{Part: part, Total: total})
 	}
 
 	return out
@@ -887,6 +919,12 @@ func parseCounterPairs(subject string) []counterPair {
 func parsePartInfo(subject string) (int, int) {
 	if part, total := bestCounterAfterYEnc(subject); total > 0 {
 		return part, total
+	}
+	if part, total := bestParenthesizedCounter(subject); total > 0 {
+		return part, total
+	}
+	if hasLeadingBracketFileCounter(subject) {
+		return 0, 0
 	}
 
 	return bestCounterPair(subject)
@@ -939,6 +977,9 @@ func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {
 	if part, total := bestCounterBeforeYEnc(subject); total > 0 {
 		return part, total
 	}
+	if part, total := bestBracketCounter(subject); total > 0 {
+		return part, total
+	}
 
 	best := counterPair{}
 	for _, pair := range parseCounterPairs(subject) {
@@ -953,6 +994,41 @@ func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {
 		return 0, 0
 	}
 	return best.Part, best.Total
+}
+
+func bestParenthesizedCounter(subject string) (int, int) {
+	best := counterPair{}
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Delimiter != '(' {
+			continue
+		}
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func bestBracketCounter(subject string) (int, int) {
+	best := counterPair{}
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Delimiter != '[' {
+			continue
+		}
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func hasLeadingBracketFileCounter(subject string) bool {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return false
+	}
+	match := partMarkerRE.FindStringSubmatch(subject)
+	return len(match) == 4 && strings.HasPrefix(strings.TrimSpace(match[0]), "[")
 }
 
 func bestCounterPair(subject string) (int, int) {

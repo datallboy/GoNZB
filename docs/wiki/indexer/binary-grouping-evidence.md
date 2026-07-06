@@ -96,6 +96,31 @@ ordering source and must not be persisted as authoritative ordering.
 
 ## Grouping Classes
 
+## Subject Counter Semantics
+
+Common NNTP Subject multipart posts use two different counter positions. These
+must never be swapped:
+
+```text
+[file_index/file_total] "filename.ext" yEnc (article_part/article_total) size
+```
+
+- Square brackets (`[...]`) identify the file's position within the release or
+  file set. `[21/28]` means this binary is file 21 of 28 files in the release.
+- Parentheses (`(...)`) identify the article segment within that one binary.
+  `(1/1)` means this file is a single-article binary. `(7152/28465)` means
+  article part 7152 of 28465 for that same binary.
+- The literal `yEnc` word is common but not required for the convention. A
+  Subject such as `[21/28] "file.vol000+01.par2" (1/1)` is still complete
+  Subject multipart evidence.
+- The trailing decimal after the article counter, when present, is a Subject
+  size hint from the posting convention. It is not the NNTP `Lines` count.
+- BODY yEnc evidence is separate: `=ybegin part=... total=... size=...
+  name=...` and optional `=ypart begin=... end=...` are recovered from BODY
+  probes. BODY `part/total` should validate or enrich the Subject article
+  counter, but a randomized BODY `name=` must not override a stable Subject
+  filename.
+
 ### 1. Clear Subject
 
 The Subject contains the clear release/file name, file index and total,
@@ -110,6 +135,8 @@ Expected behavior:
 - group by provider, newsgroup, normalized filename, file size, file index,
   file total, and article part total;
 - use `(part/total)` as the article index within the binary;
+- use `[file_index/file_total]` only as release/file-set metadata, never as
+  `binary_parts.part_number` or `binary_observation_stats.total_parts`;
 - do not require yEnc recovery for initial binary assembly;
 - yEnc recovery may later validate or enrich, but must not split the binary
   when BODY `name=` is weaker or randomized.

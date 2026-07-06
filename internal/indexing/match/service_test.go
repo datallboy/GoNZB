@@ -383,6 +383,31 @@ func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) 
 	}
 }
 
+func TestMatchSeparatesFileSetCounterFromSingleArticleCounterWithoutYEncWord(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<par2-single@indexer.test>",
+		Subject:   `[21/28] "WPt9ecy6X3Ui4d4GBo5Yzx.vol000+01.par2" (1/1)`,
+	})
+
+	if got.FileName != "WPt9ecy6X3Ui4d4GBo5Yzx.vol000+01.par2" {
+		t.Fatalf("expected quoted filename, got %q", got.FileName)
+	}
+	if got.FileIndex != 21 || got.ExpectedFileCount != 28 {
+		t.Fatalf("expected file-set counter 21/28, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+	if got.PartNumber != 1 || got.TotalParts != 1 {
+		t.Fatalf("expected article counter 1/1, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	if !got.IsAuxiliary {
+		t.Fatalf("expected PAR2 volume to be auxiliary")
+	}
+	if got.IdentityStrength == "weak" {
+		t.Fatalf("expected explicit subject coordinates to avoid weak identity")
+	}
+}
+
 func TestMatchUsesMessageIDPartCounterWhenSubjectCounterIsWeak(t *testing.T) {
 	svc := NewService()
 
