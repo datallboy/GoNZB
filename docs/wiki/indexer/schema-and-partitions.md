@@ -45,6 +45,13 @@ These tables stay unpartitioned:
 
 ## Query Shape Rules
 
+- Writers must provision dated child partitions before writing a source day.
+  Scrape, binary projection refresh, and yEnc queue seeding call the partition
+  provisioner before the hot writer transaction. If the dated child cannot be
+  created, the stage blocks instead of routing high-volume rows to the default
+  partition.
+- Default partitions are emergency-only. They are monitored by retention
+  dry-runs and should remain empty for normal scrape/backfill/stage work.
 - Joins to partitioned source tables must include `source_posted_at`.
 - Upserts into partitioned tables must use conflict targets that include
   `source_posted_at`.

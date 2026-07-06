@@ -95,16 +95,7 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 		limit = yencRecoveryWorkItemSeedLimit
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("begin yenc recovery work item backfill tx: %w", err)
-	}
-	defer rollbackTx(tx)
-	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
-		return 0, 0, err
-	}
-
-	binaryIDs, err := s.selectYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit)
+	binaryIDs, err := s.selectYEncRecoveryBackfillBinaryIDs(ctx, limit)
 	if err != nil {
 		if isStatementTimeoutError(err) {
 			return 0, 0, nil
@@ -112,10 +103,19 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 		return 0, 0, err
 	}
 	if len(binaryIDs) == 0 {
-		if err := tx.Commit(); err != nil {
-			return 0, 0, fmt.Errorf("commit empty yenc recovery work item backfill tx: %w", err)
-		}
 		return 0, 0, nil
+	}
+	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+		return 0, 0, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin yenc recovery work item backfill tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
+		return 0, 0, err
 	}
 
 	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, binaryIDs)
@@ -137,7 +137,12 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin priority yenc recovery work item backfill tx: %w", err)
 	}
-	defer rollbackTx(tx)
+	selectionCommitted := false
+	defer func() {
+		if !selectionCommitted {
+			rollbackTx(tx)
+		}
+	}()
 	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
 		return 0, 0, err
 	}
@@ -151,14 +156,29 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, err
 	}
 	if len(scheduledBinaryIDs) > 0 {
-		upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, scheduledBinaryIDs)
+		if err := tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("commit scheduled priority yenc selection tx: %w", err)
+		}
+		selectionCommitted = true
+		if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, scheduledBinaryIDs); err != nil {
+			return 0, 0, err
+		}
+		writeTx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("begin scheduled priority yenc write tx: %w", err)
+		}
+		defer rollbackTx(writeTx)
+		if err := configureYEncRecoveryWorkItemQueryTx(ctx, writeTx); err != nil {
+			return 0, 0, err
+		}
+		upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, writeTx, scheduledBinaryIDs)
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := markArticleCohortYEncQueueAdmittedInTx(ctx, tx, scheduledBinaryIDs); err != nil {
+		if err := markArticleCohortYEncQueueAdmittedInTx(ctx, writeTx, scheduledBinaryIDs); err != nil {
 			return 0, 0, err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := writeTx.Commit(); err != nil {
 			return 0, 0, fmt.Errorf("commit scheduled priority yenc recovery work item backfill tx: %w", err)
 		}
 		return upserted, retired, nil
@@ -172,6 +192,7 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		if err := tx.Commit(); err != nil {
 			return 0, 0, fmt.Errorf("commit saturated priority yenc recovery work item backfill tx: %w", err)
 		}
+		selectionCommitted = true
 		return 0, 0, nil
 	}
 
@@ -190,17 +211,52 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		if err := tx.Commit(); err != nil {
 			return 0, 0, fmt.Errorf("commit empty priority yenc recovery work item backfill tx: %w", err)
 		}
+		selectionCommitted = true
 		return 0, 0, nil
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit priority yenc selection tx: %w", err)
+	}
+	selectionCommitted = true
+	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+		return 0, 0, err
+	}
 
-	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, binaryIDs)
+	writeTx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin priority yenc write tx: %w", err)
+	}
+	defer rollbackTx(writeTx)
+	if err := configureYEncRecoveryWorkItemQueryTx(ctx, writeTx); err != nil {
+		return 0, 0, err
+	}
+	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, writeTx, binaryIDs)
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := writeTx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("commit priority yenc recovery work item backfill tx: %w", err)
 	}
 	return upserted, retired, nil
+}
+
+func (s *Store) selectYEncRecoveryBackfillBinaryIDs(ctx context.Context, limit int) ([]int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin yenc recovery work item selection tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	binaryIDs, err := s.selectYEncRecoveryBackfillBinaryIDsInTx(ctx, tx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit yenc recovery work item selection tx: %w", err)
+	}
+	return binaryIDs, nil
 }
 
 func countOpenYEncRecoveryWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) (int, error) {
@@ -864,10 +920,8 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		return 0, 0, nil
 	}
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
-	if missingDays, err := missingYEncRecoveryPartitionsForBinariesInTx(ctx, tx, unique); err != nil {
+	if err := ensureYEncRecoveryPartitionsForBinaryIDsInTx(ctx, tx, unique); err != nil {
 		return 0, 0, err
-	} else if len(missingDays) > 0 {
-		return 0, 0, fmt.Errorf("missing yenc recovery daily partitions for source days %s; refusing to route yenc work rows into default partition", strings.Join(missingDays, ", "))
 	}
 
 	telemetry := binaryStatsRefreshTelemetryFromContext(ctx)
@@ -977,45 +1031,6 @@ func (s *Store) syncYEncRecoveryWorkItemsForBinariesInTx(ctx context.Context, tx
 		}
 	}
 	return totalUpserted, totalRetired, nil
-}
-
-func missingYEncRecoveryPartitionsForBinariesInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) ([]string, error) {
-	if tx == nil || len(binaryIDs) == 0 {
-		return nil, nil
-	}
-	rows, err := tx.QueryContext(ctx, `
-		WITH requested(binary_id) AS (
-			SELECT DISTINCT unnest($1::bigint[])
-		),
-		source_days AS (
-			SELECT DISTINCT
-				(bc.source_posted_at)::date::text AS day_key,
-				to_char(bc.source_posted_at, 'YYYYMMDD') AS child_suffix
-			FROM requested r
-			JOIN binary_core bc ON bc.binary_id = r.binary_id
-			WHERE bc.source_posted_at IS NOT NULL
-		)
-		SELECT day_key
-		FROM source_days
-		WHERE to_regclass('public.yenc_recovery_work_items_' || child_suffix) IS NULL
-		ORDER BY day_key
-		LIMIT 16`, binaryIDs)
-	if err != nil {
-		return nil, fmt.Errorf("check yenc recovery daily partitions: %w", err)
-	}
-	defer rows.Close()
-	missing := []string{}
-	for rows.Next() {
-		var day string
-		if err := rows.Scan(&day); err != nil {
-			return nil, fmt.Errorf("scan missing yenc recovery partition day: %w", err)
-		}
-		missing = append(missing, day)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate missing yenc recovery partition days: %w", err)
-	}
-	return missing, nil
 }
 
 func promoteOpaqueNearTimeYEncWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) error {

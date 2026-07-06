@@ -146,10 +146,10 @@ Complete partitioning for high-volume source/work/projection tables:
 Native partition conversion completed in this branch:
 
 - fresh schema migration pre-creates a rolling partition horizon from
-  `CURRENT_DATE - 21` through `CURRENT_DATE + 9`; scrape can still retry
-  runtime creation for older gaps, but broader precreation must wait for
-  partition-pruned query shapes or PostgreSQL lock tuning because a 60-day
-  horizon caused `out of shared memory` under the current workload;
+  `CURRENT_DATE - 21` through `CURRENT_DATE + 9`; historical scrape and
+  stage-owned write paths must pre-create the exact UTC source day they are
+  about to touch before opening the hot writer transaction. Default partitions
+  are emergency-only and must not become the active historical backlog buffer;
 - binary projection writers use partition-key conflict targets for
   `binary_observation_stats`, `binary_identity_current`,
   `binary_recovery_current`, `binary_lifecycle`, `binary_completion_keys`,
@@ -616,10 +616,12 @@ Required work:
 
 - keep the narrow horizon until hot queries are partition-pruned by
   `source_posted_at`;
-- keep older source partition creation out of scrape hot paths, but do not let
-  high-volume scrape/yEnc work silently route to default partitions. A missing
-  dated child partition must block scrape or queue seeding with an explicit
-  error until partitions are prepared offline;
+- keep older source partition creation out of hot writer transactions. Before
+  scrape inserts or binary/yEnc stage writes touch a source day outside the
+  rolling horizon, call the partition provisioner to create all native child
+  tables for that UTC day, then verify the child tables exist. If provision
+  fails or a default partition already contains overlapping rows, block the
+  stage explicitly instead of routing more rows to defaults;
 - decide whether PostgreSQL lock memory tuning is needed before any broader
   horizon is restored;
 - record partition counts, default-partition row counts, and retention dry-run
@@ -1154,9 +1156,9 @@ Known open signoff items:
   shared-memory partition failures.
 - The 21-day-back/9-day-forward partition horizon remains intentionally
   documented until partition-pruned query shapes or PostgreSQL lock tuning
-  justify a wider horizon. Historical backfill outside that horizon must either
-  precreate native child partitions before scrape or block; default partitions
-  are not an acceptable active backlog target.
+  justify a wider horizon. Historical backfill outside that horizon must
+  precreate native child partitions before scrape/stage writes proceed;
+  default partitions are not an acceptable active backlog target.
 - Speculative weak binary grouping remains investigation-only until sampled
   yEnc evidence is recorded and reviewed.
 - Focused Go tests and `git diff --check` pass before signoff.
