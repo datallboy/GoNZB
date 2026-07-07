@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-const articleHeaderPayloadPurgeWindowSize = 250000
 const releaseCatalogFilesBackfillBatchSize = 500
 const staleBinaryObservationRepairBatchSize = 1000
 
@@ -89,7 +88,7 @@ func (s *Store) PurgeArticleHeaderPayloads(ctx context.Context) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("pgindex store is not initialized")
 	}
-	return s.purgeArticleHeaderPayloadsInBatches(ctx, articleHeaderPayloadPurgeWindowSize)
+	return 0, fmt.Errorf("article header payload purge is disabled; use partition retention or stale source purge with relationship guards")
 }
 
 func (s *Store) runIndexerMaintenanceMetadataCleanup(ctx context.Context, result *IndexerMaintenanceResult) error {
@@ -411,56 +410,4 @@ func (s *Store) runIndexerMaintenanceDerivedCleanup(ctx context.Context, result 
 		return fmt.Errorf("commit indexer maintenance derived tx: %w", err)
 	}
 	return nil
-}
-
-func (s *Store) purgeArticleHeaderPayloadsInBatches(ctx context.Context, batchSize int64) (int64, error) {
-	if batchSize <= 0 {
-		batchSize = articleHeaderPayloadPurgeWindowSize
-	}
-
-	var maxID int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(article_header_id), 0)
-		FROM article_header_ingest_payloads`).Scan(&maxID); err != nil {
-		return 0, fmt.Errorf("query max article header payload id: %w", err)
-	}
-
-	var total int64
-	for low := int64(0); low < maxID; low += batchSize {
-		high := low + batchSize
-		res, err := s.db.ExecContext(ctx, `
-			DELETE FROM article_header_ingest_payloads p
-			USING article_headers ah
-			WHERE p.article_header_id > $1
-			  AND p.article_header_id <= $2
-			  AND ah.id = p.article_header_id
-			  AND ah.assembled_at IS NOT NULL
-			  AND (
-			  	(
-			  		ah.assembled_at < NOW() - INTERVAL '1 hour'
-			  		AND COALESCE(BTRIM(p.subject_file_name), '') <> ''
-			  		AND COALESCE(p.yenc_recovery_missing_count, 0) = 0
-			  		AND p.yenc_recovery_retry_after IS NULL
-			  	) OR (
-			  		ah.assembled_at < NOW() - INTERVAL '24 hours'
-			  		AND (
-			  			COALESCE(BTRIM(p.subject_file_name), '') = ''
-			  			OR COALESCE(p.yenc_recovery_missing_count, 0) > 0
-			  			OR p.yenc_recovery_retry_after IS NOT NULL
-			  		)
-			  	)
-			  )`,
-			low,
-			high,
-		)
-		if err != nil {
-			return total, fmt.Errorf("purge old article header payloads: %w", err)
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return total, fmt.Errorf("purge old article header payloads rows affected: %w", err)
-		}
-		total += affected
-	}
-	return total, nil
 }

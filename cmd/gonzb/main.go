@@ -203,7 +203,7 @@ var indexerMaintenanceReindexCriticalCmd = &cobra.Command{
 
 var indexerMaintenancePurgeHeaderPayloadsCmd = &cobra.Command{
 	Use:   "purge-header-payloads",
-	Short: "Manually purge aged article_header_ingest_payloads rows",
+	Short: "Disabled legacy article-header payload purge",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerPurgeHeaderPayloads()
 	},
