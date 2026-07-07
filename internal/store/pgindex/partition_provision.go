@@ -140,8 +140,8 @@ func ensureYEncRecoveryPartitionsForBinaryIDsInTx(ctx context.Context, tx *sql.T
 		),
 		source_days AS (
 			SELECT DISTINCT
-				(bc.source_posted_at)::date::text AS day_key,
-				to_char(bc.source_posted_at, 'YYYYMMDD') AS child_suffix
+				(bc.source_posted_at AT TIME ZONE 'UTC')::date::text AS day_key,
+				to_char(bc.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD') AS child_suffix
 			FROM requested r
 			JOIN binary_core bc ON bc.binary_id = r.binary_id
 			WHERE bc.source_posted_at IS NOT NULL
