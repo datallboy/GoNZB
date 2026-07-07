@@ -117,6 +117,19 @@ func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 	}
 }
 
+func TestActiveStagePartitionGuardsVerifyInsteadOfProvisioning(t *testing.T) {
+	src := readGuardrailSource(t, "partition_provision.go")
+	if strings.Contains(src, "pgindex_ensure_source_work_partitions") {
+		t.Fatalf("partition provisioning must not call pgindex_ensure_source_work_partitions; multi-parent runtime DDL caused relation-lock deadlocks")
+	}
+	if !strings.Contains(src, "partition DDL is not allowed from active indexer stage write paths") {
+		t.Fatalf("active stage partition guards must fail closed when children are missing instead of creating partitions")
+	}
+	if !strings.Contains(src, "ProvisionSourceWorkPartitions") || !strings.Contains(src, "pgindex_ensure_daily_partition") {
+		t.Fatalf("offline/startup partition provisioning should create individual parent/day children")
+	}
+}
+
 func TestPartitionedWritersUseSourcePostedConflictTargets(t *testing.T) {
 	files := []string{
 		"assembly_store.go",

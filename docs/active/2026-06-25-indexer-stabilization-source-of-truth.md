@@ -633,6 +633,38 @@ Signoff requires fresh migrations, older-gap scrape without runtime partition
 DDL/deadlock, retention dry-run, default-partition row counts near zero for hot
 source/work tables, and no shared-memory or checksum failures during soak.
 
+2026-07-07 blocker fix:
+
+- Root cause: live code called the multi-parent bootstrap helper
+  `pgindex_ensure_source_work_partitions()` while scrape/assemble/inspect
+  stages were active. PostgreSQL deadlock details showed the helper holding
+  `ACCESS EXCLUSIVE` locks on one partition parent while multi-table stage
+  queries held or requested locks on another parent. Because the helper creates
+  children for many parent tables inside one statement/transaction, those DDL
+  locks were held until the helper returned.
+- Fix: runtime provisioning no longer calls
+  `pgindex_ensure_source_work_partitions()`. It rechecks missing child tables,
+  serializes in-process provisioning, creates each missing parent/day child via
+  `pgindex_ensure_daily_partition()` in its own statement, and verifies the
+  full source/work child set before any writer proceeds. The multi-parent
+  helper remains migration/bootstrap-only.
+- Guardrail: `TestLivePartitionProvisioningDoesNotUseMultiParentFunction`
+  rejects reintroducing the multi-parent helper into live partition
+  provisioning code.
+- Follow-up validation required: rerun serve against historical backfill
+  ranges and record a clean soak with zero `40P01` deadlocks and zero default
+  partition rows.
+
+2026-07-07 inspect_media fix:
+
+- Root cause: stale/unlinked inspection candidates with an empty `release_id`
+  reached `inspect_media` and the service always attempted release rollup.
+  `ApplyReleaseInspectionUpdate` correctly rejected the empty release id, which
+  failed the whole stage run.
+- Fix: `inspect_media` records release-less candidates as completed skips with
+  `probe_skip_reason = missing_release_id` and performs no release/media side
+  effects for them.
+
 ### Hot/Warm/Cold And Latest/Backfill Policy
 
 The intended policy is:
@@ -1353,3 +1385,67 @@ Closeout status:
   close this refinement branch as code-complete and start the next branch on
   the indexing/scraping path with fresh runtime group configuration as the
   first task.
+
+## 2026-07-07 Blocker Fixes
+
+- [x] Root-caused partition-related deadlocks:
+  - Observed deadlocks were relation-level DDL lock cycles, not ordinary
+    stage-owned row write-back contention.
+  - `CREATE TABLE ... PARTITION OF` during scrape/backfill and downstream work
+    locked partition parents while active stage transactions were reading or
+    writing other source/work parents.
+  - Narrowing runtime provisioning from the old multi-parent
+    `pgindex_ensure_source_work_partitions` helper to one parent/day
+    `pgindex_ensure_daily_partition` calls reduced blast radius but did not
+    remove the deadlock class. Runtime DDL while stages are active is the
+    architecture bug.
+- [x] Fixed partition provisioning architecture for active stages:
+  - Startup now pre-provisions native daily source/work/projection partitions
+    before the usenet indexer supervisor starts.
+  - The provision horizon uses runtime settings
+    `indexing.retention.create_partitions_days_before` and
+    `indexing.retention.create_partitions_days_ahead`.
+  - The default lookback is now `180` days and default lookahead remains `8`
+    days, so older configured backfill groups have children before scrape
+    writes.
+  - Scrape, assemble, and yEnc write paths now verify required child
+    partitions exist and fail closed if they are missing. They do not create
+    partitions from hot writer transactions.
+  - Guardrail tests now assert that runtime code does not call the historical
+    multi-parent helper and that active writer paths carry an explicit
+    no-runtime-DDL failure message.
+- [x] Fixed `inspect_media` missing-release candidate handling:
+  - `inspect_media` now completes a binary-level skip with
+    `probe_skip_reason=missing_release_id` when a stale or malformed ready row
+    has no release id, rather than failing the whole stage run with
+    `release id is required`.
+  - Added a focused media service test for the missing-release-id path.
+- [x] Validation:
+  - `go test ./internal/store/pgindex ./internal/indexing/inspect/media ./internal/runtime/wiring`
+    passes.
+  - `go test ./internal/store/pgindex ./internal/indexing/inspect/... ./internal/indexing/assemble ./internal/indexing/release ./internal/runtime/wiring`
+    passes.
+- [x] Live soak signoff:
+  - Start `gonzb run serve`, confirm startup partition provisioning completes
+    before `starting usenet indexer supervisor`.
+  - Watch logs for at least 15-30 minutes and confirm no partition DDL
+    deadlocks, no `inspect_media release id is required` stage failures, and
+    normal scrape/assemble/yEnc/release stage activity against pre-created
+    child partitions.
+  - Clean patched serve boundary:
+    `2026-07-07 10:59:28-04`. Startup partition provisioning completed before
+    the supervisor started.
+  - Final blocker scan from the clean boundary found zero `deadlock detected`,
+    zero `SQLSTATE 40P01`, zero invalid page errors, zero missing native
+    partition failures, zero `precreate native daily partition` hot-path
+    failures, and zero `release id is required` failures.
+  - Observed activity during the soak:
+    `article_cohort_schedule=46` completed runs, `assemble=15` completed runs,
+    `recover_yenc=4` completed full `5,000`-candidate batches plus one running,
+    `release=52` completed runs, `release_summary_refresh=61` completed runs,
+    `scrape_backfill=3` completed runs plus one running, and `scrape_latest=5`
+    completed runs.
+  - Release formation produced `12` new releases after the clean start.
+  - Scrape gating behaved as designed: scrape paused on assemble backlog, then
+    later on the configured recover_yenc hard cap (`open_yenc` around
+    `250,000`) after backfill filled the recovery queue.

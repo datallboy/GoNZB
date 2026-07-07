@@ -47,11 +47,26 @@ These tables stay unpartitioned:
 
 ## Query Shape Rules
 
-- Writers must provision dated child partitions before writing a source day.
-  Scrape, binary projection refresh, and yEnc queue seeding call the partition
-  provisioner before the hot writer transaction. If the dated child cannot be
-  created, the stage blocks instead of routing high-volume rows to the default
-  partition.
+- Native daily partitions must be pre-provisioned before the indexer
+  supervisor starts active stages. Startup calls the partition provisioner for
+  the configured retention horizon, then scrape, assemble, yEnc, inspect, and
+  release work paths only verify that the child partitions already exist.
+- Runtime stage write paths must not run partition DDL. Even single-parent
+  `CREATE TABLE ... PARTITION OF` statements require relation locks that can
+  deadlock with active scrape/assemble/yEnc transactions touching other
+  partition parents. Missing partitions are a startup/provisioning blocker, not
+  something a hot writer should repair.
+- Do not call the migration/bootstrap helper
+  `pgindex_ensure_source_work_partitions` from application runtime code. It is
+  historical/bootstrap-only and creates children for many parent tables in one
+  transaction. Offline/startup provisioning may call
+  `pgindex_ensure_daily_partition` for one parent/day child at a time while no
+  indexer stage transactions are running.
+- Runtime settings `indexing.retention.create_partitions_days_before` and
+  `indexing.retention.create_partitions_days_ahead` define the startup
+  provision horizon. Defaults are intentionally backfill-friendly
+  (`180` days before, `8` days ahead) so older configured groups do not fall
+  into default partitions or trigger live DDL.
 - Default partitions are emergency-only. They are monitored by retention
   dry-runs and should remain empty for normal scrape/backfill/stage work.
 - Joins to partitioned source tables must include `source_posted_at`.

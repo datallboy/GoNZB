@@ -179,6 +179,20 @@ func (s *Service) processCandidates(ctx context.Context, candidates []pgindex.Bi
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
 	stageName := string(supervisor.StageInspectMedia)
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		if s != nil && s.log != nil {
+			s.log.Warn("inspect_media: skipped candidate without release id binary_id=%d file=%s", candidate.BinaryID, candidate.FileName)
+		}
+		return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+			Summary: map[string]any{
+				"probe_skip_reason": "missing_release_id",
+			},
+		})
+	}
 	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
 		return err
 	}

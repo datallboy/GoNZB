@@ -156,7 +156,7 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 		FailedProbeHours:                48,
 		ArchivedReleaseDetailGraceHours: 6,
 		MetadataIncompleteReleaseHours:  48,
-		CreatePartitionsDaysBefore:      1,
+		CreatePartitionsDaysBefore:      180,
 		CreatePartitionsDaysAhead:       8,
 		PurgeDryRunDefault:              true,
 	}
