@@ -47,12 +47,59 @@ func TestResolveReleaseCategoryLeavesGenericVideoAsMisc(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseCategoryOpaqueVideoWithAudioCodecAsMisc(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification:    "video",
+		PrimaryAudioCodec: "aac",
+		PrimaryResolution: "1080p",
+		Title:             "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+		SourceTitle:       "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+		DeobfuscatedTitle: "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+	})
+	if got.ID != OtherMisc {
+		t.Fatalf("expected OtherMisc, got %+v", got)
+	}
+}
+
 func TestResolveReleaseCategoryConsoleSwitch(t *testing.T) {
 	got := ResolveReleaseCategory(ReleaseAttributes{
 		Title: "Example.Game.NSW.Switch-GRP",
 	})
 	if got.ID != ConsoleSwitch {
 		t.Fatalf("expected ConsoleSwitch, got %+v", got)
+	}
+}
+
+func TestResolveReleaseCategorySteinbergCubaseAsPC0Day(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification:    "archive",
+		Title:             "Steinberg Cubase Pro 15 0 21 x64 Multilingual",
+		SourceTitle:       "Steinberg Cubase Pro 15.0.21 (x64) Multilingual",
+		DeobfuscatedTitle: "Steinberg.Cubase.Pro.15.0.21.(x64).Multilingual",
+	})
+	if got.ID != PC0Day {
+		t.Fatalf("expected PC0Day, got %+v", got)
+	}
+}
+
+func TestResolveReleaseCategorySoftwareArchiveEvidenceAsPC0Day(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification: "software_archive",
+		Title:          "VIP ONLY",
+	})
+	if got.ID != PC0Day {
+		t.Fatalf("expected PC0Day from software archive evidence, got %+v", got)
+	}
+}
+
+func TestResolveReleaseCategoryXXXByPosterHint(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification: "audio",
+		Title:          "opaque release",
+		Poster:         "Brazzers",
+	})
+	if got.RootID != XXXRoot {
+		t.Fatalf("expected XXX root, got %+v", got)
 	}
 }
 

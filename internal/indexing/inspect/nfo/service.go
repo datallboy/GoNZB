@@ -62,18 +62,30 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	processed := 0
+	failed := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			metrics["processed_count"] = processed
+			metrics["failed_count"] = failed
 			return metrics, err
 		}
 		if err := s.inspectCandidate(ctx, candidate); err != nil {
-			metrics["processed_count"] = processed
-			return metrics, err
+			failed++
+			processed++
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_nfo: failed binary_id=%d release_id=%s file=%s err=%v",
+					candidate.BinaryID,
+					candidate.ReleaseID,
+					candidate.FileName,
+					err,
+				)
+			}
+			continue
 		}
 		processed++
 	}
 	metrics["processed_count"] = processed
+	metrics["failed_count"] = failed
 	return metrics, nil
 }
 
@@ -184,11 +196,20 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		HasNFO:            &hasNFO,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_nfo: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func ptrTime(v time.Time) *time.Time { return &v }

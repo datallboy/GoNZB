@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +64,189 @@ func TestRunStagesOnceHonorsRequestedOrder(t *testing.T) {
 		if order[i] != want[i] {
 			t.Fatalf("expected order %v, got %v", want, order)
 		}
+	}
+}
+
+func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
+	runs := make(chan StageName, 2)
+	record := func(name StageName) RunnerFunc {
+		return func(context.Context) error {
+			runs <- name
+			return nil
+		}
+	}
+
+	stages := []Stage{
+		{Name: StageScrapeLatest},
+		{Name: StageScrapeBackfill},
+		{Name: StagePosterMaterialize, Interval: time.Hour, Enabled: true, Runner: record(StagePosterMaterialize)},
+		{Name: StageCrosspostPopularityRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageCrosspostPopularityRefresh)},
+		{Name: StageArticleCohortSchedule},
+		{Name: StageAssemble},
+		{Name: StageRecoverYEnc},
+		{Name: StageReleaseSummaryRefresh},
+		{Name: StageRelease},
+		{Name: StageReleaseGenerateNZB},
+		{Name: StageReleaseArchiveNZB},
+		{Name: StageReleasePurgeArchivedSources},
+		{Name: StageInspectDiscoveryReadyRefresh},
+		{Name: StageInspectPAR2ReadyRefresh},
+		{Name: StageInspectArchiveReadyRefresh},
+		{Name: StageInspectMediaReadyRefresh},
+		{Name: StageInspectDiscovery},
+		{Name: StageInspectPAR2},
+		{Name: StageInspectNFO},
+		{Name: StageInspectArchive},
+		{Name: StageInspectPassword},
+		{Name: StageInspectMedia},
+		{Name: StageEnrichPreDB},
+		{Name: StageEnrichTMDB},
+		{Name: StageName("maintenance.dashboard_stats_refresh")},
+		{Name: StageMaintenanceReleaseSourcePurge},
+		{Name: StageName("maintenance.poster_queue_done_cleanup")},
+		{Name: StageName("maintenance.inspect_ready_queue_cleanup")},
+		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
+		{Name: StageName("maintenance.readiness_cleanup")},
+		{Name: StageName("maintenance.runtime_history_cleanup")},
+		{Name: StageName("maintenance.grouping_evidence_cleanup")},
+		{Name: StageName("maintenance.crosspost_group_raw_purge")},
+		{Name: StageName("maintenance.yenc_done_work_item_cleanup")},
+		{Name: StageName("maintenance.group_profile_refresh")},
+		{Name: StageName("maintenance.raw_stage_retention")},
+		{Name: StageName("maintenance.partition_retention_drop")},
+		{Name: StageName("maintenance.partition_default_rehome")},
+		{Name: StageName("maintenance.stale_nonrelease_source_purge")},
+		{Name: StageName("maintenance.emergency_source_window_reset")},
+		{Name: StageName("maintenance.header_payload_purge")},
+		{Name: StageMaintenance},
+	}
+	svc := New(nil, stages)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.Run(ctx)
+	}()
+
+	seen := map[StageName]bool{}
+	for len(seen) < 2 {
+		select {
+		case name := <-runs:
+			seen[name] = true
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("timed out waiting for materializer stage runs, seen=%v", seen)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for supervisor shutdown")
+	}
+}
+
+func TestRunPipelineIncludesReadyRefreshAndMaintenanceExcludesPipeline(t *testing.T) {
+	runs := make(chan StageName, 4)
+	record := func(name StageName) RunnerFunc {
+		return func(context.Context) error {
+			runs <- name
+			return nil
+		}
+	}
+
+	stages := []Stage{
+		{Name: StageScrapeLatest},
+		{Name: StageScrapeBackfill},
+		{Name: StagePosterMaterialize},
+		{Name: StageCrosspostPopularityRefresh},
+		{Name: StageArticleCohortSchedule},
+		{Name: StageAssemble},
+		{Name: StageRecoverYEnc},
+		{Name: StageReleaseSummaryRefresh},
+		{Name: StageRelease},
+		{Name: StageReleaseGenerateNZB},
+		{Name: StageReleaseArchiveNZB},
+		{Name: StageInspectDiscoveryReadyRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageInspectDiscoveryReadyRefresh)},
+		{Name: StageInspectPAR2ReadyRefresh},
+		{Name: StageInspectArchiveReadyRefresh},
+		{Name: StageInspectMediaReadyRefresh},
+		{Name: StageInspectDiscovery},
+		{Name: StageInspectPAR2},
+		{Name: StageInspectNFO},
+		{Name: StageInspectArchive},
+		{Name: StageInspectPassword},
+		{Name: StageInspectMedia},
+		{Name: StageEnrichPreDB},
+		{Name: StageEnrichTMDB},
+		{Name: StageName("maintenance.dashboard_stats_refresh"), Interval: time.Hour, Enabled: true, Runner: record(StageName("maintenance.dashboard_stats_refresh"))},
+		{Name: StageMaintenanceReleaseSourcePurge},
+		{Name: StageName("maintenance.poster_queue_done_cleanup")},
+		{Name: StageName("maintenance.inspect_ready_queue_cleanup")},
+		{Name: StageName("maintenance.assembly_queue_stale_cleanup")},
+		{Name: StageName("maintenance.readiness_cleanup")},
+		{Name: StageName("maintenance.runtime_history_cleanup")},
+		{Name: StageName("maintenance.grouping_evidence_cleanup")},
+		{Name: StageName("maintenance.crosspost_group_raw_purge")},
+		{Name: StageName("maintenance.yenc_done_work_item_cleanup")},
+		{Name: StageName("maintenance.group_profile_refresh")},
+		{Name: StageName("maintenance.raw_stage_retention")},
+		{Name: StageName("maintenance.partition_retention_drop")},
+		{Name: StageName("maintenance.partition_default_rehome")},
+		{Name: StageName("maintenance.stale_nonrelease_source_purge")},
+		{Name: StageName("maintenance.emergency_source_window_reset")},
+		{Name: StageName("maintenance.header_payload_purge")},
+		{Name: StageMaintenance},
+	}
+	svc := New(nil, stages)
+
+	pipelineCtx, cancelPipeline := context.WithCancel(context.Background())
+	pipelineDone := make(chan error, 1)
+	go func() {
+		pipelineDone <- svc.RunPipeline(pipelineCtx)
+	}()
+
+	select {
+	case name := <-runs:
+		if name != StageInspectDiscoveryReadyRefresh {
+			t.Fatalf("expected pipeline ready-refresh stage, got %s", name)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for pipeline stage")
+	}
+	cancelPipeline()
+	if err := <-pipelineDone; err != nil {
+		t.Fatalf("run pipeline: %v", err)
+	}
+
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
+	maintenanceDone := make(chan error, 1)
+	go func() {
+		maintenanceDone <- svc.RunMaintenance(maintenanceCtx)
+	}()
+
+	select {
+	case name := <-runs:
+		if name != StageName("maintenance.dashboard_stats_refresh") {
+			t.Fatalf("expected maintenance stage, got %s", name)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for maintenance stage")
+	}
+	cancelMaintenance()
+	if err := <-maintenanceDone; err != nil {
+		t.Fatalf("run maintenance: %v", err)
+	}
+
+	select {
+	case name := <-runs:
+		t.Fatalf("unexpected extra stage run: %s", name)
+	default:
 	}
 }
 
@@ -137,6 +321,160 @@ func TestRunStageOnceSkipsWhenTrackerDoesNotClaim(t *testing.T) {
 	}
 	if tracker.claims != 1 {
 		t.Fatalf("expected 1 claim, got %d", tracker.claims)
+	}
+}
+
+func TestRunStageOnceSkipsWhenStageGateBlocks(t *testing.T) {
+	tracker := &fakeTracker{
+		claimResult: &pgindex.IndexerStageClaimResult{
+			Claimed: true,
+			Run:     &pgindex.IndexerStageRun{ID: 88, StageName: string(StageAssemble)},
+		},
+	}
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageAssemble,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		Tracker: tracker,
+		Owner:   "test-owner",
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			return StageGateDecision{Allowed: false, Reason: "low space"}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageAssemble); err != nil {
+		t.Fatalf("run stage once: %v", err)
+	}
+	if tracker.claims != 0 {
+		t.Fatalf("expected stage gate to block before claim, got %d claims", tracker.claims)
+	}
+}
+
+func TestRunStageOnceSerializesBinarySourceWriters(t *testing.T) {
+	startedAssemble := make(chan struct{})
+	releaseAssemble := make(chan struct{})
+	doneAssemble := make(chan error, 1)
+	var ranPurge bool
+
+	svc := New(nil, []Stage{
+		{
+			Name:     StageAssemble,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				close(startedAssemble)
+				<-releaseAssemble
+				return nil
+			}),
+		},
+		{
+			Name:     StageReleasePurgeArchivedSources,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				ranPurge = true
+				return nil
+			}),
+		},
+	})
+
+	go func() {
+		doneAssemble <- svc.RunStageOnce(context.Background(), StageAssemble)
+	}()
+
+	select {
+	case <-startedAssemble:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for assemble to start")
+	}
+
+	if err := svc.RunStageOnce(context.Background(), StageReleasePurgeArchivedSources); err != nil {
+		t.Fatalf("run purge while assemble active: %v", err)
+	}
+	if ranPurge {
+		t.Fatal("purge runner should not execute while assemble holds the binary source write lane")
+	}
+
+	close(releaseAssemble)
+	select {
+	case err := <-doneAssemble:
+		if err != nil {
+			t.Fatalf("assemble returned error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for assemble to finish")
+	}
+}
+
+func TestRunStageOnceSuppressesRepeatedBlockedWarnings(t *testing.T) {
+	log := &fakeSupervisorLogger{}
+	svc := New(log, []Stage{
+		{
+			Name:     StageScrapeLatest,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			return StageGateDecision{Allowed: false, Reason: "same reason"}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("first run stage once: %v", err)
+	}
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("second run stage once: %v", err)
+	}
+	if got := log.warnCountContaining("index stage blocked"); got != 1 {
+		t.Fatalf("expected 1 blocked warning, got %d (%v)", got, log.warns)
+	}
+}
+
+func TestRunStageOnceLogsBlockedWarningWhenReasonChanges(t *testing.T) {
+	log := &fakeSupervisorLogger{}
+	reasons := []string{"reason one", "reason two"}
+	var idx int
+	svc := New(log, []Stage{
+		{
+			Name:     StageScrapeLatest,
+			Interval: time.Second,
+			Enabled:  true,
+			Runner: RunnerFunc(func(context.Context) error {
+				t.Fatal("runner should not execute when the stage gate blocks")
+				return nil
+			}),
+		},
+	}, Options{
+		StageGate: func(context.Context, Stage, string) (StageGateDecision, error) {
+			reason := reasons[idx]
+			if idx < len(reasons)-1 {
+				idx++
+			}
+			return StageGateDecision{Allowed: false, Reason: reason}, nil
+		},
+	})
+
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("first run stage once: %v", err)
+	}
+	if err := svc.RunStageOnce(context.Background(), StageScrapeLatest); err != nil {
+		t.Fatalf("second run stage once: %v", err)
+	}
+	if got := log.warnCountContaining("index stage blocked"); got != 2 {
+		t.Fatalf("expected 2 blocked warnings after reason change, got %d (%v)", got, log.warns)
 	}
 }
 
@@ -254,6 +592,33 @@ type fakeTracker struct {
 	completes   int
 	fails       int
 	lastFinish  pgindex.IndexerStageFinishRequest
+}
+
+type fakeSupervisorLogger struct {
+	mu    sync.Mutex
+	warns []string
+}
+
+func (f *fakeSupervisorLogger) Debug(string, ...interface{}) {}
+func (f *fakeSupervisorLogger) Info(string, ...interface{})  {}
+func (f *fakeSupervisorLogger) Error(string, ...interface{}) {}
+
+func (f *fakeSupervisorLogger) Warn(format string, v ...interface{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.warns = append(f.warns, fmt.Sprintf(format, v...))
+}
+
+func (f *fakeSupervisorLogger) warnCountContaining(fragment string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, entry := range f.warns {
+		if strings.Contains(entry, fragment) {
+			count++
+		}
+	}
+	return count
 }
 
 func (f *fakeTracker) ClaimIndexerStage(context.Context, pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error) {

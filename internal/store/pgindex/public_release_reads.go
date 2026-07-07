@@ -34,6 +34,7 @@ type PublicIndexerReleaseListParams struct {
 	TVDBID            int64
 	Season            int
 	Episode           int
+	ReadyPolicy       ReleaseReadyPolicy
 }
 
 type PublicIndexerReleaseSummary struct {
@@ -109,30 +110,19 @@ type PublicIndexerReleaseCapabilities struct {
 	CanSendToDownloader bool `json:"can_send_to_downloader"`
 }
 
-func publicIndexerReleaseVisibilityClause(alias string) string {
-	return fmt.Sprintf(`
-		COALESCE(%[1]s.search_title, '') <> ''
-		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) <> 'unknown-release'
-		AND COALESCE(%[1]s.match_confidence, 0) >= 0.55
-		AND COALESCE(%[1]s.completion_pct, 0) >= 100
-		AND COALESCE(%[1]s.identity_status, '') IN ('identified', 'probable')
-		AND COALESCE(%[1]s.size_bytes, 0) > 0
-		AND COALESCE(%[1]s.category_id, 8010) <> 8010
-		AND (
-			COALESCE(%[1]s.expected_file_count, 0) <= 1
-			OR COALESCE(%[1]s.file_count, 0) >= 2
-		)
-		AND NOT (
-			COALESCE(%[1]s.search_title, '') ~* '(^|[^a-z0-9])(seed|test)([^a-z0-9]|$)'
-			OR COALESCE(%[1]s.group_name, '') ~* '(^|[._-])(seed|test)([._-]|$)'
-		)
-		AND COALESCE(ro.hidden, FALSE) = FALSE`, alias)
+func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolicy) string {
+	return releaseReadyVisibilityClause(alias, policy)
 }
 
 func sanitizePublicPasswordState(raw string) string {
-	switch strings.TrimSpace(raw) {
-	case "not_passworded", "passworded_known", "passworded_unknown":
-		return raw
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	normalized := normalizeReleasePasswordState(raw, false, false, false)
+	switch normalized {
+	case "not_passworded", "password_known", "password_unknown":
+		return normalized
 	default:
 		return ""
 	}
@@ -225,7 +215,7 @@ func publicSortClause(sort string) string {
 }
 
 func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string, []any) {
-	clauses := []string{publicIndexerReleaseVisibilityClause("r")}
+	clauses := []string{publicIndexerReleaseVisibilityClause("r", params.ReadyPolicy)}
 	args := make([]any, 0, 16)
 	arg := 1
 
@@ -251,7 +241,7 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 		add(fmt.Sprintf("r.has_par2 = $%d", arg), *params.HasPAR2)
 	}
 	if v := sanitizePublicPasswordState(strings.TrimSpace(params.PasswordState)); v != "" {
-		add(fmt.Sprintf("r.password_state = $%d", arg), v)
+		add(fmt.Sprintf("%s = $%d", releasePasswordStateSQL("r"), arg), v)
 	}
 	if v := strings.TrimSpace(params.AvailabilityTier); v != "" {
 		add(fmt.Sprintf("r.availability_tier = $%d", arg), v)
@@ -393,6 +383,10 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 }
 
 func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID string) (*PublicIndexerReleaseDetail, error) {
+	return s.GetPublicIndexerReleaseDetailWithPolicy(ctx, releaseID, DefaultReleaseReadyPolicy())
+}
+
+func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, releaseID string, policy ReleaseReadyPolicy) (*PublicIndexerReleaseDetail, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return nil, fmt.Errorf("release id is required")
@@ -428,7 +422,7 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
 		WHERE r.release_id = $1
-		  AND (%s)`, publicIndexerReleaseVisibilityClause("r")),
+		  AND (%s)`, publicIndexerReleaseVisibilityClause("r", policy)),
 		releaseID,
 	)
 
@@ -462,8 +456,8 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 			COALESCE(archive_count, 0),
 			COALESCE(video_count, 0),
 			COALESCE(audio_count, 0)
-		FROM releases
-		WHERE release_id = $1`, releaseID,
+		FROM releases r
+		WHERE r.release_id = $1`, releaseID,
 	).Scan(
 		&runtimeSeconds,
 		&primaryResolution,
@@ -486,20 +480,17 @@ func (s *Store) GetPublicIndexerReleaseDetail(ctx context.Context, releaseID str
 
 	filesRows, err := s.db.QueryContext(ctx, `
 		SELECT
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.posted_at,
-			COUNT(bp.id) AS article_count,
-			COALESCE(b.total_parts, 0),
-			COALESCE(b.observed_parts, 0)
-		FROM release_files rf
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		WHERE rf.release_id = $1
-		GROUP BY rf.id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.posted_at, b.total_parts, b.observed_parts
-		ORDER BY rf.file_index, rf.id`, releaseID)
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.posted_at,
+			cf.article_count,
+			cf.total_parts,
+			cf.observed_parts
+		FROM release_catalog_files cf
+		WHERE cf.release_id = $1
+		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list public release files for %s: %w", releaseID, err)
 	}

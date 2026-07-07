@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import {
   getAdminRelease,
   hideAdminRelease,
+  identifyAdminRelease,
   patchAdminRelease,
   reenrichAdminRelease,
   reinspectAdminRelease,
@@ -21,10 +22,85 @@ function stringifyJSON(value: unknown) {
   }
 }
 
+function fileKindLabel(fileName: string, isPars: boolean) {
+  const name = fileName.toLowerCase()
+  if (name.endsWith('.nzb')) return 'Posted NZB Sidecar'
+  if (isPars || name.endsWith('.par2')) return 'PAR2'
+  if (name.endsWith('.nfo')) return 'NFO'
+  if (name.match(/\.(rar|zip|7z|tar|gz|bz2|xz)$/)) return 'Archive'
+  if (name.match(/\.(mkv|mp4|avi|m2ts|ts|mp3|flac)$/)) return 'Media'
+  return 'Payload'
+}
+
+function formatNZBStatus(value: string) {
+  switch (value) {
+    case 'legacy_pending':
+    case 'pending':
+      return 'NZB pending'
+    case 'legacy_ready':
+    case 'ready':
+      return 'NZB ready'
+    case 'legacy_failed':
+    case 'failed':
+      return 'NZB failed'
+    case 'archived':
+      return 'Archived'
+    case 'purge_pending':
+      return 'Archived, purge pending'
+    case 'purged':
+      return 'Archived, sources purged'
+    default:
+      return value || 'NZB pending'
+  }
+}
+
+function passwordStateLabel(value: string | undefined) {
+  switch ((value ?? '').trim()) {
+    case 'not_passworded':
+      return 'Not passworded'
+    case 'password_known':
+    case 'passworded_known':
+      return 'Password known'
+    case 'password_unknown':
+    case 'passworded_unknown':
+    case 'passworded':
+      return 'Password unknown'
+    case 'unknown':
+    case '':
+      return 'Not inspected'
+    default:
+      return value ?? 'Not inspected'
+  }
+}
+
+function payloadCompletionLabel(diagnostics: AdminReleaseDetailResponse['release']['diagnostics']) {
+  if (!diagnostics.payload_completeness_known) return 'Unknown'
+  return formatPercent(diagnostics.payload_completion_pct)
+}
+
+function payloadCompleteLabel(diagnostics: AdminReleaseDetailResponse['release']['diagnostics']) {
+  if (!diagnostics.payload_completeness_known) return 'Unknown'
+  return diagnostics.payload_complete ? 'Yes' : 'No'
+}
+
+function formatDeltaMinutes(value?: number) {
+  if (value == null || Number.isNaN(value)) return 'Unknown'
+  if (value < 60) return `${value.toFixed(1)} min`
+  return `${(value / 60).toFixed(1)} hr`
+}
+
 export function AdminReleaseDetailPage() {
   const { id = '' } = useParams()
   const [data, setData] = useState<AdminReleaseDetailResponse | null>(null)
   const [form, setForm] = useState<ReleaseOverridePatch>({})
+  const [identityForm, setIdentityForm] = useState({
+    title: '',
+    external_media_type: '',
+    external_year: '',
+    season_number: '',
+    episode_number: '',
+    classification: '',
+  })
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,6 +118,14 @@ export function AdminReleaseDetailPage() {
         tags: response.override?.tags ?? [],
         hidden: response.override?.hidden ?? false,
       })
+      setIdentityForm((current) => ({
+        title: current.title || response.release.release.title || '',
+        external_media_type: current.external_media_type || response.release.release.external_media_type || '',
+        external_year: current.external_year || String(response.release.release.external_year || ''),
+        season_number: current.season_number || String(response.release.release.season_number || ''),
+        episode_number: current.episode_number || String(response.release.release.episode_number || ''),
+        classification: current.classification || response.release.release.classification || '',
+      }))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load release')
@@ -93,6 +177,37 @@ export function AdminReleaseDetailPage() {
     }
   }
 
+  async function handleManualIdentity(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setMessage(null)
+    try {
+      await identifyAdminRelease(id, {
+        source: 'manual',
+        title: identityForm.title,
+        external_media_type: identityForm.external_media_type || undefined,
+        external_year: Number(identityForm.external_year || 0) || undefined,
+        season_number: Number(identityForm.season_number || 0) || undefined,
+        episode_number: Number(identityForm.episode_number || 0) || undefined,
+        classification: identityForm.classification || undefined,
+      })
+      await refresh()
+      setMessage('Manual identity applied.')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to apply manual identity')
+    }
+  }
+
+  async function choosePredbCandidate(entryID: number) {
+    setMessage(null)
+    try {
+      await identifyAdminRelease(id, { source: 'predb', predb_entry_id: entryID })
+      await refresh()
+      setMessage('PreDB candidate applied.')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to apply PreDB candidate')
+    }
+  }
+
   if (error) {
     return <div className="banner error">{error}</div>
   }
@@ -101,8 +216,15 @@ export function AdminReleaseDetailPage() {
   }
 
   const release = data.release.release
+  const diagnostics = data.release.diagnostics
   const subtitleLanguages = release.subtitle_languages ?? []
   const mediaTags = release.media_tags ?? []
+  const archiveState = release.nzb_generation_status || 'pending'
+  const isArchivedOrPurged =
+    archiveState === 'archived' ||
+    archiveState === 'purge_pending' ||
+    archiveState === 'purged'
+  const releaseFileRows = data.release.files ?? []
 
   return (
     <div className="page-section stack">
@@ -126,10 +248,15 @@ export function AdminReleaseDetailPage() {
       <div className="dashboard-grid">
         <div className="page-card">
           <h2 className="section-title">Release Summary</h2>
+          {diagnostics.readiness_note ? <div className="banner">{diagnostics.readiness_note}</div> : null}
           <dl className="detail-grid">
             <div>
-              <dt>Completion</dt>
-              <dd>{formatPercent(release.completion_pct)}</dd>
+              <dt>Overall Binary Completion</dt>
+              <dd>{formatPercent(diagnostics.known_binary_completion_pct)}</dd>
+            </div>
+            <div>
+              <dt>Main Payload Completion</dt>
+              <dd>{payloadCompletionLabel(diagnostics)}</dd>
             </div>
             <div>
               <dt>Identity</dt>
@@ -137,7 +264,7 @@ export function AdminReleaseDetailPage() {
             </div>
             <div>
               <dt>Password</dt>
-              <dd>{release.password_state || 'unknown'}</dd>
+              <dd>{passwordStateLabel(release.password_state)}</dd>
             </div>
             <div>
               <dt>Availability</dt>
@@ -157,7 +284,35 @@ export function AdminReleaseDetailPage() {
             </div>
             <div>
               <dt>NZB Cache</dt>
-              <dd>{release.nzb_generation_status || 'pending'}</dd>
+              <dd>{formatNZBStatus(release.nzb_generation_status || 'pending')}</dd>
+            </div>
+            <div>
+              <dt>Archive State</dt>
+              <dd>{isArchivedOrPurged ? formatNZBStatus(archiveState) : 'Not archived yet'}</dd>
+            </div>
+            <div>
+              <dt>Payload Complete</dt>
+              <dd>{payloadCompleteLabel(diagnostics)}</dd>
+            </div>
+            <div>
+              <dt>Expected Files Complete</dt>
+              <dd>{diagnostics.expected_file_count_complete ? 'Yes' : 'No'}</dd>
+            </div>
+            <div>
+              <dt>Expected Archive Files</dt>
+              <dd>{diagnostics.expected_archive_file_count_known ? release.expected_archive_file_count : 'Unknown'}</dd>
+            </div>
+            <div>
+              <dt>Missing Expected Files</dt>
+              <dd>{diagnostics.missing_expected_file_count}</dd>
+            </div>
+            <div>
+              <dt>Missing Payload Files</dt>
+              <dd>
+                {diagnostics.expected_archive_file_count_known
+                  ? diagnostics.missing_expected_archive_file_count
+                  : 'Unknown'}
+              </dd>
             </div>
             <div>
               <dt>Metadata Updated</dt>
@@ -320,6 +475,64 @@ export function AdminReleaseDetailPage() {
         {message ? <div className="banner">{message}</div> : null}
       </form>
 
+      <form className="page-card stack" onSubmit={handleManualIdentity}>
+        <h2 className="section-title">Manual Identity</h2>
+        <div className="toolbar-grid">
+          <label className="field">
+            <span>Title</span>
+            <input
+              value={identityForm.title}
+              onChange={(event) => setIdentityForm((current) => ({ ...current, title: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Media Type</span>
+            <input
+              value={identityForm.external_media_type}
+              onChange={(event) =>
+                setIdentityForm((current) => ({ ...current, external_media_type: event.target.value }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Year</span>
+            <input
+              type="number"
+              value={identityForm.external_year}
+              onChange={(event) => setIdentityForm((current) => ({ ...current, external_year: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Season</span>
+            <input
+              type="number"
+              value={identityForm.season_number}
+              onChange={(event) => setIdentityForm((current) => ({ ...current, season_number: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Episode</span>
+            <input
+              type="number"
+              value={identityForm.episode_number}
+              onChange={(event) => setIdentityForm((current) => ({ ...current, episode_number: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Classification</span>
+            <input
+              value={identityForm.classification}
+              onChange={(event) => setIdentityForm((current) => ({ ...current, classification: event.target.value }))}
+            />
+          </label>
+        </div>
+        <div className="button-row">
+          <button className="primary-button" type="submit">
+            Apply Manual Identity
+          </button>
+        </div>
+      </form>
+
       <div className="page-card stack">
         <h2 className="section-title">Release-Level Evidence</h2>
         <div className="dashboard-grid">
@@ -363,9 +576,35 @@ export function AdminReleaseDetailPage() {
             {(data.release.predb_matches ?? []).map((match) => (
               <details className="detail-block" key={`predb-${match.entry_id}`}>
                 <summary>
+                  {match.chosen ? 'Chosen · ' : ''}
                   {match.title} · {match.confidence.toFixed(2)}
                 </summary>
-                <pre className="json-block">{stringifyJSON(match.payload_json)}</pre>
+                <div className="stack">
+                  <div className="muted-row">
+                    <span>{match.category || 'Uncategorized'}</span>
+                    <span>Posted {formatDateTime(match.posted_at)}</span>
+                    <span>Delta {formatDeltaMinutes(match.posted_delta_minutes)}</span>
+                  </div>
+                  <div className="muted-row">
+                    <span>Payload {formatBytes(match.payload_size_bytes)} from {match.payload_size_source || 'unknown'}</span>
+                    <span>PreDB {formatBytes(match.predb_size_bytes)}</span>
+                    <span>Size delta {(match.size_delta_pct * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="muted-row">
+                    <span>Resolution {match.resolution_match ? 'match' : 'miss'}</span>
+                    <span>Video {match.video_codec_match ? 'match' : 'miss'}</span>
+                    <span>Audio {match.audio_codec_match ? 'match' : 'miss'}</span>
+                  </div>
+                  {match.auto_apply_skip_reason ? (
+                    <div className="banner">{match.auto_apply_skip_reason}</div>
+                  ) : null}
+                  <div className="button-row">
+                    <button className="secondary-button" type="button" onClick={() => void choosePredbCandidate(match.entry_id)}>
+                      Use Candidate
+                    </button>
+                  </div>
+                  <pre className="json-block">{stringifyJSON(match.payload_json)}</pre>
+                </div>
               </details>
             ))}
           </div>
@@ -384,200 +623,55 @@ export function AdminReleaseDetailPage() {
       </div>
 
       <div className="page-card stack">
-        <h2 className="section-title">Files and Articles</h2>
-        {(data.files ?? []).map((file) => (
-          <details className="detail-block" key={file.file_id} open={file.is_pars}>
-            <summary>
-              {file.file_name} · {formatBytes(file.size_bytes)} · {file.is_pars ? 'PAR2' : 'payload'}
-            </summary>
-            <div className="stack">
-              <div className="muted-row">
-                <span>Index {file.file_index}</span>
-                <span>
-                  Parts {file.observed_parts} / {file.total_parts}
-                </span>
-                <span>Articles {file.article_count}</span>
-                <span>Posted {formatDateTime(file.posted_at)}</span>
+        <div className="page-header">
+          <div>
+            <h2 className="section-title">Release Files</h2>
+            <p className="muted-copy">Catalog view of the release payload. Expand a file to review its article segments.</p>
+          </div>
+        </div>
+        {releaseFileRows.map((summary) => {
+          const groups = data.release.newsgroups
+          return (
+            <details className="detail-block" key={`${summary.file_index}-${summary.file_name}`}>
+              <summary>
+                {summary.file_name} · {formatBytes(summary.size_bytes)} · {fileKindLabel(summary.file_name, summary.is_pars)}
+              </summary>
+              <div className="stack">
+                <div className="muted-row">
+                  <span>Index {summary.file_index}</span>
+                  <span>
+                    Parts {summary.observed_parts} / {summary.total_parts}
+                  </span>
+                  <span>Articles {summary.article_count}</span>
+                  <span>Posted {formatDateTime(summary.posted_at)}</span>
+                </div>
+                <div className="muted-row">
+                  <span>Binary {summary.binary_id || 'not linked'}</span>
+                  <span>{summary.match_status || 'unmatched'}</span>
+                  <span>{summary.poster || 'Unknown poster'}</span>
+                  <span>{groups.join(', ') || 'No groups recorded'}</span>
+                </div>
+                {summary.binary_id <= 0 ? (
+                  <div className="banner">
+                    Catalog-only file. The source binary link is not currently available, so article segments and binary inspection details may be unavailable.
+                  </div>
+                ) : null}
+                {summary.file_name.toLowerCase().endsWith('.nzb') ? (
+                  <div className="banner">
+                    Posted NZB sidecar. This is an uploaded companion NZB for the release set, not the generated cache NZB and not a required payload volume.
+                  </div>
+                ) : null}
+                {summary.binary_id > 0 ? (
+                  <div className="button-row">
+                    <Link className="secondary-button" to={`/admin/indexer/binaries/${summary.binary_id}`}>
+                      Open Binary Detail
+                    </Link>
+                  </div>
+                ) : null}
               </div>
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Part</th>
-                      <th>Message ID</th>
-                      <th>Bytes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {file.articles.map((article) => (
-                      <tr key={`${file.file_id}-${article.message_id}-${article.part_number}`}>
-                        <td>{article.part_number}</td>
-                        <td className="mono-cell">{article.message_id}</td>
-                        <td>{formatBytes(article.bytes)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <pre className="json-block">{stringifyJSON(file.grouping_evidence_json)}</pre>
-            </div>
-          </details>
-        ))}
-      </div>
-
-      <div className="page-card stack">
-        <h2 className="section-title">Binaries and Inspection Artifacts</h2>
-        {(data.binaries ?? []).map((binary) => (
-          <details className="detail-block" key={binary.binary_id}>
-            <summary>
-              {binary.binary_name} · {binary.match_status || 'unmatched'} · {binary.observed_parts}/{binary.total_parts}
-            </summary>
-            <div className="stack">
-              <dl className="detail-grid">
-                <div>
-                  <dt>Posted</dt>
-                  <dd>{formatDateTime(binary.posted_at)}</dd>
-                </div>
-                <div>
-                  <dt>Total Bytes</dt>
-                  <dd>{formatBytes(binary.total_bytes)}</dd>
-                </div>
-                <div>
-                  <dt>Poster</dt>
-                  <dd>{binary.poster || 'Unknown'}</dd>
-                </div>
-                <div>
-                  <dt>Password State</dt>
-                  <dd>{binary.password_state || 'unknown'}</dd>
-                </div>
-              </dl>
-
-              <div className="dashboard-grid">
-                <div className="stack">
-                  <h3 className="section-subtitle">Inspections</h3>
-                  {binary.inspections.map((inspection) => (
-                    <details className="detail-block detail-block--nested" key={`${binary.binary_id}-${inspection.stage_name}`}>
-                      <summary>
-                        {inspection.stage_name} · {inspection.status}
-                      </summary>
-                      <pre className="json-block">{stringifyJSON(inspection.summary_json)}</pre>
-                    </details>
-                  ))}
-                </div>
-                <div className="stack">
-                  <h3 className="section-subtitle">Artifacts</h3>
-                  {binary.artifacts.map((artifact) => (
-                    <div className="list-row list-row--start" key={`${binary.binary_id}-${artifact.artifact_path}`}>
-                      <div>
-                        <strong>{artifact.artifact_name || artifact.artifact_role}</strong>
-                        <div className="muted-row">
-                          <span>{artifact.stage_name}</span>
-                          <span>{artifact.mime_type || 'unknown mime'}</span>
-                        </div>
-                      </div>
-                      <span>{formatBytes(artifact.bytes_total)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="dashboard-grid">
-                <div className="stack">
-                  <h3 className="section-subtitle">Archive Entries</h3>
-                  {binary.archive_entries.map((entry) => (
-                    <div className="list-row list-row--start" key={`${binary.binary_id}-${entry.entry_name}`}>
-                      <div>
-                        <strong>{entry.entry_name}</strong>
-                        <div className="muted-row">
-                          <span>{entry.media_type || 'unknown'}</span>
-                          <span>{entry.encrypted ? 'encrypted' : 'plain'}</span>
-                        </div>
-                      </div>
-                      <span>{formatBytes(entry.uncompressed_bytes)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="stack">
-                  <h3 className="section-subtitle">Media Streams</h3>
-                  {binary.media_streams.map((stream) => (
-                    <div className="list-row list-row--start" key={`${binary.binary_id}-${stream.stream_index}-${stream.stream_type}`}>
-                      <div>
-                        <strong>{stream.stream_type}</strong>
-                        <div className="muted-row">
-                          <span>{stream.codec_name || 'unknown codec'}</span>
-                          <span>{stream.language || 'und'}</span>
-                        </div>
-                      </div>
-                      <span>
-                        {stream.width && stream.height ? `${stream.width}x${stream.height}` : stream.channels || '-'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="dashboard-grid">
-                <div className="stack">
-                  <h3 className="section-subtitle">Text Evidence</h3>
-                  {binary.text_evidence.map((entry, index) => (
-                    <details className="detail-block detail-block--nested" key={`${binary.binary_id}-text-${index}`}>
-                      <summary>
-                        {entry.stage_name} · {entry.evidence_kind}
-                      </summary>
-                      <div className="stack">
-                        <div>{entry.text_value}</div>
-                        <div className="muted-row">
-                          <span>{entry.tokens.join(', ') || 'no tokens'}</span>
-                        </div>
-                        <pre className="json-block">{stringifyJSON(entry.metadata_json)}</pre>
-                      </div>
-                    </details>
-                  ))}
-                </div>
-                <div className="stack">
-                  <h3 className="section-subtitle">PAR2 and Parts</h3>
-                  {binary.par2_sets.map((set) => (
-                    <div className="list-row list-row--start" key={`${binary.binary_id}-${set.set_name}`}>
-                      <div>
-                        <strong>{set.set_name}</strong>
-                        <div className="muted-row">
-                          <span>{set.base_name}</span>
-                          <span>{set.signature_ok ? 'signature ok' : 'signature unknown'}</span>
-                        </div>
-                      </div>
-                      <span>{set.recovery_blocks}</span>
-                    </div>
-                  ))}
-                  <details className="detail-block detail-block--nested">
-                    <summary>Binary Parts ({binary.parts.length})</summary>
-                    <div className="table-shell">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Part</th>
-                            <th>Message ID</th>
-                            <th>Bytes</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {binary.parts.map((part) => (
-                            <tr key={`${binary.binary_id}-${part.article_header_id}`}>
-                              <td>{part.part_number}</td>
-                              <td className="mono-cell">{part.message_id}</td>
-                              <td>{formatBytes(part.segment_bytes)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </details>
-                </div>
-              </div>
-
-              <pre className="json-block">{stringifyJSON(binary.grouping_evidence_json)}</pre>
-            </div>
-          </details>
-        ))}
+            </details>
+          )
+        })}
       </div>
     </div>
   )

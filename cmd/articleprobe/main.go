@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -46,6 +47,8 @@ func main() {
 	var (
 		configPath       string
 		serverID         string
+		nntpProviderID   string
+		providerID       string
 		group            string
 		messageID        string
 		articleNum       int64
@@ -61,11 +64,14 @@ func main() {
 		binaryID         int64
 		outNZB           string
 		probeSetYEnc     bool
+		probeSetSampled  bool
 		setBodyBytes     int64
 	)
 
 	flag.StringVar(&configPath, "config", "config.yaml", "config file path")
-	flag.StringVar(&serverID, "server", "", "server id from config.yaml (defaults to first server)")
+	flag.StringVar(&serverID, "server", "", "NNTP server id from config.yaml/runtime settings (defaults to first server)")
+	flag.StringVar(&nntpProviderID, "nntp-provider-id", "", "NNTP provider/server id to use; alias for --server")
+	flag.StringVar(&providerID, "provider-id", "", "NNTP provider/server id to use; alias for --server")
 	flag.StringVar(&group, "group", "", "newsgroup to select before article-number operations")
 	flag.StringVar(&messageID, "message-id", "", "message-id to inspect")
 	flag.Int64Var(&articleNum, "article-number", 0, "article number to inspect within --group")
@@ -81,8 +87,12 @@ func main() {
 	flag.Int64Var(&binaryID, "binary-id", 0, "export an NZB for one binary id")
 	flag.StringVar(&outNZB, "out-nzb", "", "write exported NZB to this path; defaults to stdout for export modes")
 	flag.BoolVar(&probeSetYEnc, "probe-set-yenc", false, "for export modes, fetch BODY prefixes and print yEnc header names for segments")
+	flag.BoolVar(&probeSetSampled, "probe-set-yenc-sampled", false, "with --probe-set-yenc, sample representative segment positions instead of probing every segment")
 	flag.Int64Var(&setBodyBytes, "set-body-bytes", 8192, "BODY prefix bytes to fetch per segment for --probe-set-yenc")
 	flag.Parse()
+
+	serverID, err := resolveArticleProbeServerID(serverID, nntpProviderID, providerID)
+	fatalIf(err)
 
 	cfg, err := config.Load(configPath)
 	fatalIf(err)
@@ -95,7 +105,7 @@ func main() {
 	}
 
 	if isExportMode(releaseID, releaseFamilyKey, binaryID) {
-		fatalIf(runNZBExport(context.Background(), cfg, serverID, releaseID, releaseFamilyKey, binaryID, outNZB, probeSetYEnc, setBodyBytes))
+		fatalIf(runNZBExport(context.Background(), cfg, serverID, releaseID, releaseFamilyKey, binaryID, outNZB, probeSetYEnc, probeSetSampled, setBodyBytes))
 		return
 	}
 
@@ -215,7 +225,7 @@ func runXOverExport(ctx context.Context, cfg *config.Config, serverID, group str
 	return nil
 }
 
-func runNZBExport(ctx context.Context, cfg *config.Config, serverID, releaseID, releaseFamilyKey string, binaryID int64, outPath string, probeYEnc bool, prefixBytes int64) error {
+func runNZBExport(ctx context.Context, cfg *config.Config, serverID, releaseID, releaseFamilyKey string, binaryID int64, outPath string, probeYEnc bool, probeSampled bool, prefixBytes int64) error {
 	selected := 0
 	if strings.TrimSpace(releaseID) != "" {
 		selected++
@@ -263,7 +273,7 @@ func runNZBExport(ctx context.Context, cfg *config.Config, serverID, releaseID, 
 	fmt.Fprintf(os.Stderr, "exported files=%d segments=%d title=%q\n", len(files), countSegments(files), title)
 
 	if probeYEnc {
-		if err := probeNZBYEncPrefixes(ctx, cfg, serverID, files, prefixBytes); err != nil {
+		if err := probeNZBYEncPrefixes(ctx, cfg, serverID, files, prefixBytes, probeSampled); err != nil {
 			return err
 		}
 	}
@@ -335,35 +345,47 @@ func loadNZBExportBinaries(ctx context.Context, store *pgindex.Store, mode, rele
 	case "release_family_key":
 		rows, err = db.QueryContext(ctx, `
 			SELECT
-				b.id,
-				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), 'binary-' || b.id::text) AS file_name,
-				COALESCE(b.binary_name, b.file_name, '') AS subject,
+				bc.binary_id,
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), 'binary-' || bc.binary_id::text) AS file_name,
+				COALESCE(bic.binary_name, bic.file_name, '') AS subject,
 				COALESCE(po.poster_name, '') AS poster,
-				b.posted_at,
-				COALESCE(b.total_bytes, 0),
-				COALESCE(b.file_index, 0),
+				bos.posted_at,
+				COALESCE(bos.total_bytes, 0),
+				COALESCE(bic.file_index, 0),
 				ng.group_name
-			FROM binaries b
-			JOIN newsgroups ng ON ng.id = b.newsgroup_id
-			LEFT JOIN posters po ON po.id = b.poster_id
-			WHERE b.release_family_key = $1
-			ORDER BY b.file_index, b.id`, releaseFamilyKey)
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+			LEFT JOIN posters po ON po.id = bc.poster_id
+			WHERE bic.release_family_key = $1
+			ORDER BY bic.file_index, bc.binary_id`, releaseFamilyKey)
 	case "id":
 		rows, err = db.QueryContext(ctx, `
 			SELECT
-				b.id,
-				COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), 'binary-' || b.id::text) AS file_name,
-				COALESCE(b.binary_name, b.file_name, '') AS subject,
+				bc.binary_id,
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), 'binary-' || bc.binary_id::text) AS file_name,
+				COALESCE(bic.binary_name, bic.file_name, '') AS subject,
 				COALESCE(po.poster_name, '') AS poster,
-				b.posted_at,
-				COALESCE(b.total_bytes, 0),
-				COALESCE(b.file_index, 0),
+				bos.posted_at,
+				COALESCE(bos.total_bytes, 0),
+				COALESCE(bic.file_index, 0),
 				ng.group_name
-			FROM binaries b
-			JOIN newsgroups ng ON ng.id = b.newsgroup_id
-			LEFT JOIN posters po ON po.id = b.poster_id
-			WHERE b.id = $1
-			ORDER BY b.file_index, b.id`, binaryID)
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+			JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+			LEFT JOIN posters po ON po.id = bc.poster_id
+			WHERE bc.binary_id = $1
+			ORDER BY bic.file_index, bc.binary_id`, binaryID)
 	default:
 		return "", nil, fmt.Errorf("unknown export binary mode %q", mode)
 	}
@@ -414,7 +436,9 @@ func loadBinarySegments(ctx context.Context, store *pgindex.Store, binaryID int6
 			ah.bytes,
 			bp.part_number
 		FROM binary_parts bp
-		JOIN article_headers ah ON ah.id = bp.article_header_id
+		JOIN article_headers ah
+		  ON ah.source_posted_at = bp.source_posted_at
+		 AND ah.id = bp.article_header_id
 		WHERE bp.binary_id = $1
 		ORDER BY bp.part_number`, binaryID)
 	if err != nil {
@@ -488,7 +512,7 @@ func writeNZB(model nzb.Model, outPath string) error {
 	return nil
 }
 
-func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID string, files []nzbExportFile, prefixBytes int64) error {
+func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID string, files []nzbExportFile, prefixBytes int64, sampled bool) error {
 	server, err := chooseServer(cfg, serverID)
 	if err != nil {
 		return err
@@ -497,8 +521,13 @@ func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID stri
 		prefixBytes = 8192
 	}
 	for _, file := range files {
-		fmt.Fprintf(os.Stderr, "\n== file binary_id=%d index=%d name=%q segments=%d ==\n", file.BinaryID, file.Index, file.FileName, len(file.Segments))
-		for _, segment := range file.Segments {
+		segments := file.Segments
+		if sampled {
+			segments = sampleYEncSegments(file.Segments)
+		}
+		fmt.Fprintf(os.Stderr, "\n== file binary_id=%d index=%d name=%q segments=%d probed=%d sampled=%t ==\n", file.BinaryID, file.Index, file.FileName, len(file.Segments), len(segments), sampled)
+		report := yencSampleReport{TotalSegments: len(file.Segments), ProbedSegments: len(segments)}
+		for _, segment := range segments {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -512,8 +541,10 @@ func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID stri
 			header, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_header_error=%v\n", segment.Number, segment.MessageID, err)
+				report.Errors++
 				continue
 			}
+			report.Observe(segment, header)
 			fmt.Fprintf(os.Stderr, "part=%d msg=%s yenc_name=%q yenc_part=%d/%d file_size=%d offset=%d end=%d\n",
 				segment.Number,
 				segment.MessageID,
@@ -525,8 +556,109 @@ func probeNZBYEncPrefixes(ctx context.Context, cfg *config.Config, serverID stri
 				header.PartEnd,
 			)
 		}
+		fmt.Fprintf(os.Stderr, "sample_report names=%d totals=%d monotonic=%t ypart_offsets=%t errors=%d verdict=%s\n",
+			len(report.Names),
+			len(report.Totals),
+			report.Monotonic(),
+			report.YPartOffsetsConsistent(),
+			report.Errors,
+			report.Verdict(),
+		)
 	}
 	return nil
+}
+
+type yencSampleReport struct {
+	TotalSegments   int
+	ProbedSegments  int
+	Names           map[string]struct{}
+	Totals          map[int]struct{}
+	lastArticlePart int
+	lastYEncPart    int
+	monotonicOK     bool
+	offsetsOK       bool
+	Errors          int
+}
+
+func (r *yencSampleReport) Observe(segment nzb.Segment, header nzb.YencHeader) {
+	if r.Names == nil {
+		r.Names = map[string]struct{}{}
+	}
+	if r.Totals == nil {
+		r.Totals = map[int]struct{}{}
+	}
+	if r.lastArticlePart == 0 && r.lastYEncPart == 0 {
+		r.monotonicOK = true
+		r.offsetsOK = true
+	}
+	r.Names[header.FileName] = struct{}{}
+	r.Totals[header.TotalParts] = struct{}{}
+	if r.lastArticlePart > 0 && segment.Number >= r.lastArticlePart && header.PartNumber < r.lastYEncPart {
+		r.monotonicOK = false
+	}
+	if header.PartOffset > 0 && header.PartEnd > 0 && header.PartEnd < header.PartOffset {
+		r.offsetsOK = false
+	}
+	r.lastArticlePart = segment.Number
+	r.lastYEncPart = header.PartNumber
+}
+
+func (r yencSampleReport) Monotonic() bool {
+	return r.monotonicOK
+}
+
+func (r yencSampleReport) YPartOffsetsConsistent() bool {
+	return r.offsetsOK
+}
+
+func (r yencSampleReport) Verdict() string {
+	if r.Errors > 0 {
+		return "needs_full_recovery"
+	}
+	if len(r.Names) == 1 && len(r.Totals) == 1 && r.Monotonic() && r.YPartOffsetsConsistent() {
+		return "weak_header_sampled_yenc_candidate"
+	}
+	return "needs_full_recovery"
+}
+
+func sampleYEncSegments(in []nzb.Segment) []nzb.Segment {
+	n := len(in)
+	if n < 20 {
+		return append([]nzb.Segment(nil), in...)
+	}
+	budget := 8
+	switch {
+	case n > 1000:
+		budget = 32
+	case n > 200:
+		budget = 16
+	}
+	positions := []int{0, n / 10, n / 2, (n * 9) / 10, n - 1}
+	if budget > len(positions) {
+		step := n / budget
+		if step <= 0 {
+			step = 1
+		}
+		for i := 0; i < n && len(positions) < budget; i += step {
+			positions = append(positions, i)
+		}
+	}
+	seen := map[int]struct{}{}
+	out := make([]nzb.Segment, 0, budget)
+	for _, pos := range positions {
+		if pos < 0 {
+			pos = 0
+		}
+		if pos >= n {
+			pos = n - 1
+		}
+		if _, ok := seen[pos]; ok {
+			continue
+		}
+		seen[pos] = struct{}{}
+		out = append(out, in[pos])
+	}
+	return out
 }
 
 func fetchBodyPrefix(server config.ServerConfig, messageID string, groups []string, maxBytes int64) ([]byte, error) {
@@ -585,7 +717,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
-	if cfg == nil || len(cfg.Servers) > 0 || strings.TrimSpace(cfg.Store.SQLitePath) == "" {
+	if cfg == nil || strings.TrimSpace(cfg.Store.SQLitePath) == "" {
 		return cfg, nil
 	}
 	store, err := settingsstore.NewStore(cfg.Store.SQLitePath)
@@ -594,7 +726,26 @@ func withRuntimeServers(cfg *config.Config) (*config.Config, error) {
 	}
 	defer store.Close()
 
-	return store.LoadEffectiveSettings(context.Background(), cfg)
+	runtime, err := store.GetRuntimeSettings(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("load runtime settings: %w", err)
+	}
+
+	effective := settingsstore.ApplyToConfig(cfg, runtime)
+	if effective == nil {
+		return nil, fmt.Errorf("effective config is nil")
+	}
+
+	// articleprobe is an indexer-side BODY/HEAD tool; prefer the indexer NNTP pool
+	// even when the compatibility/shared server list is present but incomplete.
+	if servers := app.IndexerNNTPServers(runtime); len(servers) > 0 {
+		effective.Servers = app.ToConfigServers(servers)
+	}
+
+	if err := effective.ValidateEffective(); err != nil {
+		return nil, fmt.Errorf("validate effective config: %w", err)
+	}
+	return effective, nil
 }
 
 func fatalIf(err error) {
@@ -616,6 +767,24 @@ func normalizeArticleRef(messageID string, articleNumber int64) (articleRef, err
 		ref.messageID = "<" + ref.messageID + ">"
 	}
 	return ref, nil
+}
+
+func resolveArticleProbeServerID(values ...string) (string, error) {
+	selected := ""
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if selected == "" {
+			selected = value
+			continue
+		}
+		if selected != value {
+			return "", fmt.Errorf("--server, --nntp-provider-id, and --provider-id must not specify different values")
+		}
+	}
+	return selected, nil
 }
 
 func chooseServer(cfg *config.Config, serverID string) (config.ServerConfig, error) {

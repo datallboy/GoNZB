@@ -86,6 +86,7 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/runs")
+	assertRoutePresent(t, routes, "/api/v1/admin/indexer/attention")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/run")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/pause")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/resume")

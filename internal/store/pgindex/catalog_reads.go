@@ -14,6 +14,7 @@ import (
 type CatalogReleaseFile struct {
 	ID        int64
 	BinaryID  int64
+	GroupName string
 	FileName  string
 	Subject   string
 	Poster    string
@@ -29,8 +30,87 @@ type CatalogArticleRef struct {
 	PartNumber int
 }
 
+type binaryPartSourceSpan struct {
+	BinaryID int64
+	Min      time.Time
+	Max      time.Time
+}
+
 type releaseScanner interface {
 	Scan(dest ...any) error
+}
+
+func normalizeBinaryPartSourceSpan(root time.Time, min, max sql.NullTime) binaryPartSourceSpan {
+	out := binaryPartSourceSpan{
+		Min: root.Add(-24 * time.Hour),
+		Max: root.Add(24 * time.Hour),
+	}
+	if min.Valid {
+		out.Min = min.Time.UTC()
+	}
+	if max.Valid {
+		out.Max = max.Time.UTC()
+	}
+	return out
+}
+
+func (s *Store) loadBinaryPartSourceSpan(ctx context.Context, binaryID int64) (*binaryPartSourceSpan, error) {
+	var root time.Time
+	var min, max sql.NullTime
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			bc.source_posted_at,
+			bos.part_source_posted_at_min,
+			bos.part_source_posted_at_max
+		FROM binary_core bc
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		ORDER BY bc.source_posted_at
+		LIMIT 1`, binaryID)
+	if err := row.Scan(&root, &min, &max); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load binary part source span %d: %w", binaryID, err)
+	}
+	span := normalizeBinaryPartSourceSpan(root.UTC(), min, max)
+	span.BinaryID = binaryID
+	return &span, nil
+}
+
+func (s *Store) loadReleaseFileBinaryPartSourceSpan(ctx context.Context, releaseFileID int64) (*binaryPartSourceSpan, error) {
+	var binaryID int64
+	var root time.Time
+	var min, max sql.NullTime
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			rf.binary_id,
+			bc.source_posted_at,
+			bos.part_source_posted_at_min,
+			bos.part_source_posted_at_max
+		FROM release_catalog_files cf
+		JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
+		JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = rf.binary_id
+		WHERE cf.id = $1
+		ORDER BY rf.id
+		LIMIT 1`, releaseFileID)
+	if err := row.Scan(&binaryID, &root, &min, &max); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load release file part source span %d: %w", releaseFileID, err)
+	}
+	span := normalizeBinaryPartSourceSpan(root.UTC(), min, max)
+	span.BinaryID = binaryID
+	return &span, nil
 }
 
 // CHANGED: PG release catalog read by id for later resolver work.
@@ -50,9 +130,14 @@ func (s *Store) GetCatalogReleaseByID(ctx context.Context, releaseID string) (*d
 			r.posted_at,
 			r.category,
 			r.poster,
-			COALESCE(n.generation_status, 'pending')
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN TRUE
+				ELSE FALSE
+			END
 		FROM releases r
-		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		WHERE r.release_id = $1`, releaseID)
 
 	rel, err := scanCatalogRelease(row)
@@ -86,9 +171,14 @@ func (s *Store) SearchCatalogReleases(ctx context.Context, query string, limit i
 			r.posted_at,
 			r.category,
 			r.poster,
-			COALESCE(n.generation_status, 'pending')
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN TRUE
+				ELSE FALSE
+			END
 		FROM releases r
-		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		WHERE r.search_title ILIKE '%' || $1 || '%'
 		ORDER BY r.posted_at DESC NULLS LAST, r.title
 		LIMIT $2`, query, limit)
@@ -122,18 +212,25 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			id,
-			binary_id,
-			file_name,
-			subject,
-			poster,
-			posted_at,
-			size_bytes,
-			is_pars,
-			file_index
-		FROM release_files
-		WHERE release_id = $1
-		ORDER BY file_index, id`, releaseID)
+			cf.id,
+			COALESCE(rf.binary_id, 0),
+			COALESCE(ng.group_name, ''),
+			cf.file_name,
+			cf.subject,
+			COALESCE(cf.poster, ''),
+			cf.posted_at,
+			cf.size_bytes,
+			cf.is_pars,
+			cf.file_index
+		FROM release_catalog_files cf
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
+		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		WHERE cf.release_id = $1
+		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release files %s: %w", releaseID, err)
 	}
@@ -143,10 +240,12 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 	for rows.Next() {
 		var item CatalogReleaseFile
 		var postedAt sql.NullTime
+		var binaryID sql.NullInt64
 
 		if err := rows.Scan(
 			&item.ID,
-			&item.BinaryID,
+			&binaryID,
+			&item.GroupName,
 			&item.FileName,
 			&item.Subject,
 			&item.Poster,
@@ -161,6 +260,9 @@ func (s *Store) ListCatalogReleaseFiles(ctx context.Context, releaseID string) (
 		if postedAt.Valid {
 			t := postedAt.Time.UTC()
 			item.PostedAt = &t
+		}
+		if binaryID.Valid {
+			item.BinaryID = binaryID.Int64
 		}
 
 		out = append(out, item)
@@ -181,23 +283,32 @@ func (s *Store) GetCatalogBinaryFile(ctx context.Context, binaryID int64) (*Cata
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			0::BIGINT AS id,
-			b.id AS binary_id,
-			COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), b.release_name) AS file_name,
-			COALESCE(NULLIF(b.binary_name, ''), NULLIF(b.file_name, ''), b.release_name) AS subject,
+			bc.binary_id AS binary_id,
+			COALESCE(ng.group_name, '') AS group_name,
+			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), bic.release_name) AS file_name,
+			COALESCE(NULLIF(bic.binary_name, ''), NULLIF(bic.file_name, ''), bic.release_name) AS subject,
 			COALESCE(p.poster_name, '') AS poster,
-			b.posted_at,
-			b.total_bytes AS size_bytes,
-			LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
-			b.file_index
-		FROM binaries b
-		LEFT JOIN posters p ON p.id = b.poster_id
-		WHERE b.id = $1`, binaryID)
+			bos.posted_at,
+			bos.total_bytes AS size_bytes,
+			LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.par2' AS is_pars,
+			bic.file_index
+		FROM binary_core bc
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN posters p ON p.id = bc.poster_id
+		WHERE bc.binary_id = $1`, binaryID)
 
 	var item CatalogReleaseFile
 	var postedAt sql.NullTime
 	if err := row.Scan(
 		&item.ID,
 		&item.BinaryID,
+		&item.GroupName,
 		&item.FileName,
 		&item.Subject,
 		&item.Poster,
@@ -224,18 +335,70 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 		return nil, fmt.Errorf("release file id is required")
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			ah.message_id,
-			ah.bytes,
-			bp.part_number
-		FROM release_files rf
-		JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		JOIN article_headers ah ON ah.id = bp.article_header_id
-		WHERE rf.id = $1
-		ORDER BY bp.part_number`, releaseFileID)
+	span, err := s.loadReleaseFileBinaryPartSourceSpan(ctx, releaseFileID)
+	if err != nil {
+		return nil, err
+	}
+	if span == nil || span.BinaryID <= 0 {
+		return []CatalogArticleRef{}, nil
+	}
+	out, err := s.listCatalogArticlesForBinarySpan(ctx, *span)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release file articles %d: %w", releaseFileID, err)
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+
+	fallback, err := s.ListCatalogBinaryArticles(ctx, span.BinaryID)
+	if err != nil {
+		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, span.BinaryID, err)
+	}
+	return fallback, nil
+}
+
+func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
+	if binaryID <= 0 {
+		return nil, fmt.Errorf("binary id is required")
+	}
+
+	span, err := s.loadBinaryPartSourceSpan(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	if span == nil {
+		return []CatalogArticleRef{}, nil
+	}
+	return s.listCatalogArticlesForBinarySpan(ctx, *span)
+}
+
+func (s *Store) listCatalogArticlesForBinarySpan(ctx context.Context, span binaryPartSourceSpan) ([]CatalogArticleRef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH ranked_parts AS (
+			SELECT
+				ah.message_id,
+				ah.bytes,
+				bp.part_number,
+				ROW_NUMBER() OVER (
+					PARTITION BY bp.part_number
+					ORDER BY bp.source_posted_at, ah.article_number, bp.id
+				) AS keep_rank
+			FROM binary_parts bp
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			 AND ah.source_posted_at >= $1
+			 AND ah.source_posted_at <= $2
+			WHERE bp.source_posted_at >= $1
+			  AND bp.source_posted_at <= $2
+			  AND bp.binary_id = $3
+		)
+		SELECT message_id, bytes, part_number
+		FROM ranked_parts
+		WHERE keep_rank = 1
+		ORDER BY part_number`, span.Min, span.Max, span.BinaryID)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog articles for binary %d span %s..%s: %w", span.BinaryID, span.Min, span.Max, err)
 	}
 	defer rows.Close()
 
@@ -251,60 +414,6 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
 	}
-	if len(out) > 0 {
-		return out, nil
-	}
-
-	var binaryID int64
-	err = s.db.QueryRowContext(ctx, `
-		SELECT binary_id
-		FROM release_files
-		WHERE id = $1`, releaseFileID,
-	).Scan(&binaryID)
-	if err == sql.ErrNoRows {
-		return out, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("load release file binary %d: %w", releaseFileID, err)
-	}
-
-	fallback, err := s.ListCatalogBinaryArticles(ctx, binaryID)
-	if err != nil {
-		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, binaryID, err)
-	}
-	return fallback, nil
-}
-
-func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
-	if binaryID <= 0 {
-		return nil, fmt.Errorf("binary id is required")
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			ah.message_id,
-			ah.bytes,
-			bp.part_number
-		FROM binary_parts bp
-		JOIN article_headers ah ON ah.id = bp.article_header_id
-		WHERE bp.binary_id = $1
-		ORDER BY bp.part_number`, binaryID)
-	if err != nil {
-		return nil, fmt.Errorf("list catalog binary articles %d: %w", binaryID, err)
-	}
-	defer rows.Close()
-
-	out := make([]CatalogArticleRef, 0, 128)
-	for rows.Next() {
-		var item CatalogArticleRef
-		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber); err != nil {
-			return nil, fmt.Errorf("scan catalog binary article ref: %w", err)
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate catalog binary article refs: %w", err)
-	}
 	return out, nil
 }
 
@@ -315,9 +424,9 @@ func (s *Store) ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64)
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ng.group_name
-		FROM binaries b
-		JOIN newsgroups ng ON ng.id = b.newsgroup_id
-		WHERE b.id = $1
+		FROM binary_core bc
+		JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		WHERE bc.binary_id = $1
 		ORDER BY ng.group_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary newsgroups %d: %w", binaryID, err)
@@ -348,11 +457,37 @@ func (s *Store) ListCatalogReleaseNewsgroups(ctx context.Context, releaseID stri
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT ng.group_name
-		FROM release_newsgroups rng
-		JOIN newsgroups ng ON ng.id = rng.newsgroup_id
-		WHERE rng.release_id = $1
-		ORDER BY ng.group_name`, releaseID)
+		WITH release_groups AS (
+			SELECT ng.group_name
+			FROM release_newsgroups rng
+			JOIN newsgroups ng ON ng.id = rng.newsgroup_id
+			WHERE rng.release_id = $1
+		),
+		crosspost_groups AS (
+			SELECT DISTINCT ahcg.observed_group_name AS group_name
+			FROM release_files rf
+			JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = rf.binary_id
+			JOIN binary_parts bp
+			  ON bp.binary_id = rf.binary_id
+			 AND bp.source_posted_at >= COALESCE(bos.part_source_posted_at_min, bc.source_posted_at - INTERVAL '1 day')
+			 AND bp.source_posted_at <= COALESCE(bos.part_source_posted_at_max, bc.source_posted_at + INTERVAL '1 day')
+			JOIN article_header_crosspost_groups ahcg
+			  ON ahcg.source_posted_at = bp.source_posted_at
+			 AND ahcg.article_header_id = bp.article_header_id
+			WHERE rf.release_id = $1
+			  AND BTRIM(COALESCE(ahcg.observed_group_name, '')) <> ''
+		)
+		SELECT DISTINCT group_name
+		FROM (
+			SELECT group_name FROM release_groups
+			UNION ALL
+			SELECT group_name FROM crosspost_groups
+		) groups
+		WHERE BTRIM(COALESCE(group_name, '')) <> ''
+		ORDER BY group_name`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list catalog release newsgroups %s: %w", releaseID, err)
 	}
@@ -378,7 +513,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 	var rel domain.Release
 	var source string
 	var postedAt sql.NullTime
-	var generationStatus string
+	var archived bool
 
 	if err := scanner.Scan(
 		&rel.ID,
@@ -389,7 +524,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 		&postedAt,
 		&rel.Category,
 		&rel.Poster,
-		&generationStatus,
+		&archived,
 	); err != nil {
 		return nil, err
 	}
@@ -398,7 +533,7 @@ func scanCatalogRelease(scanner releaseScanner) (*domain.Release, error) {
 		rel.PublishDate = postedAt.Time.UTC()
 	}
 	rel.Source = source
-	rel.CachePresent = strings.EqualFold(generationStatus, "ready")
+	rel.CachePresent = archived
 
 	return &rel, nil
 }

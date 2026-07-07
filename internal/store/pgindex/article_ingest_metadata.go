@@ -18,7 +18,7 @@ type parsedArticleMetadata struct {
 
 var (
 	ingestQuotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
-	ingestCounterPairRE    = regexp.MustCompile(`(?i)(?:\(|\[)\s*(\d{1,5})\s*/\s*(\d{1,5})\s*(?:\)|\])`)
+	ingestCounterPairRE    = regexp.MustCompile(`(?i)([\(\[])\s*(\d{1,5})\s*/\s*(\d{1,5})\s*[\)\]]`)
 	ingestYEncTailRE       = regexp.MustCompile(`(?i)\s+yenc.*$`)
 	ingestYEncSizeRE       = regexp.MustCompile(`(?i)\byenc\s*\(\s*\d{1,5}\s*/\s*\d{1,5}\s*\)\s+(\d{1,18})\s*$`)
 )
@@ -39,8 +39,14 @@ func parseArticleIngestMetadata(subject string) parsedArticleMetadata {
 		if filePart, fileTotal := bestCounterBeforeYEncForIngest(subject, counters); fileTotal > 0 {
 			out.FileIndex = filePart
 			out.FileTotal = fileTotal
+		} else if filePart, fileTotal := bestBracketCounterForIngest(counters); fileTotal > 0 {
+			out.FileIndex = filePart
+			out.FileTotal = fileTotal
 		}
 		if yencPart, yencTotal := bestCounterAfterYEncForIngest(subject, counters); yencTotal > 0 {
+			out.YEncPart = yencPart
+			out.YEncTotalParts = yencTotal
+		} else if yencPart, yencTotal := bestParenthesizedCounterForIngest(counters); yencTotal > 0 {
 			out.YEncPart = yencPart
 			out.YEncTotalParts = yencTotal
 		}
@@ -61,8 +67,9 @@ func parseArticleIngestMetadata(subject string) parsedArticleMetadata {
 }
 
 type ingestCounterPair struct {
-	Part  int
-	Total int
+	Part      int
+	Total     int
+	Delimiter byte
 }
 
 func parseIngestCounterPairs(subject string) []ingestCounterPair {
@@ -70,14 +77,26 @@ func parseIngestCounterPairs(subject string) []ingestCounterPair {
 	out := make([]ingestCounterPair, 0, len(matches))
 	for _, match := range matches {
 		if len(match) != 3 {
-			continue
+			if len(match) != 4 {
+				continue
+			}
 		}
-		part, errPart := strconv.Atoi(match[1])
-		total, errTotal := strconv.Atoi(match[2])
+		partValueIndex := 1
+		totalValueIndex := 2
+		delimiter := byte(0)
+		if len(match) == 4 {
+			partValueIndex = 2
+			totalValueIndex = 3
+			if match[1] != "" {
+				delimiter = match[1][0]
+			}
+		}
+		part, errPart := strconv.Atoi(match[partValueIndex])
+		total, errTotal := strconv.Atoi(match[totalValueIndex])
 		if errPart != nil || errTotal != nil || part <= 0 || total <= 0 {
 			continue
 		}
-		out = append(out, ingestCounterPair{Part: part, Total: total})
+		out = append(out, ingestCounterPair{Part: part, Total: total, Delimiter: delimiter})
 	}
 	return out
 }
@@ -110,6 +129,32 @@ func bestCounterForIngest(section string, counters []ingestCounterPair) (int, in
 		return best.Part, best.Total
 	}
 	for _, pair := range counters {
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func bestBracketCounterForIngest(counters []ingestCounterPair) (int, int) {
+	best := ingestCounterPair{}
+	for _, pair := range counters {
+		if pair.Delimiter != '[' {
+			continue
+		}
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func bestParenthesizedCounterForIngest(counters []ingestCounterPair) (int, int) {
+	best := ingestCounterPair{}
+	for _, pair := range counters {
+		if pair.Delimiter != '(' {
+			continue
+		}
 		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
 			best = pair
 		}

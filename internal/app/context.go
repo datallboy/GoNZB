@@ -13,43 +13,48 @@ type Context struct {
 	Config          *config.Config
 	Logger          *logger.Logger
 
+	DisableReleasePurgeArchivedSources bool
+
 	// High-level interfaces for services to use
-	NNTP              NNTPManager
-	Aggregator        IndexerAggregator
-	Resolver          ReleaseResolver
-	UsenetIndexer     UsenetIndexerService
-	Processor         Processor
-	Downloader        Downloader
-	Queue             QueueManager
-	NZBParser         NZBParser
-	JobStore          JobStore
-	QueueFileStore    QueueFileStore
-	BlobStore         BlobStore
-	PayloadFetcher    PayloadFetcher
-	PayloadCacheStore PayloadCacheStore
-	SettingsStore     SettingsStore
-	PGIndexStore      UsenetIndexStore
-	ArrNotifier       ArrNotifier
+	NNTP                NNTPManager
+	Aggregator          IndexerAggregator
+	Resolver            ReleaseResolver
+	UsenetIndexer       UsenetIndexerService
+	Processor           Processor
+	Downloader          Downloader
+	Queue               QueueManager
+	NZBParser           NZBParser
+	JobStore            JobStore
+	QueueFileStore      QueueFileStore
+	BlobStore           BlobStore
+	IndexerArchiveStore BlobStore
+	PayloadFetcher      PayloadFetcher
+	PayloadCacheStore   PayloadCacheStore
+	SettingsStore       SettingsStore
+	PGIndexStore        UsenetIndexStore
+	ArrNotifier         ArrNotifier
 
 	DownloaderModule DownloaderModule
 	AggregatorModule AggregatorModule
 	SettingsAdmin    SettingsAdmin
 
-	ExtractionEnabled bool
-	closers           []io.Closer
-	runtimeModules    map[string]RuntimeModule
+	ExtractionEnabled  bool
+	closers            []io.Closer
+	runtimeModules     map[string]RuntimeModule
+	runtimeModuleOrder []string
 }
 
 // NewContext returns the shared application container. Concrete runtime
 // construction lives in internal/runtime/wiring.
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	return &Context{
-		BootstrapConfig:   cfg,
-		Config:            cfg,
-		Logger:            log,
-		ExtractionEnabled: true,
-		closers:           make([]io.Closer, 0, 3),
-		runtimeModules:    make(map[string]RuntimeModule),
+		BootstrapConfig:    cfg,
+		Config:             cfg,
+		Logger:             log,
+		ExtractionEnabled:  true,
+		closers:            make([]io.Closer, 0, 3),
+		runtimeModules:     make(map[string]RuntimeModule),
+		runtimeModuleOrder: make([]string, 0, 4),
 	}, nil
 }
 
@@ -101,7 +106,11 @@ func (ctx *Context) RegisterRuntimeModules(modules ...RuntimeModule) {
 		if module == nil {
 			continue
 		}
-		ctx.runtimeModules[module.Name()] = module
+		name := module.Name()
+		if _, exists := ctx.runtimeModules[name]; !exists {
+			ctx.runtimeModuleOrder = append(ctx.runtimeModuleOrder, name)
+		}
+		ctx.runtimeModules[name] = module
 	}
 }
 
@@ -118,7 +127,22 @@ func (ctx *Context) RuntimeModules() []RuntimeModule {
 	}
 
 	modules := make([]RuntimeModule, 0, len(ctx.runtimeModules))
-	for _, module := range ctx.runtimeModules {
+	for _, name := range ctx.runtimeModuleOrder {
+		if module := ctx.runtimeModules[name]; module != nil {
+			modules = append(modules, module)
+		}
+	}
+	if len(modules) == len(ctx.runtimeModules) {
+		return modules
+	}
+	seen := make(map[string]struct{}, len(modules))
+	for _, name := range ctx.runtimeModuleOrder {
+		seen[name] = struct{}{}
+	}
+	for name, module := range ctx.runtimeModules {
+		if _, ok := seen[name]; ok || module == nil {
+			continue
+		}
 		modules = append(modules, module)
 	}
 	return modules

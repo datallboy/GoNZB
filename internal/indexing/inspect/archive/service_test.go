@@ -31,7 +31,7 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 		}},
 	}
 
-	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, nil, testArchiveLogger{}, inspectpkg.Options{})
 	if err := svc.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
@@ -74,8 +74,8 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 	if boolValue(update.PasswordedKnown) {
 		t.Fatalf("expected no known password flag, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 	if intValue(update.ArchiveCount) != 1 {
 		t.Fatalf("expected archive_count 1, got %+v", update.ArchiveCount)
@@ -92,18 +92,18 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &fakeArchiveRepository{
 		candidates: []pgindex.BinaryInspectionCandidate{
-			{BinaryID: 41, ReleaseID: "rel-archive", FileName: "random.part01.rar", SourceUpdatedAt: &now},
+			{BinaryID: 41, ReleaseID: "rel-archive", FileName: "random.part001.rar", SourceUpdatedAt: &now},
 			{BinaryID: 42, ReleaseID: "rel-archive", FileName: "other.part02.rar", SourceUpdatedAt: &now},
 			{BinaryID: 43, ReleaseID: "rel-archive", FileName: "third.part03.rar", SourceUpdatedAt: &now},
 		},
 		files: []pgindex.CatalogReleaseFile{
-			{ID: 501, BinaryID: 41, FileName: "random.part01.rar", FileIndex: 1, SizeBytes: 2048},
+			{ID: 501, BinaryID: 41, FileName: "random.part001.rar", FileIndex: 1, SizeBytes: 2048},
 			{ID: 502, BinaryID: 42, FileName: "other.part02.rar", FileIndex: 2, SizeBytes: 2048},
 			{ID: 503, BinaryID: 43, FileName: "third.part03.rar", FileIndex: 3, SizeBytes: 2048},
 		},
 	}
 
-	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, testArchiveLogger{}, inspectpkg.Options{})
+	svc := NewService(repo, inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}), nil, nil, nil, testArchiveLogger{}, inspectpkg.Options{})
 	candidates, err := svc.dedupeCandidates(context.Background(), repo.candidates)
 	if err != nil {
 		t.Fatalf("dedupe candidates: %v", err)
@@ -113,7 +113,7 @@ func TestRunOnceDedupesObfuscatedSplitRARCandidates(t *testing.T) {
 		t.Fatalf("expected one deduped archive candidate, got %d", len(candidates))
 	}
 	if candidates[0].BinaryID != 41 {
-		t.Fatalf("expected part01 representative to win, got %+v", candidates[0])
+		t.Fatalf("expected first RAR part representative to win, got %+v", candidates[0])
 	}
 }
 
@@ -143,6 +143,7 @@ func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *tes
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir(), SevenZipPath: "7z"}),
 		fakeArchiveFetcher{},
 		fakeArchiveCommandRunner{output: "Enter password (will not be echoed):", err: fmt.Errorf("password required")},
+		nil,
 		testArchiveLogger{},
 		inspectpkg.Options{SevenZipPath: "7z"},
 	)
@@ -167,8 +168,8 @@ func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *tes
 	if !boolValue(update.Encrypted) || !boolValue(update.Passworded) || !boolValue(update.PasswordedUnknown) {
 		t.Fatalf("expected encrypted unresolved password update, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 }
 
@@ -264,11 +265,15 @@ func (fakeArchiveFetcher) Fetch(context.Context, string, []string) (io.Reader, e
 }
 
 type fakeArchiveCommandRunner struct {
-	output string
-	err    error
+	output  string
+	err     error
+	runFunc func(context.Context, string, ...string) ([]byte, error)
 }
 
-func (f fakeArchiveCommandRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+func (f fakeArchiveCommandRunner) Run(ctx context.Context, tool string, args ...string) ([]byte, error) {
+	if f.runFunc != nil {
+		return f.runFunc(ctx, tool, args...)
+	}
 	return []byte(f.output), f.err
 }
 

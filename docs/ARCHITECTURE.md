@@ -45,7 +45,7 @@ Bootstrap config is for values needed before the app can start:
 - hard module gates
 - logging
 - SQLite/blob/PostgreSQL bootstrap paths
-- API key and CORS
+- CORS
 
 Operational settings are stored in SQLite runtime settings and are edited through the control plane:
 
@@ -54,6 +54,9 @@ Operational settings are stored in SQLite runtime settings and are edited throug
 - aggregator sources
 - indexer newsgroups, stages, schedules, and enrichment settings
 - maintenance and retention settings
+- user, role, and user-token auth state
+
+Newznab/NZB `apikey` values are generated account API tokens. They authenticate as the owning user and are authorized through that user's RBAC roles.
 
 That means a fresh install usually follows this flow:
 
@@ -155,7 +158,8 @@ Storage:
 
 Reference:
 
-- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage pipeline
+- see the [Indexer Wiki](./wiki/indexer/README.md) for the stage-by-stage
+  pipeline, schema, partition, retention, and release-formation contracts
 
 Boundary rule:
 

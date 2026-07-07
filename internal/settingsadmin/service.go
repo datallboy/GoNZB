@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -110,6 +111,8 @@ func preserveRuntimeSecrets(current, next *app.RuntimeSettings) {
 	}
 
 	preserveServerPasswords(current.Servers, next.Servers)
+	preserveServerPasswords(current.DownloaderServers, next.Servers)
+	preserveServerPasswords(current.IndexerServers, next.Servers)
 	preserveServerPasswords(current.DownloaderServers, next.DownloaderServers)
 	preserveServerPasswords(current.IndexerServers, next.IndexerServers)
 
@@ -161,25 +164,38 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 	}
 
 	issues = append(issues, validateServers("servers", runtime.Servers)...)
-	issues = append(issues, validateServers("downloader_servers", runtime.DownloaderServers)...)
-	issues = append(issues, validateServers("indexer_servers", runtime.IndexerServers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
 	issues = append(issues, validateDownload(runtime.Download)...)
+	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
 	issues = append(issues, validateIndexing(runtime.Indexing)...)
 
 	indexingEnabled := anyIndexerStageEnabled(runtime.Indexing)
 	if indexingEnabled {
 		if len(app.IndexerNNTPServers(runtime)) == 0 {
-			issues = append(issues, "indexing stages require at least one NNTP server in indexer_servers")
-		}
-		if runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
-			issues = append(issues, "indexing stages require at least one newsgroup in indexing.newsgroups")
+			issues = append(issues, "indexing stages require at least one NNTP server in servers")
 		}
 	}
 	if len(issues) > 0 {
 		return fmt.Errorf("runtime settings validation failed: %s", strings.Join(issues, "; "))
 	}
 	return nil
+}
+
+func validateNNTPPool(pool *app.NNTPPoolRuntimeSettings) []string {
+	if pool == nil {
+		return nil
+	}
+	issues := make([]string, 0)
+	if pool.IndexerMaxPercent < 1 || pool.IndexerMaxPercent > 100 {
+		issues = append(issues, "nntp_pool.indexer_max_percent must be between 1 and 100")
+	}
+	if pool.DownloaderReservePercent < 1 || pool.DownloaderReservePercent > 100 {
+		issues = append(issues, "nntp_pool.downloader_reserve_percent must be between 1 and 100")
+	}
+	if pool.DemandWindowSeconds < 1 {
+		issues = append(issues, "nntp_pool.demand_window_seconds must be at least 1")
+	}
+	return issues
 }
 
 func preserveServerPasswords(current, next []app.ServerRuntimeSettings) {
@@ -225,8 +241,22 @@ func validateServers(field string, servers []app.ServerRuntimeSettings) []string
 		if server.MaxConnection < 0 {
 			issues = append(issues, prefix+".max_connections must be 0 or greater")
 		}
+		for j, role := range server.Roles {
+			if !validNNTPProviderRole(role) {
+				issues = append(issues, fmt.Sprintf("%s.roles[%d] must be one of scrape, yenc_recovery, inspection, download", prefix, j))
+			}
+		}
 	}
 	return issues
+}
+
+func validNNTPProviderRole(role string) bool {
+	switch strings.TrimSpace(strings.ToLower(role)) {
+	case "scrape", "yenc_recovery", "inspection", "download":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateIndexers(indexers []app.IndexerRuntimeSettings) []string {
@@ -276,6 +306,31 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 			issues = append(issues, fmt.Sprintf("indexing.newsgroups[%d] is required", i))
 		}
 	}
+	for i, group := range indexing.ExplicitGroups {
+		if strings.TrimSpace(group.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.explicit_groups[%d].group_name is required", i))
+		}
+		if group.BackfillUntilDate != "" {
+			if _, err := time.Parse("2006-01-02", group.BackfillUntilDate); err != nil {
+				issues = append(issues, fmt.Sprintf("indexing.explicit_groups[%d].backfill_until_date must be YYYY-MM-DD", i))
+			}
+		}
+	}
+	for i, rule := range indexing.WildcardRules {
+		if strings.TrimSpace(rule.Pattern) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.wildcard_rules[%d].pattern is required", i))
+		}
+	}
+	for i, group := range indexing.MaterializedGroups {
+		if strings.TrimSpace(group.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.materialized_groups[%d].group_name is required", i))
+		}
+		if group.BackfillUntilDate != "" {
+			if _, err := time.Parse("2006-01-02", group.BackfillUntilDate); err != nil {
+				issues = append(issues, fmt.Sprintf("indexing.materialized_groups[%d].backfill_until_date must be YYYY-MM-DD", i))
+			}
+		}
+	}
 	for group, until := range indexing.BackfillUntilDateByGroup {
 		if strings.TrimSpace(group) == "" {
 			issues = append(issues, "indexing.backfill_until_date_by_group contains an empty group name")
@@ -294,6 +349,24 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if stage.config.BatchSize <= 0 {
 			issues = append(issues, "indexing."+stage.name+".batch_size must be greater than 0 when enabled")
 		}
+		if stage.config.MaxBatches < 0 {
+			issues = append(issues, "indexing."+stage.name+".max_batches must be greater than or equal to 0")
+		}
+		if stage.config.BinaryUpsertDBChunkSize < 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than or equal to 0")
+		}
+		if strings.HasPrefix(stage.name, "assemble") && stage.config.BinaryUpsertDBChunkSize == 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
+		}
+		if stage.name == "recover_yenc" {
+			if stage.config.FetchTimeoutSeconds < 0 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be greater than or equal to 0")
+			}
+			if stage.config.FetchTimeoutSeconds > 120 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be less than or equal to 120")
+			}
+			issues = append(issues, validateYEncRecoveryTargetWindow(stage.config)...)
+		}
 	}
 	if indexing.Inspect.MinBinaryBytes < 0 {
 		issues = append(issues, "indexing.inspect.min_binary_bytes must be greater than or equal to 0")
@@ -303,6 +376,44 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	}
 	if indexing.Inspect.MinBinaryBytes > 0 && indexing.Inspect.MaxBinaryBytes > 0 && indexing.Inspect.MinBinaryBytes > indexing.Inspect.MaxBinaryBytes {
 		issues = append(issues, "indexing.inspect.min_binary_bytes must be less than or equal to indexing.inspect.max_binary_bytes")
+	}
+	if indexing.StorageGuard.MinFreeBytes < 0 {
+		issues = append(issues, "indexing.storage_guard.min_free_bytes must be greater than or equal to 0")
+	}
+	if indexing.StorageGuard.MinFreePercent < 0 || indexing.StorageGuard.MinFreePercent > 100 {
+		issues = append(issues, "indexing.storage_guard.min_free_percent must be between 0 and 100")
+	}
+	if indexing.MemoryGuard.MinAvailableBytes < 0 {
+		issues = append(issues, "indexing.memory_guard.min_available_bytes must be greater than or equal to 0")
+	}
+	if indexing.MemoryGuard.MinAvailablePercent < 0 || indexing.MemoryGuard.MinAvailablePercent > 100 {
+		issues = append(issues, "indexing.memory_guard.min_available_percent must be between 0 and 100")
+	}
+	if indexing.MemoryGuard.MinSwapFreeBytes < 0 {
+		issues = append(issues, "indexing.memory_guard.min_swap_free_bytes must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes < 0 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes > 24*60 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be less than or equal to 1440")
+	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches < 0 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches > 20 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be less than or equal to 20")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_high_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogLowWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater >= indexing.ScrapeTiers.AssembleBacklogHighWater {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be less than indexing.scrape_tiers.assemble_backlog_high_water")
 	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
@@ -324,6 +435,34 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	return issues
 }
 
+func validateYEncRecoveryTargetWindow(stage app.IndexingStageRuntimeSettings) []string {
+	if !stage.TargetWindowEnabled {
+		return nil
+	}
+	issues := make([]string, 0)
+	start, startErr := time.Parse(time.RFC3339, strings.TrimSpace(stage.TargetWindowStart))
+	end, endErr := time.Parse(time.RFC3339, strings.TrimSpace(stage.TargetWindowEnd))
+	if startErr != nil {
+		issues = append(issues, "indexing.recover_yenc.target_window_start must be RFC3339 when target window is enabled")
+	}
+	if endErr != nil {
+		issues = append(issues, "indexing.recover_yenc.target_window_end must be RFC3339 when target window is enabled")
+	}
+	if startErr == nil && endErr == nil && !start.Before(end) {
+		issues = append(issues, "indexing.recover_yenc.target_window_start must be before target_window_end")
+	}
+	if stage.TargetWindowPct < 0 || stage.TargetWindowPct > 100 {
+		issues = append(issues, "indexing.recover_yenc.target_window_pct must be between 0 and 100 when target window is enabled")
+	}
+	if stage.NewestPct < 0 || stage.NewestPct > 100 {
+		issues = append(issues, "indexing.recover_yenc.newest_pct must be between 0 and 100 when target window is enabled")
+	}
+	if stage.TargetWindowPct+stage.NewestPct != 100 {
+		issues = append(issues, "indexing.recover_yenc.target_window_pct and newest_pct must total 100 when target window is enabled")
+	}
+	return issues
+}
+
 type namedStage struct {
 	name   string
 	config app.IndexingStageRuntimeSettings
@@ -333,16 +472,19 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
+		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
-		{name: "assemble_lane_a", config: indexing.AssembleLaneA},
-		{name: "assemble_lane_b", config: indexing.AssembleLaneB},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
+		{name: "release_summary_refresh", config: indexing.ReleaseSummaryRefresh},
 		{name: "release", config: app.IndexingStageRuntimeSettings{
 			Enabled:         indexing.Release.Enabled,
 			IntervalMinutes: indexing.Release.IntervalMinutes,
 			BatchSize:       indexing.Release.BatchSize,
 			BackoffSeconds:  indexing.Release.BackoffSeconds,
 		}},
+		{name: "release_generate_nzb", config: indexing.ReleaseGenerateNZB},
+		{name: "release_archive_nzb", config: indexing.ReleaseArchiveNZB},
+		{name: "release_purge_archived_sources", config: indexing.ReleasePurgeArchivedSources},
 		{name: "inspect_discovery", config: indexing.InspectDiscovery},
 		{name: "inspect_par2", config: indexing.InspectPAR2},
 		{name: "inspect_nfo", config: indexing.InspectNFO},
@@ -369,14 +511,9 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		return nil
 	}
 	if base != nil && base.Modules.Downloader.Enabled &&
-		len(app.DownloaderNNTPServers(next)) < len(app.DownloaderNNTPServers(current)) &&
+		len(next.Servers) < len(current.Servers) &&
 		downloaderConfigured(current) {
-		return fmt.Errorf("removing downloader NNTP servers while downloader runtime is configured requires a restart")
-	}
-	if base != nil && base.Modules.UsenetIndexer.Enabled &&
-		len(app.IndexerNNTPServers(next)) < len(app.IndexerNNTPServers(current)) &&
-		anyIndexerStageEnabled(current.Indexing) {
-		return fmt.Errorf("removing indexer NNTP servers while indexer stages are enabled requires a restart")
+		return fmt.Errorf("removing NNTP servers while downloader runtime is configured requires a restart")
 	}
 	if base != nil && base.Modules.Aggregator.Enabled &&
 		len(next.Indexers) < len(current.Indexers) &&
@@ -388,11 +525,37 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 		downloaderConfigured(current) {
 		return fmt.Errorf("removing ARR integrations while downloader runtime is configured requires a restart")
 	}
-	if anyIndexerStageEnabled(current.Indexing) && current.Indexing != nil && next.Indexing != nil &&
-		len(next.Indexing.Newsgroups) < len(current.Indexing.Newsgroups) {
-		return fmt.Errorf("removing indexer newsgroups while indexer stages are enabled requires a restart")
+	if err := validateIndexerMaintenanceTasks(next); err != nil {
+		return err
 	}
 	return nil
+}
+
+func validateIndexerMaintenanceTasks(next *app.RuntimeSettings) error {
+	if next == nil || next.Indexing == nil {
+		return nil
+	}
+	for key, cfg := range next.Indexing.MaintenanceTasks {
+		minIntervalHours := maintenanceTaskMinIntervalHours(key)
+		if cfg.ScheduleEnabled && cfg.IntervalHours < minIntervalHours {
+			return fmt.Errorf("maintenance task %q scheduled interval must be at least %d hours", key, minIntervalHours)
+		}
+		if cfg.BatchSize < 0 {
+			return fmt.Errorf("maintenance task %q batch size cannot be negative", key)
+		}
+	}
+	return nil
+}
+
+func maintenanceTaskMinIntervalHours(taskKey string) int {
+	switch strings.TrimSpace(strings.ToLower(taskKey)) {
+	case "dashboard_stats_refresh", "group_profile_refresh":
+		return 1
+	case "raw_stage_retention", "partition_default_rehome", "stale_nonrelease_source_purge", "emergency_source_window_reset":
+		return 24
+	default:
+		return 6
+	}
 }
 
 func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.ControlPlaneCapabilities {
@@ -471,16 +634,16 @@ func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) [
 }
 
 func indexerConfigured(runtime *app.RuntimeSettings) bool {
-	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(runtime.Indexing.Newsgroups) > 0
+	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(app.EffectiveNewsgroupNames(runtime.Indexing)) > 0
 }
 
 func indexerRequirements(runtime *app.RuntimeSettings) []string {
 	reqs := make([]string, 0, 2)
 	if runtime == nil || len(app.IndexerNNTPServers(runtime)) == 0 {
-		reqs = append(reqs, "configure at least one indexer NNTP server")
+		reqs = append(reqs, "configure at least one NNTP server")
 	}
-	if runtime == nil || runtime.Indexing == nil || len(runtime.Indexing.Newsgroups) == 0 {
-		reqs = append(reqs, "configure at least one newsgroup")
+	if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
+		reqs = append(reqs, "configure at least one scrape group")
 	}
 	return reqs
 }
@@ -492,7 +655,12 @@ func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	return indexing.ScrapeLatest.Enabled ||
 		indexing.ScrapeBackfill.Enabled ||
 		indexing.Assemble.Enabled ||
+		indexing.RecoverYEnc.Enabled ||
+		indexing.ReleaseSummaryRefresh.Enabled ||
 		indexing.Release.Enabled ||
+		indexing.ReleaseGenerateNZB.Enabled ||
+		indexing.ReleaseArchiveNZB.Enabled ||
+		indexing.ReleasePurgeArchivedSources.Enabled ||
 		indexing.InspectDiscovery.Enabled ||
 		indexing.InspectPAR2.Enabled ||
 		indexing.InspectNFO.Enabled ||

@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
+
+var rarFirstPartRE = regexp.MustCompile(`(?i)\.part0*1\.rar$`)
 
 type logger interface {
 	Debug(format string, v ...interface{})
@@ -42,7 +45,7 @@ type Service struct {
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, log logger, opts inspectpkg.Options) *Service {
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, _ any, log logger, opts inspectpkg.Options) *Service {
 	return &Service{
 		repo:      repo,
 		workspace: workspace,
@@ -65,6 +68,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		Limit:         s.opts.CandidateBatchSize,
 		Owner:         s.opts.ClaimOwner + ":" + stageName,
 		LeaseDuration: s.opts.ClaimLease,
+		Options: pgindex.BinaryInspectionCandidateOptions{
+			RequireExpectedFileCount: s.opts.RequireExpectedFileCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim inspect_archive candidates: %w", err)
@@ -227,7 +233,7 @@ func (s *Service) dedupeCandidates(ctx context.Context, candidates []pgindex.Bin
 func archiveCandidatePriority(fileName string) int {
 	lower := strings.ToLower(strings.TrimSpace(fileName))
 	switch {
-	case strings.HasSuffix(lower, ".part01.rar"), strings.HasSuffix(lower, ".part1.rar"):
+	case rarFirstPartRE.MatchString(lower):
 		return 0
 	case strings.HasSuffix(lower, ".7z.001"), strings.HasSuffix(lower, ".zip.001"):
 		return 0
@@ -388,8 +394,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["family_files"] = probe.FamilyFileNames
 		materializedBytes += probe.MaterializedBytes
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	if probe != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	if probe != nil && strings.TrimSpace(probe.ProbeError) != "" {
 		if isRecoverableArchiveInspectionError(fmt.Errorf("%s", probe.ProbeError)) {
@@ -442,9 +450,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			archiveCount := 1
 			passworded := true
 			passwordedUnknown := true
-			passwordState := "passworded_unknown"
+			passwordState := "password_unknown"
 			tags := []string{"archive", "unresolved_password"}
-			return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+			if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 				ReleaseID:         candidate.ReleaseID,
 				Encrypted:         &encrypted,
 				Passworded:        &passworded,
@@ -453,7 +461,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				ArchiveCount:      &archiveCount,
 				MediaTags:         tags,
 				MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-			})
+			}); err != nil {
+				if pgindex.IsReleaseNotFound(err) {
+					if s != nil && s.log != nil {
+						s.log.Warn("inspect_archive: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+					}
+					return nil
+				}
+				return err
+			}
+			return nil
 		}
 		return nil
 	}
@@ -464,11 +481,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	passwordState := "not_passworded"
 	tags := []string{"archive"}
 	if encrypted {
-		passwordState = "passworded_unknown"
+		passwordState = "password_unknown"
 		tags = append(tags, "unresolved_password")
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		Encrypted:         &encrypted,
 		Passworded:        &passworded,
@@ -477,7 +494,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		ArchiveCount:      &archiveCount,
 		MediaTags:         tags,
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_archive: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func isRecoverableArchiveInspectionError(err error) bool {

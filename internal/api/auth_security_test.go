@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
@@ -47,6 +48,10 @@ func TestAuthSetupAndRBACFlow(t *testing.T) {
 	adminUsersResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/admin/auth/users", nil, nil, "")
 	if adminUsersResp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unauthenticated admin list, got %d", adminUsersResp.Code)
+	}
+	legacyAPIKeyResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/admin/auth/users", nil, nil, "X-API-Key test-api-key")
+	if legacyAPIKeyResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for legacy API key on RBAC admin list, got %d body=%s", legacyAPIKeyResp.Code, legacyAPIKeyResp.Body.String())
 	}
 
 	setupResp := performJSONRequest(t, e, http.MethodPost, "/api/v1/auth/setup", map[string]string{
@@ -148,6 +153,70 @@ func TestAuthSetupAndRBACFlow(t *testing.T) {
 	}
 }
 
+func TestAPIKeyMiddlewareUsesUserTokenRBAC(t *testing.T) {
+	e := echo.New()
+	appCtx := newAuthTestAppContext(t)
+	authStore, ok := any(appCtx.SettingsStore).(auth.Store)
+	if !ok {
+		t.Fatalf("settings store does not implement auth store")
+	}
+	authSvc := auth.NewService(authStore)
+	if err := authSvc.Bootstrap(t.Context()); err != nil {
+		t.Fatalf("bootstrap auth: %v", err)
+	}
+	adminSession, _, err := authSvc.SetupInitialUser(t.Context(), "owner", "very-secure-pass")
+	if err != nil {
+		t.Fatalf("setup owner: %v", err)
+	}
+	adminToken, err := createAuthTokenForUser(t, authSvc, adminSession.UserID, "admin-api")
+	if err != nil {
+		t.Fatalf("create admin token: %v", err)
+	}
+
+	if _, err := authSvc.UpsertRole(t.Context(), auth.Role{ID: "noagg", Name: "No Aggregator", Permissions: []string{auth.PermissionIndexerReleasesRead}}); err != nil {
+		t.Fatalf("create noagg role: %v", err)
+	}
+	noAggUser, err := authSvc.UpsertUser(t.Context(), auth.StoredUser{User: auth.User{Username: "noagg", Enabled: true}}, "noagg-secure-pass", []string{"noagg"})
+	if err != nil {
+		t.Fatalf("create noagg user: %v", err)
+	}
+	noAggToken, err := createAuthTokenForUser(t, authSvc, noAggUser.ID, "noagg-api")
+	if err != nil {
+		t.Fatalf("create noagg token: %v", err)
+	}
+
+	e.GET("/newznab", func(c *echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead))
+
+	missingResp := performJSONRequest(t, e, http.MethodGet, "/newznab", nil, nil, "")
+	if missingResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", missingResp.Code)
+	}
+	legacyResp := performJSONRequest(t, e, http.MethodGet, "/newznab", nil, nil, "X-API-Key test-api-key")
+	if legacyResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for legacy configured key, got %d", legacyResp.Code)
+	}
+	forbiddenResp := performJSONRequest(t, e, http.MethodGet, "/newznab", nil, nil, "X-API-Key "+noAggToken)
+	if forbiddenResp.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for token without aggregator permission, got %d", forbiddenResp.Code)
+	}
+	okResp := performJSONRequest(t, e, http.MethodGet, "/newznab", nil, nil, "X-API-Key "+adminToken)
+	if okResp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for admin token, got %d", okResp.Code)
+	}
+	queryResp := performJSONRequest(t, e, http.MethodGet, "/newznab?apikey="+adminToken, nil, nil, "")
+	if queryResp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for query token, got %d", queryResp.Code)
+	}
+}
+
+func createAuthTokenForUser(t *testing.T, authSvc *auth.Service, userID, name string) (string, error) {
+	t.Helper()
+	_, raw, err := authSvc.CreateToken(t.Context(), userID, name)
+	return raw, err
+}
+
 func newAuthTestAppContext(t *testing.T) *app.Context {
 	t.Helper()
 	dir := t.TempDir()
@@ -193,6 +262,8 @@ func performJSONRequest(t *testing.T, e *echo.Echo, method, path string, body an
 	if bearer != "" {
 		if len(bearer) > 7 && bearer[:7] == "Bearer " {
 			req.Header.Set("Authorization", bearer)
+		} else if len(bearer) > 10 && bearer[:10] == "X-API-Key " {
+			req.Header.Set("X-API-Key", bearer[10:])
 		} else {
 			req.Header.Set("X-CSRF-Token", bearer)
 		}

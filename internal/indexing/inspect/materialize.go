@@ -114,6 +114,9 @@ func MaterializeBinaryToWorkspace(ctx context.Context, repo CatalogReader, fetch
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("sync materialized binary %s: %w", outputPath, err)
 	}
+	if written != exactSize {
+		return nil, fmt.Errorf("materialized binary %d incomplete: decoded %d bytes, expected %d bytes", candidate.BinaryID, written, exactSize)
+	}
 
 	return &MaterializedBinary{
 		File:         file,
@@ -142,14 +145,50 @@ func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher Article
 	if err != nil {
 		return nil, err
 	}
-	article, err := fetchDecodedArticle(ctx, fetcher, groups, refs[0].MessageID)
-	if err != nil {
-		return nil, err
+	prefix := make([]byte, 0)
+	var exactSize int64
+	var expectedOffset int64
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if maxBytes > 0 && int64(len(prefix)) >= maxBytes {
+			break
+		}
+		article, err := fetchDecodedArticle(ctx, fetcher, groups, ref.MessageID)
+		if err != nil {
+			return nil, err
+		}
+		if article.Offset != expectedOffset {
+			if expectedOffset == 0 {
+				return nil, fmt.Errorf("binary %d prefix starts at offset %d instead of 0", candidate.BinaryID, article.Offset)
+			}
+			break
+		}
+		if exactSize <= 0 && article.FileSize > 0 {
+			exactSize = article.FileSize
+		}
+		body := article.Body
+		if maxBytes > 0 {
+			remaining := maxBytes - int64(len(prefix))
+			if remaining <= 0 {
+				break
+			}
+			if int64(len(body)) > remaining {
+				body = body[:remaining]
+			}
+		}
+		prefix = append(prefix, body...)
+		expectedOffset += int64(len(article.Body))
 	}
-
-	prefix := append([]byte(nil), article.Body...)
-	if maxBytes > 0 && int64(len(prefix)) > maxBytes {
-		prefix = prefix[:maxBytes]
+	if len(prefix) == 0 {
+		return nil, fmt.Errorf("binary %d produced no prefix bytes", candidate.BinaryID)
+	}
+	if exactSize <= 0 {
+		exactSize = file.SizeBytes
+	}
+	if exactSize <= 0 {
+		exactSize = candidate.TotalBytes
 	}
 	sig := DetectSignature(prefix, file.FileName)
 	return &BinaryPrefixSample{
@@ -159,7 +198,7 @@ func SampleBinaryPrefix(ctx context.Context, repo CatalogReader, fetcher Article
 		Signature:  sig,
 		MIMEType:   DetectMIMEType(prefix, file.FileName),
 		BytesRead:  int64(len(prefix)),
-		ExactSize:  file.SizeBytes,
+		ExactSize:  exactSize,
 		OutputName: file.FileName,
 	}, nil
 }
@@ -238,6 +277,15 @@ func DetectSignature(data []byte, fileName string) string {
 	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
 		return "png"
 	}
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return "jpeg"
+	}
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		return "gif"
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "webp"
+	}
 	if len(data) >= 6 && string(data[:6]) == "PAR2\x00P" {
 		return "par2"
 	}
@@ -278,6 +326,14 @@ func DetectSignature(data []byte, fileName string) string {
 	switch ext {
 	case ".nfo":
 		return "text"
+	case ".png":
+		return "png"
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".gif":
+		return "gif"
+	case ".webp":
+		return "webp"
 	case ".mkv":
 		return "matroska"
 	case ".mp4", ".m4v":
@@ -294,6 +350,14 @@ func DetectMIMEType(data []byte, fileName string) string {
 	switch DetectSignature(data, fileName) {
 	case "rclone":
 		return "application/octet-stream"
+	case "png":
+		return "image/png"
+	case "jpeg":
+		return "image/jpeg"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
 	case "par2":
 		return "application/x-par2"
 	case "7z":

@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -19,6 +20,8 @@ var (
 	videoCodecRE = regexp.MustCompile(`(?i)\b(x265|h265|hevc|av1|x264|h264|xvid)\b`)
 	audioCodecRE = regexp.MustCompile(`(?i)\b(truehd|atmos|dts[- ]?hd|dts|ddp|eac3|ac3|aac|flac|mp3)\b`)
 )
+
+const directMediaProbePrefixBytes int64 = 8 * 1024 * 1024
 
 type logger interface {
 	Debug(format string, v ...interface{})
@@ -48,7 +51,7 @@ type Service struct {
 	opts      inspectpkg.Options
 }
 
-func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, log logger, opts inspectpkg.Options) *Service {
+func NewService(repo repository, workspace *inspectpkg.WorkspaceManager, fetcher inspectpkg.ArticleFetcher, runner inspectpkg.CommandRunner, _ any, log logger, opts inspectpkg.Options) *Service {
 	return &Service{repo: repo, workspace: workspace, fetcher: fetcher, runner: runner, log: log, opts: inspectpkg.DefaultOptions(opts)}
 }
 
@@ -64,6 +67,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		Limit:         s.opts.CandidateBatchSize,
 		Owner:         s.opts.ClaimOwner + ":" + stageName,
 		LeaseDuration: s.opts.ClaimLease,
+		Options: pgindex.BinaryInspectionCandidateOptions{
+			RequireExpectedFileCount: s.opts.RequireExpectedFileCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim inspect_media candidates: %w", err)
@@ -173,6 +179,20 @@ func (s *Service) processCandidates(ctx context.Context, candidates []pgindex.Bi
 
 func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
 	stageName := string(supervisor.StageInspectMedia)
+	if strings.TrimSpace(candidate.ReleaseID) == "" {
+		if s != nil && s.log != nil {
+			s.log.Warn("inspect_media: skipped candidate without release id binary_id=%d file=%s", candidate.BinaryID, candidate.FileName)
+		}
+		return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:       stageName,
+			BinaryID:        candidate.BinaryID,
+			ReleaseID:       candidate.ReleaseID,
+			SourceUpdatedAt: candidate.SourceUpdatedAt,
+			Summary: map[string]any{
+				"probe_skip_reason": "missing_release_id",
+			},
+		})
+	}
 	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
 		return err
 	}
@@ -190,7 +210,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	defer workspace.Cleanup()
 
-	stagePath := filepath.Join(workspace.Dir, filepath.Base(candidate.FileName))
 	text := strings.ToLower(strings.Join([]string{
 		candidate.ReleaseTitle,
 		candidate.SourceTitle,
@@ -229,7 +248,8 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	probeMode := "heuristic"
 	ffprobeError := ""
 	archiveExtractError := ""
-	materializedBytes := workspace.MaterializedBytes
+	materializedBytes := int64(0)
+	mediaTitle := ""
 	artifactRows := make([]pgindex.BinaryInspectionArtifactRecord, 0)
 	streamRows := make([]pgindex.BinaryMediaStreamRecord, 0)
 
@@ -239,29 +259,35 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 
 	if (isVideo || isAudio) && s.fetcher != nil && s.runner != nil && !archiveBacked {
-		materialized, err := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, stagePath, s.opts.MaxBytes)
+		sampleCtx, sampleCancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
+		sample, err := inspectpkg.SampleBinaryPrefix(sampleCtx, s.repo, s.fetcher, candidate, directMediaProbePrefixLimit(s.opts.MaxBytes))
+		sampleCancel()
 		if err == nil {
-			probeMode = "ffprobe_direct"
-			materializedBytes += materialized.BytesWritten
+			probeMode = "ffprobe_direct_prefix"
+			materializedBytes += sample.BytesRead
 			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbe(probeCtx, s.runner, s.opts.FFProbePath, materialized.OutputPath)
+			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbeInput(probeCtx, s.runner, s.opts.FFProbePath, bytes.NewReader(sample.Prefix))
 			cancel()
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
 				ReleaseID:    candidate.ReleaseID,
 				StageName:    stageName,
-				ArtifactRole: "decoded_file",
+				ArtifactRole: "decoded_media_prefix",
 				ArtifactName: candidate.FileName,
-				BytesTotal:   materialized.ExactSize,
-				MIMEType:     materialized.MIMEType,
-				Signature:    materialized.Signature,
+				BytesTotal:   sample.BytesRead,
+				MIMEType:     sample.MIMEType,
+				Signature:    sample.Signature,
 				SourceKind:   "inspect_media",
 				Metadata: map[string]any{
-					"probe_mode":           "ffprobe_direct",
+					"probe_mode":           "ffprobe_direct_prefix",
+					"prefix_bytes":         sample.BytesRead,
+					"exact_size":           sample.ExactSize,
+					"streamed_to_ffprobe":  true,
 					"ffprobe_error_detail": errorString(probeErr),
 				},
 			}}
 			if ffprobeResult != nil {
+				mediaTitle = firstNonEmpty(mediaTitle, ffprobeFormatTitle(ffprobeResult.Format.Tags))
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
 					if stream.Tags != nil {
@@ -363,6 +389,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				probeErr = fmt.Errorf("ffprobe archive probe returned no result")
 			}
 			if ffprobeResult != nil {
+				mediaTitle = firstNonEmpty(mediaTitle, ffprobeFormatTitle(ffprobeResult.Format.Tags))
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
 					if stream.Tags != nil {
@@ -448,11 +475,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 
 	summary := map[string]any{
-		"resolution":     resolution,
-		"video_codec":    videoCodec,
-		"audio_codec":    audioCodec,
-		"file_extension": strings.ToLower(filepath.Ext(candidate.FileName)),
-		"probe_mode":     probeMode,
+		"resolution":                    resolution,
+		"video_codec":                   videoCodec,
+		"audio_codec":                   audioCodec,
+		"file_extension":                strings.ToLower(filepath.Ext(candidate.FileName)),
+		"probe_mode":                    probeMode,
+		"media_title_extractor_version": "v2",
 	}
 	if runtimeSeconds > 0 {
 		summary["runtime_seconds"] = runtimeSeconds
@@ -471,6 +499,25 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if mediaEntry != "" {
 		summary["archive_entry"] = mediaEntry
 		summary["archive_entry_count"] = len(archiveEntries)
+	}
+	if mediaTitle != "" {
+		summary["media_title"] = mediaTitle
+		summary["media_title_source"] = "ffprobe_format_tag"
+	}
+	if !archiveBacked && ffprobeError != "" {
+		if err := s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			StageName:         stageName,
+			BinaryID:          candidate.BinaryID,
+			ReleaseID:         candidate.ReleaseID,
+			ErrorText:         ffprobeError,
+			MaterializedBytes: materializedBytes,
+			ToolProvenance:    inspectpkg.ToolProvenance(s.opts, stageName),
+			Summary:           summary,
+			SourceUpdatedAt:   candidate.SourceUpdatedAt,
+		}); err != nil {
+			return err
+		}
+		return nil
 	}
 	if err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
@@ -496,7 +543,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		tags = append(tags, audioCodec)
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:         candidate.ReleaseID,
 		VideoCount:        &videoCount,
 		AudioCount:        &audioCount,
@@ -509,11 +556,27 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		MediaQualityScore: &mediaQuality,
 		MediaQualityTier:  mediaTier(mediaQuality),
 		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_media: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func normalizeMatch(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func directMediaProbePrefixLimit(maxBytes int64) int64 {
+	if maxBytes > 0 && maxBytes < directMediaProbePrefixBytes {
+		return maxBytes
+	}
+	return directMediaProbePrefixBytes
 }
 
 func shouldSkipArchiveProbe(isVideo, isAudio bool, resolution, videoCodec, audioCodec string) bool {
@@ -556,6 +619,15 @@ func errorString(err error) string {
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func ffprobeFormatTitle(tags map[string]string) string {
+	for key, value := range tags {
+		if strings.EqualFold(strings.TrimSpace(key), "title") {
 			return strings.TrimSpace(value)
 		}
 	}

@@ -182,6 +182,71 @@ func TestMatchUsesYEncStructuredNameForObfuscatedMultipartFiles(t *testing.T) {
 	}
 }
 
+func TestMatchSubjectMultipartObfuscatedFileIgnoresRandomPosterContext(t *testing.T) {
+	svc := NewService()
+	firstPosted := time.Date(2026, 6, 25, 14, 28, 29, 0, time.UTC)
+	secondPosted := time.Date(2026, 6, 25, 16, 44, 2, 0, time.UTC)
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 2961163479,
+		MessageID:     "<TxVq9M3lZw0BXeSOK5lY8tq9eOkIXcDM@xI9O2SXR.zm5>",
+		Subject:       `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (7152/28465) 20403308372`,
+		Poster:        `ZZY5wdELKQYA7W <ChrqPqF0fcAwPv@0r2Px.uOc>`,
+		PostedAt:      &firstPosted,
+		Bytes:         740354,
+		Lines:         5691,
+		Xref:          `news.easynews.com alt.binaries.newznzb.bravo:2961163479`,
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 2961166034,
+		MessageID:     "<XHmxauRue9IRwOdLNjPHePyIr4KoqzdJ@NGzwvBZW.0T2>",
+		Subject:       `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (8996/28465) 20403308372`,
+		Poster:        `zzwRVvdHpvTUN3 <vujC9maTnSIGI9@g1hmM.h62>`,
+		PostedAt:      &secondPosted,
+		Bytes:         740276,
+		Lines:         5691,
+		Xref:          `news.easynews.com alt.binaries.newznzb.bravo:2961166034`,
+	})
+
+	if first.BinaryKey != second.BinaryKey {
+		t.Fatalf("expected complete subject multipart evidence to share one binary key, got %q vs %q", first.BinaryKey, second.BinaryKey)
+	}
+	if first.SourceReleaseKey != second.SourceReleaseKey {
+		t.Fatalf("expected source release key to ignore randomized context, got %q vs %q", first.SourceReleaseKey, second.SourceReleaseKey)
+	}
+	if first.ReleaseFamilyKey != second.ReleaseFamilyKey {
+		t.Fatalf("expected release family key to ignore randomized context, got %q vs %q", first.ReleaseFamilyKey, second.ReleaseFamilyKey)
+	}
+	if first.FileName != "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" || second.FileName != first.FileName {
+		t.Fatalf("expected quoted filename to be the binary file name, got %q / %q", first.FileName, second.FileName)
+	}
+	if first.PartNumber != 7152 || second.PartNumber != 8996 {
+		t.Fatalf("expected subject part numbers 7152 and 8996, got %d / %d", first.PartNumber, second.PartNumber)
+	}
+	if first.TotalParts != 28465 || second.TotalParts != 28465 {
+		t.Fatalf("expected subject total parts 28465, got %d / %d", first.TotalParts, second.TotalParts)
+	}
+	if first.FileIndex != 1 || first.ExpectedFileCount != 8 {
+		t.Fatalf("expected file counter 1/8, got %d/%d", first.FileIndex, first.ExpectedFileCount)
+	}
+	if first.FamilyKind != "subject_multipart_obfuscated" {
+		t.Fatalf("expected subject multipart family kind, got %q", first.FamilyKind)
+	}
+	if first.IdentityReason != "subject_multipart_obfuscated" {
+		t.Fatalf("expected subject multipart identity reason, got %q", first.IdentityReason)
+	}
+	if first.IdentityStrength == "weak" {
+		t.Fatalf("expected subject multipart evidence to avoid weak identity")
+	}
+	summary, ok := first.GroupingEvidence["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected summary evidence map, got %#v", first.GroupingEvidence["summary"])
+	}
+	if summary["subject_multipart"] != true {
+		t.Fatalf("expected subject multipart evidence marker, got %#v", summary)
+	}
+}
+
 func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
 	svc := NewService()
 
@@ -214,6 +279,29 @@ func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
 	}
 	if archive.BinaryKey == parity.BinaryKey {
 		t.Fatalf("expected distinct binary keys for archive and parity files, got %q", archive.BinaryKey)
+	}
+}
+
+func TestMatchCanonicalizesReadablePunctuationAcrossReleaseFamilies(t *testing.T) {
+	svc := NewService()
+
+	dotted := svc.Match(Candidate{
+		MessageID: "<directory-opus-dotted@host.example>",
+		Subject:   `[1/8] - "Directory.Opus.13.23.part01.rar" yEnc (1/10)`,
+	})
+	spaced := svc.Match(Candidate{
+		MessageID: "<directory-opus-spaced@host.example>",
+		Subject:   `[2/8] - "Directory Opus 13 23.part02.rar" yEnc (1/10)`,
+	})
+
+	if dotted.ReleaseFamilyKey != "directory opus 13 23" {
+		t.Fatalf("expected dotted family key to canonicalize punctuation, got %q", dotted.ReleaseFamilyKey)
+	}
+	if spaced.ReleaseFamilyKey != dotted.ReleaseFamilyKey {
+		t.Fatalf("expected punctuation variants to share family key, got %q vs %q", spaced.ReleaseFamilyKey, dotted.ReleaseFamilyKey)
+	}
+	if spaced.SourceReleaseKey != dotted.SourceReleaseKey {
+		t.Fatalf("expected punctuation variants to share source key, got %q vs %q", spaced.SourceReleaseKey, dotted.SourceReleaseKey)
 	}
 }
 
@@ -292,6 +380,31 @@ func TestMatchPrefersYEncInnerCounterWhenOuterFileCounterIsLarger(t *testing.T) 
 	}
 	if got.FileIndex != 11 || got.ExpectedFileCount != 14 {
 		t.Fatalf("expected outer file counter 11/14, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+}
+
+func TestMatchSeparatesFileSetCounterFromSingleArticleCounterWithoutYEncWord(t *testing.T) {
+	svc := NewService()
+
+	got := svc.Match(Candidate{
+		MessageID: "<par2-single@indexer.test>",
+		Subject:   `[21/28] "WPt9ecy6X3Ui4d4GBo5Yzx.vol000+01.par2" (1/1)`,
+	})
+
+	if got.FileName != "WPt9ecy6X3Ui4d4GBo5Yzx.vol000+01.par2" {
+		t.Fatalf("expected quoted filename, got %q", got.FileName)
+	}
+	if got.FileIndex != 21 || got.ExpectedFileCount != 28 {
+		t.Fatalf("expected file-set counter 21/28, got %d/%d", got.FileIndex, got.ExpectedFileCount)
+	}
+	if got.PartNumber != 1 || got.TotalParts != 1 {
+		t.Fatalf("expected article counter 1/1, got %d/%d", got.PartNumber, got.TotalParts)
+	}
+	if !got.IsAuxiliary {
+		t.Fatalf("expected PAR2 volume to be auxiliary")
+	}
+	if got.IdentityStrength == "weak" {
+		t.Fatalf("expected explicit subject coordinates to avoid weak identity")
 	}
 }
 
@@ -534,7 +647,10 @@ func TestMatchClassifiesNumericPrefixAsWeakSubjectSet(t *testing.T) {
 	if got.ReleaseKey != "80894690 n yuo" {
 		t.Fatalf("expected release key to preserve set token, got %q", got.ReleaseKey)
 	}
-	if got.FileSetKey != "80894690 n yuo files 4" {
-		t.Fatalf("expected file set key to include expected files, got %q", got.FileSetKey)
+	if got.ReleaseFamilyKey != "" {
+		t.Fatalf("expected promotable release family identity to be deferred, got %q", got.ReleaseFamilyKey)
+	}
+	if got.FileSetKey != "" {
+		t.Fatalf("expected promotable file set identity to be deferred, got %q", got.FileSetKey)
 	}
 }

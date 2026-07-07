@@ -9,24 +9,27 @@ Codex may edit code directly in this repository. Unless the user says otherwise,
 3. Keep responses concise and practical.
 4. Avoid unrelated cleanup unless it is required to complete the task safely.
 5. If the user references a markdown file in this repo or in the session, treat that markdown as the primary scope and source of direction for the task.
-6. For current indexer foundation, hardening, refinement, or API/UI expansion work, prefer the active docs in `docs/active/` before archived planning docs.
+6. For current indexer foundation, hardening, refinement, or API/UI expansion work, use the focused wiki pages in `docs/wiki/indexer/` as the source of truth before archived planning docs.
 7. Prefer incremental, trackable changes that can be committed in reviewable chunks instead of letting large, mixed, uncommitted diffs accumulate.
 
-## Active Docs Priority
-- Start with `docs/active/INDEXER_FOUNDATION_DOCS.md`.
-  - It defines which docs in `docs/active/` are the current execution guides and which docs are now historical or reference-only.
-- Then use the most relevant active plan(s) in `docs/active/` for the current phase.
-  - Example categories include roadmap, refinement/stabilization, and API/UI expansion.
+## Indexer Docs Priority
+- Start with `docs/wiki/indexer/README.md`.
+  - It links to the maintained indexer references for stage ownership, stage flow, schema/partitions, retention, release formation, binary grouping, yEnc queueing, and operations.
+- Use `docs/wiki/indexer/stage-ownership.md` and `docs/wiki/indexer/schema-and-partitions.md` before changing indexer DBO queries, queue ownership, write paths, partitioning, or retention behavior.
+- Use `docs/wiki/indexer/binary-grouping-evidence.md`, `docs/wiki/indexer/yenc-recovery-queueing.md`, and `docs/wiki/indexer/release-formation.md` before changing binary assembly, yEnc recovery admission/selection, or release formation.
 
-When working on indexer foundation tasks, use the active docs in `docs/active/` as the default source of truth unless the user explicitly redirects you elsewhere.
+When working on indexer foundation tasks, use the indexer wiki as the default source of truth unless the user explicitly redirects you elsewhere.
 
-For completed stabilization history, release-formation baseline, or prior schema-target decisions, use:
+Archived sprint plans, handoff documents, and root-level indexer docs are historical context only. Do not treat archived docs as the active backlog for current execution.
+
+For completed stabilization history, release-formation baseline, prior schema-target decisions, or superseded sprint context, use:
 
 - `docs/archive/completed/indexer/INDEXER_STABILIZATION_WORKLIST.md`
 - `docs/archive/completed/indexer/INDEXER_RELEASE_FORMATION_SNAPSHOT_AND_PLAN.md`
 - `docs/archive/completed/indexer/INDEXER_SCHEMA_TARGET.md`
+- `docs/archive/development/indexer/`
 
-Do not treat those archived docs as the active backlog for current execution.
+If an archived document conflicts with `docs/wiki/indexer/`, the wiki wins unless the user explicitly directs otherwise.
 
 ## Scope And Decision Making
 - Default to making the change instead of only describing it.

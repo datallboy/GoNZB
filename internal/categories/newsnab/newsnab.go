@@ -37,6 +37,7 @@ type ReleaseAttributes struct {
 	TitleSource       string
 	PredbCategory     string
 	PredbGenre        string
+	Poster            string
 }
 
 type Resolution struct {
@@ -336,7 +337,7 @@ func CategoryIDs() []int {
 }
 
 func ResolveReleaseCategory(in ReleaseAttributes) Resolution {
-	combined := normalizeCombined(in.Title, in.SourceTitle, in.DeobfuscatedTitle, in.MatchedMediaTitle, in.PredbCategory, in.PredbGenre)
+	combined := normalizeCombined(in.Title, in.SourceTitle, in.DeobfuscatedTitle, in.MatchedMediaTitle, in.PredbCategory, in.PredbGenre, in.Poster)
 	classification := strings.ToLower(strings.TrimSpace(in.Classification))
 	externalMediaType := strings.ToLower(strings.TrimSpace(in.ExternalMediaType))
 	primaryAudioCodec := strings.ToLower(strings.TrimSpace(in.PrimaryAudioCodec))
@@ -346,7 +347,7 @@ func ResolveReleaseCategory(in ReleaseAttributes) Resolution {
 	movieStructured := in.TMDBID > 0 || externalMediaType == "movie"
 
 	switch {
-	case looksXXX(combined):
+	case classification == "xxx" || looksXXX(combined):
 		return buildResolution(resolveXXXCategory(combined, normalizedResolutionID(in.PrimaryResolution)))
 	case looksConsole(combined):
 		return buildResolution(resolveConsoleCategory(combined))
@@ -366,8 +367,8 @@ func ResolveReleaseCategory(in ReleaseAttributes) Resolution {
 		return buildResolution(resolveAudioCategory(combined, primaryAudioCodec))
 	case looksBooks(classification, combined):
 		return buildResolution(resolveBooksCategory(combined))
-	case looksPC(combined):
-		return buildResolution(resolvePCCategory(combined))
+	case looksPC(classification, combined):
+		return buildResolution(resolvePCCategory(classification, combined))
 	default:
 		return buildResolution(OtherMisc)
 	}
@@ -461,6 +462,9 @@ func looksAudio(classification, externalMediaType, combined, primaryAudioCodec s
 	if classification == "audio" || externalMediaType == "audio" {
 		return true
 	}
+	if classification == "video" || classification == "video_archive" || externalMediaType == "video" {
+		return false
+	}
 	return primaryAudioCodec != "" || hasAny(combined, "flac", "mp3", "album", "discography", "podcast", "audiobook")
 }
 
@@ -471,8 +475,11 @@ func looksBooks(classification, combined string) bool {
 	return hasAny(combined, "ebook", "epub", "mobi", "pdf", "comic", "magazine", "manga")
 }
 
-func looksPC(combined string) bool {
-	return hasAny(combined, "windows", "mac", "android", "ios", "ipa", "apk", "game", "steam", "software", "0day", "trainer", "stl")
+func looksPC(classification, combined string) bool {
+	if classification == "software" || classification == "software_archive" || classification == "pc" {
+		return true
+	}
+	return hasAny(combined, "windows", "mac", "android", "ios", "ipa", "apk", "game", "steam", "software", "0day", "trainer", "stl", "steinberg", "cubase", "nuendo", "ableton", "autodesk", "adobe", "microsoft office")
 }
 
 func resolveMovieCategory(combined string, resolution int) int {
@@ -604,7 +611,7 @@ func resolveBooksCategory(combined string) int {
 	}
 }
 
-func resolvePCCategory(combined string) int {
+func resolvePCCategory(classification, combined string) int {
 	switch {
 	case hasAny(combined, "android", "apk"):
 		return PCMobileAndroid
@@ -620,7 +627,11 @@ func resolvePCCategory(combined string) int {
 		return PCISO
 	case hasAny(combined, "stl", "3d print", "3dprint"):
 		return PC3DModels
+	case classification == "software" || classification == "software_archive":
+		return PC0Day
 	case hasAny(combined, "0day"):
+		return PC0Day
+	case hasAny(combined, "steinberg", "cubase", "nuendo", "ableton", "autodesk", "adobe", "microsoft office", "software"):
 		return PC0Day
 	default:
 		return PCRoot

@@ -5,6 +5,13 @@ import { formatBytes, formatDateTime, formatRuntime } from '../../shared/lib/for
 import type { PublicReleaseDetail } from '../../shared/types'
 import { releaseCategoryLabel, simpleSceneName } from './browse'
 
+function publicFileTypeLabel(fileName: string, isPars: boolean) {
+  const name = fileName.toLowerCase()
+  if (name.endsWith('.nzb')) return 'Posted NZB Sidecar'
+  if (isPars || name.endsWith('.par2')) return 'PAR2'
+  return 'Payload'
+}
+
 export function IndexerReleaseDetailPage() {
   const { id = '' } = useParams()
   const [data, setData] = useState<PublicReleaseDetail | null>(null)
@@ -65,11 +72,10 @@ export function IndexerReleaseDetailPage() {
   }
 
   const { release, media, external, files, capabilities } = data
-
   return (
     <div className="page-section public-detail">
       <div className="page-card public-detail__hero">
-        <div>
+        <div className="public-detail__hero-copy">
           <p className="eyebrow">Release</p>
           <h1 className="page-title">{release.title}</h1>
           <div className="public-detail__scene">{simpleName}</div>
@@ -150,6 +156,7 @@ export function IndexerReleaseDetailPage() {
             </div>
           </dl>
         </div>
+
       </div>
 
       <div className="page-card" id="release-files">
@@ -167,7 +174,7 @@ export function IndexerReleaseDetailPage() {
               {files.map((file) => (
                 <tr key={`${file.file_index}-${file.file_name}`}>
                   <td>{file.file_name}</td>
-                  <td>{file.is_pars ? 'PAR2' : 'Payload'}</td>
+                  <td>{publicFileTypeLabel(file.file_name, file.is_pars)}</td>
                   <td>{formatBytes(file.size_bytes)}</td>
                 </tr>
               ))}

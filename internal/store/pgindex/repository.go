@@ -7,11 +7,25 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+var (
+	ErrBinaryNotFound  = errors.New("binary not found")
+	ErrReleaseNotFound = errors.New("release not found")
+)
+
+func IsBinaryNotFound(err error) bool {
+	return errors.Is(err, ErrBinaryNotFound)
+}
+
+func IsReleaseNotFound(err error) bool {
+	return errors.Is(err, ErrReleaseNotFound)
+}
 
 type ArticleHeader struct {
 	ArticleNumber int64
@@ -23,6 +37,11 @@ type ArticleHeader struct {
 	Lines         int
 	Xref          string
 	RawOverview   map[string]any
+}
+
+type ScrapeRangeObservation struct {
+	ArticleNumber int64
+	DateUTC       *time.Time
 }
 
 const articleHeaderInsertBatchSize = 500
@@ -39,8 +58,15 @@ type preparedArticleHeaderInsert struct {
 	Parsed        parsedArticleMetadata
 }
 
+type articleHeaderResolution struct {
+	ID             int64
+	SourcePostedAt time.Time
+}
+
 type payloadUpsertRow struct {
 	ArticleHeaderID int64
+	ArticleNumber   int64
+	MessageID       string
 	Subject         string
 	PosterID        any
 	Poster          string
@@ -51,6 +77,7 @@ type payloadUpsertRow struct {
 	YEncPart        int
 	YEncTotalParts  int
 	FileSize        int64
+	SourcePostedAt  *time.Time
 }
 
 type BackfillCheckpointState struct {
@@ -69,10 +96,27 @@ func firstNonBlank(values ...string) string {
 	return ""
 }
 
+func stringMapValue(values map[string]any, key string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	raw, ok := values[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
 type BinaryInspectionCandidate struct {
 	StageName          string
 	BinaryID           int64
 	ReleaseID          string
+	ProviderID         int64
 	ReleaseTitle       string
 	SourceTitle        string
 	DeobfuscatedTitle  string
@@ -92,11 +136,16 @@ type BinaryInspectionCandidate struct {
 	ArchiveSummaryJSON json.RawMessage
 }
 
+type BinaryInspectionCandidateOptions struct {
+	RequireExpectedFileCount bool
+}
+
 type BinaryInspectionClaimRequest struct {
 	StageName     string
 	Limit         int
 	Owner         string
 	LeaseDuration time.Duration
+	Options       BinaryInspectionCandidateOptions
 }
 
 type BinaryInspectionRecord struct {
@@ -148,6 +197,12 @@ type YEncRecoveryCandidate struct {
 	CurrentBaseStem                 string
 	CurrentReadinessBucket          string
 	StructuredIdentityBinaryMatched bool
+	PriorityRank                    int
+	AdmissionReason                 string
+	GroupTier                       string
+	RecoveryLane                    string
+	FairnessBucketStart             *time.Time
+	FairnessBucketEnd               *time.Time
 }
 
 func (c YEncRecoveryCandidate) FetchGroups() []string {
@@ -208,7 +263,9 @@ type YEncHeaderRecoveryRecord struct {
 	FileName          string
 	FileIndex         int
 	ExpectedFileCount int
+	PartNumber        int
 	TotalParts        int
+	FileSize          int64
 	MatchConfidence   float64
 	MatchStatus       string
 	GroupingEvidence  map[string]any
@@ -232,6 +289,24 @@ type BinaryInspectionArtifactRecord struct {
 	Signature    string
 	SourceKind   string
 	Metadata     map[string]any
+}
+
+type PAR2InspectionBatchRecord struct {
+	StageName         string
+	BinaryID          int64
+	ReleaseID         string
+	SourceUpdatedAt   *time.Time
+	ArtifactRows      []BinaryInspectionArtifactRecord
+	PAR2SetRows       []BinaryPAR2SetRecord
+	PAR2TargetRows    []BinaryPAR2TargetRecord
+	MaterializedBytes int64
+	ToolProvenance    map[string]any
+	Summary           map[string]any
+}
+
+type PAR2InspectionBatchResult struct {
+	FlushedCandidates int
+	RowsWritten       int64
 }
 
 type BinaryArchiveEntryRecord struct {
@@ -301,6 +376,7 @@ type BinaryPAR2TargetCoverageResult struct {
 	TargetCount        int
 	MainTargetCount    int
 	UpdatedBinaryCount int
+	SummaryKeys        []releaseFamilySummaryKey
 }
 
 type CatalogReader interface {
@@ -342,28 +418,30 @@ type ReleasePasswordCandidateRecord struct {
 }
 
 type ReleaseInspectionUpdate struct {
-	ReleaseID           string
-	Encrypted           *bool
-	HasPAR2             *bool
-	HasNFO              *bool
-	Passworded          *bool
-	PasswordedKnown     *bool
-	PasswordedUnknown   *bool
-	PasswordState       string
-	PreferredPasswordID *int64
-	ArchiveCount        *int
-	VideoCount          *int
-	AudioCount          *int
-	RuntimeSeconds      *int
-	SamplePresent       *bool
-	PrimaryResolution   string
-	PrimaryVideoCodec   string
-	PrimaryAudioCodec   string
-	SubtitleLanguages   []string
-	MediaTags           []string
-	MediaQualityScore   *float64
-	MediaQualityTier    string
-	MetadataUpdatedAt   *time.Time
+	ReleaseID                string
+	Encrypted                *bool
+	HasPAR2                  *bool
+	HasNFO                   *bool
+	Passworded               *bool
+	PasswordedKnown          *bool
+	PasswordedUnknown        *bool
+	PasswordState            string
+	PreferredPasswordID      *int64
+	ArchiveCount             *int
+	VideoCount               *int
+	AudioCount               *int
+	ExpectedFileCount        *int
+	ExpectedArchiveFileCount *int
+	RuntimeSeconds           *int
+	SamplePresent            *bool
+	PrimaryResolution        string
+	PrimaryVideoCodec        string
+	PrimaryAudioCodec        string
+	SubtitleLanguages        []string
+	MediaTags                []string
+	MediaQualityScore        *float64
+	MediaQualityTier         string
+	MetadataUpdatedAt        *time.Time
 }
 
 type ReleaseTMDBMatchRecord struct {
@@ -479,6 +557,22 @@ type ReleasePredbUpdate struct {
 	MetadataUpdatedAt       *time.Time
 }
 
+type ReleaseManualIdentityUpdate struct {
+	ReleaseID               string
+	Title                   string
+	TitleSource             string
+	PredbEntryID            int64
+	ExternalMediaType       string
+	ExternalYear            int
+	SeasonNumber            int
+	EpisodeNumber           int
+	Classification          string
+	IdentityStatus          string
+	IdentityConfidenceScore float64
+	Notes                   string
+	MetadataUpdatedAt       *time.Time
+}
+
 type ReleaseTitleCandidate struct {
 	BinaryID   int64
 	Source     string
@@ -504,6 +598,9 @@ type ReleaseEnrichmentCandidate struct {
 	SeasonNumber            int
 	EpisodeNumber           int
 	PostedAt                *time.Time
+	SizeBytes               int64
+	PayloadSizeBytes        int64
+	PayloadSizeSource       string
 	RuntimeSeconds          int
 	PrimaryResolution       string
 	PrimaryVideoCodec       string
@@ -871,14 +968,6 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 		return 0, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	posterCache := make(map[string]int64, 64)
-
 	var inserted int64
 	for start := 0; start < len(prepared); start += articleHeaderInsertBatchSize {
 		end := start + articleHeaderInsertBatchSize
@@ -886,137 +975,167 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			end = len(prepared)
 		}
 		batch := prepared[start:end]
-
-		if err := ensurePostersBatch(ctx, tx, posterCache, batch); err != nil {
+		if err := s.ensureSourceWorkPartitionsForPreparedHeaders(ctx, batch); err != nil {
 			return inserted, err
 		}
 
-		resolvedIDs, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
-		if err != nil {
-			return inserted, err
-		}
+		var batchInserted int64
+		if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
 
-		payloadRows := make([]payloadUpsertRow, 0, len(batch))
-		for idx, item := range batch {
-			articleHeaderID := resolvedIDs[idx]
-			if articleHeaderID <= 0 {
-				return inserted, fmt.Errorf("insert article header %d: no article header id returned", item.ArticleNumber)
+			batchInserted = 0
+			resolvedHeaders, err := insertArticleHeadersBatch(ctx, tx, providerID, newsgroupID, batch)
+			if err != nil {
+				return err
 			}
 
-			var posterID any
-			payloadPoster := item.Poster
-			if item.Poster != "" {
-				if cachedID, ok := posterCache[item.Poster]; ok && cachedID > 0 {
-					posterID = cachedID
-					payloadPoster = ""
+			payloadRows := make([]payloadUpsertRow, 0, len(batch))
+			posterQueueRows := make([]posterMaterializationQueueRow, 0, len(batch))
+			for idx, item := range batch {
+				resolvedHeader := resolvedHeaders[idx]
+				articleHeaderID := resolvedHeader.ID
+				if articleHeaderID <= 0 {
+					return fmt.Errorf("insert article header %d: no article header id returned", item.ArticleNumber)
+				}
+				sourcePostedAt := resolvedHeader.SourcePostedAt
+
+				payloadRows = append(payloadRows, payloadUpsertRow{
+					ArticleHeaderID: articleHeaderID,
+					ArticleNumber:   item.ArticleNumber,
+					MessageID:       item.MessageID,
+					Subject:         item.Subject,
+					PosterID:        nil,
+					Poster:          item.Poster,
+					Xref:            item.Xref,
+					FileName:        item.Parsed.FileName,
+					FileIndex:       item.Parsed.FileIndex,
+					FileTotal:       item.Parsed.FileTotal,
+					YEncPart:        item.Parsed.YEncPart,
+					YEncTotalParts:  item.Parsed.YEncTotalParts,
+					FileSize:        item.Parsed.FileSize,
+					SourcePostedAt:  &sourcePostedAt,
+				})
+				if item.Poster != "" {
+					posterQueueRows = append(posterQueueRows, posterMaterializationQueueRow{
+						ArticleHeaderID: articleHeaderID,
+						PosterName:      item.Poster,
+						SourcePostedAt:  &sourcePostedAt,
+					})
 				}
 			}
 
-			payloadRows = append(payloadRows, payloadUpsertRow{
-				ArticleHeaderID: articleHeaderID,
-				Subject:         item.Subject,
-				PosterID:        posterID,
-				Poster:          payloadPoster,
-				Xref:            item.Xref,
-				FileName:        item.Parsed.FileName,
-				FileIndex:       item.Parsed.FileIndex,
-				FileTotal:       item.Parsed.FileTotal,
-				YEncPart:        item.Parsed.YEncPart,
-				YEncTotalParts:  item.Parsed.YEncTotalParts,
-				FileSize:        item.Parsed.FileSize,
-			})
-		}
+			if err := upsertArticleHeaderPayloadsBatch(ctx, tx, payloadRows); err != nil {
+				return err
+			}
+			if err := upsertArticleHeaderAssemblyKeysBatch(ctx, tx, providerID, newsgroupID, payloadRows); err != nil {
+				return err
+			}
+			if err := upsertPosterMaterializationQueueBatch(ctx, tx, posterQueueRows); err != nil {
+				return err
+			}
+			if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedHeaders); err != nil {
+				return err
+			}
 
-		if err := upsertArticleHeaderPayloadsBatch(ctx, tx, payloadRows); err != nil {
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+
+			batchInserted = int64(len(batch))
+			return nil
+		}); err != nil {
 			return inserted, err
 		}
 
-		inserted += int64(len(batch))
-	}
-
-	if err := tx.Commit(); err != nil {
-		return inserted, err
+		inserted += batchInserted
 	}
 
 	return inserted, nil
 }
 
-func ensurePostersBatch(ctx context.Context, tx *sql.Tx, posterCache map[string]int64, batch []preparedArticleHeaderInsert) error {
-	posterNames := make([]string, 0, len(batch))
-	seen := make(map[string]struct{}, len(batch))
-	for _, item := range batch {
-		if item.Poster == "" {
-			continue
-		}
-		if _, ok := posterCache[item.Poster]; ok {
-			continue
-		}
-		if _, ok := seen[item.Poster]; ok {
-			continue
-		}
-		seen[item.Poster] = struct{}{}
-		posterNames = append(posterNames, item.Poster)
-	}
-	if len(posterNames) == 0 {
+func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, batch []preparedArticleHeaderInsert) error {
+	if s == nil || s.db == nil || len(batch) == 0 {
 		return nil
 	}
-
-	insertSQL := strings.Builder{}
-	insertSQL.WriteString("INSERT INTO posters (poster_name) VALUES ")
-	args := make([]any, 0, len(posterNames)*2)
-	for idx, posterName := range posterNames {
-		if idx > 0 {
-			insertSQL.WriteString(",")
+	days := make([]time.Time, 0, len(batch))
+	for _, item := range batch {
+		postedAt := time.Now()
+		if item.DateUTC != nil {
+			postedAt = *item.DateUTC
 		}
-		fmt.Fprintf(&insertSQL, "($%d::text)", len(args)+1)
-		args = append(args, posterName)
+		days = append(days, postedAt)
 	}
-	insertSQL.WriteString(" ON CONFLICT (poster_name) DO NOTHING")
-	if _, err := tx.ExecContext(ctx, insertSQL.String(), args...); err != nil {
-		return fmt.Errorf("ensure poster batch during header insert: %w", err)
-	}
-
-	selectSQL := strings.Builder{}
-	selectSQL.WriteString("SELECT id, poster_name FROM posters WHERE poster_name IN (")
-	selectArgs := make([]any, 0, len(posterNames))
-	for idx, posterName := range posterNames {
-		if idx > 0 {
-			selectSQL.WriteString(",")
-		}
-		fmt.Fprintf(&selectSQL, "$%d::text", len(selectArgs)+1)
-		selectArgs = append(selectArgs, posterName)
-	}
-	selectSQL.WriteString(")")
-	rows, err := tx.QueryContext(ctx, selectSQL.String(), selectArgs...)
-	if err != nil {
-		return fmt.Errorf("load poster ids during header insert: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			id         int64
-			posterName string
-		)
-		if err := rows.Scan(&id, &posterName); err != nil {
-			return fmt.Errorf("scan poster ids during header insert: %w", err)
-		}
-		posterCache[posterName] = id
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate poster ids during header insert: %w", err)
-	}
-
-	for _, posterName := range posterNames {
-		if posterCache[posterName] <= 0 {
-			return fmt.Errorf("ensure poster %q during header insert: no poster id returned", posterName)
-		}
-	}
-
-	return nil
+	return s.verifySourceWorkPartitionsForDays(ctx, days)
 }
 
-func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]int64, error) {
+func nativePartitionDayKeys(sourcePostedAt time.Time) (string, string) {
+	utc := sourcePostedAt.UTC()
+	return utc.Format("2006-01-02"), utc.Format("20060102")
+}
+
+func (s *Store) nativeDailyPartitionExists(ctx context.Context, table, childSuffix string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var exists bool
+	childName := fmt.Sprintf("public.%s_%s", table, childSuffix)
+	if err := s.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, childName).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *Store) defaultPartitionHasRowsForDay(ctx context.Context, parentTable, day string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	defaultTable := parentTable + "_default"
+	dayStart, err := time.ParseInLocation("2006-01-02", day, time.UTC)
+	if err != nil {
+		return false, err
+	}
+	dayEnd := dayStart.Add(24 * time.Hour)
+	var exists bool
+	query := fmt.Sprintf(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM %s
+			WHERE source_posted_at >= $1
+			  AND source_posted_at < $2
+			LIMIT 1
+		)`, quoteIdentifier(defaultTable))
+	if err := s.db.QueryRowContext(ctx, query, dayStart, dayEnd).Scan(&exists); err != nil {
+		if isUndefinedTableError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return exists, nil
+}
+
+func isDefaultPartitionOverlapError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "updated partition constraint for default partition") &&
+		strings.Contains(message, "would be violated by some row")
+}
+
+func isUndefinedTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlstate 42p01") ||
+		strings.Contains(message, "does not exist")
+}
+
+func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert) ([]articleHeaderResolution, error) {
 	query := strings.Builder{}
 	query.WriteString(`
 		WITH requested (
@@ -1026,11 +1145,12 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 			article_number,
 			message_id,
 			date_utc,
+			source_posted_at,
 			bytes,
 			lines
 		) AS (VALUES `)
 
-	args := make([]any, 0, len(batch)*8)
+	args := make([]any, 0, len(batch)*9)
 	for idx, item := range batch {
 		if idx > 0 {
 			query.WriteString(",")
@@ -1046,7 +1166,9 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 		args = append(args, item.ArticleNumber)
 		fmt.Fprintf(&query, "$%d::text,", len(args)+1)
 		args = append(args, item.MessageID)
-		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
+		args = append(args, item.DateUTC)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
 		args = append(args, item.DateUTC)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, item.Bytes)
@@ -1057,6 +1179,31 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 
 	query.WriteString(`
 		),
+		existing_candidates AS (
+			SELECT
+				r.ord,
+				ah.id,
+				ah.source_posted_at,
+				0 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
+			 AND ah.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				ah.id,
+				ah.source_posted_at,
+				1 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
+			 AND ah.message_id = r.message_id
+		),
 		inserted AS (
 			INSERT INTO article_headers (
 				provider_id,
@@ -1064,6 +1211,7 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				article_number,
 				message_id,
 				date_utc,
+				source_posted_at,
 				bytes,
 				lines,
 				scraped_at
@@ -1074,48 +1222,74 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 				r.article_number,
 				r.message_id,
 				r.date_utc,
+				COALESCE(r.source_posted_at, NOW()),
 				r.bytes,
 				r.lines,
 				NOW()
 			FROM requested r
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM existing_candidates ec
+				WHERE ec.ord = r.ord
+			)
 			ON CONFLICT DO NOTHING
-			RETURNING id, newsgroup_id, article_number, message_id
-		)
-		SELECT
-			r.ord,
-			resolved.id
-		FROM requested r
-		JOIN LATERAL (
-			SELECT candidate.id
+			RETURNING id, newsgroup_id, article_number, message_id, source_posted_at
+		),
+		inserted_candidates AS (
+			SELECT
+				r.ord,
+				i.id,
+				i.source_posted_at,
+				0 AS match_rank
+			FROM requested r
+			JOIN inserted i
+			  ON i.newsgroup_id = r.newsgroup_id
+			 AND i.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				i.id,
+				i.source_posted_at,
+				1 AS match_rank
+			FROM requested r
+			JOIN inserted i
+			  ON i.newsgroup_id = r.newsgroup_id
+			 AND i.message_id = r.message_id
+		),
+		resolved AS (
+			SELECT DISTINCT ON (candidate.ord)
+				candidate.ord,
+				candidate.id,
+				candidate.source_posted_at
 			FROM (
 				SELECT
-					i.id,
+					ic.ord,
+					ic.id,
+					ic.source_posted_at,
 					0 AS source_rank,
-					CASE WHEN i.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
-				FROM inserted i
-				WHERE i.newsgroup_id = r.newsgroup_id
-				  AND (
-					i.article_number = r.article_number
-					OR i.message_id = r.message_id
-				  )
+					ic.match_rank
+				FROM inserted_candidates ic
 
 				UNION ALL
 
 				SELECT
-					ah.id,
+					ec.ord,
+					ec.id,
+					ec.source_posted_at,
 					1 AS source_rank,
-					CASE WHEN ah.article_number = r.article_number THEN 0 ELSE 1 END AS match_rank
-				FROM article_headers ah
-				WHERE ah.newsgroup_id = r.newsgroup_id
-				  AND (
-					ah.article_number = r.article_number
-					OR ah.message_id = r.message_id
-				  )
+					ec.match_rank
+				FROM existing_candidates ec
 			) AS candidate
-			ORDER BY candidate.source_rank, candidate.match_rank
-			LIMIT 1
-		) AS resolved ON TRUE
-		ORDER BY r.ord`)
+			ORDER BY candidate.ord, candidate.source_rank, candidate.match_rank, candidate.id
+		)
+		SELECT
+			ord,
+			id,
+			source_posted_at
+		FROM resolved
+		ORDER BY ord`)
 
 	rows, err := tx.QueryContext(ctx, query.String(), args...)
 	if err != nil {
@@ -1123,30 +1297,145 @@ func insertArticleHeadersBatch(ctx context.Context, tx *sql.Tx, providerID, news
 	}
 	defer rows.Close()
 
-	resolvedIDs := make([]int64, len(batch))
+	resolvedHeaders := make([]articleHeaderResolution, len(batch))
 	var count int
 	for rows.Next() {
 		var (
-			ord int
-			id  int64
+			ord            int
+			id             int64
+			sourcePostedAt time.Time
 		)
-		if err := rows.Scan(&ord, &id); err != nil {
+		if err := rows.Scan(&ord, &id, &sourcePostedAt); err != nil {
 			return nil, fmt.Errorf("scan article header ids batch: %w", err)
 		}
 		if ord < 0 || ord >= len(batch) {
 			return nil, fmt.Errorf("scan article header ids batch: invalid ord %d", ord)
 		}
-		resolvedIDs[ord] = id
+		resolvedHeaders[ord] = articleHeaderResolution{ID: id, SourcePostedAt: sourcePostedAt}
 		count++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate article header ids batch: %w", err)
 	}
 	if count != len(batch) {
-		return nil, fmt.Errorf("insert article headers batch: resolved %d ids for %d rows", count, len(batch))
+		resolvedHeaders, count, err = resolveArticleHeaderIDsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedHeaders)
+		if err != nil {
+			return nil, err
+		}
+		if count != len(batch) {
+			return nil, fmt.Errorf("insert article headers batch: resolved %d ids for %d rows", count, len(batch))
+		}
 	}
 
-	return resolvedIDs, nil
+	return resolvedHeaders, nil
+}
+
+func resolveArticleHeaderIDsBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, batch []preparedArticleHeaderInsert, resolvedHeaders []articleHeaderResolution) ([]articleHeaderResolution, int, error) {
+	if len(resolvedHeaders) != len(batch) {
+		resolvedHeaders = make([]articleHeaderResolution, len(batch))
+	}
+
+	query := strings.Builder{}
+	query.WriteString(`
+		WITH requested (
+			ord,
+			provider_id,
+			newsgroup_id,
+			article_number,
+			message_id,
+			source_posted_at
+		) AS (VALUES `)
+
+	args := make([]any, 0, len(batch)*6)
+	for idx, item := range batch {
+		if idx > 0 {
+			query.WriteString(",")
+		}
+		query.WriteString("(")
+		fmt.Fprintf(&query, "$%d::integer,", len(args)+1)
+		args = append(args, idx)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, providerID)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, newsgroupID)
+		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+		args = append(args, item.ArticleNumber)
+		fmt.Fprintf(&query, "$%d::text", len(args)+1)
+		args = append(args, item.MessageID)
+		fmt.Fprintf(&query, ",COALESCE($%d::timestamptz, NOW())", len(args)+1)
+		args = append(args, item.DateUTC)
+		query.WriteString(")")
+	}
+
+	query.WriteString(`
+		),
+		candidates AS (
+			SELECT
+				r.ord,
+				ah.id,
+				ah.source_posted_at,
+				0 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
+			 AND ah.article_number = r.article_number
+
+			UNION ALL
+
+			SELECT
+				r.ord,
+				ah.id,
+				ah.source_posted_at,
+				1 AS match_rank
+			FROM requested r
+			JOIN article_headers ah
+			  ON ah.source_posted_at = r.source_posted_at
+			 AND ah.newsgroup_id = r.newsgroup_id
+			 AND ah.message_id = r.message_id
+		),
+		resolved AS (
+			SELECT DISTINCT ON (ord)
+				ord,
+				id,
+				source_posted_at
+			FROM candidates
+			ORDER BY ord, match_rank, id
+		)
+		SELECT
+			ord,
+			id,
+			source_posted_at
+		FROM resolved
+		ORDER BY ord`)
+
+	rows, err := tx.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("resolve article header ids batch: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var (
+			ord            int
+			id             int64
+			sourcePostedAt time.Time
+		)
+		if err := rows.Scan(&ord, &id, &sourcePostedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan resolved article header ids batch: %w", err)
+		}
+		if ord < 0 || ord >= len(batch) {
+			return nil, 0, fmt.Errorf("scan resolved article header ids batch: invalid ord %d", ord)
+		}
+		resolvedHeaders[ord] = articleHeaderResolution{ID: id, SourcePostedAt: sourcePostedAt}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate resolved article header ids batch: %w", err)
+	}
+
+	return resolvedHeaders, count, nil
 }
 
 func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []payloadUpsertRow) error {
@@ -1177,11 +1466,12 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 			yenc_part_number,
 			yenc_total_parts,
 			yenc_file_size,
+			source_posted_at,
 			created_at
 		)
 		VALUES `)
 
-	args := make([]any, 0, len(order)*11)
+	args := make([]any, 0, len(order)*12)
 	for idx, articleHeaderID := range order {
 		row := lastByArticleHeaderID[articleHeaderID]
 		if idx > 0 {
@@ -1210,11 +1500,13 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		args = append(args, row.YEncTotalParts)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.FileSize)
+		fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
+		args = append(args, row.SourcePostedAt)
 		query.WriteString("NOW())")
 	}
 
 	query.WriteString(`
-		ON CONFLICT (article_header_id) DO UPDATE
+		ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
 		SET subject = EXCLUDED.subject,
 		    poster_id = COALESCE(EXCLUDED.poster_id, article_header_ingest_payloads.poster_id),
 		    poster = EXCLUDED.poster,
@@ -1224,7 +1516,8 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 		    subject_file_total = EXCLUDED.subject_file_total,
 		    yenc_part_number = EXCLUDED.yenc_part_number,
 		    yenc_total_parts = EXCLUDED.yenc_total_parts,
-		    yenc_file_size = EXCLUDED.yenc_file_size`)
+		    yenc_file_size = EXCLUDED.yenc_file_size,
+		    source_posted_at = COALESCE(EXCLUDED.source_posted_at, article_header_ingest_payloads.source_posted_at)`)
 
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("insert article header payload batch: %w", err)
@@ -1233,8 +1526,95 @@ func upsertArticleHeaderPayloadsBatch(ctx context.Context, tx *sql.Tx, rows []pa
 	return nil
 }
 
+func upsertArticleHeaderAssemblyKeysBatch(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, rows []payloadUpsertRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	lastByArticleHeaderID := make(map[int64]payloadUpsertRow, len(rows))
+	order := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if _, seen := lastByArticleHeaderID[row.ArticleHeaderID]; !seen {
+			order = append(order, row.ArticleHeaderID)
+		}
+		lastByArticleHeaderID[row.ArticleHeaderID] = row
+	}
+
+	upsertRows := make([]payloadUpsertRow, 0, len(order))
+	for _, articleHeaderID := range order {
+		upsertRows = append(upsertRows, lastByArticleHeaderID[articleHeaderID])
+	}
+
+	if len(upsertRows) > 0 {
+		query := strings.Builder{}
+		query.WriteString(`
+			INSERT INTO article_header_assembly_queue (
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				article_number,
+				message_id,
+				normalized_file_name,
+				queue_kind,
+				source_posted_at,
+				queued_at,
+				updated_at
+			)
+			VALUES `)
+
+		args := make([]any, 0, len(upsertRows)*7)
+		for idx, row := range upsertRows {
+			if idx > 0 {
+				query.WriteString(",")
+			}
+			queueKind := "general"
+			if strings.TrimSpace(row.FileName) != "" {
+				queueKind = "structured"
+			}
+			query.WriteString("(")
+			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+			args = append(args, row.ArticleHeaderID)
+			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+			args = append(args, providerID)
+			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+			args = append(args, newsgroupID)
+			fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
+			args = append(args, row.ArticleNumber)
+			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
+			args = append(args, strings.TrimSpace(row.MessageID))
+			fmt.Fprintf(&query, "lower(btrim($%d::text)),", len(args)+1)
+			args = append(args, row.FileName)
+			fmt.Fprintf(&query, "$%d::text,", len(args)+1)
+			args = append(args, queueKind)
+			fmt.Fprintf(&query, "COALESCE($%d::timestamptz, NOW()),", len(args)+1)
+			args = append(args, row.SourcePostedAt)
+			query.WriteString("NOW(),NOW())")
+		}
+		query.WriteString(`
+			ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
+			SET provider_id = EXCLUDED.provider_id,
+			    newsgroup_id = EXCLUDED.newsgroup_id,
+			    article_number = EXCLUDED.article_number,
+			    message_id = EXCLUDED.message_id,
+			    normalized_file_name = EXCLUDED.normalized_file_name,
+			    queue_kind = EXCLUDED.queue_kind,
+			    source_posted_at = COALESCE(EXCLUDED.source_posted_at, article_header_assembly_queue.source_posted_at),
+			    updated_at = NOW()`)
+
+		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+			return fmt.Errorf("upsert article header assembly queue batch: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // CHANGED: seed/update PG nzb cache metadata row for a release.
 func (s *Store) UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error {
+	return upsertNZBCacheWithRunner(ctx, s.db, releaseID, generationStatus, hashSHA256, lastError)
+}
+
+func upsertNZBCacheWithRunner(ctx context.Context, runner sqlExecQueryer, releaseID, generationStatus, hashSHA256, lastError string) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return fmt.Errorf("release id is required")
@@ -1249,7 +1629,7 @@ func (s *Store) UpsertNZBCache(ctx context.Context, releaseID, generationStatus,
 		generatedAt = time.Now().UTC()
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := runner.ExecContext(ctx, `
 		INSERT INTO nzb_cache (
 			release_id,
 			generation_status,
@@ -1285,10 +1665,14 @@ func sanitizeUTF8(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = strings.ReplaceAll(s, "\x00", "")
+	if s == "" {
+		return ""
+	}
 	if utf8.ValidString(s) {
 		return s
 	}
-	return string(bytes.ToValidUTF8([]byte(s), []byte{}))
+	return strings.ReplaceAll(string(bytes.ToValidUTF8([]byte(s), []byte{})), "\x00", "")
 }
 
 func sanitizeStringMap(in map[string]any) map[string]any {

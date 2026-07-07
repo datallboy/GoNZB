@@ -96,7 +96,7 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 	}
 
 	if effective.Aggregator.Sources.UsenetIndexer.Enabled && appCtx.PGIndexStore != nil {
-		manager.AddSource(usenetindex.New(appCtx.PGIndexStore))
+		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin, appCtx.IndexerArchiveStore))
 	}
 
 	for _, idxCfg := range effective.Indexers {
@@ -111,6 +111,6 @@ func buildReleaseResolver(appCtx *app.Context, aggregator app.IndexerAggregator)
 	return resolver.NewDefaultReleaseResolver(
 		resolver.NewManualResolver(appCtx.PayloadCacheStore),
 		resolver.NewAggregatorResolver(aggregator),
-		resolver.NewUsenetIndexResolver(appCtx.PGIndexStore),
+		resolver.NewUsenetIndexResolver(appCtx.PGIndexStore, appCtx.IndexerArchiveStore),
 	)
 }

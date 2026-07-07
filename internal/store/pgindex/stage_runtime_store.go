@@ -112,173 +112,185 @@ func (s *Store) ClaimIndexerStage(ctx context.Context, req IndexerStageClaimRequ
 	}
 	leaseExpiresAt := time.Now().UTC().Add(req.LeaseDuration)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin claim stage tx: %w", err)
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
+	var result *IndexerStageClaimResult
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin claim stage tx: %w", err)
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO indexer_stage_state (
-			stage_name,
-			enabled,
-			interval_seconds,
-			batch_size,
-			concurrency,
-			backoff_seconds,
-			updated_at
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO indexer_stage_state (
+				stage_name,
+				enabled,
+				interval_seconds,
+				batch_size,
+				concurrency,
+				backoff_seconds,
+				updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, NOW())
+			ON CONFLICT (stage_name) DO UPDATE
+			SET enabled = EXCLUDED.enabled,
+			    interval_seconds = EXCLUDED.interval_seconds,
+			    batch_size = EXCLUDED.batch_size,
+			    concurrency = EXCLUDED.concurrency,
+			    backoff_seconds = EXCLUDED.backoff_seconds,
+			    updated_at = NOW()`,
+			stageName,
+			req.Enabled,
+			intervalSeconds,
+			req.BatchSize,
+			req.Concurrency,
+			backoffSeconds,
+		); err != nil {
+			return fmt.Errorf("upsert indexer stage state %s: %w", stageName, err)
+		}
+
+		var (
+			enabled      bool
+			paused       bool
+			leaseOwner   string
+			leaseExpires sql.NullTime
+			lastRunID    sql.NullInt64
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		ON CONFLICT (stage_name) DO UPDATE
-		SET enabled = EXCLUDED.enabled,
-		    interval_seconds = EXCLUDED.interval_seconds,
-		    batch_size = EXCLUDED.batch_size,
-		    concurrency = EXCLUDED.concurrency,
-		    backoff_seconds = EXCLUDED.backoff_seconds,
-		    updated_at = NOW()`,
-		stageName,
-		req.Enabled,
-		intervalSeconds,
-		req.BatchSize,
-		req.Concurrency,
-		backoffSeconds,
-	); err != nil {
-		return nil, fmt.Errorf("upsert indexer stage state %s: %w", stageName, err)
-	}
-
-	var (
-		enabled      bool
-		paused       bool
-		leaseOwner   string
-		leaseExpires sql.NullTime
-		lastRunID    sql.NullInt64
-	)
-	if err := tx.QueryRowContext(ctx, `
-		SELECT enabled, paused, lease_owner, lease_expires_at, last_run_id
-		FROM indexer_stage_state
-		WHERE stage_name = $1
-		FOR UPDATE`,
-		stageName,
-	).Scan(&enabled, &paused, &leaseOwner, &leaseExpires, &lastRunID); err != nil {
-		return nil, fmt.Errorf("lock indexer stage state %s: %w", stageName, err)
-	}
-
-	if !enabled {
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit disabled stage claim %s: %w", stageName, err)
+		if err := tx.QueryRowContext(ctx, `
+			SELECT enabled, paused, lease_owner, lease_expires_at, last_run_id
+			FROM indexer_stage_state
+			WHERE stage_name = $1
+			FOR UPDATE`,
+			stageName,
+		).Scan(&enabled, &paused, &leaseOwner, &leaseExpires, &lastRunID); err != nil {
+			return fmt.Errorf("lock indexer stage state %s: %w", stageName, err)
 		}
-		return &IndexerStageClaimResult{Claimed: false, Reason: "disabled"}, nil
-	}
 
-	if paused {
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit paused stage claim %s: %w", stageName, err)
-		}
-		return &IndexerStageClaimResult{Claimed: false, Reason: "paused"}, nil
-	}
-
-	if leaseOwner != "" && leaseExpires.Valid && leaseExpires.Time.After(time.Now().UTC()) {
-		if leaseOwner != owner {
+		if !enabled {
 			if err := tx.Commit(); err != nil {
-				return nil, fmt.Errorf("commit leased stage claim %s: %w", stageName, err)
+				return fmt.Errorf("commit disabled stage claim %s: %w", stageName, err)
 			}
-			return &IndexerStageClaimResult{Claimed: false, Reason: "leased"}, nil
+			result = &IndexerStageClaimResult{Claimed: false, Reason: "disabled"}
+			return nil
+		}
+
+		if paused {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit paused stage claim %s: %w", stageName, err)
+			}
+			result = &IndexerStageClaimResult{Claimed: false, Reason: "paused"}
+			return nil
+		}
+
+		if leaseOwner != "" && leaseExpires.Valid && leaseExpires.Time.After(time.Now().UTC()) {
+			if leaseOwner != owner {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("commit leased stage claim %s: %w", stageName, err)
+				}
+				result = &IndexerStageClaimResult{Claimed: false, Reason: "leased"}
+				return nil
+			}
+
+			if lastRunID.Valid {
+				var status string
+				if err := tx.QueryRowContext(ctx, `
+					SELECT status
+					FROM indexer_stage_runs
+					WHERE id = $1`,
+					lastRunID.Int64,
+				).Scan(&status); err == nil && strings.EqualFold(status, "running") {
+					if err := tx.Commit(); err != nil {
+						return fmt.Errorf("commit running stage claim %s: %w", stageName, err)
+					}
+					result = &IndexerStageClaimResult{Claimed: false, Reason: "running"}
+					return nil
+				}
+			}
 		}
 
 		if lastRunID.Valid {
-			var status string
-			if err := tx.QueryRowContext(ctx, `
-				SELECT status
-				FROM indexer_stage_runs
-				WHERE id = $1`,
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE indexer_stage_runs
+				SET status = 'abandoned',
+				    error_text = CASE
+				        WHEN error_text = '' THEN 'lease expired before completion'
+				        ELSE error_text
+				    END,
+				    heartbeat_at = COALESCE(heartbeat_at, NOW()),
+				    finished_at = COALESCE(finished_at, NOW())
+				WHERE id = $1
+				  AND status = 'running'`,
 				lastRunID.Int64,
-			).Scan(&status); err == nil && strings.EqualFold(status, "running") {
-				if err := tx.Commit(); err != nil {
-					return nil, fmt.Errorf("commit running stage claim %s: %w", stageName, err)
-				}
-				return &IndexerStageClaimResult{Claimed: false, Reason: "running"}, nil
+			); err != nil {
+				return fmt.Errorf("mark stale stage run %d abandoned: %w", lastRunID.Int64, err)
 			}
 		}
-	}
 
-	if lastRunID.Valid {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE indexer_stage_runs
-			SET status = 'abandoned',
-			    error_text = CASE
-			        WHEN error_text = '' THEN 'lease expired before completion'
-			        ELSE error_text
-			    END,
-			    heartbeat_at = COALESCE(heartbeat_at, NOW()),
-			    finished_at = COALESCE(finished_at, NOW())
-			WHERE id = $1
-			  AND status = 'running'`,
-			lastRunID.Int64,
-		); err != nil {
-			return nil, fmt.Errorf("mark stale stage run %d abandoned: %w", lastRunID.Int64, err)
+		run := &IndexerStageRun{
+			StageName:   stageName,
+			TriggerKind: triggerKind,
+			Status:      "running",
+			ClaimedBy:   owner,
+			StartedAt:   time.Now().UTC(),
 		}
+
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO indexer_stage_runs (
+				stage_name,
+				trigger_kind,
+				status,
+				claimed_by,
+				started_at,
+				heartbeat_at,
+				error_text,
+				metrics_json
+			)
+			VALUES ($1, $2, 'running', $3, NOW(), NOW(), '', '{}'::jsonb)
+			RETURNING id, started_at, heartbeat_at`,
+			stageName,
+			triggerKind,
+			owner,
+		).Scan(&run.ID, &run.StartedAt, &leaseExpires); err != nil {
+			return fmt.Errorf("insert indexer stage run %s: %w", stageName, err)
+		}
+		if leaseExpires.Valid {
+			t := leaseExpires.Time.UTC()
+			run.HeartbeatAt = &t
+		}
+		run.MetricsJSON = json.RawMessage("{}")
+
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE indexer_stage_state
+			SET lease_owner = $2,
+			    lease_expires_at = $3,
+			    last_heartbeat_at = NOW(),
+			    last_run_id = $4,
+			    last_error = '',
+			    updated_at = NOW()
+			WHERE stage_name = $1`,
+			stageName,
+			owner,
+			leaseExpiresAt,
+			run.ID,
+		); err != nil {
+			return fmt.Errorf("update claimed stage state %s: %w", stageName, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit stage claim %s: %w", stageName, err)
+		}
+
+		result = &IndexerStageClaimResult{
+			Claimed: true,
+			Run:     run,
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
-	run := &IndexerStageRun{
-		StageName:   stageName,
-		TriggerKind: triggerKind,
-		Status:      "running",
-		ClaimedBy:   owner,
-		StartedAt:   time.Now().UTC(),
-	}
-
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO indexer_stage_runs (
-			stage_name,
-			trigger_kind,
-			status,
-			claimed_by,
-			started_at,
-			heartbeat_at,
-			error_text,
-			metrics_json
-		)
-		VALUES ($1, $2, 'running', $3, NOW(), NOW(), '', '{}'::jsonb)
-		RETURNING id, started_at, heartbeat_at`,
-		stageName,
-		triggerKind,
-		owner,
-	).Scan(&run.ID, &run.StartedAt, &leaseExpires); err != nil {
-		return nil, fmt.Errorf("insert indexer stage run %s: %w", stageName, err)
-	}
-	if leaseExpires.Valid {
-		t := leaseExpires.Time.UTC()
-		run.HeartbeatAt = &t
-	}
-	run.MetricsJSON = json.RawMessage("{}")
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE indexer_stage_state
-		SET lease_owner = $2,
-		    lease_expires_at = $3,
-		    last_heartbeat_at = NOW(),
-		    last_run_id = $4,
-		    last_error = '',
-		    updated_at = NOW()
-		WHERE stage_name = $1`,
-		stageName,
-		owner,
-		leaseExpiresAt,
-		run.ID,
-	); err != nil {
-		return nil, fmt.Errorf("update claimed stage state %s: %w", stageName, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit stage claim %s: %w", stageName, err)
-	}
-
-	return &IndexerStageClaimResult{
-		Claimed: true,
-		Run:     run,
-	}, nil
+	return result, nil
 }
 
 func (s *Store) HeartbeatIndexerStageRun(ctx context.Context, runID int64, owner string, leaseDuration time.Duration) error {
@@ -366,52 +378,71 @@ func (s *Store) RepairIndexerStageRuntime(ctx context.Context) (*IndexerStageRep
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin repair indexer stage runtime tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
 	repair := &IndexerStageRepairResult{}
+	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin repair indexer stage runtime tx: %w", err)
+		}
+		defer rollbackTx(tx)
 
-	abandonedResult, err := tx.ExecContext(ctx, `
-		UPDATE indexer_stage_runs r
-		SET status = 'abandoned',
-		    error_text = CASE
-		    	WHEN r.error_text = '' THEN 'lease expired before repair cleanup'
-		    	ELSE r.error_text
-		    END,
-		    heartbeat_at = COALESCE(r.heartbeat_at, NOW()),
-		    finished_at = COALESCE(r.finished_at, NOW())
-		FROM indexer_stage_state s
-		WHERE s.last_run_id = r.id
-		  AND r.status = 'running'
-		  AND s.lease_expires_at IS NOT NULL
-		  AND s.lease_expires_at < NOW()`)
-	if err != nil {
-		return nil, fmt.Errorf("abandon stale indexer stage runs: %w", err)
-	}
-	if repair.AbandonedRuns, err = abandonedResult.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("abandon stale indexer stage runs rows affected: %w", err)
-	}
+		abandonedResult, err := tx.ExecContext(ctx, `
+			WITH expired_stage_state AS MATERIALIZED (
+				SELECT stage_name, last_run_id
+				FROM indexer_stage_state
+				WHERE lease_owner <> ''
+				  AND lease_expires_at IS NOT NULL
+				  AND lease_expires_at < NOW()
+				ORDER BY stage_name
+				FOR UPDATE
+			)
+			UPDATE indexer_stage_runs r
+			SET status = 'abandoned',
+			    error_text = CASE
+			    	WHEN r.error_text = '' THEN 'lease expired before repair cleanup'
+			    	ELSE r.error_text
+			    END,
+			    heartbeat_at = COALESCE(r.heartbeat_at, NOW()),
+			    finished_at = COALESCE(r.finished_at, NOW())
+			FROM expired_stage_state s
+			WHERE s.last_run_id = r.id
+			  AND r.status = 'running'`)
+		if err != nil {
+			return fmt.Errorf("abandon stale indexer stage runs: %w", err)
+		}
+		if repair.AbandonedRuns, err = abandonedResult.RowsAffected(); err != nil {
+			return fmt.Errorf("abandon stale indexer stage runs rows affected: %w", err)
+		}
 
-	clearedResult, err := tx.ExecContext(ctx, `
-		UPDATE indexer_stage_state
-		SET lease_owner = '',
-		    lease_expires_at = NULL,
-		    updated_at = NOW()
-		WHERE lease_owner <> ''
-		  AND lease_expires_at IS NOT NULL
-		  AND lease_expires_at < NOW()`)
-	if err != nil {
-		return nil, fmt.Errorf("clear stale indexer stage leases: %w", err)
-	}
-	if repair.ClearedStaleLeases, err = clearedResult.RowsAffected(); err != nil {
-		return nil, fmt.Errorf("clear stale indexer stage leases rows affected: %w", err)
-	}
+		clearedResult, err := tx.ExecContext(ctx, `
+			WITH expired_stage_state AS MATERIALIZED (
+				SELECT stage_name
+				FROM indexer_stage_state
+				WHERE lease_owner <> ''
+				  AND lease_expires_at IS NOT NULL
+				  AND lease_expires_at < NOW()
+				ORDER BY stage_name
+				FOR UPDATE
+			)
+			UPDATE indexer_stage_state s
+			SET lease_owner = '',
+			    lease_expires_at = NULL,
+			    updated_at = NOW()
+			FROM expired_stage_state e
+			WHERE s.stage_name = e.stage_name`)
+		if err != nil {
+			return fmt.Errorf("clear stale indexer stage leases: %w", err)
+		}
+		if repair.ClearedStaleLeases, err = clearedResult.RowsAffected(); err != nil {
+			return fmt.Errorf("clear stale indexer stage leases rows affected: %w", err)
+		}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit repair indexer stage runtime tx: %w", err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit repair indexer stage runtime tx: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return repair, nil
@@ -575,85 +606,87 @@ func (s *Store) finishIndexerStageRun(ctx context.Context, req IndexerStageFinis
 		metrics = json.RawMessage("{}")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin finish stage run tx: %w", err)
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
+	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin finish stage run tx: %w", err)
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
 
-	var stageName string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT stage_name
-		FROM indexer_stage_runs
-		WHERE id = $1
-		  AND claimed_by = $2
-		FOR UPDATE`,
-		req.RunID,
-		req.Owner,
-	).Scan(&stageName); err != nil {
-		return fmt.Errorf("lock stage run %d: %w", req.RunID, err)
-	}
+		var stageName string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT stage_name
+			FROM indexer_stage_runs
+			WHERE id = $1
+			  AND claimed_by = $2
+			FOR UPDATE`,
+			req.RunID,
+			req.Owner,
+		).Scan(&stageName); err != nil {
+			return fmt.Errorf("lock stage run %d: %w", req.RunID, err)
+		}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE indexer_stage_runs
-		SET status = $2,
-		    heartbeat_at = NOW(),
-		    finished_at = NOW(),
-		    error_text = $3,
-		    metrics_json = $4
-		WHERE id = $1`,
-		req.RunID,
-		status,
-		req.ErrorText,
-		metrics,
-	); err != nil {
-		return fmt.Errorf("finish stage run %d: %w", req.RunID, err)
-	}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE indexer_stage_runs
+			SET status = $2,
+			    heartbeat_at = NOW(),
+			    finished_at = NOW(),
+			    error_text = $3,
+			    metrics_json = $4
+			WHERE id = $1`,
+			req.RunID,
+			status,
+			req.ErrorText,
+			metrics,
+		); err != nil {
+			return fmt.Errorf("finish stage run %d: %w", req.RunID, err)
+		}
 
-	success := status == "completed"
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE indexer_stage_state
-		SET lease_owner = CASE
-		        WHEN last_run_id = $1 AND lease_owner = $2 THEN ''
-		        ELSE lease_owner
-		    END,
-		    lease_expires_at = CASE
-		        WHEN last_run_id = $1 AND lease_owner = $2 THEN NULL
-		        ELSE lease_expires_at
-		    END,
-		    last_heartbeat_at = CASE
-		        WHEN last_run_id = $1 THEN NOW()
-		        ELSE last_heartbeat_at
-		    END,
-		    last_success_at = CASE
-		        WHEN last_run_id = $1 AND $3 THEN NOW()
-		        ELSE last_success_at
-		    END,
-		    last_error = CASE
-		        WHEN last_run_id = $1 THEN $4
-		        ELSE last_error
-		    END,
-		    updated_at = CASE
-		        WHEN last_run_id = $1 THEN NOW()
-		        ELSE updated_at
-		    END
-		WHERE stage_name = $5`,
-		req.RunID,
-		req.Owner,
-		success,
-		req.ErrorText,
-		stageName,
-	); err != nil {
-		return fmt.Errorf("update stage state for run %d: %w", req.RunID, err)
-	}
+		success := status == "completed"
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE indexer_stage_state
+			SET lease_owner = CASE
+			        WHEN last_run_id = $1 AND lease_owner = $2 THEN ''
+			        ELSE lease_owner
+			    END,
+			    lease_expires_at = CASE
+			        WHEN last_run_id = $1 AND lease_owner = $2 THEN NULL
+			        ELSE lease_expires_at
+			    END,
+			    last_heartbeat_at = CASE
+			        WHEN last_run_id = $1 THEN NOW()
+			        ELSE last_heartbeat_at
+			    END,
+			    last_success_at = CASE
+			        WHEN last_run_id = $1 AND $3 THEN NOW()
+			        ELSE last_success_at
+			    END,
+			    last_error = CASE
+			        WHEN last_run_id = $1 THEN $4
+			        ELSE last_error
+			    END,
+			    updated_at = CASE
+			        WHEN last_run_id = $1 THEN NOW()
+			        ELSE updated_at
+			    END
+			WHERE stage_name = $5`,
+			req.RunID,
+			req.Owner,
+			success,
+			req.ErrorText,
+			stageName,
+		); err != nil {
+			return fmt.Errorf("update stage state for run %d: %w", req.RunID, err)
+		}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit finish stage run %d: %w", req.RunID, err)
-	}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit finish stage run %d: %w", req.RunID, err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func (s *Store) setIndexerStagePaused(ctx context.Context, stageName string, paused bool) error {
