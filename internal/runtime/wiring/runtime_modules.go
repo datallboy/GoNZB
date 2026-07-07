@@ -150,14 +150,16 @@ func aggregatorHasSource(cfg *config.Config) bool {
 }
 
 type usenetIndexerRuntimeModule struct {
-	appCtx     *app.Context
-	current    io.Closer
-	telemetry  io.Closer
-	runParent  context.Context
-	runCancel  context.CancelFunc
-	running    bool
-	stageOwner string
-	nntpStats  func() app.NNTPRuntimeStats
+	appCtx                    *app.Context
+	current                   io.Closer
+	telemetry                 io.Closer
+	runParent                 context.Context
+	runCancel                 context.CancelFunc
+	running                   bool
+	stageOwner                string
+	nntpStats                 func() app.NNTPRuntimeStats
+	partitionCreateDaysBefore int
+	partitionCreateDaysAhead  int
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -254,6 +256,8 @@ func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 	m.appCtx.UsenetIndexer = rt.service
 	m.current = rt.scrapeProvider
 	m.nntpStats = rt.nntpStats
+	m.partitionCreateDaysBefore = rt.partitionCreateDaysBefore
+	m.partitionCreateDaysAhead = rt.partitionCreateDaysAhead
 	if wasRunning {
 		m.stopRuntime()
 		m.running = true
@@ -289,6 +293,16 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 	}
 
 	service := m.appCtx.UsenetIndexer
+	if m.appCtx.PGIndexStore != nil {
+		m.appCtx.Logger.Info("pre-provisioning usenet indexer native partitions days_before=%d days_ahead=%d", m.partitionCreateDaysBefore, m.partitionCreateDaysAhead)
+		if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(childCtx, m.partitionCreateDaysBefore, m.partitionCreateDaysAhead); err != nil {
+			childCancel()
+			m.runCancel = nil
+			m.running = false
+			m.appCtx.Logger.Error("usenet indexer partition provisioning failed: %v", err)
+			return
+		}
+	}
 	m.appCtx.Logger.Info("starting usenet indexer supervisor")
 	go func() {
 		if err := service.Start(childCtx, 0); err != nil && childCtx.Err() == nil {

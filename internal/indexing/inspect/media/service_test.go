@@ -198,6 +198,44 @@ func TestRunOnceFailsDirectMediaProbeWhenFFProbeFails(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsCandidateWithoutReleaseID(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        53,
+			FileName:        "orphan.feature.2026.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      8,
+		}},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{body: []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00}, fileName: "orphan.feature.2026.mkv"},
+		&mediaRunner{},
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.failed) != 0 {
+		t.Fatalf("expected missing release id to be a completed skip, got failed=%+v", repo.failed)
+	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed skip, got %+v", repo.completed)
+	}
+	if repo.completed[0].Summary["probe_skip_reason"] != "missing_release_id" {
+		t.Fatalf("expected missing_release_id skip, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.releaseUpdates) != 0 || len(repo.mediaStreams) != 0 || len(repo.artifacts) != 0 {
+		t.Fatalf("expected no release/media side effects, updates=%+v streams=%+v artifacts=%+v", repo.releaseUpdates, repo.mediaStreams, repo.artifacts)
+	}
+}
+
 type fakeMediaRepository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile

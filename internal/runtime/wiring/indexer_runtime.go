@@ -36,10 +36,12 @@ import (
 )
 
 type usenetIndexerRuntime struct {
-	service        app.UsenetIndexerService
-	supervisor     *supervisor.Supervisor
-	scrapeProvider io.Closer
-	nntpStats      func() app.NNTPRuntimeStats
+	service                   app.UsenetIndexerService
+	supervisor                *supervisor.Supervisor
+	scrapeProvider            io.Closer
+	nntpStats                 func() app.NNTPRuntimeStats
+	partitionCreateDaysBefore int
+	partitionCreateDaysAhead  int
 }
 
 type usenetIndexerConfig struct {
@@ -75,6 +77,8 @@ type usenetIndexerConfig struct {
 	InspectMediaReadyRefresh                        indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
+	PartitionCreateDaysBefore                       int
+	PartitionCreateDaysAhead                        int
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
 	InspectDiscovery                                indexerStageConfig
@@ -656,10 +660,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	return &usenetIndexerRuntime{
-		service:        service,
-		supervisor:     supervisorSvc,
-		scrapeProvider: scrapeProvider,
-		nntpStats:      nntpStats,
+		service:                   service,
+		supervisor:                supervisorSvc,
+		scrapeProvider:            scrapeProvider,
+		nntpStats:                 nntpStats,
+		partitionCreateDaysBefore: runtimeCfg.PartitionCreateDaysBefore,
+		partitionCreateDaysAhead:  runtimeCfg.PartitionCreateDaysAhead,
 	}, nil
 }
 
@@ -935,6 +941,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			FailedProbeHours: indexingCfg.Retention.FailedProbeHours,
 			DoneYEncHours:    indexingCfg.Retention.RawStageWarmHours,
 		},
+		PartitionCreateDaysBefore: indexingCfg.Retention.CreatePartitionsDaysBefore,
+		PartitionCreateDaysAhead:  indexingCfg.Retention.CreatePartitionsDaysAhead,
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
 			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,

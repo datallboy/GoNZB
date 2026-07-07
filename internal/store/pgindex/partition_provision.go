@@ -6,10 +6,32 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-func (s *Store) ensureSourceWorkPartitionsForDays(ctx context.Context, sourcePostedAt []time.Time) error {
+var nativePartitionProvisionMu sync.Mutex
+
+func (s *Store) ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if daysBefore < 0 {
+		daysBefore = 0
+	}
+	if daysAhead < 0 {
+		daysAhead = 0
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	sourcePostedAt := make([]time.Time, 0, daysBefore+daysAhead+1)
+	for offset := -daysBefore; offset <= daysAhead; offset++ {
+		sourcePostedAt = append(sourcePostedAt, today.AddDate(0, 0, offset))
+	}
+	return s.provisionSourceWorkPartitionsForDays(ctx, sourcePostedAt)
+}
+
+func (s *Store) verifySourceWorkPartitionsForDays(ctx context.Context, sourcePostedAt []time.Time) error {
 	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
 		return nil
 	}
@@ -29,14 +51,44 @@ func (s *Store) ensureSourceWorkPartitionsForDays(ctx context.Context, sourcePos
 	sort.Strings(dayKeys)
 
 	for _, dayKey := range dayKeys {
-		if err := s.ensureSourceWorkPartitionsForDay(ctx, days[dayKey]); err != nil {
+		if err := s.verifySourceWorkPartitionsForDay(ctx, days[dayKey]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) ensureSourceWorkPartitionsForDay(ctx context.Context, dayStart time.Time) error {
+func (s *Store) provisionSourceWorkPartitionsForDays(ctx context.Context, sourcePostedAt []time.Time) error {
+	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
+		return nil
+	}
+	days := make(map[string]time.Time, len(sourcePostedAt))
+	for _, postedAt := range sourcePostedAt {
+		dayKey, _ := nativePartitionDayKeys(postedAt)
+		dayStart, err := time.ParseInLocation("2006-01-02", dayKey, time.UTC)
+		if err != nil {
+			return fmt.Errorf("parse partition day %s: %w", dayKey, err)
+		}
+		days[dayKey] = dayStart
+	}
+	dayKeys := make([]string, 0, len(days))
+	for dayKey := range days {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	sort.Strings(dayKeys)
+
+	nativePartitionProvisionMu.Lock()
+	defer nativePartitionProvisionMu.Unlock()
+
+	for _, dayKey := range dayKeys {
+		if err := s.provisionSourceWorkPartitionsForDay(ctx, days[dayKey]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) verifySourceWorkPartitionsForDay(ctx context.Context, dayStart time.Time) error {
 	dayKey, childSuffix := nativePartitionDayKeys(dayStart)
 	missing, err := s.missingNativeDailyPartitions(ctx, childSuffix)
 	if err != nil {
@@ -45,13 +97,23 @@ func (s *Store) ensureSourceWorkPartitionsForDay(ctx context.Context, dayStart t
 	if len(missing) == 0 {
 		return nil
 	}
+	return fmt.Errorf("missing native daily partitions for source day %s: %s; partition DDL is not allowed from active indexer stage write paths; pre-provision the partition horizon before running the supervisor", dayKey, strings.Join(missing, ", "))
+}
 
-	var created int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT public.pgindex_ensure_source_work_partitions($1::date, 0)`,
-		dayKey,
-	).Scan(&created); err != nil {
-		return fmt.Errorf("precreate native daily partitions for source day %s: %w", dayKey, err)
+func (s *Store) provisionSourceWorkPartitionsForDay(ctx context.Context, dayStart time.Time) error {
+	dayKey, childSuffix := nativePartitionDayKeys(dayStart)
+	missing, err := s.missingNativeDailyPartitions(ctx, childSuffix)
+	if err != nil {
+		return fmt.Errorf("check native daily partitions for source day %s: %w", dayKey, err)
+	}
+	for _, childName := range missing {
+		parentTable := strings.TrimSuffix(childName, "_"+childSuffix)
+		if parentTable == childName {
+			return fmt.Errorf("derive native partition parent for source day %s child %s", dayKey, childName)
+		}
+		if err := s.ensureNativeDailyPartitionForTable(ctx, parentTable, dayKey); err != nil {
+			return fmt.Errorf("precreate native daily partition %s for source day %s: %w", childName, dayKey, err)
+		}
 	}
 
 	missing, err = s.missingNativeDailyPartitions(ctx, childSuffix)
@@ -62,6 +124,25 @@ func (s *Store) ensureSourceWorkPartitionsForDay(ctx context.Context, dayStart t
 		return fmt.Errorf("missing native daily partitions for source day %s after precreate: %s; refusing to route rows into default partitions", dayKey, strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func (s *Store) ensureNativeDailyPartitionForTable(ctx context.Context, parentTable, dayKey string) error {
+	parentTable = strings.TrimSpace(parentTable)
+	if parentTable == "" {
+		return fmt.Errorf("parent table is required")
+	}
+	valid := false
+	for _, table := range nativeSourceWorkPartitionTables() {
+		if table == parentTable {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("table %q is not a native source/work partition target", parentTable)
+	}
+	_, err := s.db.ExecContext(ctx, `SELECT public.pgindex_ensure_daily_partition($1, $2::date)`, parentTable, dayKey)
+	return err
 }
 
 func (s *Store) missingNativeDailyPartitions(ctx context.Context, childSuffix string) ([]string, error) {
@@ -127,7 +208,7 @@ func (s *Store) ensureSourceWorkPartitionsForBinaryIDs(ctx context.Context, bina
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate binary source days for partition precreate: %w", err)
 	}
-	return s.ensureSourceWorkPartitionsForDays(ctx, days)
+	return s.verifySourceWorkPartitionsForDays(ctx, days)
 }
 
 func ensureYEncRecoveryPartitionsForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
