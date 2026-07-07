@@ -158,7 +158,8 @@ Storage:
 
 Reference:
 
-- see [INDEXER_HOW_IT_WORKS.md](./INDEXER_HOW_IT_WORKS.md) for the stage-by-stage pipeline
+- see the [Indexer Wiki](./wiki/indexer/README.md) for the stage-by-stage
+  pipeline, schema, partition, retention, and release-formation contracts
 
 Boundary rule:
 

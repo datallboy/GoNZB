@@ -173,4 +173,4 @@ docker run -d \
 
 - [Docs Index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Indexer How It Works](docs/INDEXER_HOW_IT_WORKS.md)
+- [Indexer Wiki](docs/wiki/indexer/README.md)

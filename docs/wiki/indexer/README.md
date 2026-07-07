@@ -1,7 +1,8 @@
 # Indexer Wiki
 
 This directory is the maintained reference for indexer design and operations.
-Prefer these focused pages over the older root-level indexer documents.
+The older root-level indexer documents were archived during the v0.8.0
+closeout; use these focused pages as the source of truth.
 
 ## Pages
 
@@ -21,5 +22,6 @@ Prefer these focused pages over the older root-level indexer documents.
 - [Operations Playbook](./operations-playbook.md): practical checks and common
   commands.
 
-`docs/active/2026-06-25-indexer-stabilization-source-of-truth.md` remains the
-only active sprint plan. The wiki is the durable reference.
+Archived sprint plans and handoff notes are historical context only. If a
+future plan conflicts with this wiki, update the wiki or the plan before
+changing code.

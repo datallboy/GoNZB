@@ -56,12 +56,10 @@ These tables stay unpartitioned:
   deadlock with active scrape/assemble/yEnc transactions touching other
   partition parents. Missing partitions are a startup/provisioning blocker, not
   something a hot writer should repair.
-- Do not call the migration/bootstrap helper
-  `pgindex_ensure_source_work_partitions` from application runtime code. It is
-  historical/bootstrap-only and creates children for many parent tables in one
-  transaction. Offline/startup provisioning may call
-  `pgindex_ensure_daily_partition` for one parent/day child at a time while no
-  indexer stage transactions are running.
+- Startup provisioning may call `pgindex_ensure_daily_partition` for one
+  parent/day child at a time while no indexer stage transactions are running.
+  Multi-parent partition helper functions and runtime partition conversion
+  helpers are not part of the v0.8.0 baseline.
 - Runtime settings `indexing.retention.create_partitions_days_before` and
   `indexing.retention.create_partitions_days_ahead` define the startup
   provision horizon. Defaults are intentionally backfill-friendly
