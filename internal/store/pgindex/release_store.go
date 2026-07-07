@@ -365,8 +365,9 @@ func (s *Store) listExistingReleaseCandidates(ctx context.Context, limit, offset
 				  AND NOT EXISTS (
 					SELECT 1
 					FROM binary_lifecycle bl
-					WHERE bl.binary_id = bic.binary_id
-					  AND bl.lifecycle_status = 'superseded'
+					WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 				  )
 			) family_payload ON TRUE
 			LEFT JOIN LATERAL (
@@ -411,11 +412,13 @@ func (s *Store) listExistingReleaseCandidates(ctx context.Context, limit, offset
 			 AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
 		)
 		SELECT
 			b.provider_id,
@@ -446,6 +449,10 @@ func (s *Store) listExistingReleaseCandidates(ctx context.Context, limit, offset
 		FROM candidate_binaries b
 		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR (
+			COUNT(*) FILTER (WHERE b.is_main_payload) >= 1
+			AND COUNT(*) FILTER (WHERE b.is_auxiliary) >= 1
+		    )
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, limit, offset, minReformAgeSeconds)
 	if err != nil {
@@ -553,11 +560,13 @@ func (s *Store) ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, 
 			 AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
 		)
 		SELECT
 			b.provider_id,
@@ -583,6 +592,10 @@ func (s *Store) ListExistingReleaseCandidatesForReleaseIDs(ctx context.Context, 
 		FROM candidate_binaries b
 		GROUP BY b.provider_id, b.release_family_key
 		HAVING COUNT(*) FILTER (WHERE b.is_main_payload OR NOT b.is_auxiliary) >= 2
+		    OR (
+			COUNT(*) FILTER (WHERE b.is_main_payload) >= 1
+			AND COUNT(*) FILTER (WHERE b.is_auxiliary) >= 1
+		    )
 		    OR COALESCE(MAX(GREATEST(b.expected_file_count, b.expected_archive_file_count)), 0) <= 1
 		ORDER BY MIN(b.posted_at) NULLS LAST, b.release_family_key`, ids)
 	if err != nil {
@@ -640,15 +653,16 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 
 	usesNewsgroupArg := newsgroupID > 0
 	candidateSelector := `
-			SELECT bic.binary_id
+			SELECT bic.binary_id, bic.source_posted_at
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND bic.release_family_key = $2
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`
 	if newsgroupID > 0 {
 		candidateSelector += `
@@ -657,7 +671,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	switch keyKind {
 	case ReleaseCandidateKeyKindBaseStem:
 		candidateSelector = `
-			SELECT bic.binary_id
+			SELECT bic.binary_id, bic.source_posted_at
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
@@ -666,8 +680,9 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -676,7 +691,7 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 	case ReleaseCandidateKeyKindReleaseFamily:
 		usesNewsgroupArg = false
 		candidateSelector = `
-			SELECT bic.binary_id
+			SELECT bic.binary_id, bic.source_posted_at
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND BTRIM(bic.release_family_key) <> ''
@@ -684,13 +699,14 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`
 	case ReleaseCandidateKeyKindRecoveredFileSet:
 		usesNewsgroupArg = false
 		candidateSelector = `
-			SELECT bic.binary_id
+			SELECT bic.binary_id, bic.source_posted_at
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND BTRIM(bic.file_set_key) <> ''
@@ -698,13 +714,14 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`
 	default:
 		candidateSelector += `
 			UNION
-			SELECT bic.binary_id
+			SELECT bic.binary_id, bic.source_posted_at
 			FROM binary_identity_current bic
 			WHERE bic.provider_id = $1
 			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
@@ -713,8 +730,9 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`
 		if newsgroupID > 0 {
 			candidateSelector += `
@@ -762,8 +780,10 @@ func (s *Store) ListBinariesForReleaseCandidate(ctx context.Context, providerID,
 			bic.match_status
 		FROM candidate_binaries cb
 		JOIN binary_core bc ON bc.binary_id = cb.binary_id
-		JOIN binary_identity_current bic ON bic.binary_id = cb.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = cb.binary_id
+		JOIN binary_identity_current bic ON bic.source_posted_at = cb.source_posted_at
+		AND bic.binary_id = cb.binary_id
+		JOIN binary_observation_stats bos ON bos.source_posted_at = cb.source_posted_at
+		AND bos.binary_id = cb.binary_id
 		LEFT JOIN posters p ON p.id = bc.poster_id`
 	args := []any{providerID, releaseFamilyKey}
 	if usesNewsgroupArg {
@@ -914,8 +934,9 @@ func (s *Store) PromoteBaseStemCandidatesForReleaseFamily(ctx context.Context, p
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			  )`,
 			providerID,
 			newsgroupID,
@@ -978,7 +999,7 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 				c.newsgroup_id,
 				c.key_kind,
 				c.family_key,
-				c.updated_at,
+				MAX(c.updated_at),
 				NOW()
 			FROM release_ready_candidates c
 			JOIN (VALUES `+strings.Join(values, ",")+`) AS v(provider_id, newsgroup_id, key_kind, family_key)
@@ -986,7 +1007,8 @@ func ackReleaseCandidatesChunk(ctx context.Context, db *sql.DB, candidates []Rel
 			 AND c.newsgroup_id = v.newsgroup_id
 			 AND c.key_kind = v.key_kind
 			 AND c.family_key = v.family_key
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			GROUP BY c.provider_id, c.newsgroup_id, c.key_kind, c.family_key
+				ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET processed_at = GREATEST(release_ready_candidate_acks.processed_at, EXCLUDED.processed_at),
 			    updated_at = NOW()`,
 			args...,
@@ -1252,9 +1274,9 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		    	ELSE releases.passworded_unknown OR EXCLUDED.passworded_unknown
 		    END,
 		    password_state = CASE
-		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'passworded_known'
-		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'passworded_unknown'
-		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'passworded'
+		    	WHEN releases.passworded_known OR EXCLUDED.passworded_known THEN 'password_known'
+		    	WHEN releases.passworded_unknown OR EXCLUDED.passworded_unknown THEN 'password_unknown'
+		    	WHEN releases.passworded OR EXCLUDED.passworded THEN 'password_unknown'
 		    	WHEN EXCLUDED.password_state <> '' AND EXCLUDED.password_state <> 'unknown' THEN EXCLUDED.password_state
 		    	ELSE releases.password_state
 		    END,
@@ -1274,7 +1296,10 @@ func upsertReleaseWithRunner(ctx context.Context, runner sqlExecQueryRower, in R
 		    	ELSE releases.media_quality_tier
 		    END,
 		    identity_confidence_score = GREATEST(releases.identity_confidence_score, EXCLUDED.identity_confidence_score),
-		    runtime_seconds = EXCLUDED.runtime_seconds,
+		    runtime_seconds = CASE
+		        WHEN EXCLUDED.runtime_seconds > 0 THEN EXCLUDED.runtime_seconds
+		        ELSE releases.runtime_seconds
+		    END,
 		    primary_resolution = CASE
 		    	WHEN EXCLUDED.primary_resolution <> '' THEN EXCLUDED.primary_resolution
 		    	ELSE releases.primary_resolution
@@ -1441,7 +1466,10 @@ func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, provider
 		  AND EXISTS (
 		  	SELECT 1
 		  	FROM release_files rf
-			    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+			JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = rf.binary_id
 		  	WHERE rf.release_id = r.release_id
 			      AND bic.provider_id = $1
 			      AND bic.newsgroup_id = $2
@@ -1450,7 +1478,10 @@ func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, provider
 		  AND NOT EXISTS (
 		  	SELECT 1
 		  	FROM release_files rf
-			    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+			JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = rf.binary_id
 		  	WHERE rf.release_id = r.release_id
 			      AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 		  )`
@@ -1480,7 +1511,10 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 			  	OR EXISTS (
 			  		SELECT 1
 			  		FROM release_files rf
-						    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+					JOIN binary_core bc ON bc.binary_id = rf.binary_id
+					JOIN binary_identity_current bic
+					  ON bic.source_posted_at = bc.source_posted_at
+					 AND bic.binary_id = rf.binary_id
 			  		WHERE rf.release_id = r.release_id
 						      AND bic.provider_id = $1
 						      AND bic.file_set_key = $2
@@ -1512,7 +1546,10 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 		  	OR EXISTS (
 		  		SELECT 1
 		  		FROM release_files rf
-				    JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
+				JOIN binary_core bc ON bc.binary_id = rf.binary_id
+				JOIN binary_identity_current bic
+				  ON bic.source_posted_at = bc.source_posted_at
+				 AND bic.binary_id = rf.binary_id
 		  		WHERE rf.release_id = r.release_id
 				      AND bic.provider_id = $1
 				      AND bic.file_set_key = $2

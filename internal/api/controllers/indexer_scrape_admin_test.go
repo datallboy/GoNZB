@@ -2,10 +2,26 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/datallboy/gonzb/internal/app"
 )
+
+func TestSanitizeProviderInventoryTextRepairsInvalidUTF8(t *testing.T) {
+	got := sanitizeProviderInventoryText(" alt.binaries.\xe8quebec\x00 ")
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 text, got %q", got)
+	}
+	if strings.Contains(got, "\xe8") || strings.Contains(got, "\x00") {
+		t.Fatalf("expected invalid bytes and NULs removed, got %q", got)
+	}
+	if got != "alt.binaries.quebec" {
+		t.Fatalf("unexpected sanitized text %q", got)
+	}
+}
 
 func TestPreviewWildcardGroupsPageFiltersBookPattern(t *testing.T) {
 	indexing := &app.IndexingRuntimeSettings{

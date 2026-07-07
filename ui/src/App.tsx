@@ -1,7 +1,12 @@
 import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
+import { AdminAttentionPage } from './modules/admin/AdminAttentionPage'
+import { AdminArticleCohortsPage } from './modules/admin/AdminArticleCohortsPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
+import { AdminBinaryDetailPage } from './modules/admin/AdminBinaryDetailPage'
+import { AdminBinariesPage } from './modules/admin/AdminBinariesPage'
+import { AdminIndexerWorkPage } from './modules/admin/AdminIndexerWorkPage'
 import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
@@ -72,6 +77,14 @@ export default function App() {
             }
           />
           <Route
+            path="indexer/attention"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminAttentionPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="indexer/releases"
             element={
               <RequireAuth permission="indexer.runtime.read">
@@ -88,10 +101,42 @@ export default function App() {
             }
           />
           <Route
+            path="indexer/binaries"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminBinariesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/binaries/:id"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminBinaryDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="indexer/stages"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminStagesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/work"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminIndexerWorkPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/cohorts"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminArticleCohortsPage />
               </RequireAuth>
             }
           />

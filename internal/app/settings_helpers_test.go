@@ -159,7 +159,7 @@ func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 	if runtime.Indexing.Assemble.IntervalMinutes <= 0 || runtime.Indexing.Assemble.BatchSize <= 0 {
 		t.Fatalf("expected assemble defaults to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
-	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 250 ||
+	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 1000 ||
 		runtime.Indexing.Assemble.LaneATargetPct != 70 ||
 		runtime.Indexing.Assemble.LaneBMinPct != 30 ||
 		runtime.Indexing.Assemble.LaneATimeWindowMinutes != 15 {

@@ -214,6 +214,7 @@ func releaseSourcePurgeReadyPolicy(indexing app.IndexingRuntimeSettings) pgindex
 		MinIdentityStatus:                    indexing.Release.PublicMinIdentityStatus,
 		RequireInspection:                    indexing.Release.PublicRequireInspection,
 		RequireEnrichment:                    indexing.Release.PublicRequireEnrichment,
+		RequireClearTitle:                    indexing.Release.PublicRequireClearTitle,
 		RequirePayloadComplete:               indexing.Release.PublicRequirePayloadComplete,
 		RequireExpectedFileCountComplete:     indexing.Release.PublicRequireExpectedFileCountComplete,
 		RequirePAR2:                          indexing.Release.PublicRequirePAR2,
@@ -604,7 +605,7 @@ func (r *Runner) ExecuteIndexerMaintenanceTask(taskKey string, dryRun bool, batc
 	defer cleanup()
 
 	indexing := app.IndexingRuntimeFromConfig(appCtx.Config.Indexing)
-	out, err := runIndexerMaintenanceTaskCLI(ctx, appCtx.PGIndexStore, taskKey, dryRun, batchSize, releaseSourcePurgeReadyPolicy(indexing))
+	out, err := runIndexerMaintenanceTaskCLI(ctx, appCtx.PGIndexStore, taskKey, dryRun, batchSize, releaseSourcePurgeReadyPolicy(indexing), rawStageRetentionPolicy(indexing))
 	if err != nil {
 		appCtx.Logger.Fatal("indexer maintenance task failed: %v", err)
 	}
@@ -619,7 +620,7 @@ func (r *Runner) ExecuteIndexerMaintenanceTask(taskKey string, dryRun bool, batc
 	fmt.Println(string(encoded))
 }
 
-func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStore, taskKey string, dryRun bool, batchSize int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error) {
+func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStore, taskKey string, dryRun bool, batchSize int, policy pgindex.ReleaseReadyPolicy, rawPolicy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error) {
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
@@ -681,6 +682,21 @@ func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStor
 			},
 			Warnings: []string{"v1 delegates to the existing combined indexer maintenance cleanup path"},
 		}, nil
+	case "partition_retention_drop":
+		if dryRun {
+			return store.DryRunPartitionRetentionTask(ctx, batchSize)
+		}
+		return store.RunPartitionRetentionTask(ctx, batchSize)
+	case "partition_default_rehome":
+		if dryRun {
+			return store.DryRunPartitionDefaultRehomeTask(ctx, batchSize)
+		}
+		return store.RunPartitionDefaultRehomeTask(ctx, batchSize)
+	case "raw_stage_retention":
+		if dryRun {
+			return store.DryRunRawStageRetentionTask(ctx, batchSize, rawPolicy)
+		}
+		return store.RunRawStageRetentionTask(ctx, batchSize, rawPolicy)
 	case "inspect_workspace_cleanup":
 		return &pgindex.MaintenanceTaskResult{
 			TaskKey:              taskKey,
@@ -693,6 +709,16 @@ func runIndexerMaintenanceTaskCLI(ctx context.Context, store app.UsenetIndexStor
 			return store.DryRunSimpleMaintenanceTask(ctx, taskKey, batchSize)
 		}
 		return store.RunSimpleMaintenanceTask(ctx, taskKey, batchSize)
+	}
+}
+
+func rawStageRetentionPolicy(indexing app.IndexingRuntimeSettings) pgindex.RawStageRetentionPolicy {
+	return pgindex.RawStageRetentionPolicy{
+		HotHours:         indexing.Retention.RawStageHotHours,
+		WarmHours:        indexing.Retention.RawStageWarmHours,
+		ColdHours:        indexing.Retention.RawStageColdHours,
+		FailedProbeHours: indexing.Retention.FailedProbeHours,
+		DoneYEncHours:    indexing.Retention.RawStageWarmHours,
 	}
 }
 

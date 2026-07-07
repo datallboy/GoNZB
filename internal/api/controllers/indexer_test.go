@@ -18,6 +18,9 @@ type stubIndexerService struct {
 	overview     *pgindex.IndexerOverview
 	dashboard    *pgindex.IndexerDashboardStats
 	backfill     *pgindex.IndexerBackfillProgress
+	capacity     *pgindex.YEncRecoveryAdmissionSnapshot
+	profiles     []pgindex.IndexerGroupProfileSummary
+	deferred     []pgindex.DeferredArticleRangeSummary
 	throughput   *pgindex.IndexerStageThroughput
 	nntpStats    *app.NNTPRuntimeStats
 	stages       []indexerStageView
@@ -56,6 +59,18 @@ func (s *stubIndexerService) StorageAudit(ctx context.Context) (*pgindex.Indexer
 
 func (s *stubIndexerService) BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error) {
 	return s.backfill, nil
+}
+
+func (s *stubIndexerService) RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
+	return s.capacity, nil
+}
+
+func (s *stubIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error) {
+	return s.profiles, nil
+}
+
+func (s *stubIndexerService) DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error) {
+	return s.deferred, nil
 }
 
 func (s *stubIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
@@ -160,6 +175,14 @@ func (s *stubIndexerService) ListReleases(ctx context.Context, params pgindex.Pu
 	return s.releases, s.releaseTotal, nil
 }
 
+func (s *stubIndexerService) ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error) {
+	return nil, 0, nil
+}
+
+func (s *stubIndexerService) ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error) {
+	return nil, 0, nil
+}
+
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
 }
@@ -176,6 +199,10 @@ func (s *stubIndexerService) UpdateReleaseOverride(ctx context.Context, releaseI
 	return &pgindex.ReleaseOverrideRecord{ReleaseID: releaseID}, nil
 }
 
+func (s *stubIndexerService) IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error) {
+	return &pgindex.IndexerReleaseDetail{Release: pgindex.IndexerReleaseSummary{ReleaseID: releaseID}}, nil
+}
+
 func (s *stubIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
 	s.reinspectID = releaseID
 	return nil
@@ -188,6 +215,10 @@ func (s *stubIndexerService) ReenrichRelease(ctx context.Context, releaseID stri
 
 func (s *stubIndexerService) GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error) {
 	return s.binary, nil
+}
+
+func (s *stubIndexerService) ListBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error) {
+	return nil, 0, nil
 }
 
 func (s *stubIndexerService) GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error) {
@@ -691,7 +722,7 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 				Classification:    "video",
 				HasPAR2:           true,
 				HasNFO:            true,
-				PasswordState:     "passworded_known",
+				PasswordState:     "password_known",
 				AvailabilityScore: 100,
 				AvailabilityTier:  "excellent",
 				MediaQualityScore: 90,
@@ -725,7 +756,7 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 		`"sort":"posted_at_desc"`,
 		`"release_id":"rel-1"`,
 		`"guid":"guid-1"`,
-		`"password_state":"passworded_known"`,
+		`"password_state":"password_known"`,
 		`"tmdb_id":123`,
 		`"external_media_type":"movie"`,
 	} {
@@ -769,7 +800,7 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 					Classification:    "video",
 					HasPAR2:           true,
 					HasNFO:            true,
-					PasswordState:     "passworded_known",
+					PasswordState:     "password_known",
 					AvailabilityScore: 100,
 					AvailabilityTier:  "excellent",
 					MediaQualityScore: 90,
@@ -820,7 +851,7 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 	for _, needle := range []string{
 		`"release_id":"rel-1"`,
 		`"guid":"guid-1"`,
-		`"password_state":"passworded_known"`,
+		`"password_state":"password_known"`,
 		`"file_name":"example.feature.1963.7z.001"`,
 		`"tmdb_id":123`,
 		`"external_media_type":"movie"`,
@@ -867,7 +898,7 @@ func TestIndexerControllerGetBinaryMarksResponseAsInternalDebug(t *testing.T) {
 				FileID:        7,
 				FileName:      "example.7z.001",
 				MatchStatus:   "matched",
-				PasswordState: "passworded_known",
+				PasswordState: "password_known",
 			},
 		},
 	}

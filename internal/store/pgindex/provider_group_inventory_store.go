@@ -78,25 +78,34 @@ func insertProviderGroupInventoryBatch(ctx context.Context, tx *sql.Tx, rows []I
 			status,
 			scanned_at
 		) VALUES `)
-	for i, row := range rows {
-		if i > 0 {
+	valueCount := 0
+	for _, row := range rows {
+		row = sanitizeProviderGroupInventoryItem(row)
+		if row.ProviderID == "" || row.GroupName == "" {
+			continue
+		}
+		if valueCount > 0 {
 			query.WriteByte(',')
 		}
+		valueCount++
 		base := len(args)
 		query.WriteString(fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d::timestamptz)", base+1, base+2, base+3, base+4, base+5, base+6, base+7))
-		scannedAt := strings.TrimSpace(row.ScannedAt)
+		scannedAt := row.ScannedAt
 		if scannedAt == "" {
 			scannedAt = time.Now().UTC().Format(time.RFC3339)
 		}
 		args = append(args,
-			strings.TrimSpace(row.ProviderID),
-			strings.TrimSpace(row.ProviderName),
-			strings.TrimSpace(row.GroupName),
+			row.ProviderID,
+			row.ProviderName,
+			row.GroupName,
 			row.High,
 			row.Low,
-			strings.TrimSpace(row.Status),
+			row.Status,
 			scannedAt,
 		)
+	}
+	if len(args) == 0 {
+		return nil
 	}
 	query.WriteString(`
 		ON CONFLICT (provider_id, group_name) DO UPDATE
@@ -109,6 +118,18 @@ func insertProviderGroupInventoryBatch(ctx context.Context, tx *sql.Tx, rows []I
 		return fmt.Errorf("insert provider group inventory batch: %w", err)
 	}
 	return nil
+}
+
+func sanitizeProviderGroupInventoryItem(row IndexerProviderGroupInventoryItem) IndexerProviderGroupInventoryItem {
+	return IndexerProviderGroupInventoryItem{
+		ProviderID:   sanitizeUTF8(row.ProviderID),
+		ProviderName: sanitizeUTF8(row.ProviderName),
+		GroupName:    sanitizeUTF8(row.GroupName),
+		High:         row.High,
+		Low:          row.Low,
+		Status:       sanitizeUTF8(row.Status),
+		ScannedAt:    sanitizeUTF8(row.ScannedAt),
+	}
 }
 
 func (s *Store) GetIndexerProviderGroupInventoryStats(ctx context.Context) (IndexerProviderGroupInventoryStats, error) {

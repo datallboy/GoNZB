@@ -47,6 +47,20 @@ func TestResolveReleaseCategoryLeavesGenericVideoAsMisc(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseCategoryOpaqueVideoWithAudioCodecAsMisc(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification:    "video",
+		PrimaryAudioCodec: "aac",
+		PrimaryResolution: "1080p",
+		Title:             "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+		SourceTitle:       "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+		DeobfuscatedTitle: "qLR2Udq02lRoeOa483rft2J7dEkxP81I.vol01+02",
+	})
+	if got.ID != OtherMisc {
+		t.Fatalf("expected OtherMisc, got %+v", got)
+	}
+}
+
 func TestResolveReleaseCategoryConsoleSwitch(t *testing.T) {
 	got := ResolveReleaseCategory(ReleaseAttributes{
 		Title: "Example.Game.NSW.Switch-GRP",
@@ -65,6 +79,16 @@ func TestResolveReleaseCategorySteinbergCubaseAsPC0Day(t *testing.T) {
 	})
 	if got.ID != PC0Day {
 		t.Fatalf("expected PC0Day, got %+v", got)
+	}
+}
+
+func TestResolveReleaseCategorySoftwareArchiveEvidenceAsPC0Day(t *testing.T) {
+	got := ResolveReleaseCategory(ReleaseAttributes{
+		Classification: "software_archive",
+		Title:          "VIP ONLY",
+	})
+	if got.ID != PC0Day {
+		t.Fatalf("expected PC0Day from software archive evidence, got %+v", got)
 	}
 }
 

@@ -132,6 +132,7 @@ textarea {
   position: sticky;
   top: 0;
   height: 100vh;
+  min-height: 0;
   padding: 1.5rem;
   background: rgba(4, 13, 20, 0.72);
   backdrop-filter: blur(20px);
@@ -166,6 +167,9 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.25rem;
 }
 
 .shell-nav a {
@@ -187,6 +191,7 @@ textarea {
 
 .sidebar-footer {
   margin-top: auto;
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -368,6 +373,20 @@ textarea {
   align-items: end;
 }
 
+.stat-grid,
+.two-column-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.stat-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.two-column-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
 .release-list-summary {
   display: inline-flex;
   align-items: baseline;
@@ -533,6 +552,20 @@ textarea {
 
 .detail-grid dd {
   margin: 0.35rem 0 0;
+}
+
+.detail-grid--wide-values {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.breakable-value {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mono-cell.breakable-value,
+.breakable-value.mono-cell {
+  white-space: normal;
 }
 
 .field {
@@ -928,6 +961,10 @@ textarea {
   align-items: end;
 }
 
+.binary-filter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
 .release-page-size {
   width: min(100%, 140px);
 }
@@ -1001,6 +1038,24 @@ textarea {
 .table-link {
   color: var(--accent-strong);
   font-weight: 600;
+}
+
+.loading-dot {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.45rem;
+  border: 2px solid rgba(174, 216, 198, 0.22);
+  border-top-color: var(--accent-strong);
+  border-radius: 999px;
+  vertical-align: -0.1rem;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .pill {
@@ -1160,6 +1215,39 @@ textarea {
 
 .stat-card strong {
   font-size: 1.8rem;
+}
+
+.stat-card small {
+  display: block;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
+.bucket-progress-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 120px;
+}
+
+.bucket-progress {
+  width: 100%;
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(7, 18, 26, 0.82);
+}
+
+.bucket-progress span {
+  display: block;
+  height: 100%;
+  background: var(--secondary);
+}
+
+.bucket-progress-meta {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .backlog-stat-card {

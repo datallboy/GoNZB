@@ -359,6 +359,12 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
 		}
 		if stage.name == "recover_yenc" {
+			if stage.config.FetchTimeoutSeconds < 0 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be greater than or equal to 0")
+			}
+			if stage.config.FetchTimeoutSeconds > 120 {
+				issues = append(issues, "indexing."+stage.name+".fetch_timeout_seconds must be less than or equal to 120")
+			}
 			issues = append(issues, validateYEncRecoveryTargetWindow(stage.config)...)
 		}
 	}
@@ -385,6 +391,29 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 	}
 	if indexing.MemoryGuard.MinSwapFreeBytes < 0 {
 		issues = append(issues, "indexing.memory_guard.min_swap_free_bytes must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes < 0 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.NearTimeCohortBucketMinutes > 24*60 {
+		issues = append(issues, "indexing.recovery_admission.near_time_cohort_bucket_minutes must be less than or equal to 1440")
+	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches < 0 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be greater than or equal to 0")
+	}
+	if indexing.RecoveryAdmission.Priority0ReservoirBatches > 20 {
+		issues = append(issues, "indexing.recovery_admission.priority0_reservoir_batches must be less than or equal to 20")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_high_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogLowWater < 0 {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be greater than or equal to 0")
+	}
+	if indexing.ScrapeTiers.AssembleBacklogHighWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater > 0 &&
+		indexing.ScrapeTiers.AssembleBacklogLowWater >= indexing.ScrapeTiers.AssembleBacklogHighWater {
+		issues = append(issues, "indexing.scrape_tiers.assemble_backlog_low_water must be less than indexing.scrape_tiers.assemble_backlog_high_water")
 	}
 	for i, rule := range indexing.Inspect.BlockedMagicHex {
 		clean := strings.ToUpper(strings.TrimSpace(rule))
@@ -443,6 +472,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
+		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
 		{name: "release_summary_refresh", config: indexing.ReleaseSummaryRefresh},
@@ -519,8 +549,10 @@ func validateIndexerMaintenanceTasks(next *app.RuntimeSettings) error {
 
 func maintenanceTaskMinIntervalHours(taskKey string) int {
 	switch strings.TrimSpace(strings.ToLower(taskKey)) {
-	case "dashboard_stats_refresh":
+	case "dashboard_stats_refresh", "group_profile_refresh":
 		return 1
+	case "raw_stage_retention", "partition_default_rehome", "stale_nonrelease_source_purge", "emergency_source_window_reset":
+		return 24
 	default:
 		return 6
 	}

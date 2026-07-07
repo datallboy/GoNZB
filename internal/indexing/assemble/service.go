@@ -38,6 +38,14 @@ type repository interface {
 	RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error
 }
 
+type assemblyClaimStatsRepository interface {
+	ClaimAssemblyQueueBatchWithStats(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, pgindex.AssemblyClaimStats, error)
+}
+
+type subjectMultipartRegroupRepository interface {
+	RegroupSubjectMultipartBinaries(ctx context.Context, limit int) (*pgindex.SubjectMultipartRegroupResult, error)
+}
+
 // narrow matcher dependency.
 type subjectMatcher interface {
 	Match(candidate match.Candidate) match.Result
@@ -72,6 +80,7 @@ type recoveryCounters struct {
 type pendingBinaryPart struct {
 	binaryCacheKey  string
 	articleHeaderID int64
+	sourcePostedAt  time.Time
 	messageID       string
 	partNumber      int
 	totalParts      int
@@ -90,11 +99,13 @@ type assembleWork struct {
 }
 
 type Service struct {
-	repo    repository
-	matcher subjectMatcher
-	fetcher articleFetcher
-	log     logger
-	opts    Options
+	repo                        repository
+	matcher                     subjectMatcher
+	fetcher                     articleFetcher
+	log                         logger
+	opts                        Options
+	subjectMultipartRegroupMu   sync.Mutex
+	lastSubjectMultipartRegroup time.Time
 }
 
 func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher, log logger, opts Options) *Service {
@@ -114,7 +125,7 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 		opts.MaxYEncRecoveryAttempts = 128
 	}
 	if opts.BinaryUpsertDBChunkSize <= 0 {
-		opts.BinaryUpsertDBChunkSize = 250
+		opts.BinaryUpsertDBChunkSize = 1000
 	}
 	if opts.LaneATargetPct <= 0 {
 		opts.LaneATargetPct = 70
@@ -160,12 +171,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	}
 
 	started := time.Now()
-	selectionStarted := time.Now()
-	staleDeleted, err := s.repo.CleanupStaleAssemblyQueueRows(ctx, s.opts.BatchSize)
-	if err != nil {
-		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
-	}
-	headers, err := s.repo.ClaimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
+	staleDeleted := 0
+	cleanupDuration := time.Duration(0)
+	headers, claimStats, err := s.claimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
 		Limit:                  s.opts.BatchSize,
 		Owner:                  s.opts.ClaimOwner,
 		LeaseDuration:          s.opts.ClaimLease,
@@ -177,9 +185,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
 	}
-	selectionDuration := time.Since(selectionStarted)
+	selectionDuration := cleanupDuration + claimStats.ClaimDuration + claimStats.HydrationDuration
 	if len(headers) == 0 {
-		return map[string]any{
+		metrics := map[string]any{
 			"selected_headers":                0,
 			"processed_headers":               0,
 			"binaries_refreshed":              0,
@@ -188,10 +196,17 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			"lane_mode":                       laneMetricName(s.opts.Lane),
 			"stale_queue_rows_deleted":        staleDeleted,
 			"candidate_selection_duration_ms": durationMillis(selectionDuration),
+			"queue_cleanup_duration_ms":       durationMillis(cleanupDuration),
+			"assembly_claim_duration_ms":      durationMillis(claimStats.ClaimDuration),
+			"assembly_hydration_duration_ms":  durationMillis(claimStats.HydrationDuration),
+			"assembly_claimed_headers":        claimStats.Claimed,
+			"assembly_hydrated_headers":       claimStats.Hydrated,
 			"total_duration_ms":               durationMillis(time.Since(started)),
 			"headers_per_second":              0.0,
 			"refreshed_binaries_per_second":   0.0,
-		}, nil
+		}
+		s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
+		return metrics, nil
 	}
 
 	workerCount := s.opts.Concurrency
@@ -240,6 +255,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"lane_mode":                       laneMetricName(s.opts.Lane),
 		"stale_queue_rows_deleted":        staleDeleted,
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
+		"queue_cleanup_duration_ms":       durationMillis(cleanupDuration),
+		"assembly_claim_duration_ms":      durationMillis(claimStats.ClaimDuration),
+		"assembly_hydration_duration_ms":  durationMillis(claimStats.HydrationDuration),
+		"assembly_claimed_headers":        claimStats.Claimed,
+		"assembly_hydrated_headers":       claimStats.Hydrated,
 	}
 	for err := range errCh {
 		if err != nil {
@@ -254,7 +274,24 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics, err := s.persistAssembleWork(ctx, started, combined, work, s.opts.BatchSize)
 	combined["selected_headers"] = len(headers)
 	combined["candidate_selection_duration_ms"] = durationMillis(selectionDuration)
+	if err == nil {
+		s.regroupSubjectMultipartBinaries(ctx, metrics, s.opts.BatchSize)
+	}
 	return metrics, err
+}
+
+func (s *Service) claimAssemblyQueueBatch(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, pgindex.AssemblyClaimStats, error) {
+	if repo, ok := s.repo.(assemblyClaimStatsRepository); ok {
+		return repo.ClaimAssemblyQueueBatchWithStats(ctx, req)
+	}
+	started := time.Now()
+	headers, err := s.repo.ClaimAssemblyQueueBatch(ctx, req)
+	stats := pgindex.AssemblyClaimStats{
+		ClaimDuration: time.Since(started),
+		Claimed:       len(headers),
+		Hydrated:      len(headers),
+	}
+	return headers, stats, err
 }
 
 type claimedBatchRepository struct {
@@ -311,12 +348,9 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	}
 
 	started := time.Now()
-	selectionStarted := time.Now()
-	staleDeleted, err := s.repo.CleanupStaleAssemblyQueueRows(ctx, batchSize)
-	if err != nil {
-		return nil, fmt.Errorf("cleanup stale assembly queue rows: %w", err)
-	}
-	headers, err := s.repo.ClaimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
+	staleDeleted := 0
+	cleanupDuration := time.Duration(0)
+	headers, claimStats, err := s.claimAssemblyQueueBatch(ctx, pgindex.AssemblyClaimRequest{
 		Limit:                  batchSize,
 		Owner:                  claimOwner,
 		LeaseDuration:          s.opts.ClaimLease,
@@ -328,18 +362,24 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
 	}
-	selectionDuration := time.Since(selectionStarted)
+	selectionDuration := cleanupDuration + claimStats.ClaimDuration + claimStats.HydrationDuration
 	metrics := map[string]any{
 		"selected_headers":                len(headers),
 		"batch_size":                      batchSize,
 		"lane_mode":                       laneMetricName(s.opts.Lane),
 		"stale_queue_rows_deleted":        staleDeleted,
 		"candidate_selection_duration_ms": durationMillis(selectionDuration),
+		"queue_cleanup_duration_ms":       durationMillis(cleanupDuration),
+		"assembly_claim_duration_ms":      durationMillis(claimStats.ClaimDuration),
+		"assembly_hydration_duration_ms":  durationMillis(claimStats.HydrationDuration),
+		"assembly_claimed_headers":        claimStats.Claimed,
+		"assembly_hydrated_headers":       claimStats.Hydrated,
 	}
 	if len(headers) == 0 {
 		s.log.Debug("assemble: no unassembled article headers found")
 		metrics["processed_headers"] = 0
 		metrics["binaries_refreshed"] = 0
+		s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
 		metrics["total_duration_ms"] = durationMillis(time.Since(started))
 		metrics["headers_per_second"] = 0.0
 		metrics["refreshed_binaries_per_second"] = 0.0
@@ -354,7 +394,68 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		return metrics, err
 	}
 
-	return s.persistAssembleWork(ctx, started, metrics, work, batchSize)
+	metrics, err = s.persistAssembleWork(ctx, started, metrics, work, batchSize)
+	if err == nil {
+		s.regroupSubjectMultipartBinaries(ctx, metrics, batchSize)
+	}
+	return metrics, err
+}
+
+func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics map[string]any, limit int) {
+	metrics["subject_multipart_regroup_groups"] = int64(0)
+	metrics["subject_multipart_regroup_sources"] = int64(0)
+	metrics["subject_multipart_regroup_parts_moved"] = int64(0)
+	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = int64(0)
+	repo, ok := s.repo.(subjectMultipartRegroupRepository)
+	if !ok {
+		return
+	}
+	const regroupInterval = 30 * time.Minute
+	s.subjectMultipartRegroupMu.Lock()
+	if !s.lastSubjectMultipartRegroup.IsZero() && time.Since(s.lastSubjectMultipartRegroup) < regroupInterval {
+		s.subjectMultipartRegroupMu.Unlock()
+		metrics["subject_multipart_regroup_skipped"] = true
+		return
+	}
+	s.lastSubjectMultipartRegroup = time.Now()
+	s.subjectMultipartRegroupMu.Unlock()
+
+	if limit <= 0 {
+		limit = s.opts.BatchSize
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	started := time.Now()
+	result, err := repo.RegroupSubjectMultipartBinaries(ctx, limit)
+	metrics["subject_multipart_regroup_duration_ms"] = durationMillis(time.Since(started))
+	if err != nil {
+		metrics["subject_multipart_regroup_error"] = err.Error()
+		if s.log != nil {
+			s.log.Warn("assemble: subject multipart regroup skipped err=%v", err)
+		}
+		return
+	}
+	if result == nil {
+		return
+	}
+	metrics["subject_multipart_regroup_groups"] = result.Groups
+	metrics["subject_multipart_regroup_sources"] = result.SourceBinaries
+	metrics["subject_multipart_regroup_parts_moved"] = result.PartsMoved
+	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = result.DuplicatePartsDeleted
+	if result.Groups > 0 && s.log != nil {
+		s.log.Info(
+			"assemble: subject multipart regroup groups=%d sources=%d parts_moved=%d duplicate_parts_deleted=%d duration_ms=%.2f",
+			result.Groups,
+			result.SourceBinaries,
+			result.PartsMoved,
+			result.DuplicatePartsDeleted,
+			metrics["subject_multipart_regroup_duration_ms"],
+		)
+	}
 }
 
 func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.AssemblyCandidate) (assembleWork, error) {
@@ -451,6 +552,7 @@ func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.Assem
 		work.partSeeds = append(work.partSeeds, pendingBinaryPart{
 			binaryCacheKey:  binaryCacheKey,
 			articleHeaderID: header.ID,
+			sourcePostedAt:  header.SourcePostedAt,
 			messageID:       header.MessageID,
 			partNumber:      matched.PartNumber,
 			totalParts:      matched.TotalParts,
@@ -515,6 +617,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		partRecords = append(partRecords, pgindex.BinaryPartRecord{
 			BinaryID:        binaryID,
 			ArticleHeaderID: seed.articleHeaderID,
+			SourcePostedAt:  seed.sourcePostedAt,
 			MessageID:       seed.messageID,
 			PartNumber:      seed.partNumber,
 			TotalParts:      seed.totalParts,
@@ -552,6 +655,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
 		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
+		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemRetire(refreshCtx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {
@@ -581,7 +685,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	addAssembleTimingMetrics(metrics, started, work.headerMatchDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration, assembledCount, len(refreshed))
 
 	s.log.Info(
-		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
+		"assemble: lane_mode=%s lane_a_selected=%d lane_b_selected=%d processed_headers=%d binaries_refreshed=%d batch_size=%d headers_per_second=%.2f refreshed_binaries_per_second=%.2f candidate_selection_ms=%.2f queue_cleanup_ms=%.2f assembly_claim_ms=%.2f assembly_hydration_ms=%.2f assembly_claimed_headers=%d assembly_hydrated_headers=%d header_match_ms=%.2f binary_upsert_ms=%.2f binary_part_upsert_ms=%.2f binary_refresh_ms=%.2f binary_upsert_chunk_count=%d binary_upsert_chunk_rows=%d binary_upsert_chunk_retries=%d binary_upsert_chunk_retry_deadlocks=%d binary_upsert_chunk_retry_serialization=%d binary_upsert_chunk_ms=%.2f binary_upsert_chunk_max_ms=%.2f binary_upsert_lock_ms=%.2f binary_upsert_lock_max_ms=%.2f binary_upsert_stage_ms=%.2f binary_upsert_stage_max_ms=%.2f binary_upsert_existing_snapshot_ms=%.2f binary_upsert_existing_snapshot_max_ms=%.2f binary_upsert_update_ms=%.2f binary_upsert_update_max_ms=%.2f binary_upsert_insert_ms=%.2f binary_upsert_insert_max_ms=%.2f binary_upsert_observation_ms=%.2f binary_upsert_observation_max_ms=%.2f binary_upsert_identity_ms=%.2f binary_upsert_identity_max_ms=%.2f binary_upsert_recovery_seed_ms=%.2f binary_upsert_recovery_seed_max_ms=%.2f binary_upsert_lifecycle_seed_ms=%.2f binary_upsert_lifecycle_seed_max_ms=%.2f binary_upsert_completion_key_sync_ms=%.2f binary_upsert_completion_key_sync_max_ms=%.2f binary_upsert_readback_ms=%.2f binary_upsert_readback_max_ms=%.2f binary_upsert_query_ms=%.2f binary_upsert_query_max_ms=%.2f binary_upsert_evidence_ms=%.2f binary_upsert_evidence_max_ms=%.2f binary_upsert_deferred_summary_chunks=%d binary_upsert_deferred_summary_keys=%d binary_refresh_tx_count=%d binary_refresh_batch_count=%d binary_refresh_binary_count=%d binary_refresh_summary_key_count=%d binary_refresh_deferred_summary_batches=%d binary_refresh_deferred_summary_keys=%d binary_refresh_stats_update_ms=%.2f binary_refresh_stats_update_max_ms=%.2f binary_refresh_summary_mark_ms=%.2f binary_refresh_summary_mark_max_ms=%.2f binary_refresh_yenc_sync_ms=%.2f binary_refresh_yenc_sync_max_ms=%.2f binary_refresh_yenc_admission_ms=%.2f binary_refresh_yenc_priority_open_ms=%.2f binary_refresh_yenc_sync_chunks=%d binary_refresh_yenc_sync_chunk_binaries=%d binary_refresh_yenc_sync_upserted=%d binary_refresh_yenc_sync_retired=%d binary_refresh_yenc_sync_upsert_ms=%.2f binary_refresh_yenc_sync_retire_ms=%.2f binary_refresh_yenc_promotion_ms=%.2f unique_binary_upserts=%d binary_upsert_cache_hits=%d assemble_recovery_attempts=%d assemble_recovery_successes=%d assemble_recovery_noops=%d assemble_recovery_fetch_failures=%d assemble_recovery_skipped_by_cap=%d assemble_recovery_skipped_by_backoff=%d",
 		laneMetricName(s.opts.Lane),
 		work.laneASelected,
 		work.laneBSelected,
@@ -591,6 +695,11 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		metrics["headers_per_second"],
 		metrics["refreshed_binaries_per_second"],
 		metrics["candidate_selection_duration_ms"],
+		metrics["queue_cleanup_duration_ms"],
+		metrics["assembly_claim_duration_ms"],
+		metrics["assembly_hydration_duration_ms"],
+		metrics["assembly_claimed_headers"],
+		metrics["assembly_hydrated_headers"],
 		metrics["header_match_duration_ms"],
 		metrics["binary_upsert_duration_ms"],
 		metrics["binary_part_upsert_duration_ms"],
@@ -612,6 +721,16 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		metrics["binary_upsert_update_max_ms"],
 		metrics["binary_upsert_insert_ms"],
 		metrics["binary_upsert_insert_max_ms"],
+		metrics["binary_upsert_observation_ms"],
+		metrics["binary_upsert_observation_max_ms"],
+		metrics["binary_upsert_identity_ms"],
+		metrics["binary_upsert_identity_max_ms"],
+		metrics["binary_upsert_recovery_seed_ms"],
+		metrics["binary_upsert_recovery_seed_max_ms"],
+		metrics["binary_upsert_lifecycle_seed_ms"],
+		metrics["binary_upsert_lifecycle_seed_max_ms"],
+		metrics["binary_upsert_completion_key_sync_ms"],
+		metrics["binary_upsert_completion_key_sync_max_ms"],
 		metrics["binary_upsert_readback_ms"],
 		metrics["binary_upsert_readback_max_ms"],
 		metrics["binary_upsert_query_ms"],
@@ -632,6 +751,15 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 		metrics["binary_refresh_summary_mark_max_ms"],
 		metrics["binary_refresh_yenc_sync_ms"],
 		metrics["binary_refresh_yenc_sync_max_ms"],
+		metrics["binary_refresh_yenc_admission_ms"],
+		metrics["binary_refresh_yenc_priority_open_ms"],
+		metrics["binary_refresh_yenc_sync_chunk_count"],
+		metrics["binary_refresh_yenc_sync_chunk_binary_count"],
+		metrics["binary_refresh_yenc_sync_upserted"],
+		metrics["binary_refresh_yenc_sync_retired"],
+		metrics["binary_refresh_yenc_sync_upsert_ms"],
+		metrics["binary_refresh_yenc_sync_retire_ms"],
+		metrics["binary_refresh_yenc_promotion_ms"],
 		metrics["unique_binary_upserts"],
 		metrics["binary_upsert_cache_hits"],
 		work.recovery.attempts,
@@ -687,7 +815,12 @@ func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
 			"binary_upsert_evidence_max_ms",
 			"binary_refresh_stats_update_max_ms",
 			"binary_refresh_summary_mark_max_ms",
-			"binary_refresh_yenc_sync_max_ms":
+			"binary_refresh_yenc_sync_max_ms",
+			"binary_refresh_yenc_admission_max_ms",
+			"binary_refresh_yenc_priority_open_max_ms",
+			"binary_refresh_yenc_sync_upsert_max_ms",
+			"binary_refresh_yenc_sync_retire_max_ms",
+			"binary_refresh_yenc_promotion_max_ms":
 			if current := numericMetricFloat64(dst, key); numericMetricFloat64(src, key) > current {
 				dst[key] = numericMetricFloat64(src, key)
 			}
@@ -759,6 +892,16 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_update_max_ms"] = telemetry.UpdateDurationMaxMs
 	metrics["binary_upsert_insert_ms"] = telemetry.InsertDurationMs
 	metrics["binary_upsert_insert_max_ms"] = telemetry.InsertDurationMaxMs
+	metrics["binary_upsert_observation_ms"] = telemetry.ObservationStatsDurationMs
+	metrics["binary_upsert_observation_max_ms"] = telemetry.ObservationStatsDurationMaxMs
+	metrics["binary_upsert_identity_ms"] = telemetry.IdentityDurationMs
+	metrics["binary_upsert_identity_max_ms"] = telemetry.IdentityDurationMaxMs
+	metrics["binary_upsert_recovery_seed_ms"] = telemetry.RecoverySeedDurationMs
+	metrics["binary_upsert_recovery_seed_max_ms"] = telemetry.RecoverySeedDurationMaxMs
+	metrics["binary_upsert_lifecycle_seed_ms"] = telemetry.LifecycleSeedDurationMs
+	metrics["binary_upsert_lifecycle_seed_max_ms"] = telemetry.LifecycleSeedDurationMaxMs
+	metrics["binary_upsert_completion_key_sync_ms"] = telemetry.CompletionKeySyncDurationMs
+	metrics["binary_upsert_completion_key_sync_max_ms"] = telemetry.CompletionKeySyncDurationMaxMs
 	metrics["binary_upsert_readback_ms"] = telemetry.ReadbackDurationMs
 	metrics["binary_upsert_readback_max_ms"] = telemetry.ReadbackDurationMaxMs
 	metrics["binary_upsert_query_ms"] = telemetry.UpsertQueryDurationMs
@@ -782,6 +925,20 @@ func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgi
 	metrics["binary_refresh_summary_mark_max_ms"] = telemetry.SummaryMarkDurationMaxMs
 	metrics["binary_refresh_yenc_sync_ms"] = telemetry.YEncSyncDurationMs
 	metrics["binary_refresh_yenc_sync_max_ms"] = telemetry.YEncSyncDurationMaxMs
+	metrics["binary_refresh_yenc_admission_ms"] = telemetry.YEncAdmissionDurationMs
+	metrics["binary_refresh_yenc_admission_max_ms"] = telemetry.YEncAdmissionDurationMaxMs
+	metrics["binary_refresh_yenc_priority_open_ms"] = telemetry.YEncPriorityOpenDurationMs
+	metrics["binary_refresh_yenc_priority_open_max_ms"] = telemetry.YEncPriorityOpenDurationMaxMs
+	metrics["binary_refresh_yenc_sync_chunk_count"] = telemetry.YEncSyncChunkCount
+	metrics["binary_refresh_yenc_sync_chunk_binary_count"] = telemetry.YEncSyncChunkBinaryCount
+	metrics["binary_refresh_yenc_sync_upserted"] = telemetry.YEncSyncUpserted
+	metrics["binary_refresh_yenc_sync_retired"] = telemetry.YEncSyncRetired
+	metrics["binary_refresh_yenc_sync_upsert_ms"] = telemetry.YEncSyncUpsertDurationMs
+	metrics["binary_refresh_yenc_sync_upsert_max_ms"] = telemetry.YEncSyncUpsertDurationMaxMs
+	metrics["binary_refresh_yenc_sync_retire_ms"] = telemetry.YEncSyncRetireDurationMs
+	metrics["binary_refresh_yenc_sync_retire_max_ms"] = telemetry.YEncSyncRetireDurationMaxMs
+	metrics["binary_refresh_yenc_promotion_ms"] = telemetry.YEncPromotionDurationMs
+	metrics["binary_refresh_yenc_promotion_max_ms"] = telemetry.YEncPromotionDurationMaxMs
 }
 
 func laneMetricName(lane string) string {

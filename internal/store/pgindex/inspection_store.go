@@ -129,6 +129,19 @@ func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (boo
 	return exists, nil
 }
 
+func binarySourcePostedAtInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (time.Time, bool, error) {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(source_posted_at, created_at)
+		FROM binary_core
+		WHERE binary_id = $1`, binaryID).Scan(&sourcePostedAt); err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	} else if err != nil {
+		return time.Time{}, false, fmt.Errorf("load binary source_posted_at %d: %w", binaryID, err)
+	}
+	return sourcePostedAt.UTC(), true, nil
+}
+
 func artifactReleaseIDs(rows []BinaryInspectionArtifactRecord) []string {
 	releaseIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -221,6 +234,16 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 		}
 
 		if err := appendRows(`
+			SELECT binary_id, summary_json->>'media_title'
+			FROM binary_inspections
+			WHERE stage_name = 'inspect_media'
+			  AND binary_id IN (`+filter+`)
+			  AND COALESCE(summary_json->>'media_title', '') <> ''`,
+			"media_title", 0.96); err != nil {
+			return nil, fmt.Errorf("list inspect_media media title candidates: %w", err)
+		}
+
+		if err := appendRows(`
 			SELECT binary_id, summary_json->>'archive_entry'
 			FROM binary_inspections
 			WHERE stage_name = 'inspect_media'
@@ -241,6 +264,16 @@ func (s *Store) ListReleaseTitleCandidates(ctx context.Context, binaryIDs []int6
 			  )`,
 			"archive_entry", 0.92); err != nil {
 			return nil, fmt.Errorf("list archive entry title candidates: %w", err)
+		}
+
+		if err := appendRows(`
+			SELECT binary_id, entry_name
+			FROM binary_archive_entries
+			WHERE binary_id IN (`+filter+`)
+			  AND is_dir = FALSE
+			  AND lower(entry_name) ~ '\.(exe|msi|msix|appx|dmg|pkg|deb|rpm)$'`,
+			"archive_software_entry", 0.80); err != nil {
+			return nil, fmt.Errorf("list archive software evidence candidates: %w", err)
 		}
 
 		if err := appendRows(`
@@ -379,7 +412,7 @@ func (s *Store) listIndexerExternalMatches(ctx context.Context, source, releaseI
 	return out, nil
 }
 
-func (s *Store) listIndexerPredbMatches(ctx context.Context, releaseID string) ([]IndexerPredbMatchSummary, error) {
+func (s *Store) listIndexerPredbMatches(ctx context.Context, release IndexerReleaseSummary, releaseID string) ([]IndexerPredbMatchSummary, error) {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return nil, fmt.Errorf("release id is required")
@@ -439,7 +472,184 @@ func (s *Store) listIndexerPredbMatches(ctx context.Context, releaseID string) (
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate predb matches for %s: %w", releaseID, err)
 	}
+	sizeEvidence, err := s.releaseDecodedPayloadSizeEvidence(ctx, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	annotateIndexerPredbMatches(release, sizeEvidence, out)
 	return out, nil
+}
+
+type releaseDecodedPayloadSizeEvidence struct {
+	SizeBytes int64
+	Source    string
+}
+
+func (s *Store) releaseDecodedPayloadSizeEvidence(ctx context.Context, releaseID string) (releaseDecodedPayloadSizeEvidence, error) {
+	var out releaseDecodedPayloadSizeEvidence
+	err := s.db.QueryRowContext(ctx, `
+		WITH payload_files AS (
+			SELECT
+				rf.binary_id,
+				rf.file_name,
+				rf.size_bytes,
+				LOWER(COALESCE(rf.file_name, '')) AS lower_name
+			FROM release_files rf
+			WHERE rf.release_id = $1
+			  AND COALESCE(rf.is_pars, FALSE) = FALSE
+			  AND LOWER(COALESCE(rf.file_name, '')) !~ '\.(nfo|sfv|srr|srs|nzb|par2|vol[0-9]+\+[0-9]+\.par2)$'
+		),
+		file_sizes AS (
+			SELECT
+				pf.file_name,
+				pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.(7z|zip)\.0*[0-9]+)$' AS is_split_archive,
+				pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.(7z|zip)(\.[0-9]+)?)$' AS is_archive_payload,
+				COALESCE(par2_size.size_bytes, yenc_size.size_bytes, NULLIF(pf.size_bytes, 0), observed_size.size_bytes, 0) AS size_bytes,
+				CASE
+					WHEN COALESCE(par2_size.size_bytes, 0) > 0 THEN 'par2_target'
+					WHEN COALESCE(yenc_size.size_bytes, 0) > 0 THEN 'yenc_or_subject_size'
+					WHEN COALESCE(pf.size_bytes, 0) > 0 THEN 'release_file_observed'
+					WHEN COALESCE(observed_size.size_bytes, 0) > 0 THEN 'observed_encoded_or_unknown'
+					ELSE ''
+				END AS size_source
+			FROM payload_files pf
+			LEFT JOIN LATERAL (
+				SELECT MAX(bpt.file_size) AS size_bytes
+				FROM binary_par2_targets bpt
+				WHERE bpt.release_id = $1
+				  AND LOWER(BTRIM(bpt.file_name)) = LOWER(BTRIM(pf.file_name))
+				  AND COALESCE(bpt.file_size, 0) > 0
+			) par2_size ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT MAX(p.yenc_file_size) AS size_bytes
+				FROM binary_parts bp
+				JOIN article_header_ingest_payloads p
+				  ON p.source_posted_at = bp.source_posted_at
+				 AND p.article_header_id = bp.article_header_id
+				WHERE bp.binary_id = pf.binary_id
+				  AND COALESCE(p.yenc_file_size, 0) > 0
+			) yenc_size ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT MAX(cf.size_bytes) AS size_bytes
+				FROM release_catalog_files cf
+				WHERE cf.release_id = $1
+				  AND LOWER(BTRIM(cf.file_name)) = LOWER(BTRIM(pf.file_name))
+				  AND COALESCE(cf.is_pars, FALSE) = FALSE
+				  AND COALESCE(cf.size_bytes, 0) > 0
+			) observed_size ON TRUE
+		),
+		size_summary AS (
+			SELECT
+				COALESCE(SUM(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS sum_size_bytes,
+				COALESCE(MAX(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS max_size_bytes,
+				COUNT(*) FILTER (WHERE is_archive_payload) AS archive_file_count,
+				COUNT(*) FILTER (WHERE is_split_archive) AS split_archive_file_count,
+				COUNT(*) FILTER (WHERE size_bytes > 0) AS sized_file_count,
+				COUNT(*) FILTER (WHERE size_source = 'par2_target') AS par2_file_count,
+				COUNT(*) FILTER (WHERE size_source = 'yenc_or_subject_size') AS yenc_file_count,
+				COUNT(*) FILTER (WHERE size_source IN ('release_file_observed', 'observed_encoded_or_unknown')) AS observed_file_count
+			FROM file_sizes
+		),
+		top_file AS (
+			SELECT size_source
+			FROM file_sizes
+			WHERE size_bytes > 0
+			ORDER BY size_bytes DESC, file_name
+			LIMIT 1
+		)
+		SELECT
+			CASE
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				THEN size_summary.sum_size_bytes
+				ELSE size_summary.max_size_bytes
+			END AS size_bytes,
+			CASE
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.observed_file_count > 0 THEN 'decoded_payload_sum_with_observed_fallback'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.par2_file_count = size_summary.sized_file_count THEN 'par2_target_sum'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0
+				  AND size_summary.yenc_file_count = size_summary.sized_file_count THEN 'yenc_or_subject_size_sum'
+				WHEN size_summary.archive_file_count >= 2
+				  AND size_summary.split_archive_file_count >= 1
+				  AND size_summary.sized_file_count > 0 THEN 'decoded_payload_sum'
+				ELSE COALESCE(top_file.size_source, '')
+			END AS size_source
+		FROM size_summary
+		LEFT JOIN top_file ON TRUE`, releaseID,
+	).Scan(&out.SizeBytes, &out.Source)
+	if err != nil {
+		return out, fmt.Errorf("load release decoded payload size evidence %s: %w", releaseID, err)
+	}
+	return out, nil
+}
+
+func annotateIndexerPredbMatches(release IndexerReleaseSummary, sizeEvidence releaseDecodedPayloadSizeEvidence, rows []IndexerPredbMatchSummary) {
+	for idx := range rows {
+		row := &rows[idx]
+		row.PayloadSizeBytes = sizeEvidence.SizeBytes
+		row.PayloadSizeSource = sizeEvidence.Source
+		if row.PayloadSizeSource == "" && row.PayloadSizeBytes <= 0 {
+			row.PayloadSizeBytes = release.SizeBytes
+			if row.PayloadSizeBytes > 0 {
+				row.PayloadSizeSource = "release_total"
+			}
+		}
+		row.PredbSizeBytes, row.SizeDeltaBytes, row.SizeDeltaPct = closestPredbSizeEvidence(row.PayloadSizeBytes, row.SizeKB)
+		if release.PostedAt != nil && row.PostedAt != nil {
+			delta := release.PostedAt.Sub(*row.PostedAt)
+			if delta < 0 {
+				delta = -delta
+			}
+			minutes := delta.Minutes()
+			row.PostedDeltaMinutes = &minutes
+		}
+		title := strings.ToLower(row.Title)
+		row.ResolutionMatch = release.PrimaryResolution != "" && strings.Contains(title, strings.ToLower(release.PrimaryResolution))
+		row.VideoCodecMatch = release.PrimaryVideoCodec != "" && strings.Contains(title, strings.ToLower(release.PrimaryVideoCodec))
+		row.AudioCodecMatch = release.PrimaryAudioCodec != "" && strings.Contains(title, strings.ToLower(release.PrimaryAudioCodec))
+		row.AutoApplyEligible = row.Confidence >= 0.90 && row.PostedDeltaMinutes != nil && *row.PostedDeltaMinutes <= 30
+		switch {
+		case row.Chosen:
+			row.AutoApplySkipReason = "chosen"
+		case row.AutoApplyEligible:
+			row.AutoApplySkipReason = ""
+		case row.Confidence < 0.90:
+			row.AutoApplySkipReason = "confidence below 0.90"
+		case row.PostedDeltaMinutes == nil:
+			row.AutoApplySkipReason = "posted time unavailable"
+		default:
+			row.AutoApplySkipReason = "posted delta exceeds 30 minutes"
+		}
+	}
+}
+
+func closestPredbSizeEvidence(payloadBytes int64, sizeKB float64) (int64, int64, float64) {
+	if payloadBytes <= 0 || sizeKB <= 0 {
+		return 0, 0, 0
+	}
+	kbBytes := int64(sizeKB * 1024)
+	mbBytes := int64(sizeKB * 1024 * 1024)
+	best := kbBytes
+	if absInt64PGIndex(payloadBytes-mbBytes) < absInt64PGIndex(payloadBytes-kbBytes) {
+		best = mbBytes
+	}
+	delta := absInt64PGIndex(payloadBytes - best)
+	return best, delta, float64(delta) / float64(payloadBytes)
+}
+
+func absInt64PGIndex(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (s *Store) listIndexerInspectionSummaries(ctx context.Context, whereClause string, args ...any) ([]IndexerInspectionSummary, error) {
@@ -524,9 +734,12 @@ func (s *Store) listIndexerInspectionArtifacts(ctx context.Context, binaryID int
 			signature,
 			source_kind,
 			metadata_json
-		FROM binary_inspection_artifacts
-		WHERE binary_id = $1
-		ORDER BY updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
+		FROM binary_core bc
+		JOIN binary_inspection_artifacts bia
+		  ON bia.source_posted_at = bc.source_posted_at
+		 AND bia.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		ORDER BY bia.updated_at DESC, stage_name, artifact_role, artifact_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list inspection artifacts for binary %d: %w", binaryID, err)
 	}
@@ -571,8 +784,11 @@ func (s *Store) listIndexerArchiveEntries(ctx context.Context, binaryID int64) (
 			media_type,
 			signature,
 			metadata_json
-		FROM binary_archive_entries
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_archive_entries bae
+		  ON bae.source_posted_at = bc.source_posted_at
+		 AND bae.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY entry_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list archive entries for binary %d: %w", binaryID, err)
@@ -623,8 +839,11 @@ func (s *Store) listIndexerMediaStreams(ctx context.Context, binaryID int64) ([]
 			default_disposition,
 			forced_disposition,
 			metadata_json
-		FROM binary_media_streams
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_media_streams bms
+		  ON bms.source_posted_at = bc.source_posted_at
+		 AND bms.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY stream_index, stream_type`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list media streams for binary %d: %w", binaryID, err)
@@ -671,9 +890,12 @@ func (s *Store) listIndexerTextEvidence(ctx context.Context, binaryID int64) ([]
 			text_value,
 			tokens_json,
 			metadata_json
-		FROM binary_text_evidence
-		WHERE binary_id = $1
-		ORDER BY updated_at DESC, stage_name, evidence_kind`, binaryID)
+		FROM binary_core bc
+		JOIN binary_text_evidence bte
+		  ON bte.source_posted_at = bc.source_posted_at
+		 AND bte.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
+		ORDER BY bte.updated_at DESC, stage_name, evidence_kind`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list text evidence for binary %d: %w", binaryID, err)
 	}
@@ -714,8 +936,11 @@ func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]Inde
 			recovery_blocks,
 			signature_ok,
 			metadata_json
-		FROM binary_par2_sets
-		WHERE binary_id = $1
+		FROM binary_core bc
+		JOIN binary_par2_sets bps
+		  ON bps.source_posted_at = bc.source_posted_at
+		 AND bps.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1
 		ORDER BY set_name`, binaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list par2 sets for binary %d: %w", binaryID, err)
@@ -748,17 +973,72 @@ func (s *Store) listIndexerPAR2Sets(ctx context.Context, binaryID int64) ([]Inde
 }
 
 func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]IndexerBinaryPartSummary, error) {
+	span, err := s.loadBinaryPartSourceSpan(ctx, binaryID)
+	if err != nil {
+		return nil, err
+	}
+	if span == nil {
+		return []IndexerBinaryPartSummary{}, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			article_header_id,
-			message_id,
-			part_number,
-			total_parts,
-			segment_bytes,
-			file_name
-		FROM binary_parts
-		WHERE binary_id = $1
-		ORDER BY part_number, id`, binaryID)
+			bp.article_header_id,
+			COALESCE(ah.provider_id, 0),
+			COALESCE(ah.newsgroup_id, 0),
+			COALESCE(ng.group_name, ''),
+			COALESCE(ah.article_number, 0),
+			bp.message_id,
+			COALESCE(p.subject, ''),
+			COALESCE(p.poster, ''),
+			ah.date_utc,
+			bp.part_number,
+			bp.total_parts,
+			bp.segment_bytes,
+			bp.file_name,
+			COALESCE(ah.bytes, 0),
+			COALESCE(ah.lines, 0),
+			COALESCE(p.subject_file_name, ''),
+			COALESCE(p.subject_file_index, 0),
+			COALESCE(p.subject_file_total, 0),
+			COALESCE(p.yenc_part_number, 0),
+			COALESCE(p.yenc_total_parts, 0),
+			COALESCE(p.yenc_file_size, 0),
+			COALESCE(wi.yenc_part_number, 0),
+			COALESCE(wi.yenc_total_parts, 0),
+			COALESCE(wi.yenc_file_size, 0),
+			COALESCE(wi.status, ''),
+			wi.ready_at,
+			COALESCE(wi.admission_reason, ''),
+			COALESCE(brc.recovered_kind, ''),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, '')
+		FROM binary_parts bp
+		LEFT JOIN article_headers ah
+		  ON ah.source_posted_at = bp.source_posted_at
+		 AND ah.id = bp.article_header_id
+		 AND ah.source_posted_at >= $1
+		 AND ah.source_posted_at <= $2
+		LEFT JOIN newsgroups ng ON ng.id = ah.newsgroup_id
+		LEFT JOIN article_header_ingest_payloads p
+		  ON p.source_posted_at = bp.source_posted_at
+		 AND p.article_header_id = bp.article_header_id
+		 AND p.source_posted_at >= $1
+		 AND p.source_posted_at <= $2
+		LEFT JOIN yenc_recovery_work_items wi
+		  ON wi.source_posted_at = bp.source_posted_at
+		 AND wi.article_header_id = bp.article_header_id
+		 AND wi.source_posted_at >= $1
+		 AND wi.source_posted_at <= $2
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bp.source_posted_at
+		 AND brc.binary_id = bp.binary_id
+		 AND brc.source_posted_at >= $1
+		 AND brc.source_posted_at <= $2
+		WHERE bp.source_posted_at >= $1
+		  AND bp.source_posted_at <= $2
+		  AND bp.binary_id = $3
+		ORDER BY bp.part_number, bp.id`, span.Min, span.Max, span.BinaryID)
 	if err != nil {
 		return nil, fmt.Errorf("list binary parts for binary %d: %w", binaryID, err)
 	}
@@ -767,15 +1047,48 @@ func (s *Store) listIndexerBinaryParts(ctx context.Context, binaryID int64) ([]I
 	out := make([]IndexerBinaryPartSummary, 0, 128)
 	for rows.Next() {
 		var item IndexerBinaryPartSummary
+		var dateUTC, readyAt sql.NullTime
 		if err := rows.Scan(
 			&item.ArticleHeaderID,
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.GroupName,
+			&item.ArticleNumber,
 			&item.MessageID,
+			&item.Subject,
+			&item.Poster,
+			&dateUTC,
 			&item.PartNumber,
 			&item.TotalParts,
 			&item.SegmentBytes,
 			&item.FileName,
+			&item.ArticleBytes,
+			&item.ArticleLines,
+			&item.SubjectFileName,
+			&item.SubjectFileIndex,
+			&item.SubjectFileTotal,
+			&item.YEncPartNumber,
+			&item.YEncTotalParts,
+			&item.YEncFileSize,
+			&item.RecoveredPartNumber,
+			&item.RecoveredTotalParts,
+			&item.RecoveredFileSize,
+			&item.YEncRecoveryStatus,
+			&readyAt,
+			&item.YEncRecoveryError,
+			&item.RecoveredKind,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
 		); err != nil {
 			return nil, fmt.Errorf("scan binary part summary: %w", err)
+		}
+		if dateUTC.Valid {
+			t := dateUTC.Time.UTC()
+			item.DateUTC = &t
+		}
+		if readyAt.Valid {
+			t := readyAt.Time.UTC()
+			item.YEncRecoveryReadyAt = &t
 		}
 		out = append(out, item)
 	}
@@ -802,6 +1115,7 @@ const binaryInspectionCandidateStateCTE = `
 binary_state AS (
 	SELECT
 		bc.binary_id AS id,
+		bc.source_posted_at,
 		bc.provider_id,
 		bc.newsgroup_id,
 		bc.poster_id,
@@ -837,19 +1151,31 @@ binary_state AS (
 			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
 		) AS updated_at
 	FROM binary_core bc
-	JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-	JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = bc.source_posted_at
+	 AND bic.binary_id = bc.binary_id
+	JOIN binary_observation_stats bos
+	  ON bos.source_posted_at = bc.source_posted_at
+	 AND bos.binary_id = bc.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = bc.source_posted_at
+	 AND brc.binary_id = bc.binary_id
 )`
 
 const binaryInspectionPAR2CandidateStateCTE = `
 candidate_source AS (
 	SELECT DISTINCT ON (rf.binary_id)
 		rf.binary_id,
+		bc.source_posted_at,
 		rf.release_id
 	FROM release_files rf
-	JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = rf.binary_id
+	JOIN binary_core bc ON bc.binary_id = rf.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = bc.source_posted_at
+	 AND bic.binary_id = rf.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = bc.source_posted_at
+	 AND brc.binary_id = rf.binary_id
 	WHERE rf.binary_id > 0
 	  AND (
 		rf.is_pars = TRUE OR
@@ -862,6 +1188,7 @@ candidate_source AS (
 binary_state AS (
 	SELECT
 		bc.binary_id AS id,
+		bc.source_posted_at,
 		cs.release_id,
 		bc.provider_id,
 		bc.newsgroup_id,
@@ -898,10 +1225,18 @@ binary_state AS (
 			COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
 		) AS updated_at
 	FROM candidate_source cs
-	JOIN binary_core bc ON bc.binary_id = cs.binary_id
-	JOIN binary_identity_current bic ON bic.binary_id = cs.binary_id
-	JOIN binary_observation_stats bos ON bos.binary_id = cs.binary_id
-	LEFT JOIN binary_recovery_current brc ON brc.binary_id = cs.binary_id
+	JOIN binary_core bc
+	  ON bc.source_posted_at = cs.source_posted_at
+	 AND bc.binary_id = cs.binary_id
+	JOIN binary_identity_current bic
+	  ON bic.source_posted_at = cs.source_posted_at
+	 AND bic.binary_id = cs.binary_id
+	JOIN binary_observation_stats bos
+	  ON bos.source_posted_at = cs.source_posted_at
+	 AND bos.binary_id = cs.binary_id
+	LEFT JOIN binary_recovery_current brc
+	  ON brc.source_posted_at = cs.source_posted_at
+	 AND brc.binary_id = cs.binary_id
 )`
 
 func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInspectionQueryer, stageName string, limit int, opts BinaryInspectionCandidateOptions) ([]BinaryInspectionCandidate, error) {
@@ -982,6 +1317,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			SELECT 1
 			FROM binary_inspections cfi
 			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
 			  AND cfi.binary_id = b.id
 			  AND cfi.status = 'completed'
 			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
@@ -1000,6 +1336,14 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			` + errorRerunPredicate
 	if stageName == "inspect_media" {
 		rerunPredicate += `
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'probe_skip_reason', '') = 'ffprobe_failed'
+			)
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'media_title_extractor_version', '') <> 'v2'
+			)
 			OR (
 				abi.updated_at IS NOT NULL AND (
 					bi.id IS NULL OR
@@ -1061,7 +1405,8 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 					EXISTS (
 						SELECT 1
 						FROM binary_par2_targets bpt
-						WHERE bpt.binary_id = b.id
+						WHERE bpt.source_posted_at = b.source_posted_at
+						  AND bpt.binary_id = b.id
 					) AS has_targets,
 					(
 						COALESCE(bi.status, '') = 'completed' AND
@@ -1077,8 +1422,9 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
 				LEFT JOIN binary_inspections bi
-					ON bi.stage_name = $1
-					AND bi.binary_id = b.id
+				  ON bi.source_posted_at = b.source_posted_at
+				 AND bi.stage_name = $1
+				 AND bi.binary_id = b.id
 				WHERE (
 					LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
 					COALESCE(b.recovered_kind, '') = 'par2' OR
@@ -1204,13 +1550,20 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
 			FROM binary_identity_current bic
-			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
 			LEFT JOIN posters p ON p.id = bc.poster_id
 			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = $1
-				AND bi.binary_id = bic.binary_id
+			  ON bi.source_posted_at = bic.source_posted_at
+			 AND bi.stage_name = $1
+			 AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
 			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 			  AND (
@@ -1272,11 +1625,13 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = $1
-			AND bi.binary_id = b.id
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = $1
+		 AND bi.binary_id = b.id
 		LEFT JOIN binary_inspections abi
-			ON abi.stage_name = 'inspect_archive'
-			AND abi.binary_id = b.id
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
 			` + rerunPredicate + `
@@ -1341,11 +1696,13 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				JOIN release_files rf ON rf.binary_id = b.id
 				JOIN releases r ON r.release_id = rf.release_id
 				LEFT JOIN binary_inspections bi
-					ON bi.stage_name = $1
-					AND bi.binary_id = b.id
+				  ON bi.source_posted_at = b.source_posted_at
+				 AND bi.stage_name = $1
+				 AND bi.binary_id = b.id
 				LEFT JOIN binary_inspections abi
-					ON abi.stage_name = 'inspect_archive'
-					AND abi.binary_id = b.id
+				  ON abi.source_posted_at = b.source_posted_at
+				 AND abi.stage_name = 'inspect_archive'
+				 AND abi.binary_id = b.id
 				WHERE ` + filter + `
 				  AND (` + representativePredicate + `)
 				  AND (
@@ -1596,9 +1953,10 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			SELECT
 				req.binary_id,
 				req.requested_release_id,
-				req.source_updated_at,
-				req.lookup_binary_id,
-				bc.binary_id AS locked_binary_id
+					req.source_updated_at,
+					req.lookup_binary_id,
+					bc.binary_id AS locked_binary_id,
+					COALESCE(bc.source_posted_at, NOW()) AS source_posted_at
 			FROM requested req
 			JOIN binary_core bc
 			  ON bc.binary_id = req.binary_id
@@ -1607,8 +1965,9 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		INSERT INTO binary_inspections (
 			stage_name,
 			binary_id,
-			release_id,
-			status,
+				release_id,
+				source_posted_at,
+				status,
 			started_at,
 			finished_at,
 			error_text,
@@ -1622,7 +1981,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		)
 		SELECT
 			$1,
-			req.locked_binary_id,
+				req.locked_binary_id,
 			COALESCE(
 				CASE
 					WHEN req.requested_release_id <> '' AND EXISTS (
@@ -1639,8 +1998,9 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 					ORDER BY rf.release_id
 					LIMIT 1
 				)
-			),
-			'running',
+				),
+				req.source_posted_at,
+				'running',
 			NOW(),
 			NULL,
 			'',
@@ -1651,9 +2011,9 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			$2,
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
-		FROM locked_binaries req
-		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+			FROM locked_binaries req
+			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
+			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
 		    started_at = NOW(),
 		    finished_at = NULL,
@@ -1702,17 +2062,18 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	const directInspectionClaimLeaseSeconds = 900
 
 	_, err := s.db.ExecContext(ctx, `
-		WITH locked_binary AS (
-			SELECT bc.binary_id
-			FROM binary_core bc
-			WHERE bc.binary_id = $2
+			WITH locked_binary AS (
+				SELECT bc.binary_id, COALESCE(bc.source_posted_at, NOW()) AS source_posted_at
+				FROM binary_core bc
+				WHERE bc.binary_id = $2
 			FOR KEY SHARE
 		)
 		INSERT INTO binary_inspections (
 			stage_name,
-			binary_id,
-			release_id,
-			status,
+				binary_id,
+				release_id,
+				source_posted_at,
+				status,
 			started_at,
 			finished_at,
 			error_text,
@@ -1725,8 +2086,8 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			updated_at
 		)
 			SELECT
-			$1,
-			lb.binary_id,
+				$1,
+				lb.binary_id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -1740,8 +2101,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 					ORDER BY rf.release_id
 					LIMIT 1
 				)
-			),
-			'running',
+				),
+				lb.source_posted_at,
+				'running',
 			NOW(),
 			NULL,
 			'',
@@ -1752,9 +2114,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 			$5,
 			NOW() + ($6::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
-		FROM locked_binary lb
-		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+			FROM locked_binary lb
+			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
+			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
 		    started_at = NOW(),
 		    finished_at = NULL,
@@ -2271,15 +2633,15 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE binary_id = $1`, binaryID); err != nil {
-		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_archive_entries WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
+		return fmt.Errorf("delete archive entries %d: %w", binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, archiveEntryReleaseIDs(rows))
@@ -2299,6 +2661,7 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			strings.TrimSpace(row.EntryName),
 			row.IsDir,
@@ -2316,6 +2679,7 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_archive_entries (
 				binary_id,
+				source_posted_at,
 				release_id,
 				entry_name,
 				is_dir,
@@ -2349,15 +2713,15 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 	}
 	defer rollbackTx(tx)
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE binary_id = $1`, binaryID); err != nil {
-		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_media_streams WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
+		return fmt.Errorf("delete media streams %d: %w", binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, mediaStreamReleaseIDs(rows))
@@ -2377,6 +2741,7 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			row.StreamIndex,
 			strings.TrimSpace(row.StreamType),
@@ -2399,6 +2764,7 @@ func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, r
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_media_streams (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stream_index,
 				stream_type,
@@ -2441,9 +2807,17 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	}
 	defer rollbackTx(tx)
 
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return tx.Commit()
+	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM binary_text_evidence
-		WHERE binary_id = $1 AND stage_name = $2`,
+		WHERE source_posted_at = $1 AND binary_id = $2 AND stage_name = $3`,
+		sourcePostedAt,
 		binaryID,
 		stageName,
 	); err != nil {
@@ -2466,6 +2840,7 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			stageName,
 			strings.TrimSpace(sanitizeUTF8(row.EvidenceKind)),
@@ -2479,6 +2854,7 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_text_evidence (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stage_name,
 				evidence_kind,
@@ -2628,20 +3004,21 @@ func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2Inspect
 }
 
 func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sql.Tx, stageName string, binaryID int64, rows []BinaryInspectionArtifactRecord) error {
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM binary_inspection_artifacts
-		WHERE binary_id = $1 AND stage_name = $2`,
-		binaryID,
-		stageName,
-	); err != nil {
-		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
-	}
-	exists, err := binaryStillExistsInTx(ctx, tx, binaryID)
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_inspection_artifacts
+		WHERE source_posted_at = $1 AND binary_id = $2 AND stage_name = $3`,
+		sourcePostedAt,
+		binaryID,
+		stageName,
+	); err != nil {
+		return fmt.Errorf("delete inspection artifacts %s/%d: %w", stageName, binaryID, err)
 	}
 
 	existingReleaseIDs, err := s.existingReleaseIDsForInspectionRows(ctx, tx, artifactReleaseIDs(rows))
@@ -2661,6 +3038,7 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			stageName,
 			strings.TrimSpace(row.ArtifactRole),
@@ -2678,6 +3056,7 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_inspection_artifacts (
 				binary_id,
+				source_posted_at,
 				release_id,
 				stage_name,
 				artifact_role,
@@ -2697,7 +3076,14 @@ func (s *Store) replaceBinaryInspectionArtifactsInTx(ctx context.Context, tx *sq
 }
 
 func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2SetRecord) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE binary_id = $1`, binaryID); err != nil {
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_sets WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
 		return fmt.Errorf("delete par2 sets %d: %w", binaryID, err)
 	}
 
@@ -2718,6 +3104,7 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			strings.TrimSpace(row.SetName),
 			strings.TrimSpace(row.BaseName),
@@ -2732,6 +3119,7 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_sets (
 				binary_id,
+				source_posted_at,
 				release_id,
 				set_name,
 				base_name,
@@ -2749,7 +3137,14 @@ func (s *Store) replaceBinaryPAR2SetsInTx(ctx context.Context, tx *sql.Tx, binar
 }
 
 func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, binaryID int64, rows []BinaryPAR2TargetRecord) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE binary_id = $1`, binaryID); err != nil {
+	sourcePostedAt, exists, err := binarySourcePostedAtInTx(ctx, tx, binaryID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM binary_par2_targets WHERE source_posted_at = $1 AND binary_id = $2`, sourcePostedAt, binaryID); err != nil {
 		return fmt.Errorf("delete par2 targets %d: %w", binaryID, err)
 	}
 
@@ -2774,6 +3169,7 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 		}
 		insertRows = append(insertRows, []any{
 			binaryID,
+			sourcePostedAt,
 			releaseID,
 			fileName,
 			row.FileSize,
@@ -2784,6 +3180,7 @@ func (s *Store) replaceBinaryPAR2TargetsInTx(ctx context.Context, tx *sql.Tx, bi
 	if err := execInspectionReplaceBatch(ctx, tx, `
 			INSERT INTO binary_par2_targets (
 				binary_id,
+				source_posted_at,
 				release_id,
 				file_name,
 				file_size,
@@ -3015,9 +3412,10 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 	_, err = execer.ExecContext(ctx, `
 		INSERT INTO binary_inspections (
 			stage_name,
-			binary_id,
-			release_id,
-			status,
+				binary_id,
+				release_id,
+				source_posted_at,
+				status,
 			started_at,
 			finished_at,
 			error_text,
@@ -3028,8 +3426,8 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 			updated_at
 		)
 		SELECT
-			$1,
-			bc.binary_id,
+				$1,
+				bc.binary_id,
 			COALESCE(
 				CASE
 					WHEN $3::TEXT <> '' AND EXISTS (SELECT 1 FROM releases r WHERE r.release_id = $3)
@@ -3043,8 +3441,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 					ORDER BY rf.release_id
 					LIMIT 1
 				)
-			),
-			$4,
+				),
+				COALESCE(bc.source_posted_at, NOW()),
+				$4,
 			NOW(),
 			NOW(),
 			$5,
@@ -3053,10 +3452,10 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 			$8,
 			$9,
 			NOW()
-		FROM binary_core bc
-		WHERE bc.binary_id = $2
-		ON CONFLICT (stage_name, binary_id) DO UPDATE
-		SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
+			FROM binary_core bc
+			WHERE bc.binary_id = $2
+			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
+			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = EXCLUDED.status,
 		    finished_at = NOW(),
 		    error_text = EXCLUDED.error_text,

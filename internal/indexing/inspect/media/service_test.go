@@ -31,13 +31,14 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 		}},
 	}
 
-	ffprobeJSON := `{"format":{"duration":"5400","bit_rate":"9000000","format_name":"matroska","format_long_name":"Matroska","probe_score":100},"streams":[{"index":0,"codec_type":"video","codec_name":"hevc","codec_long_name":"H.265 / HEVC","width":1920,"height":1080,"duration":"5400","bit_rate":"8000000","disposition":{"default":1,"forced":0}},{"index":1,"codec_type":"audio","codec_name":"aac","codec_long_name":"AAC","channels":6,"duration":"5400","bit_rate":"384000","tags":{"language":"eng"},"disposition":{"default":1,"forced":0}},{"index":2,"codec_type":"subtitle","codec_name":"subrip","codec_long_name":"SubRip","duration":"5400","tags":{"language":"spa"},"disposition":{"default":0,"forced":0}}]}`
+	ffprobeJSON := `{"format":{"duration":"5400","bit_rate":"9000000","format_name":"matroska","format_long_name":"Matroska","probe_score":100,"tags":{"title":"Example Feature 2026"}},"streams":[{"index":0,"codec_type":"video","codec_name":"hevc","codec_long_name":"H.265 / HEVC","width":1920,"height":1080,"duration":"5400","bit_rate":"8000000","disposition":{"default":1,"forced":0}},{"index":1,"codec_type":"audio","codec_name":"aac","codec_long_name":"AAC","channels":6,"duration":"5400","bit_rate":"384000","tags":{"language":"eng"},"disposition":{"default":1,"forced":0}},{"index":2,"codec_type":"subtitle","codec_name":"subrip","codec_long_name":"SubRip","duration":"5400","tags":{"language":"spa"},"disposition":{"default":0,"forced":0}}]}`
 
+	runner := &mediaRunner{output: []byte(ffprobeJSON)}
 	svc := NewService(
 		repo,
 		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
 		mediaFetcher{body: []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00}, fileName: "example.feature.2026.mkv"},
-		mediaRunner{output: []byte(ffprobeJSON)},
+		runner,
 		nil,
 		testMediaLogger{},
 		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
@@ -48,6 +49,9 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 
 	if len(repo.mediaStreams) != 3 {
 		t.Fatalf("expected 3 media streams, got %d", len(repo.mediaStreams))
+	}
+	if runner.runCalls != 0 || runner.runInputCall != 1 || runner.inputBytes != 8 {
+		t.Fatalf("expected one prefix RunInput call and no file Run calls, got run=%d runInput=%d inputBytes=%d", runner.runCalls, runner.runInputCall, runner.inputBytes)
 	}
 	if len(repo.releaseUpdates) != 1 {
 		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
@@ -66,14 +70,23 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 	if update.Passworded != nil || update.PasswordedKnown != nil || update.PasswordedUnknown != nil || update.Encrypted != nil {
 		t.Fatalf("expected media stage not to touch password/encryption flags, got %+v", update)
 	}
-	if len(repo.completed) != 1 || repo.completed[0].Summary["probe_mode"] != "ffprobe_direct" {
-		t.Fatalf("expected ffprobe_direct summary, got %+v", repo.completed)
+	if len(repo.completed) != 1 || repo.completed[0].Summary["probe_mode"] != "ffprobe_direct_prefix" {
+		t.Fatalf("expected ffprobe_direct_prefix summary, got %+v", repo.completed)
+	}
+	if repo.completed[0].Summary["media_title"] != "Example Feature 2026" {
+		t.Fatalf("expected media title summary, got %+v", repo.completed[0].Summary)
+	}
+	if repo.completed[0].MaterializedBytes != 8 {
+		t.Fatalf("expected direct media to materialize only prefix bytes, got %d", repo.completed[0].MaterializedBytes)
 	}
 	if _, ok := repo.completed[0].Summary["workspace_path"]; ok {
 		t.Fatalf("expected no transient workspace_path in summary, got %+v", repo.completed[0].Summary)
 	}
 	if len(repo.artifacts) != 1 {
 		t.Fatalf("expected one artifact row, got %+v", repo.artifacts)
+	}
+	if repo.artifacts[0].ArtifactRole != "decoded_media_prefix" || repo.artifacts[0].BytesTotal != 8 {
+		t.Fatalf("expected decoded_media_prefix artifact, got %+v", repo.artifacts[0])
 	}
 	if repo.artifacts[0].ArtifactPath != "" {
 		t.Fatalf("expected no transient artifact path, got %+v", repo.artifacts[0])
@@ -135,10 +148,99 @@ func TestRunOnceSkipsArchiveProbeWhenArchiveEntryAlreadyHasStrongMediaSignals(t 
 	}
 }
 
+func TestRunOnceFailsDirectMediaProbeWhenFFProbeFails(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        52,
+			ReleaseID:       "rel-media-fail",
+			ReleaseTitle:    "Broken.Feature.2026",
+			FileName:        "broken.feature.2026.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      8,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        602,
+			BinaryID:  52,
+			FileName:  "broken.feature.2026.mkv",
+			SizeBytes: 8,
+		}},
+	}
+
+	runner := &mediaRunner{err: fmt.Errorf("Invalid data found when processing input")}
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{body: []byte{0, 0, 0, 0, 0, 0, 0, 0}, fileName: "broken.feature.2026.mkv"},
+		runner,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.completed) != 0 {
+		t.Fatalf("expected no completed media inspection, got %+v", repo.completed)
+	}
+	if runner.runCalls != 0 || runner.runInputCall != 1 || runner.inputBytes != 8 {
+		t.Fatalf("expected failed direct media probe to use one prefix RunInput call, got run=%d runInput=%d inputBytes=%d", runner.runCalls, runner.runInputCall, runner.inputBytes)
+	}
+	if len(repo.failed) != 1 {
+		t.Fatalf("expected one failed media inspection, got %+v", repo.failed)
+	}
+	if repo.failed[0].Summary["probe_skip_reason"] != "ffprobe_failed" {
+		t.Fatalf("expected ffprobe_failed summary, got %+v", repo.failed[0].Summary)
+	}
+	if len(repo.releaseUpdates) != 0 {
+		t.Fatalf("expected failed probe not to update release media metadata, got %+v", repo.releaseUpdates)
+	}
+}
+
+func TestRunOnceSkipsCandidateWithoutReleaseID(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        53,
+			FileName:        "orphan.feature.2026.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      8,
+		}},
+	}
+
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{body: []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00}, fileName: "orphan.feature.2026.mkv"},
+		&mediaRunner{},
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.failed) != 0 {
+		t.Fatalf("expected missing release id to be a completed skip, got failed=%+v", repo.failed)
+	}
+	if len(repo.completed) != 1 {
+		t.Fatalf("expected one completed skip, got %+v", repo.completed)
+	}
+	if repo.completed[0].Summary["probe_skip_reason"] != "missing_release_id" {
+		t.Fatalf("expected missing_release_id skip, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.releaseUpdates) != 0 || len(repo.mediaStreams) != 0 || len(repo.artifacts) != 0 {
+		t.Fatalf("expected no release/media side effects, updates=%+v streams=%+v artifacts=%+v", repo.releaseUpdates, repo.mediaStreams, repo.artifacts)
+	}
+}
+
 type fakeMediaRepository struct {
 	candidates     []pgindex.BinaryInspectionCandidate
 	files          []pgindex.CatalogReleaseFile
 	completed      []pgindex.BinaryInspectionRecord
+	failed         []pgindex.BinaryInspectionRecord
 	artifacts      []pgindex.BinaryInspectionArtifactRecord
 	mediaStreams   []pgindex.BinaryMediaStreamRecord
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
@@ -161,7 +263,8 @@ func (f *fakeMediaRepository) CompleteBinaryInspection(_ context.Context, in pgi
 	return nil
 }
 
-func (f *fakeMediaRepository) FailBinaryInspection(context.Context, pgindex.BinaryInspectionRecord) error {
+func (f *fakeMediaRepository) FailBinaryInspection(_ context.Context, in pgindex.BinaryInspectionRecord) error {
+	f.failed = append(f.failed, in)
 	return nil
 }
 
@@ -203,15 +306,25 @@ func (f mediaFetcher) Fetch(context.Context, string, []string) (io.Reader, error
 }
 
 type mediaRunner struct {
-	output []byte
+	output       []byte
+	err          error
+	runCalls     int
+	runInputCall int
+	inputBytes   int
 }
 
-func (f mediaRunner) Run(context.Context, string, ...string) ([]byte, error) {
-	return f.output, nil
+func (f *mediaRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	f.runCalls++
+	return f.output, f.err
 }
 
-func (f mediaRunner) RunInput(context.Context, io.Reader, string, ...string) ([]byte, error) {
-	return f.output, nil
+func (f *mediaRunner) RunInput(_ context.Context, input io.Reader, _ string, _ ...string) ([]byte, error) {
+	f.runInputCall++
+	if input != nil {
+		payload, _ := io.ReadAll(input)
+		f.inputBytes += len(payload)
+	}
+	return f.output, f.err
 }
 
 type testMediaLogger struct{}

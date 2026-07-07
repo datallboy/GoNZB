@@ -93,6 +93,7 @@ type IndexingStageRuntimeSettings struct {
 	TargetWindowStart       string  `json:"target_window_start,omitempty"`
 	TargetWindowEnd         string  `json:"target_window_end,omitempty"`
 	TargetWindowPct         int     `json:"target_window_pct,omitempty"`
+	FetchTimeoutSeconds     int     `json:"fetch_timeout_seconds,omitempty"`
 	NewestPct               int     `json:"newest_pct"`
 }
 
@@ -104,6 +105,48 @@ type IndexingSourceWindowRuntimeSettings struct {
 	ResumeOpenHeaders  int  `json:"resume_open_headers,omitempty"`
 	MaxBlockingYEnc    int  `json:"max_blocking_yenc,omitempty"`
 	ResumeBlockingYEnc int  `json:"resume_blocking_yenc,omitempty"`
+}
+
+type IndexingRetentionRuntimeSettings struct {
+	RawStageHotHours                int  `json:"raw_stage_hot_hours,omitempty"`
+	RawStageWarmHours               int  `json:"raw_stage_warm_hours,omitempty"`
+	RawStageColdHours               int  `json:"raw_stage_cold_hours,omitempty"`
+	FailedProbeHours                int  `json:"failed_probe_hours,omitempty"`
+	ArchivedReleaseDetailGraceHours int  `json:"archived_release_detail_grace_hours,omitempty"`
+	MetadataIncompleteReleaseHours  int  `json:"metadata_incomplete_release_hours,omitempty"`
+	CreatePartitionsDaysBefore      int  `json:"create_partitions_days_before,omitempty"`
+	CreatePartitionsDaysAhead       int  `json:"create_partitions_days_ahead,omitempty"`
+	PurgeDryRunDefault              bool `json:"purge_dry_run_default,omitempty"`
+}
+
+type IndexingRecoveryAdmissionRuntimeSettings struct {
+	TargetHotLagHours           int `json:"target_hot_lag_hours,omitempty"`
+	TargetWarmLagHours          int `json:"target_warm_lag_hours,omitempty"`
+	SoftQueueHours              int `json:"soft_queue_hours,omitempty"`
+	HardQueueMultiplier         int `json:"hard_queue_multiplier,omitempty"`
+	AbsoluteHardQueueCap        int `json:"absolute_hard_queue_cap,omitempty"`
+	EWMAWindowMinutes           int `json:"ewma_window_minutes,omitempty"`
+	BootstrapProbesPerHour      int `json:"bootstrap_probes_per_hour,omitempty"`
+	Priority0OverflowCap        int `json:"priority0_overflow_cap,omitempty"`
+	Priority0ReservoirBatches   int `json:"priority0_reservoir_batches,omitempty"`
+	NearTimeCohortBucketMinutes int `json:"near_time_cohort_bucket_minutes,omitempty"`
+}
+
+type IndexingScrapeTierRuntimeSettings struct {
+	HotWindowMinutes          int  `json:"hot_window_minutes,omitempty"`
+	WarmWindowMinutes         int  `json:"warm_window_minutes,omitempty"`
+	ColdSampleHeaders         int  `json:"cold_sample_headers,omitempty"`
+	MaxArticlesPerGroupWindow int  `json:"max_articles_per_group_window,omitempty"`
+	AssembleBacklogHighWater  int  `json:"assemble_backlog_high_water,omitempty"`
+	AssembleBacklogLowWater   int  `json:"assemble_backlog_low_water,omitempty"`
+	AllowGlobalDailyGate      bool `json:"allow_global_daily_gate,omitempty"`
+}
+
+type IndexingDeferredBackfillRuntimeSettings struct {
+	Enabled                  bool    `json:"enabled,omitempty"`
+	MaxRangesPerRun          int     `json:"max_ranges_per_run,omitempty"`
+	MaxArticlesPerRangeChunk int     `json:"max_articles_per_range_chunk,omitempty"`
+	RunOnlyBelowQueueRatio   float64 `json:"run_only_below_queue_ratio,omitempty"`
 }
 
 type IndexingReleaseRuntimeSettings struct {
@@ -121,6 +164,7 @@ type IndexingReleaseRuntimeSettings struct {
 	PublicMinIdentityStatus                         string  `json:"public_min_identity_status,omitempty"`
 	PublicRequireInspection                         bool    `json:"public_require_inspection,omitempty"`
 	PublicRequireEnrichment                         bool    `json:"public_require_enrichment,omitempty"`
+	PublicRequireClearTitle                         bool    `json:"public_require_clear_title,omitempty"`
 	PublicRequirePayloadComplete                    bool    `json:"public_require_payload_complete,omitempty"`
 	PublicRequireExpectedFileCountComplete          bool    `json:"public_require_expected_file_count_complete,omitempty"`
 	PublicRequirePAR2                               bool    `json:"public_require_par2,omitempty"`
@@ -241,9 +285,14 @@ type IndexingRuntimeSettings struct {
 	ScrapeBackfill               IndexingStageRuntimeSettings                      `json:"scrape_backfill,omitempty"`
 	PosterMaterialize            IndexingStageRuntimeSettings                      `json:"poster_materialize,omitempty"`
 	CrosspostPopularityRefresh   IndexingStageRuntimeSettings                      `json:"crosspost_popularity_refresh,omitempty"`
+	ArticleCohortSchedule        IndexingStageRuntimeSettings                      `json:"article_cohort_schedule,omitempty"`
 	Assemble                     IndexingStageRuntimeSettings                      `json:"assemble,omitempty"`
 	RecoverYEnc                  IndexingStageRuntimeSettings                      `json:"recover_yenc,omitempty"`
 	SourceWindow                 IndexingSourceWindowRuntimeSettings               `json:"source_window,omitempty"`
+	Retention                    IndexingRetentionRuntimeSettings                  `json:"retention,omitempty"`
+	RecoveryAdmission            IndexingRecoveryAdmissionRuntimeSettings          `json:"recovery_admission,omitempty"`
+	ScrapeTiers                  IndexingScrapeTierRuntimeSettings                 `json:"scrape_tiers,omitempty"`
+	DeferredBackfill             IndexingDeferredBackfillRuntimeSettings           `json:"deferred_backfill,omitempty"`
 	ReleaseSummaryRefresh        IndexingStageRuntimeSettings                      `json:"release_summary_refresh,omitempty"`
 	Release                      IndexingReleaseRuntimeSettings                    `json:"release,omitempty"`
 	ReleaseGenerateNZB           IndexingStageRuntimeSettings                      `json:"release_generate_nzb,omitempty"`

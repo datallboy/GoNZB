@@ -52,6 +52,15 @@ type YEncRecoverySelectionOptions struct {
 type YEncRecoverySelectionStats struct {
 	BatchRequested    int
 	BatchSelected     int
+	ReadyCount        int
+	Priority0Ready    int
+	PrioritySeedLimit int
+	PrioritySeeded    int64
+	PriorityRetired   int64
+	GenericSeedLimit  int
+	GenericSeeded     int64
+	GenericRetired    int64
+	SeedDuration      time.Duration
 	WindowedRequested int
 	NewestRequested   int
 	SelectedWindowed  int
@@ -122,6 +131,7 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if limit <= 0 {
 		limit = 100
 	}
+	stats := YEncRecoverySelectionStats{BatchRequested: limit}
 
 	if _, err := s.retireStaleReadyYEncRecoveryWorkItems(ctx); err != nil {
 		return nil, err
@@ -131,16 +141,57 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 	if err != nil {
 		return nil, err
 	}
+	stats.ReadyCount = readyCount
 	if readyCount > yencRecoverySeedScanLowYieldThreshold {
 		s.clearYEncRecoverySeedScanBackoff()
 	}
+	priority0Ready, err := s.countReadyYEncRecoveryPriority0Candidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	stats.Priority0Ready = priority0Ready
+	priority0Target := limit * s.yEncPriority0ReservoirBatches(ctx)
+	if priority0Target < limit {
+		priority0Target = limit
+	}
+	if priority0Ready < priority0Target && !s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
+		seedLimit := priority0Target - priority0Ready
+		if seedLimit < limit/2 {
+			seedLimit = limit / 2
+		}
+		if seedLimit <= 0 {
+			seedLimit = limit
+		}
+		if seedLimit > yencRecoveryWorkItemSeedLimit {
+			seedLimit = yencRecoveryWorkItemSeedLimit
+		}
+		stats.PrioritySeedLimit = seedLimit
+		seedStarted := time.Now()
+		upserted, retired, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		stats.SeedDuration += time.Since(seedStarted)
+		stats.PrioritySeeded = upserted
+		stats.PriorityRetired = retired
+		if seedErr != nil {
+			return nil, seedErr
+		}
+		s.recordYEncRecoverySeedScanResult(time.Now(), priority0Ready, upserted)
+		if upserted > 0 {
+			s.clearYEncRecoverySeedScanBackoff()
+		}
+	}
 	if readyCount == 0 {
-		if _, _, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit); seedErr != nil {
+		seedStarted := time.Now()
+		upserted, retired, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit)
+		stats.SeedDuration += time.Since(seedStarted)
+		stats.GenericSeedLimit = limit
+		stats.GenericSeeded = upserted
+		stats.GenericRetired = retired
+		if seedErr != nil {
 			return nil, seedErr
 		}
 	}
 
-	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts)
+	return s.listReadyYEncRecoveryCandidates(ctx, limit, opts, stats)
 }
 
 func (s *Store) LastYEncRecoverySelectionStats() YEncRecoverySelectionStats {
@@ -183,9 +234,6 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 	if limit <= 0 {
 		limit = yencRecoveryWorkItemSeedLimit
 	}
-	if s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
-		return 0, 0, nil
-	}
 	readyCount, err := s.countReadyYEncRecoveryCandidates(ctx, limit)
 	if err != nil {
 		return 0, 0, err
@@ -194,6 +242,9 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 		if readyCount > yencRecoverySeedScanLowYieldThreshold {
 			s.clearYEncRecoverySeedScanBackoff()
 		}
+		return 0, 0, nil
+	}
+	if s.shouldBackoffYEncRecoverySeedScan(time.Now()) {
 		return 0, 0, nil
 	}
 	seedLimit := limit
@@ -206,6 +257,35 @@ func (s *Store) maybeBackfillYEncRecoveryWorkItems(ctx context.Context, limit in
 	}
 	s.recordYEncRecoverySeedScanResult(time.Now(), readyCount, upserted)
 	return upserted, retired, nil
+}
+
+func (s *Store) countReadyYEncRecoveryPriority0Candidates(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	var count int
+	windowLimit := yencRecoveryReadyWindowLimit(limit)
+	if err := s.withParallelGatherDisabledTx(ctx, true, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			WITH ready_window AS (
+				SELECT wi.binary_id
+				FROM yenc_recovery_work_items wi
+				WHERE wi.status = 'ready'
+				  AND wi.ready_at <= NOW()
+				  AND wi.priority_rank = 0
+				  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+				ORDER BY wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+				LIMIT $1
+			)
+			SELECT COUNT(*) FROM (SELECT 1 FROM ready_window LIMIT $2) ready`,
+			windowLimit,
+			limit,
+		).Scan(&count)
+	}); err != nil {
+		return 0, fmt.Errorf("count ready priority0 yenc recovery candidates: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Store) shouldBackoffYEncRecoverySeedScan(now time.Time) bool {
@@ -248,7 +328,7 @@ func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int6
 	var retired int64
 	if err := s.db.QueryRowContext(ctx, `
 		WITH stale AS (
-			SELECT wi.binary_id
+			SELECT wi.binary_id, wi.source_posted_at
 			FROM yenc_recovery_work_items wi
 			WHERE wi.status IN ('ready', 'running')
 			  AND BTRIM(COALESCE(wi.message_id, '')) = ''
@@ -259,8 +339,9 @@ func (s *Store) retireStaleReadyYEncRecoveryWorkItems(ctx context.Context) (int6
 			UPDATE yenc_recovery_work_items wi
 			SET status = 'stale',
 			    updated_at = NOW()
-			FROM stale s
-			WHERE wi.binary_id = s.binary_id
+		FROM stale s
+		WHERE wi.source_posted_at = s.source_posted_at
+		  AND wi.binary_id = s.binary_id
 			RETURNING 1
 		)
 		SELECT COUNT(*) FROM retired`,
@@ -298,9 +379,11 @@ func (s *Store) countReadyYEncRecoveryCandidates(ctx context.Context, limit int)
 	return count, nil
 }
 
-func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions) ([]YEncRecoveryCandidate, error) {
+func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, opts YEncRecoverySelectionOptions, stats YEncRecoverySelectionStats) ([]YEncRecoveryCandidate, error) {
 	var out []YEncRecoveryCandidate
-	stats := YEncRecoverySelectionStats{BatchRequested: limit}
+	if stats.BatchRequested <= 0 {
+		stats.BatchRequested = limit
+	}
 	defer func() {
 		stats.BatchSelected = len(out)
 		s.setYEncRecoverySelectionStats(stats)
@@ -311,8 +394,18 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
+		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit)
+		if err != nil {
+			return err
+		}
+		out = append(out, priority...)
+		if len(out) >= limit {
+			return nil
+		}
+
 		if opts.HasTargetWindow() {
-			targetLimit := yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			remainingLimit := limit - len(out)
+			targetLimit := yencRecoveryPercentLimit(remainingLimit, opts.TargetWindowPercent)
 			stats.WindowedRequested = targetLimit
 			if targetLimit > 0 {
 				targeted, scanned, empty, err := claimYEncRecoveryPostedWindowsBackward(ctx, tx, targetLimit, *opts.TargetWindowStart, *opts.TargetWindowEnd, "target_window")
@@ -324,9 +417,12 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 				stats.SelectedWindowed += len(targeted)
 				out = append(out, targeted...)
 			}
-			newestLimit := yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			newestLimit := yencRecoveryPercentLimit(remainingLimit, opts.NewestPercent)
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
+			}
+			if newestLimit <= 0 && len(out) == 0 && targetLimit > 0 {
+				newestLimit = limit
 			}
 			stats.NewestRequested = newestLimit
 			if newestLimit > 0 {
@@ -341,9 +437,10 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		fixedSplit := opts.HasValidSplit()
-		fairnessLimit := yencRecoveryFairnessLimit(ctx, tx, limit)
+		remainingLimit := limit - len(out)
+		fairnessLimit := yencRecoveryFairnessLimit(ctx, tx, remainingLimit)
 		if fixedSplit {
-			fairnessLimit = yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+			fairnessLimit = yencRecoveryPercentLimit(remainingLimit, opts.TargetWindowPercent)
 		}
 		stats.WindowedRequested = fairnessLimit
 		if fairnessLimit > 0 {
@@ -359,7 +456,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 
 		newestLimit := limit - len(out)
 		if fixedSplit {
-			newestLimit = yencRecoveryPercentLimit(limit, opts.NewestPercent)
+			newestLimit = yencRecoveryPercentLimit(remainingLimit, opts.NewestPercent)
 			if newestLimit > limit-len(out) {
 				newestLimit = limit - len(out)
 			}
@@ -379,6 +476,23 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		return nil, fmt.Errorf("list yenc recovery candidates: %w", err)
 	}
 	return out, nil
+}
+
+func claimPriority0YEncRecoveryCandidates(ctx context.Context, tx *sql.Tx, limit int) ([]YEncRecoveryCandidate, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, claimYEncRecoveryCandidatesSQL(`
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND wi.priority_rank = 0
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		ORDER BY wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+		LIMIT $2`), limit, yencRecoveryReadyWindowLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return scanClaimedYEncRecoveryCandidates(rows, "priority0", nil, nil)
 }
 
 func claimYEncRecoveryPostedWindowsBackward(ctx context.Context, tx *sql.Tx, limit int, start, end time.Time, lane string) ([]YEncRecoveryCandidate, int, int, error) {
@@ -751,9 +865,10 @@ func claimYEncRecoveryCandidatesInPostedRange(ctx context.Context, tx *sql.Tx, l
 
 func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 	return `
-		WITH ready_window AS (
+		WITH locked_window AS (
 			SELECT
 				wi.binary_id,
+				wi.source_posted_at,
 				wi.article_header_id,
 				wi.provider_id,
 				wi.newsgroup_id,
@@ -780,36 +895,51 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 				wi.current_readiness_bucket,
 				wi.structured_identity_binary_matched,
 				wi.priority_rank,
-				wi.updated_at,
-				date_trunc('minute', COALESCE(wi.date_utc, wi.updated_at)) AS posted_minute,
-				CASE
-					WHEN POSITION('@' IN COALESCE(wi.poster, '')) > 0
-						THEN LOWER(regexp_replace(split_part(wi.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
-					ELSE ''
-				END AS poster_hint,
-				CASE
-					WHEN POSITION('@' IN BTRIM(COALESCE(wi.message_id, ''), '<>')) > 0
-						THEN LOWER(regexp_replace(split_part(BTRIM(wi.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
-					ELSE ''
-				END AS message_hint
+				wi.admission_reason,
+				wi.group_tier,
+				wi.updated_at
 			FROM yenc_recovery_work_items wi
 			` + readyWindowClause + `
 			FOR UPDATE SKIP LOCKED
 		),
-		ranked AS (
+		ready_window AS (
 			SELECT
-				rw.binary_id,
+				lw.*,
+				date_trunc('minute', COALESCE(lw.date_utc, lw.updated_at)) AS posted_minute,
+				CASE
+					WHEN POSITION('@' IN COALESCE(lw.poster, '')) > 0
+						THEN LOWER(regexp_replace(split_part(lw.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS poster_hint,
+				CASE
+					WHEN POSITION('@' IN BTRIM(COALESCE(lw.message_id, ''), '<>')) > 0
+						THEN LOWER(regexp_replace(split_part(BTRIM(lw.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
+					ELSE ''
+				END AS message_hint,
 				ROW_NUMBER() OVER (
-					PARTITION BY rw.provider_id, rw.newsgroup_id, rw.priority_rank, rw.posted_minute, rw.poster_hint, rw.message_hint
-					ORDER BY rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+					PARTITION BY
+						lw.provider_id,
+						lw.newsgroup_id,
+						lw.priority_rank,
+						date_trunc('minute', COALESCE(lw.date_utc, lw.updated_at)),
+						CASE
+							WHEN POSITION('@' IN COALESCE(lw.poster, '')) > 0
+								THEN LOWER(regexp_replace(split_part(lw.poster, '@', 2), '[^a-z0-9._-]', '', 'g'))
+							ELSE ''
+						END,
+						CASE
+							WHEN POSITION('@' IN BTRIM(COALESCE(lw.message_id, ''), '<>')) > 0
+								THEN LOWER(regexp_replace(split_part(BTRIM(lw.message_id, '<>'), '@', 2), '[^a-z0-9._-]', '', 'g'))
+							ELSE ''
+						END
+					ORDER BY lw.date_utc DESC NULLS LAST, lw.article_number, lw.binary_id
 				) AS group_rank
-			FROM ready_window rw
+			FROM locked_window lw
 		),
 		selected AS (
-			SELECT rw.*, r.group_rank
+			SELECT rw.*
 			FROM ready_window rw
-			JOIN ranked r ON r.binary_id = rw.binary_id
-			ORDER BY rw.priority_rank, rw.posted_minute DESC, rw.poster_hint, rw.message_hint, r.group_rank, rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
+			ORDER BY rw.priority_rank, rw.posted_minute DESC, rw.poster_hint, rw.message_hint, rw.group_rank, rw.date_utc DESC NULLS LAST, rw.article_number, rw.binary_id
 			LIMIT $1
 		),
 		claimed AS (
@@ -819,7 +949,8 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 			    lease_expires_at = NOW() + INTERVAL '30 minutes',
 			    updated_at = NOW()
 			FROM selected s
-			WHERE wi.binary_id = s.binary_id
+			WHERE wi.source_posted_at = s.source_posted_at
+			  AND wi.binary_id = s.binary_id
 			RETURNING
 				s.binary_id,
 				s.article_header_id,
@@ -849,6 +980,8 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 				s.structured_identity_binary_matched,
 				s.group_rank,
 				s.priority_rank,
+				s.admission_reason,
+				s.group_tier,
 				s.updated_at
 		)
 		SELECT
@@ -878,7 +1011,10 @@ func claimYEncRecoveryCandidatesSQL(readyWindowClause string) string {
 			current_base_stem,
 			current_readiness_bucket,
 			structured_identity_binary_matched,
-			group_rank
+			group_rank,
+			priority_rank,
+			admission_reason,
+			group_tier
 		FROM claimed
 		ORDER BY
 			priority_rank,
@@ -960,12 +1096,11 @@ func (s *Store) RecordYEncRecoveryTransientFailureBatch(ctx context.Context, art
 		)
 		UPDATE yenc_recovery_work_items wi
 		SET status = 'ready',
-		    ready_at = COALESCE(p.yenc_recovery_retry_after, NOW() + INTERVAL '15 minutes'),
+		    ready_at = NOW() + INTERVAL '15 minutes',
 		    lease_owner = '',
 		    lease_expires_at = NULL,
 		    updated_at = NOW()
 		FROM requested r
-		LEFT JOIN article_header_ingest_payloads p ON p.article_header_id = r.article_header_id
 		WHERE wi.article_header_id = r.article_header_id`,
 		articleHeaderIDs,
 	); err != nil {
@@ -1020,6 +1155,7 @@ func scanYEncRecoveryCandidateDest(scanner interface{ Scan(dest ...any) error },
 	if groupRank != nil {
 		dest = append(dest, groupRank)
 	}
+	dest = append(dest, &item.PriorityRank, &item.AdmissionReason, &item.GroupTier)
 	if err := scanner.Scan(dest...); err != nil {
 		return YEncRecoveryCandidate{}, fmt.Errorf("scan yenc recovery candidate: %w", err)
 	}
@@ -1057,6 +1193,9 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		supersededSources := []yencRecoverySupersededSource{}
 		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil)
 		if err != nil {
+			return err
+		}
+		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, []int64{in.ArticleHeaderID}); err != nil {
 			return err
 		}
 		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {
@@ -1172,6 +1311,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		targetIDs := make([]int64, 0, len(orderedRowIDs))
 		summaryKeys := make([]releaseFamilySummaryKey, 0, len(orderedRowIDs)*4)
 		chunkResults := make([]YEncHeaderRecoveryResult, 0, len(orderedRowIDs))
+		recoveredArticleIDs := make([]int64, 0, len(orderedRowIDs))
 		targetUpdates := make(map[int64]struct{}, len(orderedRowIDs))
 		supersededSources := make([]yencRecoverySupersededSource, 0, len(orderedRowIDs))
 		for _, rowID := range orderedRowIDs {
@@ -1190,8 +1330,16 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 				return err
 			}
 			chunkResults = append(chunkResults, *result)
+			recoveredArticleIDs = append(recoveredArticleIDs, records[rowID].ArticleHeaderID)
 			targetIDs = append(targetIDs, targetID)
 			summaryKeys = append(summaryKeys, keys...)
+		}
+		started = time.Now()
+		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, recoveredArticleIDs); err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
 		}
 		started = time.Now()
 		if err := markYEncRecoverySourcesSupersededBatch(ctx, tx, supersededSources); err != nil {
@@ -1283,6 +1431,9 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		if err := updateBinaryFromYEncRecovery(ctx, tx, in.BinaryID, in); err != nil {
 			return nil, 0, nil, err
 		}
+		if err := strengthenRecoveredBinaryPart(ctx, tx, in.BinaryID, in.ArticleHeaderID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
+			return nil, 0, nil, err
+		}
 		if stats != nil {
 			stats.TargetUpdateDuration += time.Since(started)
 		}
@@ -1324,6 +1475,7 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		}
 		record := yencRecoverySupersededSource{
 			SourceBinaryID:   in.BinaryID,
+			SourcePostedAt:   seed.SourcePostedAt,
 			TargetBinaryID:   targetID,
 			ProviderID:       seed.ProviderID,
 			NewsgroupID:      seed.NewsgroupID,
@@ -1345,36 +1497,25 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 
 	started = time.Now()
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE article_header_ingest_payloads
-		SET yenc_part_number = CASE WHEN $2 > 0 THEN $2 ELSE yenc_part_number END,
-		    yenc_total_parts = GREATEST(yenc_total_parts, $3),
-		    yenc_file_size = GREATEST(yenc_file_size, $4),
-		    yenc_recovery_missing_count = 0,
-		    yenc_recovery_last_missing_at = NULL,
-		    yenc_recovery_retry_after = NULL
-		WHERE article_header_id = $1`,
-		in.ArticleHeaderID,
-		in.PartNumber,
-		in.TotalParts,
-		in.FileSize,
-	); err != nil {
-		return nil, 0, nil, fmt.Errorf("clear yenc recovery backoff article %d: %w", in.ArticleHeaderID, err)
-	}
-	if stats != nil {
-		stats.IngestPayloadUpdateDuration += time.Since(started)
-	}
-	started = time.Now()
-	if _, err := tx.ExecContext(ctx, `
+		WITH target_sources AS (
+			SELECT binary_id, source_posted_at
+			FROM binary_core
+			WHERE binary_id IN ($1, $2)
+			  AND source_posted_at IS NOT NULL
+		)
 		UPDATE yenc_recovery_work_items
 		SET status = 'done',
 		    ready_at = NOW(),
 		    lease_owner = '',
 		    lease_expires_at = NULL,
+		    missing_count = 0,
 		    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
 		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
 		    yenc_file_size = GREATEST(yenc_file_size, $6),
 		    updated_at = NOW()
-		WHERE binary_id IN ($1, $2)`,
+		FROM target_sources ts
+		WHERE yenc_recovery_work_items.source_posted_at = ts.source_posted_at
+		  AND yenc_recovery_work_items.binary_id = ts.binary_id`,
 		in.BinaryID,
 		targetID,
 		in.ArticleHeaderID,
@@ -1530,6 +1671,7 @@ func dedupeYEncRecoveryInt64s(in []int64) []int64 {
 
 type yencRecoveryBinarySeed struct {
 	ID               int64
+	SourcePostedAt   time.Time
 	ProviderID       int64
 	NewsgroupID      int64
 	ReleaseFamilyKey string
@@ -1539,6 +1681,7 @@ type yencRecoveryBinarySeed struct {
 
 type yencRecoverySupersededSource struct {
 	SourceBinaryID   int64
+	SourcePostedAt   time.Time
 	TargetBinaryID   int64
 	ProviderID       int64
 	NewsgroupID      int64
@@ -1550,18 +1693,22 @@ func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64)
 	var seed yencRecoveryBinarySeed
 	err := tx.QueryRowContext(ctx, `
 		SELECT
-			bc.binary_id,
-			bc.provider_id,
-			bc.newsgroup_id,
+				bc.binary_id,
+				COALESCE(bc.source_posted_at, bic.source_posted_at, NOW()),
+				bc.provider_id,
+				bc.newsgroup_id,
 			bic.release_family_key,
 			bic.base_stem,
 			bc.binary_key
-		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		WHERE bc.binary_id = $1
-		FOR UPDATE OF bc, bic`,
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			WHERE bc.binary_id = $1
+			  AND bc.source_posted_at IS NOT NULL
+			FOR UPDATE OF bc, bic`,
 		binaryID,
-	).Scan(&seed.ID, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
+	).Scan(&seed.ID, &seed.SourcePostedAt, &seed.ProviderID, &seed.NewsgroupID, &seed.ReleaseFamilyKey, &seed.BaseStem, &seed.BinaryKey)
 	if err == sql.ErrNoRows {
 		return seed, fmt.Errorf("%w: %d for yenc recovery", ErrBinaryNotFound, binaryID)
 	}
@@ -1632,7 +1779,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	sort.Slice(sourceIDs, func(i, j int) bool { return sourceIDs[i] < sourceIDs[j] })
 
 	values := make([]string, 0, len(sourceIDs))
-	args := make([]any, 0, len(sourceIDs)*7)
+	args := make([]any, 0, len(sourceIDs)*8)
 	for _, sourceID := range sourceIDs {
 		record := bySource[sourceID]
 		targetBinaryKey, ok := targetKeys[record.TargetBinaryID]
@@ -1640,9 +1787,10 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 			return fmt.Errorf("load yenc superseded target binary %d: %w", record.TargetBinaryID, sql.ErrNoRows)
 		}
 		base := len(args) + 1
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,'yenc_recovery_merge',NOW())", base, base+1, base+2, base+3, base+4, base+5, base+6))
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,'yenc_recovery_merge',NOW())", base, base+1, base+2, base+3, base+4, base+5, base+6, base+7))
 		args = append(args,
 			record.SourceBinaryID,
+			record.SourcePostedAt,
 			record.TargetBinaryID,
 			record.ProviderID,
 			record.NewsgroupID,
@@ -1654,6 +1802,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_superseded_sources (
 			source_binary_id,
+			source_posted_at,
 			target_binary_id,
 			provider_id,
 			newsgroup_id,
@@ -1664,7 +1813,7 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 			superseded_at
 		)
 		VALUES `+strings.Join(values, ",")+`
-		ON CONFLICT (source_binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, source_binary_id) DO UPDATE
 		SET target_binary_id = EXCLUDED.target_binary_id,
 		    provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
@@ -1684,19 +1833,20 @@ func markYEncRecoverySourcesSupersededBatch(ctx context.Context, tx *sql.Tx, rec
 	for _, sourceID := range sourceIDs {
 		record := bySource[sourceID]
 		base := len(args) + 1
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,'superseded',NOW())", base, base+1, base+2))
-		args = append(args, record.SourceBinaryID, record.ProviderID, record.NewsgroupID)
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,'superseded',NOW())", base, base+1, base+2, base+3))
+		args = append(args, record.SourceBinaryID, record.SourcePostedAt, record.ProviderID, record.NewsgroupID)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO binary_lifecycle (
 			binary_id,
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			lifecycle_status,
 			updated_at
 		)
 		VALUES `+strings.Join(values, ",")+`
-		ON CONFLICT (binary_id) DO UPDATE
+		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
 		SET provider_id = EXCLUDED.provider_id,
 		    newsgroup_id = EXCLUDED.newsgroup_id,
 		    lifecycle_status = 'superseded',
@@ -1731,6 +1881,20 @@ func findYEncRecoveryTargetBinary(ctx context.Context, tx *sql.Tx, providerID, n
 }
 
 func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int64, in YEncHeaderRecoveryRecord) error {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at
+		FROM binary_core
+		WHERE binary_id = $1
+		  AND source_posted_at IS NOT NULL`,
+		binaryID,
+	).Scan(&sourcePostedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("%w: %d for yenc recovery update", ErrBinaryNotFound, binaryID)
+		}
+		return fmt.Errorf("load yenc recovered binary source_posted_at %d: %w", binaryID, err)
+	}
+
 	groupingSummaryKind, groupingSummaryStatus, groupingSummaryFallbackUsed := groupingSummaryScalars(sanitizeStringMap(in.GroupingEvidence))
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE binary_core
@@ -1768,7 +1932,8 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    grouping_summary_status = $23,
 		    grouping_summary_fallback_used = $24,
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $25`,
 		binaryID,
 		in.SourceReleaseKey,
 		in.ReleaseFamilyKey,
@@ -1793,6 +1958,7 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		groupingSummaryKind,
 		groupingSummaryStatus,
 		groupingSummaryFallbackUsed,
+		sourcePostedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("update yenc recovered binary identity %d: %w", binaryID, err)
@@ -1801,9 +1967,11 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		UPDATE binary_observation_stats
 		SET total_parts = GREATEST(total_parts, $2),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $3`,
 		binaryID,
 		in.TotalParts,
+		sourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update yenc recovered binary stats %d: %w", binaryID, err)
 	}
@@ -1814,28 +1982,14 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 		    recovered_file_name = $3,
 		    recovered_at = NOW(),
 		    updated_at = NOW()
-		WHERE binary_id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $4`,
 		binaryID,
 		in.MatchConfidence,
 		in.FileName,
+		sourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update yenc recovered binary recovery %d: %w", binaryID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE binary_parts
-		SET file_name = $2,
-		    part_number = CASE WHEN $4 > 0 THEN $4 ELSE part_number END,
-		    total_parts = GREATEST(total_parts, $3),
-		    updated_at = NOW()
-		WHERE binary_id = $1
-		  AND article_header_id = $5`,
-		binaryID,
-		in.FileName,
-		in.TotalParts,
-		in.PartNumber,
-		in.ArticleHeaderID,
-	); err != nil {
-		return fmt.Errorf("update yenc recovered binary parts %d: %w", binaryID, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE release_files
@@ -1852,13 +2006,114 @@ func updateBinaryFromYEncRecovery(ctx context.Context, tx *sql.Tx, binaryID int6
 	return nil
 }
 
-func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, part_number, segment_bytes
+func strengthenRecoveredBinaryPart(ctx context.Context, tx *sql.Tx, binaryID, articleHeaderID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
+	if binaryID <= 0 || articleHeaderID <= 0 {
+		return nil
+	}
+	if recoveredPartNumber <= 0 && recoveredTotalParts <= 0 && strings.TrimSpace(fileName) == "" {
+		return nil
+	}
+
+	var sourcePostedAt time.Time
+	var partID int64
+	var currentPartNumber int
+	var currentTotalParts int
+	var segmentBytes int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at, id, part_number, total_parts, segment_bytes
 		FROM binary_parts
 		WHERE binary_id = $1
+		  AND article_header_id = $2
+		FOR UPDATE`,
+		binaryID,
+		articleHeaderID,
+	).Scan(&sourcePostedAt, &partID, &currentPartNumber, &currentTotalParts, &segmentBytes); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("lock recovered binary part binary=%d article=%d: %w", binaryID, articleHeaderID, err)
+	}
+
+	partNumber := currentPartNumber
+	if recoveredPartNumber > 0 {
+		partNumber = recoveredPartNumber
+	}
+	totalParts := currentTotalParts
+	if recoveredTotalParts > totalParts {
+		totalParts = recoveredTotalParts
+	}
+
+	if recoveredPartNumber > 0 && recoveredPartNumber != currentPartNumber {
+		var existingID int64
+		var existingBytes int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, segment_bytes
+			FROM binary_parts
+			WHERE binary_id = $1
+			  AND source_posted_at = $2
+			  AND part_number = $3
+			  AND id <> $4
+			FOR UPDATE`,
+			binaryID,
+			sourcePostedAt,
+			recoveredPartNumber,
+			partID,
+		).Scan(&existingID, &existingBytes)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("lock existing recovered part binary=%d part=%d: %w", binaryID, recoveredPartNumber, err)
+		}
+		if err == nil && existingBytes >= segmentBytes {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, sourcePostedAt, partID); err != nil {
+				return fmt.Errorf("delete weaker recovered duplicate part %d: %w", partID, err)
+			}
+			return nil
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, sourcePostedAt, existingID); err != nil {
+				return fmt.Errorf("delete existing weaker recovered part %d: %w", existingID, err)
+			}
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_parts
+		SET file_name = CASE WHEN BTRIM($3) <> '' THEN $3 ELSE file_name END,
+		    part_number = $4,
+		    total_parts = GREATEST(total_parts, $5),
+		    updated_at = NOW()
+		WHERE source_posted_at = $1
+		  AND id = $2`,
+		sourcePostedAt,
+		partID,
+		fileName,
+		partNumber,
+		totalParts,
+	); err != nil {
+		return fmt.Errorf("strengthen recovered binary part %d: %w", partID, err)
+	}
+	return nil
+}
+
+func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
+	var sourcePostedAt time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_posted_at
+		FROM binary_core
+		WHERE binary_id = $1
+		  AND source_posted_at IS NOT NULL`,
+		sourceID,
+	).Scan(&sourcePostedAt); err != nil {
+		return fmt.Errorf("load yenc source binary partition key %d: %w", sourceID, err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, source_posted_at, part_number, segment_bytes
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND source_posted_at = $2
 		ORDER BY part_number, id`,
 		sourceID,
+		sourcePostedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("list yenc source binary parts %d: %w", sourceID, err)
@@ -1866,14 +2121,15 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 	defer rows.Close()
 
 	type part struct {
-		ID           int64
-		PartNumber   int
-		SegmentBytes int64
+		ID             int64
+		SourcePostedAt time.Time
+		PartNumber     int
+		SegmentBytes   int64
 	}
 	parts := []part{}
 	for rows.Next() {
 		var p part
-		if err := rows.Scan(&p.ID, &p.PartNumber, &p.SegmentBytes); err != nil {
+		if err := rows.Scan(&p.ID, &p.SourcePostedAt, &p.PartNumber, &p.SegmentBytes); err != nil {
 			return fmt.Errorf("scan yenc source part: %w", err)
 		}
 		parts = append(parts, p)
@@ -1894,21 +2150,23 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			FROM binary_parts
 			WHERE binary_id = $1
 			  AND part_number = $2
+			  AND source_posted_at = $3
 			FOR UPDATE`,
 			targetID,
 			partNumber,
+			p.SourcePostedAt,
 		).Scan(&existingID, &existingBytes)
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("lock yenc target part binary=%d part=%d: %w", targetID, partNumber, err)
 		}
 		if err == nil && existingBytes >= p.SegmentBytes {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE id = $1`, p.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, p.SourcePostedAt, p.ID); err != nil {
 				return fmt.Errorf("delete duplicate yenc source part %d: %w", p.ID, err)
 			}
 			continue
 		}
 		if err == nil {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE id = $1`, existingID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM binary_parts WHERE source_posted_at = $1 AND id = $2`, p.SourcePostedAt, existingID); err != nil {
 				return fmt.Errorf("delete weaker yenc target part %d: %w", existingID, err)
 			}
 		}
@@ -1919,12 +2177,14 @@ func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, target
 			    part_number = $4,
 			    total_parts = GREATEST(total_parts, $5),
 			    updated_at = NOW()
-			WHERE id = $1`,
+			WHERE id = $1
+			  AND source_posted_at = $6`,
 			p.ID,
 			targetID,
 			fileName,
 			partNumber,
 			recoveredTotalParts,
+			p.SourcePostedAt,
 		); err != nil {
 			return fmt.Errorf("move yenc source part %d to binary %d: %w", p.ID, targetID, err)
 		}
@@ -1963,6 +2223,17 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	in.BinaryKey = strings.TrimSpace(in.BinaryKey)
 	in.BinaryName = strings.TrimSpace(in.BinaryName)
 	in.FileName = strings.TrimSpace(in.FileName)
+	if strings.TrimSpace(in.FileName) != "" {
+		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)) == "" {
+			in.SourceReleaseKey = fallbackFamily
+			in.ReleaseFamilyKey = fallbackFamily
+			in.FileSetKey = fallbackFamily
+			in.ReleaseKey = fallbackFamily
+			if in.BaseStem == "" {
+				in.BaseStem = fallbackFamily
+			}
+		}
+	}
 	if recoveredKey := recoveredYEncBinaryKey(in); recoveredKey != "" {
 		in.BinaryKey = recoveredKey
 		if in.FileSetKey != "" {
@@ -1980,6 +2251,24 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	if in.GroupingEvidence == nil {
 		in.GroupingEvidence = map[string]any{}
 	}
+}
+
+func recoveredYEncFallbackFamilyKey(in *YEncHeaderRecoveryRecord) string {
+	if in == nil {
+		return ""
+	}
+	fileKey := normalizeBinaryIdentityKey(firstNonBlank(in.FileName, in.BinaryName))
+	if fileKey == "" {
+		return ""
+	}
+	parts := []string{"yenc", fileKey}
+	if in.TotalParts > 0 {
+		parts = append(parts, fmt.Sprintf("parts%d", in.TotalParts))
+	}
+	if in.FileSize > 0 {
+		parts = append(parts, fmt.Sprintf("size%d", in.FileSize))
+	}
+	return normalizeBinaryIdentityKey(strings.Join(parts, " "))
 }
 
 func recoveredYEncBinaryKey(in *YEncHeaderRecoveryRecord) string {

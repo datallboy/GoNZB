@@ -144,7 +144,7 @@ func TestRunOnceInspectsStandalonePAR2BinaryBeforeReleaseFormation(t *testing.T)
 	}
 }
 
-func TestRunOnceFallsBackToFullManifestMaterializationForPlainPAR2(t *testing.T) {
+func TestRunOnceParsesPlainPAR2FromContiguousPrefixSample(t *testing.T) {
 	now := time.Now().UTC()
 	full := buildPAR2Sample("target.part01.rar", 123456)
 	split := len(full) / 2
@@ -184,10 +184,10 @@ func TestRunOnceFallsBackToFullManifestMaterializationForPlainPAR2(t *testing.T)
 	}
 
 	if len(repo.par2Targets) != 1 {
-		t.Fatalf("expected one par2 target after full manifest fallback, got %+v", repo.par2Targets)
+		t.Fatalf("expected one par2 target after prefix sample, got %+v", repo.par2Targets)
 	}
-	if got := repo.completed[0].Summary["full_manifest_fallback"]; got != true {
-		t.Fatalf("expected full_manifest_fallback=true, got %+v", repo.completed[0].Summary)
+	if got := repo.completed[0].Summary["full_manifest_fallback"]; got != false {
+		t.Fatalf("expected full_manifest_fallback=false, got %+v", repo.completed[0].Summary)
 	}
 }
 

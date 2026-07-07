@@ -30,6 +30,23 @@ func TestShouldAdoptInspectionTitleAllowsObfuscatedSource(t *testing.T) {
 	}
 }
 
+func TestShouldAdoptMediaTitleForObfuscatedSource(t *testing.T) {
+	candidate, ok := ChooseBestInspectionTitle("UVfqPzXK070Y05iFn0nhMANXvrj2b6Ik", []InspectionCandidate{{
+		Source:     "media_title",
+		Value:      "The One Show 2026 S01E00 24/06/2026",
+		Confidence: 0.96,
+	}})
+	if !ok {
+		t.Fatalf("expected media title candidate")
+	}
+	if candidate.DisplayTitle != "The One Show 2026 S01E00 24/06/2026" {
+		t.Fatalf("unexpected media display title: %+v", candidate)
+	}
+	if !ShouldAdoptInspectionTitle("UVfqPzXK070Y05iFn0nhMANXvrj2b6Ik", candidate) {
+		t.Fatalf("media title should replace obfuscated source title: %+v", candidate)
+	}
+}
+
 func TestShouldAdoptInspectionTitleAllowsRelatedReadableSource(t *testing.T) {
 	candidate, ok := ChooseBestInspectionTitle("Example Show S01E01 1080p", []InspectionCandidate{{
 		Source:     "archive_entry",
